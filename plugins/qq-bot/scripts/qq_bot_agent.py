@@ -1275,6 +1275,8 @@ def build_messages(daemon, msg):
         head_line + "\n\n%s%s%s%s%s%s%s\n\n"
         "## 硬性规则\n"
         "- 输出是QQ聊天文本：禁止Markdown（# * ` [链接]()），口语化\n"
+        "- 绝对禁止任何脏话、粗口、侮辱性词汇（\"我操/卧槽/他妈的\"等，任何语境、"
+        "任何情绪下都不行）：你的角色再惊讶再生气也不说脏话，用\"哎呀/天哪/好家伙\"表达\n"
         "- 遵守人设的语气与长度习惯；高冷人设就要少说话\n"
         "- 想连发多条短消息时用 [[SPLIT]] 分隔（最多3条）\n"
         "- 想发某张表情包时，单独输出一行 [STICKER:表情包id]\n"
@@ -1299,14 +1301,16 @@ def build_messages(daemon, msg):
 SPLIT_RE = re.compile(r"\[\[SPLIT\]\]")
 STICKER_RE = re.compile(r"\[STICKER:(\d{1,4})\]")
 MEMO_RE = re.compile(r"^\s*\[记忆\]\s*(.+)$", re.M)
+# 句中 [记忆]（模型没按行首格式写）：同样提取入库并从正文剥离，防泄漏给用户
+MEMO_ANY_RE = re.compile(r"\[记忆\]\s*([^\[\n]{1,100})")
 
 
 def parse_reply(text):
     if "[SKIP]" in text.upper().replace(" ", ""):
         return None, [], None
-    memo = MEMO_RE.search(text)
-    memo_text = memo.group(1).strip()[:100] if memo else None
-    text = MEMO_RE.sub("", text)
+    mm = MEMO_ANY_RE.search(text)
+    memo_text = mm.group(1).strip()[:100] if mm else None
+    text = MEMO_ANY_RE.sub("", text)
     sticker_ids = [int(m) for m in STICKER_RE.findall(text)]
     text = STICKER_RE.sub("", text)
     parts = [p.strip() for p in SPLIT_RE.split(text) if p.strip()]
@@ -1317,20 +1321,40 @@ def _norm_dup(s):
     return re.sub(r"\s+", "", str(s or ""))
 
 
+_ECHO_LINE_RE = re.compile(r"^([^:：\n]{1,20})[:：]\s*(.*)$", re.M)
+# 强脏话（「我操」排除 我操作/我操控 等正常词）；人设（妈妈系等）绝不骂脏话
+_PROFANITY_RE = re.compile(r"我操(?!作|控|盘|心)|卧槽|操你|草你|他妈的|傻逼|傻b|nmsl", re.I)
+
+
 def _dedup_reply(daemon, msg, texts):
-    """复读守卫：与最近 bot 消息重复的段落剔除（含截断变体与「你:」前缀
-    抄历史两种形态）；全部重复时返回空列表（调用方静默跳过）。
-    背景：模型偶发把上下文里自己的旧回复原样再输出，进入历史后滚雪球。"""
+    """输出卫生守卫（发送前）：
+    ① 复读——与最近 bot 消息重复的段落剔除（含截断变体与「你:」前缀抄历史）；
+    ② 历史行复写——「群友昵称: 内容」整行照抄上下文格式的行剔除；
+    ③ 脏话——含强粗口的段整段丢弃（人设不可能说，模型退化输出）。
+    全部被剔时返回空列表（调用方静默跳过）。"""
     history = daemon.history(msg["chat_type"], msg["chat_id"], limit=12)
     recent = [_norm_dup(h.get("text")) for h in history if h.get("is_bot")]
     recent = [t for t in recent if len(t) >= 24][-4:]
-    if not recent:
-        return texts, 0
+    speakers = {str(h.get("sender_name", "")).strip() for h in history
+                if str(h.get("sender_name", "")).strip()} | {"你"}
     fresh, dropped = [], 0
     for t in texts:
-        segs = [s.strip() for s in re.split(r"(?m)^\s*你[:：]|\n{2,}", str(t)) if s.strip()]
+        # ② 先剥历史行复写（行级：「昵称: 内容」且昵称是群里真实说话者）
+        lines = []
+        for ln in str(t).split("\n"):
+            mm = _ECHO_LINE_RE.match(ln.strip())
+            if mm and mm.group(1).strip() in speakers:
+                continue
+            lines.append(ln)
+        body = "\n".join(lines).strip()
+        # ①③ 段级：复读 + 脏话
+        segs = [s.strip() for s in re.split(r"(?m)^\s*你[:：]|\n{2,}", body) if s.strip()]
         keep = []
         for s in segs:
+            if _PROFANITY_RE.search(s):
+                out("AGENT_PROFANITY_DROP msg_id=%s seg=%.30s" % (msg["id"], s))
+                dropped += 1
+                continue
             n = _norm_dup(s)
             n2 = _norm_dup(re.sub(r"^\s*你[:：]\s*", "", s))
             dup = any(len(n) >= 24 and (n in r or r in n)
