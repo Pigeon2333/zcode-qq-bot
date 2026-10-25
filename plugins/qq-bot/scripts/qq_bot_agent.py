@@ -1355,7 +1355,8 @@ def build_messages(daemon, msg):
 
 
 SPLIT_RE = re.compile(r"\[\[SPLIT\]\]")
-STICKER_RE = re.compile(r"\[STICKER:(\d{1,4})\]")
+STICKER_RE = re.compile(r"\[STICKER[:：]\s*(\d{1,4})\]")   # 兼容中文冒号/空格变体
+_STICKER_LEAK_RE = re.compile(r"\[STICKER[^\]\n]{0,24}\]")  # 兜底：任何残留标记整段剥掉
 MEMO_RE = re.compile(r"^\s*\[记忆\]\s*(.+)$", re.M)
 # [记忆] / [记忆@目标]（目标=QQ号；模型可能混入昵称如 [记忆@陨星CClt(QQ:702215860)]）。
 # 任意位置匹配：提取入库并从正文剥离，防泄漏给用户。
@@ -1377,6 +1378,7 @@ def parse_reply(text):
         text = MEMO_ANY_RE.sub("", text)
     sticker_ids = [int(m) for m in STICKER_RE.findall(text)]
     text = STICKER_RE.sub("", text)
+    text = _STICKER_LEAK_RE.sub("", text)  # 未解析变体兜底剥离，绝不泄漏给用户
     parts = [p.strip() for p in SPLIT_RE.split(text) if p.strip()]
     return parts[:4], sticker_ids[:2], memo
 
@@ -1522,7 +1524,7 @@ def _proactive_compose(daemon, chat_type, chat_id):
         "## 硬性规则\n"
         "- 输出是QQ聊天文本：禁止Markdown，口语化，遵守人设语气\n"
         "- 绝对禁止任何脏话粗口（任何语境都不行），用\"哎呀/天哪\"表达情绪\n"
-        "- 想连发多条用 [[SPLIT]] 分隔（最多2条）；想发表情包单独一行 [STICKER:表情包id]\n"
+        "- 想连发多条用 [[SPLIT]] 分隔（最多2条）；主动消息只发文字，不要输出表情包标记\n"
         "- 出现值得长期记住的关于某人的信息可单独一行 [记忆@对方QQ号] 内容\n"
         "%s\n"
         "## 本次任务（主动发消息）\n"
@@ -1618,18 +1620,13 @@ def _proactive_tick(daemon):
             return
         fake_msg = {"chat_type": chat_type, "chat_id": chat_id, "id": "pro"}
         texts, dropped = _dedup_reply(daemon, fake_msg, texts)
-        if not texts and not stickers:
-            out("AGENT_PROACTIVE_SKIP chat=%s/%s (与近期发言重复)" % (chat_type, chat_id))
+        if not texts:
+            out("AGENT_PROACTIVE_SKIP chat=%s/%s (与近期发言重复/无有效内容)"
+                % (chat_type, chat_id))
             return
-        if texts:
-            daemon.send(chat_type, chat_id, texts[:2])
-        if stickers:
-            for sid in stickers[:1]:
-                path = sticker_file_path(sid, active)
-                if path:
-                    daemon.send_image(chat_type, chat_id, path)
-        out("AGENT_PROACTIVE_OK chat=%s/%s text:%d%s"
-            % (chat_type, chat_id, len(texts), "+sticker" if stickers else ""))
+        # 主动消息只发文字：表情图在无人互动时突兀，标记已由 parse 兜底剥离
+        daemon.send(chat_type, chat_id, texts[:2])
+        out("AGENT_PROACTIVE_OK chat=%s/%s text:%d" % (chat_type, chat_id, len(texts)))
     except Exception as e:
         out("AGENT_PROACTIVE_FAIL chat=%s/%s %r" % (chat_type, chat_id, e))
 
