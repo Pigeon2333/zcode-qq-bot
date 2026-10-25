@@ -2023,6 +2023,30 @@ def start_admin_server(port):
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
 
+def _backup_data():
+    """每日数据快照：关键数据文件复制到 backups/<日期>/，保留最近 30 份。
+    人设/风格/自进化/记忆/分群与回复配置都可从此恢复（密钥类文件不备份）。"""
+    import shutil
+    names = ["persona_collection.json", "style.md", "evolved.json",
+             "memory_stream.jsonl", "group_reply_modes.json",
+             "reply_config.json", "private_config.json",
+             "group_whitelist.json", "model_chain.json", "app_config.json"]
+    bdir = os.path.join(DATA_DIR, "backups", time.strftime("%Y%m%d"))
+    try:
+        os.makedirs(bdir, exist_ok=True)
+        for n in names:
+            src = os.path.join(DATA_DIR, n)
+            if os.path.isfile(src):
+                shutil.copy2(src, os.path.join(bdir, n))
+        root = os.path.join(DATA_DIR, "backups")
+        days = sorted(x for x in os.listdir(root) if x.isdigit())
+        for old in days[:-30]:
+            shutil.rmtree(os.path.join(root, old), ignore_errors=True)
+        out("AGENT_BACKUP_OK %s (%d files)" % (bdir, len(names)))
+    except OSError as e:
+        out("AGENT_BACKUP_FAIL %r" % e)
+
+
 def _daily_review_once(daemon):
     """夜间复盘一次：统计当日表现 → GLM 提炼风格观察 → 写入自进化 → 日报发主人。"""
     import io
@@ -2108,6 +2132,7 @@ def _daily_review_loop(daemon):
                     or (now.tm_hour >= 4 and last_run["day"] != key
                         and time.strftime("%H:%M") < "05:30"):
                 last_run["day"] = key
+                _backup_data()  # 数据快照（人设/记忆/配置），与复盘开关无关
                 if feature_enabled("daily_review_enabled"):
                     _daily_review_once(daemon)
                 else:
