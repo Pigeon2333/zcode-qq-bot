@@ -552,6 +552,8 @@ async function vGroups(){
   const ov=_gmModes[x]||{};
   const cur=ov.paused?'paused':(ov.reply_mode||'');
   const opt=(v,t)=>`<option value="${v}"${cur===v?' selected':''}>${t}</option>`;
+  const pcur=ov.paused?'x':(ov.proactive===true?'on':(ov.proactive===false?'off':''));
+  const opt2=(v,t)=>`<option value="${v}"${pcur===v?' selected':''}>${t}</option>`;
   let params='';
   if(ov.reply_mode==='keyword'){
    params=`<div class="gm-sub">该群关键词（逗号分隔，覆盖全局；回车保存）：<input value="${esc((ov.keywords||_gmGlobal.keywords||[]).join(', '))}" style="width:230px" onchange="saveGmFieldFor('${esc(x)}','keywords',this)"></div>`;
@@ -564,6 +566,9 @@ async function vGroups(){
    <select class="mini" style="width:116px;flex:none" title="该群回复模式" onchange="rowGmMode(this)">
     ${opt('','跟随全局')}${opt('standard','标准')}${opt('keyword','关键词')}${opt('chat','闲聊')}${opt('paused','暂停回应')}
    </select>
+   <select class="mini" style="width:96px;flex:none" title="该群是否参与主动发消息" onchange="rowGmPro(this)">
+    ${opt2('','跟随')}${opt2('on','主动开')}${opt2('off','主动关')}
+   </select>
    <button class="act ghost" onclick="delg(${i})">删除</button></div>${params}</div>`;
  }).join('');
  const modeCard=(v,title,desc)=>`<div class="card rm ${m===v?'on':''}" onclick="pickMode('${v}')">
@@ -572,7 +577,7 @@ async function vGroups(){
  `<div class="card"><label class="master"><input type="checkbox" id="genabled" ${on?'checked':''} onchange="saveGroupEnabled(this.checked)">
   <span><b>回应群消息</b><div class="k" style="margin-top:3px">总开关：关闭后机器人不再回应任何群消息（私聊不受影响，适合只想私聊用的场景）；改动即时生效</div></span></label></div>
  <div class="${on?'':'dimmed'}">
- <div class="card"><div class="k">回复模式（决定机器人在群里什么时候说话，仅对群生效）</div>
+ <div class="card"><div class="k" style="display:flex;gap:8px;align-items:center">回复模式<span class="badge" style="background:var(--tint);color:var(--dim)">全局通用默认</span>（决定机器人在群里什么时候说话，仅对群生效；每个群可在下方白名单行内单独覆盖）</div>
   <div class="rmgrid">
    ${modeCard('standard','标准模式','只有被 @ 或回复机器人时才说话')}
    ${modeCard('keyword','关键词模式','标准模式基础上，群消息包含关键词也会触发回复')}
@@ -591,10 +596,18 @@ async function vGroups(){
     <span><b>防插嘴</b><div class="k" style="margin-top:2px">结合上下文判断：与自己无关的话题、他人之间正在讨论的对话、无人叫你时保持沉默；开启时覆盖上一项，判定更严格</div></span></label></div>
   </div>`:''}
  </div>
+ <div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">主动发消息<span class="badge" style="background:var(--tint);color:var(--dim)">全局通用默认</span>（每个群可在下方白名单行内单独覆盖）</div>
+  <label class="master"><input type="checkbox" ${rv.proactive_groups_enabled?'checked':''} onchange="savePro('proactive_groups_enabled',this.checked)">
+   <span><b>允许机器人主动在群里发消息</b><div class="k" style="margin-top:3px">开启后机器人会不定期根据最近对话、当前时间、记忆主动开个话头：只选最近 6 小时内有活动的白名单群；深夜 0-8 点不打扰；安静模式/暂停/群暂停回应/限额停响应时都不发；发送前过复读与脏话守卫</div></span></label>
+  <div style="display:flex;gap:14px;margin-top:10px;flex-wrap:wrap;align-items:center">
+   <label>频率：每 <input id="proiv" type="number" min="5" max="1440" value="${Math.round((rv.proactive_min_interval_sec||1800)/60)}" style="width:60px" onchange="saveProIv()"> 分钟评估一次</label>
+   <label>命中概率 <input type="range" min="0" max="100" value="${Math.round((rv.proactive_probability||0.1)*100)}" style="width:150px" oninput="$('#proprob').textContent=this.value+'%'" onchange="savePro('proactive_probability',(parseInt(this.value)||0)/100)"> <b id="proprob">${Math.round((rv.proactive_probability||0.1)*100)}%</b></label>
+  </div>
+  <div class="k" style="margin-top:6px">例：30 分钟 + 10% ≈ 平均每 5 小时主动说一句。私聊的主动开关在「私聊消息」页单独设置（频率/概率共用本组）。</div></div>
  <div class="card">
   <label class="master" style="margin-bottom:8px"><input type="checkbox" id="allowall" ${allOn?'checked':''} onchange="saveGroups(true)">
    <span><b>响应所有群</b><div class="k" style="margin-top:3px">开启后忽略下方白名单；关闭即恢复白名单，列表保留不丢</div></span></label>
-  <div class="k">白名单群与分群模式（机器人只在列表内群响应；每群可单独选模式——跟随全局=用上方全局设置，标准/关键词/闲聊=仅该群覆盖，暂停回应=该群一切回应停止（@也不回）但群保留在列表、随时切回；改动即时生效${allOn?'；当前被上面的开关覆盖':''}）</div>
+  <div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">白名单群与分群模式<span class="badge" style="background:var(--tint);color:var(--dim)">每行可覆盖全局</span><span>机器人只在列表内群响应；模式下拉=该群回复模式，主动下拉=该群是否参与主动发消息（跟随全局=用上方全局设置，暂停回应=该群一切回应停止（@也不回）但群保留在列表、随时切回；改动即时生效${allOn?'；当前被上面的开关覆盖':''}）</span></div>
   <div class="chain" style="margin-top:10px;${allOn?'opacity:.45':''}">${rows||'<i class="k">空（无白名单生效）</i>'}</div>
   <div style="margin-top:10px;display:flex;gap:8px"><input id="newg" placeholder="群号，如 661206749" onkeydown="if(event.key==='Enter')addg()"><button class="act" onclick="addg()">添加</button></div></div>
  </div>`;
@@ -606,7 +619,10 @@ async function vPrivate(){
   <input value="${esc(x)}" data-i="${i}" style="flex:1" placeholder="QQ号" onchange="savePrivate()">
   <button class="act ghost" onclick="delpq(${i})">删除</button></div>`).join('');
  $('#view').innerHTML=head('私聊回应开关与私信白名单（私聊始终全部回复，无需回复模式）')+saveHint(_SAVE_HINT)+
- `<div class="card">
+ `<div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">主动发消息<span class="badge" style="background:var(--tint);color:var(--dim)">全局通用</span>（对所有可私聊对象生效；频率/概率与群共用「群消息」页那组设置）</div>
+  <label class="master"><input type="checkbox" ${rv.proactive_private_enabled?'checked':''} onchange="savePro('proactive_private_enabled',this.checked)">
+   <span><b>允许机器人主动私聊</b><div class="k" style="margin-top:3px">开启后机器人会不定期根据与对方的最近对话、时间、记忆主动发条消息（仅限私聊白名单/最近有对话的人；深夜 0-8 点不打扰；安静模式/暂停/限额时都不发）</div></span></label></div>
+ <div class="card">
   <label class="master" style="margin-bottom:8px"><input type="checkbox" id="penabled" ${on?'checked':''} onchange="savePrivate()">
    <span><b>回应私信</b><div class="k" style="margin-top:3px">默认关闭；开启后机器人会回复私聊消息</div></span></label>
   <label class="master"><input type="checkbox" id="pallowall" ${all?'checked':''} onchange="savePrivate()">
@@ -833,6 +849,17 @@ async function saveFeature(key,on){await saveKV('/api/reply-config',{[key]:on},(
 async function saveEcon(key,val){await saveKV('/api/reply-config',{[key]:val},{econ_enabled:'高峰降耗总开关',econ_manual:'开启方式',econ_days:'生效日'}[key]+'已更新（已生效）');load()}
 async function saveEconDays(){const days=[...document.querySelectorAll('.ecday')].filter(x=>x.checked).map(x=>+x.dataset.d);await saveEcon('econ_days',days)}
 async function saveEconTime(key,val){if(!val)return;const r=await saveKV('/api/reply-config',{[key]:val},'时段已更新（已生效）');if(r.ok!==false)load()}
+async function savePro(key,val){await saveKV('/api/reply-config',{[key]:val},{proactive_groups_enabled:'群主动发消息',proactive_private_enabled:'私聊主动发消息',proactive_probability:'主动概率'}[key]+'已更新（已生效）')}
+async function saveProIv(){const v=Math.max(5,Math.min(1440,parseInt($('#proiv').value)||30));await saveKV('/api/reply-config',{proactive_min_interval_sec:v*60},'主动频率已更新（每 '+v+' 分钟评估一次）')}
+async function rowGmPro(sel){
+ const gid=sel.closest('.gm-wrap').querySelector('input.gin').value.trim();
+ if(!/^\d{5,12}$/.test(gid)){toast('群号无效：先修正行内群号',false);sel.value='';return}
+ const v=sel.value;
+ const ov=v==='on'?{proactive:true}:(v==='off'?{proactive:false}:{proactive:null});
+ const name=v==='on'?'开启主动发消息':(v==='off'?'关闭主动发消息':'主动发消息跟随全局');
+ const r=await saveKV('/api/group-modes',{chat_id:gid,override:ov},'群 '+gid+'：'+name+'（已生效）');
+ if(r.ok!==false)load();
+}
 async function saveLimit(key,val){await saveKV('/api/reply-config',{[key]:val},{token_limit_enabled:'token 限额'}[key]+'已更新（已生效）');load()}
 async function saveLimitHours(){const v=parseInt($('#tlhours').value)||1;await saveKV('/api/reply-config',{token_limit_hours:Math.max(1,Math.min(24,v))},'限额窗口已更新（已生效）');load()}
 async function saveLimitMax(){const v=parseInt($('#tlmax').value)||0;await saveKV('/api/reply-config',{token_limit_max:Math.max(1000,v)},'限额上限已更新（已生效）');load()}
@@ -1669,6 +1696,10 @@ class UiHandler(BaseHTTPRequestHandler):
                                      "econ_end": data.get("econ_end", "18:00"),
                                      "econ_days": data.get("econ_days", [0, 1, 2, 3, 4]),
                                      "econ_active": C.econ_active(data),
+                                     "proactive_groups_enabled": data.get("proactive_groups_enabled", False),
+                                     "proactive_private_enabled": data.get("proactive_private_enabled", False),
+                                     "proactive_probability": data.get("proactive_probability", 0.1),
+                                     "proactive_min_interval_sec": data.get("proactive_min_interval_sec", 1800),
                                      "token_limit_enabled": data.get("token_limit_enabled", False),
                                      "token_limit_hours": data.get("token_limit_hours", 1),
                                      "token_limit_max": data.get("token_limit_max", 100000)})
@@ -1797,11 +1828,18 @@ class UiHandler(BaseHTTPRequestHandler):
                     return self._reply(400, {"ok": False, "error": "interval 非法"})
             if "paused" in ov:
                 clean["paused"] = bool(ov["paused"])
+            if "proactive" in ov:
+                # None=清除覆盖（跟随全局）；True/False=该群强制开/关主动发消息
+                if ov["proactive"] is None:
+                    clean.pop("proactive", None)
+                else:
+                    clean["proactive"] = bool(ov["proactive"])
             # 模式与暂停互斥（按本次请求判定）：请求设了模式即解除暂停，请求暂停即丢弃模式
             if "reply_mode" in ov:
                 clean.pop("paused", None)
             if ov.get("paused"):
                 clean.pop("reply_mode", None)
+                clean.pop("proactive", None)
             if not clean:
                 data.pop(gid, None)
             else:
@@ -1887,6 +1925,20 @@ class UiHandler(BaseHTTPRequestHandler):
                     data["token_limit_max"] = max(1000, min(2000000000, int(body["token_limit_max"])))
                 except (TypeError, ValueError):
                     return self._reply(400, {"ok": False, "error": "上限应为 tokens 整数（≥1000）"})
+            if "proactive_groups_enabled" in body:
+                data["proactive_groups_enabled"] = bool(body["proactive_groups_enabled"])
+            if "proactive_private_enabled" in body:
+                data["proactive_private_enabled"] = bool(body["proactive_private_enabled"])
+            if "proactive_probability" in body:
+                try:
+                    data["proactive_probability"] = min(1.0, max(0.0, float(body["proactive_probability"])))
+                except (TypeError, ValueError):
+                    return self._reply(400, {"ok": False, "error": "概率应为 0-1 数字"})
+            if "proactive_min_interval_sec" in body:
+                try:
+                    data["proactive_min_interval_sec"] = max(300, min(86400, int(body["proactive_min_interval_sec"])))
+                except (TypeError, ValueError):
+                    return self._reply(400, {"ok": False, "error": "间隔应为 300-86400 秒"})
             write_const(REPLY_CONFIG_PATH, json.dumps(data, ensure_ascii=False, indent=2))
             return self._reply(200, {"ok": True})
         if u.path == "/api/personas/save":

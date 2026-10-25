@@ -764,6 +764,24 @@ class Daemon:
         recs.reverse()
         return recs[:max(1, min(int(limit), 200))]
 
+    def recent_chats(self, within=6 * 3600):
+        """最近有消息往来的会话（主动发消息选目标用）；within 秒内。"""
+        now = time.time()
+        best = {}
+        with self.lock:
+            for key, dq in self.mem_history.items():
+                if not dq:
+                    continue
+                last = dq[-1]
+                if now - last.get("ts", 0) > within:
+                    continue
+                ct, _, cid = key.partition("_")
+                prev = best.get((ct, cid))
+                if prev is None or last.get("ts", 0) > prev:
+                    best[(ct, cid)] = last.get("ts", 0)
+        return [{"chat_type": ct, "chat_id": cid, "ts": ts}
+                for (ct, cid), ts in sorted(best.items(), key=lambda x: -x[1])]
+
     # ---------- OneBot 动作调用 ----------
 
     def _call_action(self, action, params, timeout=None):
@@ -961,6 +979,9 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
                     only_triggered=q.get("triggered") in ("1", "true"),
                     limit=int(q.get("limit", 50)))
                 return self._reply(200, {"ok": True, "items": items})
+            if u.path == "/recent-chats":
+                return self._reply(200, {"ok": True,
+                                         "chats": self.daemon.recent_chats()})
             if u.path == "/history":
                 recs = self.daemon.history(
                     q.get("chat_type", "group"), q.get("chat_id", ""),
