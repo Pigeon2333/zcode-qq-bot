@@ -142,6 +142,18 @@ button.act:disabled{opacity:.45;cursor:default}
 button.act:disabled:hover{background:var(--btn)}
 .hint-save{color:var(--dim);font-size:12px;margin:-10px 0 14px;display:flex;gap:6px;align-items:center}
 .hint-save::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--ok);flex:none}
+/* 自制弹窗（替代浏览器原生 confirm/prompt，双主题自适应） */
+.dlg-mask{position:fixed;inset:0;background:color-mix(in srgb,var(--fg) 22%,transparent);backdrop-filter:blur(2px);z-index:200;display:flex;align-items:center;justify-content:center;padding:24px}
+.dlg{background:var(--card);border:1px solid var(--line2);border-radius:12px;width:100%;max-width:400px;padding:20px 20px 16px;animation:dlgIn .16s ease}
+@keyframes dlgIn{from{opacity:0;transform:translateY(10px) scale(.98)}to{opacity:1;transform:none}}
+.dlg h3{margin:0 0 8px;font-size:15px;font-weight:600;color:var(--fg-strong,var(--fg))}
+.dlg .dlg-body{color:var(--dim);font-size:13px;line-height:1.6;white-space:pre-line;word-break:break-word}
+.dlg input{width:100%;margin-top:12px}
+.dlg .dlg-btns{display:flex;gap:8px;justify-content:flex-end;margin-top:18px}
+.dlg .dlg-btns .act{margin:0}
+button.act.dlg-danger{background:var(--err);color:#fff}
+[data-theme="dark"] button.act.dlg-danger{color:#450a0a}
+button.act.dlg-danger:hover{background:var(--err);opacity:.88}
 /* 白名单行内分群模式：wrap 含主行 + 参数子行 */
 .gm-wrap{display:flex;flex-direction:column}
 .gm-sub{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:4px 0 10px 34px;color:var(--dim);font-size:12.5px}
@@ -181,6 +193,32 @@ function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').
 function head(sub){return '<h2>'+TITLES[TAB]+'</h2>'+(sub?'<div class="sub">'+sub+'</div>':'')}
 function skeleton(){$('#view').innerHTML='<h2>'+TITLES[TAB]+'</h2><div class="card" style="color:var(--dim);padding:26px 20px">加载中…</div>'}
 function toast(m,ok=true){const t=$('#toast');t.textContent=m;t.style.display='block';t.style.borderColor=ok?'var(--ok)':'var(--err)';setTimeout(()=>t.style.display='none',2600)}
+/* ---- 自制弹窗：dlgConfirm/dlgPrompt 返回 Promise（取消=false/null，ESC/点遮罩=取消） ---- */
+function _dlgBuild(title,body,withInput,okText,danger){
+ const m=document.createElement('div');m.className='dlg-mask';
+ m.innerHTML='<div class="dlg" role="dialog" aria-modal="true"><h3></h3><div class="dlg-body"></div>'
+  +(withInput?'<input>':'')
+  +'<div class="dlg-btns"><button class="act ghost">取消</button>'
+  +'<button class="act'+(danger?' dlg-danger':'')+'">'+(okText||'确定')+'</button></div></div>';
+ m.querySelector('h3').textContent=title||'';
+ m.querySelector('.dlg-body').textContent=body||'';
+ document.body.appendChild(m);return m}
+function _dlgWire(m,onOk,onCancel){
+ const cancel=m.querySelector('.dlg-btns .ghost'),ok=m.querySelector('.dlg-btns .act:not(.ghost)');
+ const close=()=>m.remove();
+ cancel.onclick=()=>{close();onCancel()};
+ ok.onclick=()=>{close();onOk()};
+ m.onkeydown=e=>{if(e.key==='Escape'){close();onCancel()}};
+ m.onclick=e=>{if(e.target===m){close();onCancel()}};
+ ok.focus()}
+function dlgConfirm(o){return new Promise(res=>{const m=_dlgBuild(o.title,o.body,false,o.okText,o.danger);_dlgWire(m,()=>res(true),()=>res(false))})}
+function dlgPrompt(o){return new Promise(res=>{
+ const m=_dlgBuild(o.title,o.body,true,o.okText,false);
+ const inp=m.querySelector('input');inp.placeholder=o.placeholder||'';if(o.value!=null)inp.value=o.value;
+ const okBtn=m.querySelector('.dlg-btns .act:not(.ghost)');
+ _dlgWire(m,()=>res(inp.value.trim()),()=>res(null));
+ inp.onkeydown=e=>{if(e.key==='Enter'){m.remove();res(inp.value.trim())}};
+ setTimeout(()=>{inp.focus();if(o.value)inp.select()},30)})}
 async function api(p,opts){const r=await fetch(p,opts);return r.json()}
 /* ---- 统一保存交互 ----
    规则：开关/选项/模式卡/列表增删 = 点击即保存即生效；
@@ -192,9 +230,10 @@ function saveHint(text){return '<div class="hint-save">'+esc(text)+'</div>'}
 const _SAVE_HINT='本页设置均为即时生效：开关/选项点击即保存；输入框改完按回车或点别处自动保存；带「保存」按钮的卡片只保存该卡片内容。';
 function dirtyOn(el,btnId){el.classList.add('dirty');const b=document.getElementById(btnId);if(b)b.disabled=false}
 function dirtyOff(btnId){const b=document.getElementById(btnId);if(b)b.disabled=true;document.querySelectorAll('textarea.dirty,input.dirty').forEach(x=>x.classList.remove('dirty'))}
-function dirtyGuard(){const d=document.querySelector('textarea.dirty,input.dirty');if(d&&!confirm('有未保存的修改（蓝色边框标记），离开将丢失。确定离开？'))return false;return true}
+async function dirtyGuard(){const d=document.querySelector('textarea.dirty,input.dirty');if(!d)return true;
+ return await dlgConfirm({title:'有未保存的修改',body:'当前有未保存的修改（蓝色边框标记），离开将丢失。确定离开？',okText:'放弃修改',danger:true})}
 async function load(){try{if(TAB==='status')await vStatus();else if(TAB==='runlog')await vRunlog();else if(TAB==='models')await vModels();else if(TAB==='groups')await vGroups();else if(TAB==='private')await vPrivate();else if(TAB==='persona')await vPersonas();else if(TAB==='style')await vFile('style');else if(TAB==='memory')await vMemory();else if(TAB==='stickers')await vStickers();else if(TAB==='settings')await vSettings();}catch(e){$('#view').innerHTML='<div class="card">加载失败: '+esc(e)+'</div>'}}
-document.querySelectorAll('#nav button').forEach(b=>b.onclick=()=>{if(!dirtyGuard())return;document.querySelectorAll('#nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');TAB=b.dataset.t;if(TAB!=='runlog'&&_runlogTimer){clearInterval(_runlogTimer);_runlogTimer=null}skeleton();load()});
+document.querySelectorAll('#nav button').forEach(b=>b.onclick=async()=>{if(!await dirtyGuard())return;document.querySelectorAll('#nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');TAB=b.dataset.t;if(TAB!=='runlog'&&_runlogTimer){clearInterval(_runlogTimer);_runlogTimer=null}skeleton();load()});
 const _urlTab=new URLSearchParams(location.search).get('tab');
 if(_urlTab&&TITLES[_urlTab]){TAB=_urlTab;document.querySelectorAll('#nav button').forEach(x=>x.classList.toggle('on',x.dataset.t===_urlTab));}
 const _sysDark=window.matchMedia('(prefers-color-scheme: dark)');
@@ -289,7 +328,7 @@ async function powerOn(){
  else{toast('启动任务已开始：每一步进度在状态页实时显示')}
  load();
 }
-async function powerOff(napcatToo){if(napcatToo&&!confirm('确认连 NapCat 一起停止？（下次启动需重新登录）'))return;const r=await api('/api/power/off',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({include_napcat:!!napcatToo})});toast('已停止');load()}
+async function powerOff(napcatToo){if(napcatToo&&!await dlgConfirm({title:'停止 NapCat',body:'确认连 NapCat 一起停止？（下次启动需重新登录）',okText:'全部停止',danger:true}))return;const r=await api('/api/power/off',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({include_napcat:!!napcatToo})});toast('已停止');load()}
 async function togglePause(){const a=await api('/api/agent-status');await api('/api/pause',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paused:!a.paused})});toast('已'+(!a.paused?'暂停':'恢复'));load()}
 let _runlogTimer=null,_runlogSrc='all';
 const _lvlColor={ok:'var(--ok)',err:'var(--err)',warn:'var(--warn)',info:'var(--fg)',dim:'var(--dim)'};
@@ -569,7 +608,7 @@ async function vPersonas(){
   <button class="act" id="bsavep" disabled onclick="savePersona()">保存当前编辑的人设</button></div>`;
  const sel=$('#psel');_pSelPrev=sel.value;
  sel.onchange=async()=>{
-  if($('#pedit').classList.contains('dirty')&&!confirm('当前人设有未保存的修改，放弃并切换？')){sel.value=_pSelPrev;return}
+  if($('#pedit').classList.contains('dirty')&&!await dlgConfirm({title:'未保存的修改',body:'当前人设有未保存的修改，放弃并切换？',okText:'放弃并切换',danger:true})){sel.value=_pSelPrev;return}
   _pSelPrev=sel.value;
   const r=await api('/api/personas/detail?name='+encodeURIComponent(sel.value));
   $('#pedit').value=r.text||'';$('#pname').textContent=sel.value;
@@ -578,13 +617,13 @@ async function vPersonas(){
 }
 let _pSelPrev='';
 async function saveGlobal(){const r=await saveKV('/api/personas/global',{text:$('#gedit').value},'全局设定已保存（即时生效）');if(r.ok!==false)dirtyOff('bsaveg')}
-async function switchPersona(){if(!dirtyGuard())return;const n=$('#psel').value;await api('/api/personas/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n})});toast('已切换到「'+n+'」（即时生效）');load()}
-async function newPersona(){if(!dirtyGuard())return;const n=prompt('新人设名称：');if(!n)return;await api('/api/personas/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n,text:'# 人设：'+n+'\n\n- 身份：\n- 性格：\n- 说话基准：\n'})});toast('已创建「'+n+'」');load()}
-async function delPersona(){if(!dirtyGuard())return;const n=$('#psel').value;if(!n)return;if(!confirm('确认删除人设「'+n+'」？'))return;const r=await api('/api/personas/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n})});if(r.ok===false){toast(r.error||'删除失败',false);return}toast('已删除');load()}
+async function switchPersona(){if(!await dirtyGuard())return;const n=$('#psel').value;await api('/api/personas/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n})});toast('已切换到「'+n+'」（即时生效）');load()}
+async function newPersona(){if(!await dirtyGuard())return;const n=await dlgPrompt({title:'新建人设',body:'输入新人设名称：',placeholder:'如：智谱娘·傲娇',okText:'创建'});if(!n)return;await api('/api/personas/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n,text:'# 人设：'+n+'\n\n- 身份：\n- 性格：\n- 说话基准：\n'})});toast('已创建「'+n+'」');load()}
+async function delPersona(){if(!await dirtyGuard())return;const n=$('#psel').value;if(!n)return;if(!await dlgConfirm({title:'删除人设',body:'确认删除人设「'+n+'」？删除后不可恢复。',okText:'删除',danger:true}))return;const r=await api('/api/personas/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n})});if(r.ok===false){toast(r.error||'删除失败',false);return}toast('已删除');load()}
 async function renamePersona(){
- if(!dirtyGuard())return;
+ if(!await dirtyGuard())return;
  const n=$('#psel').value;if(!n)return;
- const nn=prompt('重命名人设「'+n+'」为：',n);if(!nn||nn===n)return;
+ const nn=await dlgPrompt({title:'重命名人设',body:'将「'+n+'」重命名为：',value:n,okText:'重命名'});if(!nn||nn===n)return;
  const r=await api('/api/personas/rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n,new_name:nn})});
  if(r.ok===false){toast(r.error||'重命名失败',false);return}
  toast('已重命名为「'+nn+'」'+((r.moved&&r.moved.length)?'（已同步：'+r.moved.join('、')+'）':''));load()}
@@ -617,7 +656,7 @@ async function vFile(kind){
   <div><button class="act" id="bsavef" data-kind="${kind}" disabled onclick="saveFile(this.dataset.kind)">保存${kind==='style'?'风格卡':'文件内容'}</button></div></div>`;
 }
 async function toggleEvolved(name,on){await api('/api/evolved/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,enabled:on})});toast('「'+name+'」自进化已'+(on?'启用':'停用')+'（已生效）');load()}
-async function clearEvolved(name){if(!confirm('清空「'+name+'」的全部风格观察？'))return;await api('/api/evolved/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});toast('已清空');load()}
+async function clearEvolved(name){if(!await dlgConfirm({title:'清空风格观察',body:'清空「'+name+'」的全部风格观察？',okText:'清空',danger:true}))return;await api('/api/evolved/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});toast('已清空');load()}
 async function saveFile(kind){const t=$('#fedit').value;const r=await saveKV('/api/file?kind='+kind,{text:t},'已保存（agent 下一轮生效）');if(r.ok!==false)dirtyOff('bsavef')}
 async function vSettings(){
  const c=await api('/api/app-config');const k=await api('/api/apikey-status');const rv=await api('/api/reply-config');
@@ -697,7 +736,7 @@ async function vMemory(){
  <table><tr><th>时间</th><th>类型</th><th>对象</th><th>内容</th></tr>${rows||'<tr><td colspan=4 class="k">空</td></tr>'}</table>
  <button class="act ghost danger" onclick="clearMem()">清空全部记忆流水</button></div>`;
 }
-async function clearMem(){if(!confirm('确认清空记忆流水？此操作不可恢复。'))return;await api('/api/memory/clear',{method:'POST'});toast('记忆流水已清空');load()}
+async function clearMem(){if(!await dlgConfirm({title:'清空记忆流水',body:'确认清空记忆流水？此操作不可恢复。',okText:'清空',danger:true}))return;await api('/api/memory/clear',{method:'POST'});toast('记忆流水已清空');load()}
 let _curPool=null;
 async function vStickers(){
  const d=await api('/api/stickers');
@@ -757,16 +796,16 @@ async function uploadStickers(){
 async function editSticker(id,pool){
  const r=await api('/api/stickers?pool='+encodeURIComponent(pool));
  const it=(r.items||[]).find(x=>x.id===id);if(!it)return;
- const desc=prompt('备注（给机器人的使用提示，可留空）：\n例如：对方难过时发的安慰图 / 胜利嘲讽专用',it.desc||'');
+ const desc=await dlgPrompt({title:'编辑表情 · 备注',body:'备注（给机器人的使用提示，可留空）：\n例如：对方难过时发的安慰图 / 胜利嘲讽专用',value:it.desc||'',okText:'下一步'});
  if(desc===null)return;
- const tagsStr=prompt('标签（逗号分隔，点取消=保持原标签不动）：\n例如：开心,猫猫',(it.tags||[]).join(','));
- const body={pool,id,desc:desc.trim()};
+ const tagsStr=await dlgPrompt({title:'编辑表情 · 标签',body:'标签（逗号分隔，点取消=保持原标签不动）：\n例如：开心,猫猫',value:(it.tags||[]).join(','),okText:'保存'});
+ const body={pool,id,desc:desc};
  if(tagsStr!==null)body.tags=tagsStr.split(/[,，]/).map(x=>x.trim()).filter(Boolean);
  const res=await api('/api/stickers/update',{method:'POST',headers:{'Content-Type':'application/json'},
   body:JSON.stringify(body)});
- toast(res.ok?'已保存，机器人下次选表情即可感知':'保存失败: '+(res.error||''),res.ok!==false);load();
+ toast(res.ok?'已保存，机器人下次选表情即可感知':'保存失败: '+(res.error||''),res.ok===false);load();
 }
-async function delSticker(id,pool){if(!confirm('删除表情包 #'+id+'？'))return;await api('/api/stickers/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:+id,pool})});toast('已删除');load()}
+async function delSticker(id,pool){if(!await dlgConfirm({title:'删除表情',body:'删除表情包 #'+id+'？',okText:'删除',danger:true}))return;await api('/api/stickers/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:+id,pool})});toast('已删除');load()}
 async function toggleFavPool(on){const r=await api('/api/stickers/fav-toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:on})});toast(r.ok?(on?'QQ收藏表情已启用（已生效，参与选表情）':'QQ收藏表情已停用（已生效）'):'保存失败: '+(r.error||''),r.ok!==false);load()}
 async function syncQQ(){
  toast('同步中：拉取收藏表情并下载（可能需要几十秒）…');
