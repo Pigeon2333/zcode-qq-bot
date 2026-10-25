@@ -1455,13 +1455,58 @@ def _proactive_targets(daemon, cfg):
         else:
             if not cfg.get("proactive_private_enabled"):
                 continue
-            if not (isinstance(pc, dict) and pc.get("enabled")):
+            # 主动私聊不要求「回应私信」总开关开启（两者独立）；
+            # 且只发给私信白名单内的人（allow_all 也不主动打扰陌生人）
+            if not isinstance(pc, dict):
                 continue
-            if not pc.get("allow_all") and \
-                    str(cid) not in {str(q) for q in pc.get("qq_whitelist", [])}:
+            if str(cid) not in {str(q) for q in pc.get("qq_whitelist", [])}:
                 continue
             out.append((ct, cid))
     return out
+
+
+def _proactive_compose(daemon, chat_type, chat_id):
+    """构造一次主动发消息的 LLM 调用；模型认为不合适可输出 [SKIP]。"""
+    data, active = load_persona_collection()
+    persona_name, global_base = data["active"], data["global"]
+    persona = data["persona"]
+    style = read_const(STYLE_PATH)
+    ev = evolved_notes(persona_name) if persona_name else {"enabled": False, "notes": []}
+    evolved_block = ("\n\n## 自进化风格观察\n" + "\n".join("- %s" % n for n in ev["notes"][-12:])
+                     if ev["enabled"] and ev["notes"] else "")
+    mem_scope, mem_id = (("group", chat_id) if chat_type == "group"
+                         else ("contact", chat_id))
+    mems = memory_snippets(mem_scope, mem_id)
+    mem_block = ("\n\n## 长期记忆\n" + "\n".join(mems[-8:])) if mems else ""
+    lt = time.localtime()
+    tstr = "%d-%02d-%02d 周%d %02d:%02d" % (lt.tm_year, lt.tm_mon, lt.tm_mday,
+                                            lt.tm_wday + 1, lt.tm_hour, lt.tm_min)
+    hist = daemon.history(chat_type, chat_id, limit=14)
+    lines = ["%s(QQ:%s): %s" % ("你" if h.get("is_bot") else str(h.get("sender_name", "?")),
+                                h.get("sender_id", "?"), str(h.get("text", ""))[:100])
+             for h in hist]
+    hist_block = "\n".join(lines[-12:]) or "（暂无）"
+    label = "群 %s" % chat_id if chat_type == "group" else "私聊对象(QQ:%s)" % chat_id
+    system = (
+        "你是QQ里的AI机器人。身份由「全局通用设定」和「当前人设」唯一决定，"
+        "严格按人设行动。\n\n## 全局通用设定\n%s\n\n## 当前人设\n%s%s%s\n\n"
+        "## 硬性规则\n"
+        "- 输出是QQ聊天文本：禁止Markdown，口语化，遵守人设语气\n"
+        "- 绝对禁止任何脏话粗口（任何语境都不行），用\"哎呀/天哪\"表达情绪\n"
+        "- 想连发多条用 [[SPLIT]] 分隔（最多2条）；想发表情包单独一行 [STICKER:表情包id]\n"
+        "- 出现值得长期记住的关于某人的信息可单独一行 [记忆@对方QQ号] 内容\n"
+        "%s\n"
+        "## 本次任务（主动发消息）\n"
+        "现在是 %s。这不是回复——你要主动在%s开个话头或说句话：结合最近对话、"
+        "你的记忆和当前时间（深夜/清早就不该打扰，输出 [SKIP]；饭点可以聊聊吃的；"
+        "对方之前提过的事可以关心一句），输出一句自然、简短、贴合人设的话，"
+        "不要复读之前说过的内容。如果没有合适的话可说，只输出 [SKIP]。"
+        % (global_base or "（无）", persona or "（无）",
+           ("\n\n## 说话风格卡\n" + style) if style else "",
+           evolved_block, mem_block, tstr, label))
+    content = "【%s | 最近对话】\n%s\n\n【现在】请你主动发一条消息。" % (label, hist_block)
+    return [{"role": "system", "content": system},
+            {"role": "user", "content": content}], active
 
 
 def _proactive_pick(cfg, kind, pool, now):

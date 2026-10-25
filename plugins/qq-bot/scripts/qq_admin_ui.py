@@ -633,7 +633,7 @@ async function vPrivate(){
  $('#view').innerHTML=head('私聊回应开关与私信白名单（私聊始终全部回复，无需回复模式）')+saveHint(_SAVE_HINT)+
  `<div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">主动发消息<span class="badge" style="background:var(--tint);color:var(--dim)">全局通用</span>（对所有可私聊对象生效；与群聊设置互不影响）</div>
   <label class="master"><input type="checkbox" ${rv.proactive_private_enabled?'checked':''} onchange="savePro('proactive_private_enabled',this.checked)">
-   <span><b>允许机器人主动私聊</b><div class="k" style="margin-top:3px">开启后机器人会不定期根据与对方的最近对话、时间、记忆主动发条消息（仅限私聊白名单/最近有对话的人；安静模式/暂停/限额时都不发）</div></span></label>
+   <span><b>允许机器人主动私聊</b><div class="k" style="margin-top:3px">只发给私信白名单内、最近 6 小时聊过的人（与「回应私信」开关互不影响，回复所有人的私信开启时也不会主动打扰陌生人）；安静模式/暂停/限额时都不发</div></span></label>
   ${proCard('private')}
  </div> <div class="card">
   <label class="master" style="margin-bottom:8px"><input type="checkbox" id="penabled" ${on?'checked':''} onchange="savePrivate()">
@@ -870,7 +870,7 @@ function proCard(kind){
  const prob=Math.round((rvState['proactive_'+kind+'_probability']??0.1)*100);
  const sOn=!!(rvState['proactive_'+kind+'_silent_start']||rvState['proactive_'+kind+'_silent_end']);
  return `<div style="display:flex;gap:14px;margin-top:10px;flex-wrap:wrap;align-items:center">
-  <label>频率：每 <input type="number" min="5" max="1440" value="${iv}" style="width:60px" onchange="saveProNum('${kind}_min_interval_sec',(parseInt(this.value)||30)*60,'分钟')"> 分钟评估一次</label>
+  <label>频率：每 <input type="number" min="5" max="1440" value="${iv}" style="width:60px" onchange="saveProNum('${kind}_min_interval_sec',(parseInt(this.value)||30)*60,'分钟')"> 分钟评估一次（5–1440 分钟）</label>
   <label>命中概率 <input type="range" min="0" max="100" value="${prob}" style="width:150px" oninput="this.nextElementSibling.textContent=this.value+'%'" onchange="saveProNum('${kind}_probability',(parseInt(this.value)||0)/100,'概率')"> <b>${prob}%</b></label>
   <label><input type="checkbox" ${sOn?'checked':''} onchange="toggleProSilent('${kind}',this.checked)"> 禁用时段</label>
   ${sOn?`<label><input type="time" value="${esc(rvState['proactive_'+kind+'_silent_start']||'22:00')}" onchange="saveProTime('${kind}_silent_start',this.value)"> – <input type="time" value="${esc(rvState['proactive_'+kind+'_silent_end']||'08:00')}" onchange="saveProTime('${kind}_silent_end',this.value)">（此段内不主动发消息，支持跨午夜）</label>`:''}
