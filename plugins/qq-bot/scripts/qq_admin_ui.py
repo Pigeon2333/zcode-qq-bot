@@ -126,12 +126,12 @@ table{width:100%;border-collapse:collapse;font-size:13px}
 td,th{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left}
 th{color:var(--dim);font-weight:normal;font-size:12.5px}
 tr:last-child td{border-bottom:0}
-/* 记忆表：固定列宽防长文本撑爆，内容列强制换行 */
+/* 记忆表：固定列宽防长文本撑爆，内容列强制换行（宽度按最宽真实内容校准） */
 table.memtbl{table-layout:fixed}
-table.memtbl th:nth-child(1){width:84px}
-table.memtbl th:nth-child(2){width:42px}
-table.memtbl th:nth-child(3){width:104px}
-table.memtbl th:nth-child(5){width:132px}
+table.memtbl th:nth-child(1){width:112px}
+table.memtbl th:nth-child(2){width:52px}
+table.memtbl th:nth-child(3){width:112px}
+table.memtbl th:nth-child(5){width:144px}
 table.memtbl td:nth-child(4){word-break:break-all;white-space:pre-wrap}
 table.memtbl td:nth-child(5){white-space:nowrap}
 #toast{position:fixed;right:20px;bottom:20px;background:var(--card);border:1px solid var(--ok);color:var(--fg);padding:11px 18px;border-radius:10px;display:none;box-shadow:var(--shadow);font-size:13.5px;z-index:99}
