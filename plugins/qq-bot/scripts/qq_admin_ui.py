@@ -126,6 +126,14 @@ table{width:100%;border-collapse:collapse;font-size:13px}
 td,th{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left}
 th{color:var(--dim);font-weight:normal;font-size:12.5px}
 tr:last-child td{border-bottom:0}
+/* 记忆表：固定列宽防长文本撑爆，内容列强制换行 */
+table.memtbl{table-layout:fixed}
+table.memtbl th:nth-child(1){width:84px}
+table.memtbl th:nth-child(2){width:42px}
+table.memtbl th:nth-child(3){width:104px}
+table.memtbl th:nth-child(5){width:132px}
+table.memtbl td:nth-child(4){word-break:break-all;white-space:pre-wrap}
+table.memtbl td:nth-child(5){white-space:nowrap}
 #toast{position:fixed;right:20px;bottom:20px;background:var(--card);border:1px solid var(--ok);color:var(--fg);padding:11px 18px;border-radius:10px;display:none;box-shadow:var(--shadow);font-size:13.5px;z-index:99}
 .mono{font-family:Consolas,monospace;font-size:12px;color:var(--dim)}
 .tabular-nums{font-variant-numeric:tabular-nums}
@@ -776,17 +784,33 @@ async function vMemory(){
   <button class="act ghost danger" style="margin:0;padding:3px 10px;font-size:12px" onclick="delMemo(${r.idx})">删除</button></td></tr>`).join('');
  $('#view').innerHTML=head('长期记忆流水（自治大脑自动写入；改动即时生效，机器人下一轮对话即用新记忆）')+saveHint('每条记忆可单独编辑/删除（删除需确认）；也可手动新增一条（选择群或联系人）。'+`当前展示最近 100 条。`)+
  `<div class="card">
- <table><tr><th>时间</th><th>类型</th><th>对象</th><th>内容</th><th>操作</th></tr>${rows||'<tr><td colspan=5 class="k">空</td></tr>'}</table>
+ <table class="memtbl"><tr><th>时间</th><th>类型</th><th>对象</th><th>内容</th><th>操作</th></tr>${rows||'<tr><td colspan=5 class="k">空</td></tr>'}</table>
  <div style="display:flex;gap:8px"><button class="act" onclick="addMemo()">手动新增一条记忆</button>
  <button class="act ghost danger" onclick="clearMem()">清空全部记忆流水</button></div></div>`;
 }
 async function editMemo(idx){
  const d=await api('/api/memory');
  const it=(d.items||[]).find(x=>x.idx===idx);if(!it)return;
- const t=await dlgText({title:'编辑记忆',body:'对象：'+(it.scope==='group'?'群 ':'联系人 ')+it.id+'（时间 '+it.time+'）',value:it.text,okText:'保存',maxlen:300});
- if(t===null||!t)return;
- const r=await saveKV('/api/memory/update',{idx:+idx,text:t},'记忆已更新（即时生效）');
- if(r.ok!==false)load()}
+ const m=document.createElement('div');m.className='dlg-mask';
+ m.innerHTML='<div class="dlg" role="dialog"><h3>编辑记忆</h3>'
+  +'<div class="dlg-body">修改这条记忆的类型、对象或内容，保存后机器人下一轮对话即用新记忆。</div>'
+  +'<div style="display:flex;gap:8px;margin-top:12px;align-items:center">'
+  +'<select class="mini"><option value="group" '+(it.scope==='group'?'selected':'')+'>群</option><option value="contact" '+(it.scope==='contact'?'selected':'')+'>联系人</option></select>'
+  +'<input value="'+esc(String(it.id))+'" placeholder="群号/QQ号" style="width:130px">'
+  +'</div><textarea rows="4" style="width:100%;margin-top:10px;resize:vertical" maxlength="300">'+esc(it.text)+'</textarea>'
+  +'<div class="dlg-btns"><button class="act ghost">取消</button><button class="act">保存</button></div></div>';
+ document.body.appendChild(m);
+ const sel=m.querySelector('select'),cid=m.querySelector('input'),ta=m.querySelector('textarea');
+ const close=()=>m.remove();
+ m.querySelector('.dlg-btns .ghost').onclick=close;
+ m.querySelector('.dlg-btns .act:not(.ghost)').onclick=async()=>{
+  if(!/^\d{5,12}$/.test(cid.value.trim())||!ta.value.trim()){toast('对象需为群号/QQ号，内容不能为空',false);return}
+  close();
+  const r=await saveKV('/api/memory/update',{idx:+idx,scope:sel.value,id:cid.value.trim(),text:ta.value.trim()},'记忆已更新（即时生效）');
+  if(r.ok!==false)load()};
+ m.onclick=e=>{if(e.target===m)close()};
+ m.onkeydown=e=>{if(e.key==='Escape')close()};
+ setTimeout(()=>{ta.focus()},30)}
 async function delMemo(idx){
  if(!await dlgConfirm({title:'删除记忆',body:'删除这条记忆？机器人将不再记得此事（不可恢复）。',okText:'删除',danger:true}))return;
  const r=await saveKV('/api/memory/delete',{idx:+idx},'记忆已删除（即时生效）');
@@ -2064,6 +2088,16 @@ class UiHandler(BaseHTTPRequestHandler):
                         return self._reply(400, {"ok": False, "error": "记忆行不存在"})
                     rec = json.loads(lines[idx])
                     rec["text"] = text
+                    # 类型/对象可选一并修改（校验同新增）
+                    if "scope" in body or "id" in body:
+                        scope = body.get("scope", rec.get("scope"))
+                        cid = str(body.get("id", rec.get("id", ""))).strip()
+                        if scope not in ("group", "contact") or \
+                                not cid.isdigit() or len(cid) > 12:
+                            return self._reply(400, {"ok": False,
+                                                     "error": "scope/id 非法"})
+                        rec["scope"] = scope
+                        rec["id"] = cid
                     lines[idx] = json.dumps(rec, ensure_ascii=False) + "\n"
                     _flush(lines)
                 elif u.path == "/api/memory/delete":
