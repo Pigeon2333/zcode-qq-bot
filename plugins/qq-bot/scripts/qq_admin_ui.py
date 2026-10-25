@@ -664,8 +664,10 @@ async function saveGroupEnabled(on){
 async function saveGroups(fromToggle){
  const cur=await api('/api/groups');
  const c=getGroups();
+ if(!c.length&&(cur.groups||[]).length&&!fromToggle){
+  if(!await dlgConfirm({title:'清空白名单',body:'白名单即将清空（现有 '+(cur.groups||[]).length+' 个群），机器人将不再回应任何群消息。确定？',okText:'清空',danger:true}))return}
  const r=await api('/api/groups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:cur.enabled!==false,allow_all:$('#allowall')?$('#allowall').checked:!!cur.allow_all,groups:c})});
- toast(r.ok===false?('保存失败: '+(r.error||'')):(c.length+' 个群已生效'),r.ok!==false);
+ toast(r.ok===false?('保存失败: '+(r.error||'')):((c.length||0)+' 个群已生效'),r.ok!==false);
  if(fromToggle)load()}
 async function delg(i){const c=getGroups();const gid=c[i];c.splice(i,1);
  if(!gid||!await dlgConfirm({title:'删除白名单群',body:'删除群 '+gid+'？机器人将不再响应该群消息'+(_gmModes[gid]?'\n注意：该群已配置分群模式覆盖，将一并清除（重新添加后需重配）':'')+'。',okText:'删除',danger:true}))return;
