@@ -1,0 +1,343 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""qq_services.py — 组件生命周期服务（UI 电源控制与 qq_app 共用）
+
+能力：
+  - 端口探测 + 幂等启动 daemon / agent / 管理台（subprocess 参数列表形式，
+    stdout 重定向到日志文件句柄；不再经过 cmd 拼接，无引号注入面）
+  - NapCat：快速登录启动；per-account OneBot WS 配置生成（token 自动管理）
+  - 停止：daemon/agent 走各自 shutdown 接口，NapCat 尽力终止注入进程
+  - 开机自启：HKCU Run 键注册/注销（当前用户级，无需管理员）
+
+安全：
+  - 所有子进程参数为静态列表 + 常量推导路径；日志文件位于数据目录
+  - NapCat 配置写入 QQNT 目录通常需要管理员权限：失败时返回提示而非崩溃
+"""
+
+import http.client
+import json
+import os
+import pathlib
+import socket
+import subprocess
+import sys
+import time
+import winreg
+
+import qq_common as C
+
+CREATE_NO_WINDOW = 0x08000000
+RUN_KEY = "Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+AUTOSTART_NAME = "QQBotConsole"
+
+PY_EXE = os.path.join(os.path.dirname(sys.executable), "python.exe")
+PYW_EXE = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+
+
+def port_open(port):
+    s = socket.socket()
+    s.settimeout(1.0)
+    try:
+        s.connect(("127.0.0.1", int(port)))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
+def http_json(port, method, path, body=None, timeout=6):
+    conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=timeout)
+    try:
+        payload = json.dumps(body).encode("utf-8") if body is not None else None
+        headers = {"Content-Type": "application/json"} if payload else {}
+        conn.request(method, path, body=payload, headers=headers)
+        return json.loads(conn.getresponse().read().decode("utf-8"))
+    finally:
+        conn.close()
+
+
+def read_token_file(name):
+    try:
+        return (C.DATA_ROOT / name).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _spawn(script, args, log_name):
+    """以参数列表启动组件脚本，stdout/stderr 追加重定向到数据目录日志。"""
+    log_path = C.DATA_ROOT / "logs" / log_name
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    logf = open(log_path, "a", encoding="utf-8", errors="replace")
+    try:
+        subprocess.Popen(
+            [PY_EXE, script] + args,
+            cwd=C.SCRIPTS_DIR, stdout=logf, stderr=subprocess.STDOUT,
+            creationflags=CREATE_NO_WINDOW)
+    finally:
+        # Popen 已继承句柄；父进程立即关闭自己的引用
+        logf.close()
+
+
+def wait_port(port, timeout_sec, step=1.5):
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        if port_open(port):
+            return True
+        time.sleep(step)
+    return False
+
+
+# ---------------- 组件启停 ----------------
+
+def ensure_ui(cfg):
+    port = cfg["ui_port"]
+    if port_open(port):
+        return "管理台已在运行"
+    _spawn("qq_admin_ui.py", ["--port", str(port)], "ui.log")
+    return "管理台已启动" if wait_port(port, 12) else "管理台启动失败（看 logs/ui.log）"
+
+
+def ensure_daemon(cfg):
+    port = cfg["daemon_port"]
+    if port_open(port):
+        return "daemon 已在运行"
+    ws_token = read_token_file("ws_token")
+    ctl_token = read_token_file("token")
+    if not ctl_token:
+        return "daemon 未启动：缺少控制 token（首次请用控制台初始化）"
+    _spawn("qq_daemon.py", [
+        "--ws-url", "ws://127.0.0.1:%d" % cfg["napcat_ws_port"],
+        "--ws-token", ws_token,
+        "--port", str(port),
+        "--ctl-token", ctl_token], "daemon.log")
+    return "daemon 已启动" if wait_port(port, 20) else "daemon 启动失败（看 logs/daemon.log）"
+
+
+def ensure_agent(cfg):
+    port = cfg["agent_admin_port"]
+    if port_open(port):
+        return "agent 已在运行"
+    _spawn("qq_bot_agent.py", [
+        "--port", str(cfg["daemon_port"]),
+        "--admin-port", str(port)], "agent.log")
+    return "agent 已启动" if wait_port(port, 20) else "agent 启动失败（看 logs/agent.log）"
+
+
+def stop_agent(cfg):
+    port = cfg["agent_admin_port"]
+    if not port_open(port):
+        return "agent 未在运行"
+    try:
+        http_json(port, "POST", "/admin/shutdown", {})
+        return "agent 已停止"
+    except OSError:
+        return "agent 停止指令失败（进程可能已退出）"
+
+
+def stop_daemon(cfg):
+    port = cfg["daemon_port"]
+    if not port_open(port):
+        return "daemon 未在运行"
+    token = read_token_file("token")
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=6)
+        conn.request("POST", "/shutdown", body=b"{}",
+                     headers={"Content-Type": "application/json",
+                              "X-QQBot-Token": token})
+        conn.getresponse().read()
+        conn.close()
+        return "daemon 已停止"
+    except OSError:
+        return "daemon 停止指令失败"
+
+
+def stop_napcat():
+    """尽力终止 NapCat 注入的 QQ 进程（权限不足时部分进程可能残留）。"""
+    killed = 0
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-CimInstance Win32_Process -Filter \"Name='QQ.exe'\" | "
+             "Where-Object { $_.CommandLine -like '*enable-logging*' } | "
+             "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; "
+             "$_.ProcessId }"],
+            capture_output=True, text=True, timeout=30,
+            creationflags=CREATE_NO_WINDOW)
+        killed = len([ln for ln in out.stdout.splitlines() if ln.strip().isdigit()])
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return "NapCat 已停止（%d 进程）" % killed if killed else "NapCat 无运行进程或已停止"
+
+
+# ---------------- NapCat ----------------
+
+def napcat_ws_config_path(cfg):
+    qq = str(cfg.get("bot_qq") or "").strip()
+    qqnt = C.qqnt_dir_resolved(cfg)
+    if not qq or not qqnt:
+        return ""
+    return os.path.join(qqnt, "config", "onebot11_%s.json" % qq)
+
+
+def ensure_napcat_config(cfg):
+    """为当前 bot_qq 生成 OneBot WS 配置（若缺失），token 与 ws_token 文件联动。"""
+    path = napcat_ws_config_path(cfg)
+    if not path:
+        return False, "缺少 bot_qq 或 QQNT 目录，无法定位 NapCat 配置"
+    if os.path.isfile(path):
+        return True, "NapCat 配置已存在"
+    qqnt = C.qqnt_dir_resolved(cfg)
+    config_dir = os.path.realpath(os.path.join(qqnt, "config"))
+    if os.path.realpath(os.path.dirname(path)) != config_dir:
+        return False, "配置路径异常，拒绝写入"
+    ws_token = read_token_file("ws_token")
+    config = {
+        "network": {"websocketServers": [{
+            "name": "qqbot", "enable": True, "host": "127.0.0.1",
+            "port": cfg["napcat_ws_port"], "messagePostFormat": "array",
+            "reportSelfMessage": True, "enableForcePushEvent": True,
+            "token": ws_token, "debug": False}],
+            "httpServers": [], "httpSseServers": [], "httpClients": [],
+            "websocketClients": [], "plugins": []},
+        "musicSignUrl": "", "enableLocalFile2Url": False, "parseMultMsg": False,
+        "imageDownloadProxy": "",
+        "timeout": {"baseTimeout": 10000, "uploadSpeedKBps": 256,
+                    "downloadSpeedKBps": 256, "maxTimeout": 1800000}}
+    try:
+        tmp = pathlib.Path(path + ".qqbot.tmp")
+        tmp.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(str(tmp), path)
+        return True, "NapCat 配置已生成"
+    except OSError:
+        return False, ("NapCat 配置写入失败（%s 目录需管理员权限）——请手动在 "
+                       "NapCat WebUI 建立正向 WS：端口 %d，token 见 ws_token 文件"
+                       % (config_dir, cfg["napcat_ws_port"]))
+
+
+def start_napcat(cfg, wait_sec=150, on_progress=None):
+    """快速登录启动 NapCat；返回 (ok, message)。
+
+    on_progress(message)：启动过程中的阶段提示回调（配置/启动/等待登录/就绪），
+    供管理台实时展示，不传则行为与旧版一致。
+    """
+    def _p(msg):
+        if on_progress:
+            try:
+                on_progress(msg)
+            except Exception:
+                pass
+
+    qq = str(cfg.get("bot_qq") or "").strip()
+    qqnt = C.qqnt_dir_resolved(cfg)
+    if not qq:
+        return False, "未设置机器人 QQ 号（控制台 → 设置）"
+    if not qqnt or not os.path.isfile(os.path.join(qqnt, "QQ.exe")):
+        return False, "未找到 QQNT/QQ.exe（控制台 → 设置里填写安装目录）"
+    launcher = os.path.join(qqnt, "launcher-user.bat")
+    if not os.path.isfile(launcher):
+        return False, "QQNT 目录下无 launcher-user.bat：请先安装 NapCat Shell"
+    if port_open(cfg["napcat_ws_port"]):
+        return True, "NapCat 已在运行"
+    ok_cfg, msg_cfg = ensure_napcat_config(cfg)
+    _p("NapCat 配置：" + msg_cfg)
+    if not ok_cfg and not os.path.isfile(napcat_ws_config_path(cfg)):
+        return False, msg_cfg
+    if port_open(6099):
+        _p("NapCat 已在运行（WebUI 在线），无需重复启动 QQ，直接等待账号登录…")
+    else:
+        _p("正在启动 QQNT + NapCat（快速登录 %s），登录可能需要扫码…" % qq)
+        subprocess.Popen(["cmd", "/c", launcher, qq], cwd=qqnt,
+                         creationflags=CREATE_NO_WINDOW)
+    deadline = time.time() + wait_sec
+    webui_seen = False
+    while time.time() < deadline:
+        if port_open(cfg["napcat_ws_port"]):
+            _p("NapCat WS 已就绪（端口 %d 监听中）" % cfg["napcat_ws_port"])
+            return True, "NapCat 已就绪"
+        if port_open(6099):
+            if not webui_seen:
+                webui_seen = True
+                _p("NapCat WebUI 已启动，但 WS 尚未开放 —— 正在等待账号登录；"
+                   "即将自动打开登录页面（http://127.0.0.1:6099/webui），请扫码或快速登录")
+                try:
+                    import webbrowser
+                    webbrowser.open("http://127.0.0.1:6099/webui")
+                except Exception:
+                    pass
+        time.sleep(2)
+    if port_open(6099):
+        return False, ("NapCat 已运行但账号未登录（WS 未开放）：请打开 "
+                       "http://127.0.0.1:6099/webui 完成扫码或快速登录，"
+                       "登录成功后 WS 会自动开放，daemon 将自动连上")
+    return False, ("NapCat 启动超时（%d 秒内 WS 未就绪）：若登录凭据失效，请打开 "
+                   "NapCat WebUI 扫码（http://127.0.0.1:6099/webui）" % wait_sec)
+
+
+def power_on(cfg, on_note=None):
+    """一键启动全部组件（幂等）；on_note(step_dict) 实时回调每步结果。"""
+    notes = []
+
+    def _emit(note):
+        notes.append(note)
+        if on_note:
+            try:
+                on_note(note)
+            except Exception:
+                pass
+
+    ok, msg = start_napcat(cfg, on_progress=lambda m: _emit(
+        {"component": "napcat", "ok": None, "message": m, "progress": True}))
+    _emit({"component": "napcat", "ok": ok, "message": msg})
+    _emit({"component": "daemon", "ok": True, "message": ensure_daemon(cfg)})
+    _emit({"component": "agent", "ok": True, "message": ensure_agent(cfg)})
+    return notes
+
+
+def power_off(cfg, include_napcat=True):
+    """停止组件（管理台保持运行）。"""
+    notes = [{"component": "agent", "message": stop_agent(cfg)},
+             {"component": "daemon", "message": stop_daemon(cfg)}]
+    if include_napcat:
+        notes.append({"component": "napcat", "message": stop_napcat()})
+    return notes
+
+
+# ---------------- 开机自启 ----------------
+
+def autostart_enabled():
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY)
+        try:
+            winreg.QueryValueEx(key, AUTOSTART_NAME)
+            return True
+        finally:
+            winreg.CloseKey(key)
+    except OSError:
+        return False
+
+
+def set_autostart(enable):
+    """注册/注销当前用户级开机自启（启动 qq_app 静默窗口模式）。"""
+    app_entry = os.path.join(C.SCRIPTS_DIR, "qq_app.py")
+    launcher = PYW_EXE if os.path.isfile(PYW_EXE) else PY_EXE
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0,
+                             winreg.KEY_SET_VALUE)
+        try:
+            if enable:
+                winreg.SetValueEx(key, AUTOSTART_NAME, 0, winreg.REG_SZ,
+                                  '"%s" "%s"' % (launcher, app_entry))
+            else:
+                try:
+                    winreg.DeleteValue(key, AUTOSTART_NAME)
+                except OSError:
+                    pass
+        finally:
+            winreg.CloseKey(key)
+    except OSError as e:
+        return False, "注册表写入失败: %r" % e
+    cfg = C.load_app_config()
+    cfg["autostart_with_windows"] = enable
+    C.save_app_config(cfg)
+    return True, ("已开启开机自启" if enable else "已关闭开机自启")

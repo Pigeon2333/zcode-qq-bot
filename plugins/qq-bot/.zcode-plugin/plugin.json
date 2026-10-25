@@ -1,0 +1,7 @@
+{
+  "name": "qq-bot",
+  "version": "0.1.0",
+  "description": "QQ 群聊 AI 机器人：人设、指定群友风格模仿、长期记忆、联网搜索、看图、表情包自管理",
+  "author": { "name": "HP" },
+  "skills": "./skills"
+}

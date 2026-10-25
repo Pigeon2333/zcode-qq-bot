@@ -1,0 +1,19 @@
+{
+  "name": "dev-qq-bot-c0e9afb4",
+  "plugins": [
+    {
+      "name": "qq-bot",
+      "source": "./qq-bot",
+      "version": "0.1.0",
+      "description": "QQ 群聊 AI 机器人：人设、指定群友风格模仿、长期记忆、联网搜索、看图、表情包自管理",
+      "displayName": "QQ 机器人",
+      "displayName_i18n": {
+        "zh-CN": "QQ 机器人"
+      },
+      "description_i18n": {
+        "zh-CN": "QQ 群聊 AI 机器人：人设、群友风格模仿、长期记忆、联网、看图、表情包管理"
+      },
+      "icon": "icon.png"
+    }
+  ]
+}

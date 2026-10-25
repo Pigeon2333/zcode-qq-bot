@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 本地安全扫描工具状态（含会话数据，勿入仓）
+.mimosa/
+
+# 运行时产物（正常情况下都在 ~/.zcode-qq-bot/，此处兜底）
+*.log
