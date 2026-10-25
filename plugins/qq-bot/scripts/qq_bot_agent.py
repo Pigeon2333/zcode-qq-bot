@@ -1167,6 +1167,35 @@ def sticker_file_path(sid, active_persona=""):
     return None
 
 
+
+def _interrupt_gate(daemon, msg, persona_name):
+    """旁观(chat_random)两段式判定的第一段：轻量提示词判断值不值得开口。
+    通过 → False（走完整回复，质量不受影响）；拦截 → True（静默跳过）。
+    仅 ~500 token，替代此前每次旁观都用全量提示词（人设+记忆+表情菜单）。"""
+    hist = daemon.history(msg["chat_type"], msg["chat_id"], limit=10)
+    lines = ["%s: %s" % ("你" if h.get("is_bot") else str(h.get("sender_name", "?")),
+                         str(h.get("text", ""))[:80]) for h in hist]
+    hist_block = "\n".join(lines[-10:]) or "（暂无）"
+    now_line = str(msg.get("text") or "（图/表情）")[:80]
+    nl = chr(10)
+    system = (
+        "你是QQ群AI机器人「%s」的插话判定器。下面是群最近对话，最后一条【现在】"
+        "不是对你说的，你在随机旁观。判断这个话题值不值得「%s」接一句话：" + nl +
+        "- 输出 Y：话题正好是你关心/擅长的，或你能自然接一句给对话添彩" + nl +
+        "- 输出 N：与你无关 / 他人正在互相讨论 / 没人叫你 / 你只能说可有可无的附和" + nl +
+        "宁可 N。只输出 Y 或 N，不要其他任何字。") % (persona_name, persona_name)
+    user = "【最近对话】" + nl + "%s" + nl + nl + "【现在】%s" % (hist_block, now_line)
+    try:
+        _model, reply = call_glm_with_fallback(
+            [{"role": "system", "content": system},
+             {"role": "user", "content": user}], "")
+    except Exception as e:
+        out("AGENT_GATE_ERR %r" % e)
+        return True  # 判定失败宁可沉默
+    ans = reply.strip().upper()[:3]
+    return "Y" not in ans
+
+
 def build_messages(daemon, msg):
     """返回 (messages, active_persona_name)。"""
     pc, active_name = load_persona_collection()
@@ -1228,18 +1257,18 @@ def build_messages(daemon, msg):
     if g_mem or c_mem:
         mem_block = "\n\n## 长期记忆（此前互动积累）"
         if g_mem:
-            mem_block += "\n### 关于本群\n" + "\n".join(g_mem[-8:])
+            mem_block += "\n### 关于本群\n" + "\n".join(g_mem[-5:])
         if c_mem:
-            mem_block += "\n### 关于发言者\n" + "\n".join(c_mem[-6:])
+            mem_block += "\n### 关于发言者\n" + "\n".join(c_mem[-4:])
 
-    history = daemon.history(msg["chat_type"], msg["chat_id"], limit=18)
+    history = daemon.history(msg["chat_type"], msg["chat_id"], limit=12)
     hist_lines = []
     for h in history:
         name = "你" if h.get("is_bot") else str(h.get("sender_name", "?"))
         # 历史 带 QQ：模型标注 [记忆@QQ] 时需要知道每句话是谁说的
         hist_lines.append("%s(QQ:%s): %s" % (
-            name, h.get("sender_id", "?"), str(h.get("text", ""))[:100]))
-    hist_block = "\n".join(hist_lines[-14:]) if hist_lines else "（暂无）"
+            name, h.get("sender_id", "?"), str(h.get("text", ""))[:80]))
+    hist_block = "\n".join(hist_lines[-10:]) if hist_lines else "（暂无）"
 
     rt = msg.get("reply_to") or None
     if msg["chat_type"] == "group":
@@ -1831,6 +1860,16 @@ def process(daemon, msg):
             RT.count_processed()
             out("AGENT_TASK_ACCEPT msg_id=%s chat=%s/%s" % (
                 msg["id"], msg["chat_type"], msg["chat_id"]))
+            return
+    # 旁观(chat_random)两段式判定：先轻量判定值不值得开口（省 token 大头），
+    # 通过才走全量提示词生成回复——回复质量不受影响
+    if msg.get("trigger_reason") == "chat_random" and chat_anti_interrupt_enabled():
+        _pcoll, _pname = load_persona_collection()
+        if _interrupt_gate(daemon, msg, _pname or "智谱娘"):
+            daemon.ack([msg["id"]])
+            RT.count_processed()
+            out("AGENT_GATE_SKIP msg_id=%s chat=%s/%s (轻量判定不插话)"
+                % (msg["id"], msg["chat_type"], msg["chat_id"]))
             return
     messages, active_persona = build_messages(daemon, msg)
     # 联网搜索（两步法）：启发式判定 → 智谱搜索 API → 结果注入 system
