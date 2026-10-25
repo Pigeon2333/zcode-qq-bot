@@ -804,7 +804,7 @@ async function addMemo(){
  const sel=m.querySelector('select'),cid=m.querySelector('input'),ta=m.querySelector('textarea');
  const close=()=>m.remove();
  m.querySelector('.dlg-btns .ghost').onclick=close;
- m.querySelector('.dlg-btns .act').onclick=async()=>{
+ m.querySelector('.dlg-btns .act:not(.ghost)').onclick=async()=>{
   if(!/^\d{5,12}$/.test(cid.value.trim())||!ta.value.trim()){toast('对象需为群号/QQ号，内容不能为空',false);return}
   close();
   const r=await saveKV('/api/memory/add',{scope:sel.value,id:cid.value.trim(),text:ta.value.trim()},'记忆已写入（即时生效）');
