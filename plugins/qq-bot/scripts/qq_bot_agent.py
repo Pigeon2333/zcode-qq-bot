@@ -1184,7 +1184,7 @@ def _interrupt_gate(daemon, msg, persona_name):
         "- 输出 Y：话题正好是你关心/擅长的，或你能自然接一句给对话添彩" + nl +
         "- 输出 N：与你无关 / 他人正在互相讨论 / 没人叫你 / 你只能说可有可无的附和" + nl +
         "宁可 N。只输出 Y 或 N，不要其他任何字。") % (persona_name, persona_name)
-    user = "【最近对话】" + nl + "%s" + nl + nl + "【现在】%s" % (hist_block, now_line)
+    user = ("【最近对话】" + nl + "%s" + nl + nl + "【现在】%s") % (hist_block, now_line)
     try:
         _model, reply = call_glm_with_fallback(
             [{"role": "system", "content": system},
