@@ -145,9 +145,10 @@ def file_sig(path):
 
 
 def out(line):
-    """线程安全地打印结构化行（stdout 由启动方重定向到日志文件）。"""
+    """线程安全地打印结构化行（stdout 由启动方重定向到日志文件）。
+    行首带 [HH:MM:SS] 时间戳，供运行日志页展示。"""
     with _print_lock:
-        print(line, flush=True)
+        print("[%s] %s" % (time.strftime("%H:%M:%S"), line), flush=True)
 
 
 def now_ts():

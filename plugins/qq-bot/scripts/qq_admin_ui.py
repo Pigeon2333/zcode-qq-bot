@@ -18,6 +18,7 @@ import http.client
 import json
 import os
 import pathlib
+import re
 import sys
 import threading
 import time
@@ -341,6 +342,7 @@ function runlogRows(d){
  return (d.lines||[]).slice(-250).map(l=>{
   const c=_lvlColor[l.level]||'var(--fg)';
   return '<div style="display:flex;gap:8px;padding:3px 0;border-bottom:1px solid var(--line);font-size:12px;align-items:baseline">'
+   +'<span class="mono" style="flex:none;width:58px;color:var(--dim);font-size:11px">'+esc(l.ts||'--:--:--')+'</span>'
    +'<span style="flex:none;width:34px;color:var(--dim);font-size:11px">'+(_srcName[l.src]||l.src)+'</span>'
    +'<span style="flex:none;color:'+c+';font-weight:700">·</span>'
    +'<span class="mono" style="color:'+c+';word-break:break-all">'+esc(l.text)+'</span></div>';
@@ -838,48 +840,60 @@ def _tail_lines(path, n=250):
         return []
 
 
+_LINE_TS = re.compile(r"^\[(\d{2}:\d{2}:\d{2})\]\s?")
+
+
+def _split_ts(ln):
+    """剥离日志行首 [HH:MM:SS] 时间戳（旧日志无前缀返回空串）。"""
+    m = _LINE_TS.match(ln)
+    return (m.group(1), ln[m.end():]) if m else ("", ln)
+
+
 def _parse_daemon_line(ln):
     """daemon.log 单行 → 展示记录 dict；AGENT_* 前缀做轻量摘要。"""
+    ts, ln = _split_ts(ln)
     if ln.startswith("AGENT_EVENT "):
         try:
             ev = json.loads(ln[len("AGENT_EVENT "):])
-            ts = time.strftime("%H:%M:%S", time.localtime(float(ev.get("ts", 0) or 0)))
+            if not ts:
+                ts = time.strftime("%H:%M:%S", time.localtime(float(ev.get("ts", 0) or 0)))
             chat = ("群%s" % ev.get("chat_id")) if ev.get("chat_type") == "group" \
                 else ("私聊%s" % ev.get("chat_id"))
             trig = ev.get("trigger_reason")
             tag = "触发:%s" % trig if ev.get("triggered") else "旁观"
             text = str(ev.get("text", ""))[:48]
             return {"src": "daemon", "level": "info" if ev.get("triggered") else "dim",
-                    "text": "%s [%s] %s：%s（%s）" % (ts, chat,
-                                                      ev.get("sender_name", "?"), text, tag)}
+                    "ts": ts,
+                    "text": "[%s] %s：%s（%s）" % (chat,
+                                                  ev.get("sender_name", "?"), text, tag)}
         except ValueError:
             pass
-        return {"src": "daemon", "level": "dim", "text": ln}
+        return {"src": "daemon", "level": "dim", "ts": ts, "text": ln}
     if ln.startswith("AGENT_LOG "):
         try:
             rec = json.loads(ln[len("AGENT_LOG "):])
             msg = str(rec.get("msg", ""))
             detail = str(rec.get("detail", ""))[:80]
             if msg == "ws_connected":
-                return {"src": "daemon", "level": "ok", "text": "WS 已连接：%s" % detail}
+                return {"src": "daemon", "level": "ok", "ts": ts, "text": "WS 已连接：%s" % detail}
             if msg == "ws_disconnected":
-                return {"src": "daemon", "level": "warn", "text": "WS 断开（自动重连中）：%s" % detail}
+                return {"src": "daemon", "level": "warn", "ts": ts, "text": "WS 断开（自动重连中）：%s" % detail}
             if msg == "login":
-                return {"src": "daemon", "level": "ok",
+                return {"src": "daemon", "level": "ok", "ts": ts,
                         "text": "已登录：%s(%s)" % (rec.get("nickname", "?"), rec.get("user_id", "?"))}
-            return {"src": "daemon", "level": "dim", "text": msg + (" " + detail if detail else "")}
+            return {"src": "daemon", "level": "dim", "ts": ts, "text": msg + (" " + detail if detail else "")}
         except ValueError:
             pass
     if "Traceback" in ln:
-        return {"src": "daemon", "level": "err", "text": "异常堆栈（详见 daemon.log）"}
-    return {"src": "daemon", "level": "dim", "text": ln[:200]}
+        return {"src": "daemon", "level": "err", "ts": ts, "text": "异常堆栈（详见 daemon.log）"}
+    return {"src": "daemon", "level": "dim", "ts": ts, "text": ln[:200]}
 
 
 def _parse_agent_lines(lines):
     """agent.log 行列表 → 展示记录列表；Python 堆栈连续段折叠为一条。"""
     out, i, n = [], 0, len(lines)
     while i < n:
-        ln = lines[i]
+        ts, ln = _split_ts(lines[i])
         if ln.startswith("Traceback"):
             j = i + 1
             cause = ""
@@ -888,24 +902,30 @@ def _parse_agent_lines(lines):
                 if ": " in lines[j] and not lines[j].lstrip().startswith("File"):
                     cause = lines[j].strip()
                 j += 1
-            out.append({"src": "agent", "level": "err",
+            out.append({"src": "agent", "level": "err", "ts": ts,
                         "text": "异常：" + (cause or "堆栈见 agent.log")[:120]})
             i = j
             continue
         if ln.startswith("AGENT_DONE "):
-            out.append({"src": "agent", "level": "ok", "text": "回复完成 " + ln[11:140]})
+            out.append({"src": "agent", "level": "ok", "ts": ts, "text": "回复完成 " + ln[11:140]})
         elif ln.startswith("AGENT_SKIP "):
-            out.append({"src": "agent", "level": "dim", "text": "静默跳过 " + ln[11:140]})
+            out.append({"src": "agent", "level": "dim", "ts": ts, "text": "静默跳过 " + ln[11:140]})
         elif ln.startswith("AGENT_READY "):
-            out.append({"src": "agent", "level": "info", "text": "大脑就绪 " + ln[12:140]})
+            out.append({"src": "agent", "level": "info", "ts": ts, "text": "大脑就绪 " + ln[12:140]})
+        elif ln.startswith("AGENT_MODEL_FAIL"):
+            out.append({"src": "agent", "level": "warn", "ts": ts, "text": "模型失败 " + ln[18:150]})
+        elif ln.startswith("AGENT_VISION_FAIL"):
+            out.append({"src": "agent", "level": "warn", "ts": ts, "text": "视觉失败 " + ln[18:150]})
+        elif ln.startswith("AGENT_ERROR "):
+            out.append({"src": "agent", "level": "err", "ts": ts, "text": "处理失败 " + ln[12:150]})
         elif ln.startswith("AGENT_EVOLVE "):
-            out.append({"src": "agent", "level": "info", "text": ln[:140]})
+            out.append({"src": "agent", "level": "info", "ts": ts, "text": ln[:140]})
         elif ln.startswith("AGENT_LOOP_ERROR"):
-            out.append({"src": "agent", "level": "err", "text": ln[:140]})
+            out.append({"src": "agent", "level": "err", "ts": ts, "text": ln[:140]})
         elif ln.startswith("AGENT_SHUTDOWN"):
-            out.append({"src": "agent", "level": "warn", "text": "大脑已停止"})
+            out.append({"src": "agent", "level": "warn", "ts": ts, "text": "大脑已停止"})
         else:
-            out.append({"src": "agent", "level": "dim", "text": ln[:140]})
+            out.append({"src": "agent", "level": "dim", "ts": ts, "text": ln[:140]})
         i += 1
     return out
 
@@ -926,9 +946,11 @@ def collect_runlog(src="all", tail=250):
                     "final": _boot_state["final"]}
         for s in steps:
             items.append({"src": "boot", "level": "info",
+                          "ts": time.strftime("%H:%M:%S", time.localtime(float(s.get("ts", 0) or 0))),
                           "text": "[%s] %s" % (s.get("component", "?"), s.get("message", ""))})
         if meta["final"]:
             items.append({"src": "boot", "level": "err" if meta["failed"] else "info",
+                          "ts": time.strftime("%H:%M:%S"),
                           "text": "启动任务：%s" % meta["final"]})
     return items
 
@@ -1457,7 +1479,8 @@ class UiHandler(BaseHTTPRequestHandler):
                 if not isinstance(models, list) or not models or \
                         not all(isinstance(m, str) and m.strip() for m in models[:8]):
                     return self._reply(400, {"ok": False, "error": "models 必须是非空字符串数组(<=8)"})
-                cfg["models"] = [m.strip() for m in models]
+                # 智谱模型名大小写敏感，统一转小写防止手滑（大写名会被平台报套餐失效）
+                cfg["models"] = [m.strip().lower() for m in models]
             if "vision_model" in body:
                 vm = str(body.get("vision_model", "")).strip()
                 if len(vm) > 60:
@@ -1475,8 +1498,8 @@ class UiHandler(BaseHTTPRequestHandler):
                         clean["_default"] = {"enabled": bool(v.get("enabled", True)),
                                              "level": str(v.get("level", "high"))[:10]}
                     elif isinstance(k, str) and len(k) <= 60 and isinstance(v, dict):
-                        clean[k] = {"enabled": bool(v.get("enabled", True)),
-                                    "level": str(v.get("level", "high"))[:10]}
+                        clean[k.lower()] = {"enabled": bool(v.get("enabled", True)),
+                                            "level": str(v.get("level", "high"))[:10]}
                 cfg["thinking"] = clean
             write_const(MODEL_CHAIN_PATH, json.dumps(cfg, ensure_ascii=False, indent=2))
             return self._reply(200, {"ok": True})

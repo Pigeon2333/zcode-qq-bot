@@ -138,9 +138,10 @@ class Runtime:
                     return m
             return None
 
-    def cooldown(self, model):
+    def cooldown(self, model, seconds=None):
         with self.lock:
-            self.cooldowns[model] = time.time() + COOLDOWN_SECONDS
+            self.cooldowns[model] = time.time() + (
+                seconds if seconds is not None else COOLDOWN_SECONDS)
 
     def set_current(self, model):
         with self.lock:
@@ -159,7 +160,29 @@ RT = Runtime()
 
 
 def out(line):
-    print(line, flush=True)
+    """结构化日志行，行首带 [HH:MM:SS] 时间戳（运行日志页展示用）。"""
+    print("[%s] %s" % (time.strftime("%H:%M:%S"), line), flush=True)
+
+
+_RE_RESET_AT = re.compile(r"(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2}:\d{2})")
+
+
+def _cooldown_sec(detail):
+    """按平台错误信息分级冷却：套餐失效=30min（短期不会好）；平台过载=45s（稍后即恢复）；
+    限额窗口=冷却到提示的重置时刻（上限6h）；其他=默认5min。"""
+    d = detail or ""
+    if "套餐" in d and "失效" in d:
+        return 1800
+    if "访问量过大" in d or "稍后再试" in d:
+        return 45
+    m = _RE_RESET_AT.search(d)
+    if m and ("上限" in d or "重置" in d or "限额" in d):
+        try:
+            st = time.strptime("%s %s" % (m.group(1), m.group(2)), "%Y-%m-%d %H:%M:%S")
+            return int(max(60, min(21600, time.mktime(st) - time.time())))
+        except ValueError:
+            pass
+    return COOLDOWN_SECONDS
 
 
 def read_const(path, default=""):
@@ -292,8 +315,9 @@ def call_glm_with_fallback(messages, text_ctx=""):
             log_usage(model, data.get("usage") or {})
             return model, text
         detail = str(data.get("error", {}).get("message", ""))[:80]
-        out("AGENT_MODEL_FAIL model=%s http=%d %s" % (model, status, detail))
-        RT.cooldown(model)
+        cool = _cooldown_sec(detail)
+        out("AGENT_MODEL_FAIL model=%s http=%d cool=%ds %s" % (model, status, cool, detail))
+        RT.cooldown(model, cool)
         tried.append(model)
         if status == 400 and "模型不存在" in detail:
             # 链里配了不存在的模型名：只冷却该模型，继续尝试其余
@@ -1209,8 +1233,9 @@ def call_vision(messages_text, image_urls):
             log_usage(m, data.get("usage") or {})
             return m, text
         detail = str(data.get("error", {}).get("message", ""))[:80]
-        out("AGENT_VISION_FAIL model=%s http=%d %s" % (m, status, detail))
-        RT.cooldown(m); tried.append(m)
+        cool = _cooldown_sec(detail)
+        out("AGENT_VISION_FAIL model=%s http=%d cool=%ds %s" % (m, status, cool, detail))
+        RT.cooldown(m, cool); tried.append(m)
         if status == 400 and ("模型不存在" in detail or "image" in detail.lower()):
             continue  # 该模型不支持图像/不存在：冷却后试下一个
 
