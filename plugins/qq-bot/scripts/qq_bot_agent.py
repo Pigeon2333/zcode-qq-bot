@@ -1431,31 +1431,50 @@ def _in_silent_window(cfg, kind, lt):
 
 
 def _proactive_pick(cfg, kind, pool, now):
-    """某一类（group/private）的主动判定：开关/间隔/时段/概率通过则返回目标。"""
+    """某一类（groups/private）的主动判定：开关/间隔/时段/概率通过则返回目标。
+    群目标支持分群覆盖（group_reply_modes 的 proactive_probability/
+    proactive_min_interval_sec）；间隔状态按目标分别记录。"""
     st = _proactive_state[kind]
     if now - st["last_attempt"] < 60:
         return None
     st["last_attempt"] = now
-    try:
-        min_iv = max(300, int(cfg.get("proactive_%s_min_interval_sec" % kind, 1800)))
-    except (TypeError, ValueError):
-        min_iv = 1800
-    if now - st["last_sent"] < min_iv:
-        return None
     if _in_silent_window(cfg, kind, time.localtime()):
         return None
-    try:
-        prob = min(1.0, max(0.0, float(cfg.get("proactive_%s_probability" % kind, 0.1))))
-    except (TypeError, ValueError):
-        prob = 0.1
     import secrets
-    if prob <= 0 or secrets.randbelow(10000) >= int(prob * 10000):
-        return None
     want = "group" if kind == "groups" else "private"
     pool = [t for t in pool if t[0] == want]
     if not pool:
         return None
-    return secrets.choice(pool)
+    try:
+        g_iv = max(300, int(cfg.get("proactive_%s_min_interval_sec" % kind, 1800)))
+    except (TypeError, ValueError):
+        g_iv = 1800
+    try:
+        g_prob = min(1.0, max(0.0, float(cfg.get("proactive_%s_probability" % kind, 0.1))))
+    except (TypeError, ValueError):
+        g_prob = 0.1
+    modes = load_json_const(GROUP_MODES_AGENT_PATH, {}) if kind == "groups" else {}
+    secrets.SystemRandom().shuffle(pool)
+    for chat_type, chat_id in pool:
+        iv, prob = g_iv, g_prob
+        ov = modes.get(str(chat_id)) or {}
+        if kind == "groups" and isinstance(ov, dict):
+            try:
+                iv = max(300, int(ov.get("proactive_min_interval_sec", iv)))
+            except (TypeError, ValueError):
+                pass
+            try:
+                prob = min(1.0, max(0.0, float(ov.get("proactive_probability", prob))))
+            except (TypeError, ValueError):
+                pass
+        gst = _proactive_state.setdefault("g:%s:%s" % (chat_type, chat_id),
+                                          {"last_sent": 0.0})
+        if now - gst["last_sent"] < iv:
+            continue
+        if prob <= 0 or secrets.randbelow(10000) >= int(prob * 10000):
+            continue
+        return chat_type, chat_id
+    return None
 
 
 def _proactive_tick(daemon):
@@ -1479,7 +1498,8 @@ def _proactive_tick(daemon):
     if not picked:
         return
     chat_type, chat_id = picked
-    _proactive_state["groups" if chat_type == "group" else "private"]["last_sent"] = now
+    _proactive_state.setdefault("g:%s:%s" % (chat_type, chat_id),
+                              {"last_sent": 0.0})["last_sent"] = now
     out("AGENT_PROACTIVE_TRY chat=%s/%s" % (chat_type, chat_id))
     try:
         msgs, active = _proactive_compose(daemon, chat_type, chat_id)

@@ -562,6 +562,10 @@ async function vGroups(){
    params=`<div class="gm-sub">插话概率 <input type="number" min="0" max="100" style="width:60px" value="${Math.round((ov.chat_probability??_gmGlobal.chat_probability??0.5)*100)}" onchange="saveGmFieldFor('${esc(x)}','chat_probability',this)">%
    　最小间隔 <input type="number" min="0" max="3600" style="width:68px" value="${ov.chat_min_interval_sec??_gmGlobal.chat_min_interval_sec??45}" onchange="saveGmFieldFor('${esc(x)}','chat_min_interval_sec',this)"> 秒（仅该群生效）</div>`;
   }
+  if(ov.proactive===true){
+   params+=`<div class="gm-sub">该群主动：概率 <input type="number" min="0" max="100" style="width:56px" value="${Math.round((ov.proactive_probability??rv.proactive_groups_probability??0.1)*100)}" onchange="saveGmProNum('${esc(x)}','proactive_probability',(parseInt(this.value)||0)/100)">%
+   　频率 每 <input type="number" min="5" max="1440" style="width:60px" value="${Math.round((ov.proactive_min_interval_sec??rv.proactive_groups_min_interval_sec??1800)/60)}" onchange="saveGmProNum('${esc(x)}','proactive_min_interval_sec',(parseInt(this.value)||30)*60)"> 分钟（仅该群；未修改时跟随全局）</div>`;
+  }
   return `<div class="gm-wrap"><div class="row"><span class="no">${i+1}.</span>
    <input class="gin" value="${esc(x)}" data-i="${i}" style="flex:1;min-width:110px" placeholder="群号" onchange="saveGroups()">
    <select class="mini" style="width:116px;flex:none" title="该群回复模式" onchange="rowGmMode(this)">
@@ -609,8 +613,8 @@ async function vGroups(){
   <div class="chain" style="margin-top:10px;${allOn?'opacity:.45':''}">
    <div class="row" style="background:transparent;border:0;padding:2px 12px"><span class="no"></span>
     <span class="k" style="flex:1;min-width:110px">群号</span>
-    <span class="k" style="width:116px;flex:none">回复模式（该群什么时候回话）</span>
-    <span class="k" style="width:96px;flex:none">主动发消息（该群是否主动开口）</span>
+    <span class="k" style="width:116px;flex:none">回复模式</span>
+    <span class="k" style="width:96px;flex:none">主动发消息</span>
     <span class="k" style="width:52px;flex:none">操作</span></div>
    ${rows||'<i class="k">空（无白名单生效）</i>'}</div>
   <div style="margin-top:10px;display:flex;gap:8px"><input id="newg" placeholder="群号，如 661206749" onkeydown="if(event.key==='Enter')addg()"><button class="act" onclick="addg()">添加</button></div></div>
@@ -862,14 +866,20 @@ async function savePro(key,val){await saveKV('/api/reply-config',{[key]:val},{pr
 function proCard(kind){
  const iv=Math.round((rvState['proactive_'+kind+'_min_interval_sec']??1800)/60);
  const prob=Math.round((rvState['proactive_'+kind+'_probability']??0.1)*100);
+ const sOn=!!(rvState['proactive_'+kind+'_silent_start']||rvState['proactive_'+kind+'_silent_end']);
  return `<div style="display:flex;gap:14px;margin-top:10px;flex-wrap:wrap;align-items:center">
   <label>频率：每 <input type="number" min="5" max="1440" value="${iv}" style="width:60px" onchange="saveProNum('${kind}_min_interval_sec',(parseInt(this.value)||30)*60,'分钟')"> 分钟评估一次</label>
   <label>命中概率 <input type="range" min="0" max="100" value="${prob}" style="width:150px" oninput="this.nextElementSibling.textContent=this.value+'%'" onchange="saveProNum('${kind}_probability',(parseInt(this.value)||0)/100,'概率')"> <b>${prob}%</b></label>
-  <label>禁用时段 <input type="time" value="${esc(rvState['proactive_'+kind+'_silent_start']||'22:00')}" onchange="saveProTime('${kind}_silent_start',this.value)"> – <input type="time" value="${esc(rvState['proactive_'+kind+'_silent_end']||'08:00')}" onchange="saveProTime('${kind}_silent_end',this.value)">（此段内不主动发消息，支持跨午夜）</label>
+  <label><input type="checkbox" ${sOn?'checked':''} onchange="toggleProSilent('${kind}',this.checked)"> 禁用时段</label>
+  ${sOn?`<label><input type="time" value="${esc(rvState['proactive_'+kind+'_silent_start']||'22:00')}" onchange="saveProTime('${kind}_silent_start',this.value)"> – <input type="time" value="${esc(rvState['proactive_'+kind+'_silent_end']||'08:00')}" onchange="saveProTime('${kind}_silent_end',this.value)">（此段内不主动发消息，支持跨午夜）</label>`:''}
  </div>`}
 let rvState={}
 async function saveProNum(field,val,what){await saveKV('/api/reply-config',{['proactive_'+field]:val},'主动'+what+'已更新（已生效）');load()}
 async function saveProTime(field,val){if(!val)return;const r=await saveKV('/api/reply-config',{['proactive_'+field]:val},'禁用时段已更新（已生效）');if(r.ok!==false)load()}
+async function toggleProSilent(kind,on){
+ if(on){await saveKV('/api/reply-config',{['proactive_'+kind+'_silent_start']:'22:00',['proactive_'+kind+'_silent_end']:'08:00'},'禁用时段已开启（默认 22:00–08:00，可修改）')}
+ else{await saveKV('/api/reply-config',{['proactive_'+kind+'_silent_start']:'',['proactive_'+kind+'_silent_end']:''},'禁用时段已关闭（全天可发）')}
+ load()}
 async function rowGmPro(sel){
  const gid=sel.closest('.gm-wrap').querySelector('input.gin').value.trim();
  if(!/^\d{5,12}$/.test(gid)){toast('群号无效：先修正行内群号',false);sel.value='';return}
@@ -878,6 +888,11 @@ async function rowGmPro(sel){
  const name=v==='on'?'开启主动发消息':(v==='off'?'关闭主动发消息':'主动发消息跟随全局');
  const r=await saveKV('/api/group-modes',{chat_id:gid,override:ov},'群 '+gid+'：'+name+'（已生效）');
  if(r.ok!==false)load();
+}
+async function saveGmProNum(gid,f,val){
+ if(!/^\d{5,12}$/.test(gid)){toast('群号无效',false);return}
+ const r=await saveKV('/api/group-modes',{chat_id:gid,override:{[f]:val}},'该群主动设置已生效');
+ if(r.ok!==false)_gmModes[gid]=Object.assign({},_gmModes[gid],{[f]:val});
 }
 async function saveLimit(key,val){await saveKV('/api/reply-config',{[key]:val},{token_limit_enabled:'token 限额'}[key]+'已更新（已生效）');load()}
 async function saveLimitHours(){const v=parseInt($('#tlhours').value)||1;await saveKV('/api/reply-config',{token_limit_hours:Math.max(1,Math.min(24,v))},'限额窗口已更新（已生效）');load()}
@@ -1861,8 +1876,20 @@ class UiHandler(BaseHTTPRequestHandler):
                 # None=清除覆盖（跟随全局）；True/False=该群强制开/关主动发消息
                 if ov["proactive"] is None:
                     clean.pop("proactive", None)
+                    clean.pop("proactive_probability", None)
+                    clean.pop("proactive_min_interval_sec", None)
                 else:
                     clean["proactive"] = bool(ov["proactive"])
+            if "proactive_probability" in ov:
+                try:
+                    clean["proactive_probability"] = min(1.0, max(0.0, float(ov["proactive_probability"])))
+                except (TypeError, ValueError):
+                    return self._reply(400, {"ok": False, "error": "概率非法"})
+            if "proactive_min_interval_sec" in ov:
+                try:
+                    clean["proactive_min_interval_sec"] = max(300, min(86400, int(ov["proactive_min_interval_sec"])))
+                except (TypeError, ValueError):
+                    return self._reply(400, {"ok": False, "error": "间隔非法"})
             # 模式与暂停互斥（按本次请求判定）：请求设了模式即解除暂停，请求暂停即丢弃模式
             if "reply_mode" in ov:
                 clean.pop("paused", None)
