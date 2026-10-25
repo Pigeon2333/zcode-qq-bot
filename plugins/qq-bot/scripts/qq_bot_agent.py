@@ -1430,6 +1430,40 @@ def _in_silent_window(cfg, kind, lt):
     return s <= cur < e if s < e else (cur >= s or cur < e)
 
 
+def _proactive_targets(daemon, cfg):
+    """可选主动目标：白名单内、未暂停、未分群禁用主动的群 + 私聊启用对象；
+    只保留最近 6 小时有消息往来的会话（有语境才好开口）。"""
+    wl = load_json_const(GROUP_WL_PATH, {})
+    modes = load_json_const(GROUP_MODES_AGENT_PATH, {})
+    pc = load_json_const(PRIVATE_CFG_PATH, {})
+    recent = daemon.recent_chats()
+    out = []
+    for c in recent:
+        ct, cid = c["chat_type"], str(c["chat_id"])
+        if ct == "group":
+            if not cfg.get("proactive_groups_enabled"):
+                continue
+            if not (isinstance(wl, dict) and wl.get("enabled", True)):
+                continue
+            if not wl.get("allow_all"):
+                if str(cid) not in {str(g) for g in wl.get("groups", [])}:
+                    continue
+            ov = modes.get(str(cid)) or {}
+            if ov.get("paused") or ov.get("proactive") is False:
+                continue
+            out.append((ct, cid))
+        else:
+            if not cfg.get("proactive_private_enabled"):
+                continue
+            if not (isinstance(pc, dict) and pc.get("enabled")):
+                continue
+            if not pc.get("allow_all") and \
+                    str(cid) not in {str(q) for q in pc.get("qq_whitelist", [])}:
+                continue
+            out.append((ct, cid))
+    return out
+
+
 def _proactive_pick(cfg, kind, pool, now):
     """某一类（groups/private）的主动判定：开关/间隔/时段/概率通过则返回目标。
     群目标支持分群覆盖（group_reply_modes 的 proactive_probability/
