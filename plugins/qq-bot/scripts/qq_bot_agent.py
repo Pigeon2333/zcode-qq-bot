@@ -1409,122 +1409,77 @@ def _dedup_reply(daemon, msg, texts):
 GROUP_WL_PATH = os.path.join(DATA_DIR, "group_whitelist.json")
 GROUP_MODES_AGENT_PATH = os.path.join(DATA_DIR, "group_reply_modes.json")
 PRIVATE_CFG_PATH = os.path.join(DATA_DIR, "private_config.json")
-_proactive_state = {"last_attempt": 0.0, "last_sent": 0.0}
+_proactive_state = {"groups": {"last_attempt": 0.0, "last_sent": 0.0},
+                    "private": {"last_attempt": 0.0, "last_sent": 0.0}}
 
 
-def _proactive_targets(daemon, cfg):
-    """可选主动目标：白名单内、未暂停、未分群禁用主动的群 + 私聊启用对象；
-    只保留最近 6 小时有消息往来的会话（有语境才好开口）。"""
-    wl = load_json_const(GROUP_WL_PATH, {})
-    modes = load_json_const(GROUP_MODES_AGENT_PATH, {})
-    pc = load_json_const(PRIVATE_CFG_PATH, {})
-    recent = daemon.recent_chats()
-    out = []
-    for c in recent:
-        ct, cid = c["chat_type"], str(c["chat_id"])
-        if ct == "group":
-            if not cfg.get("proactive_groups_enabled"):
-                continue
-            if not (isinstance(wl, dict) and wl.get("enabled", True)):
-                continue
-            if not wl.get("allow_all"):
-                if str(cid) not in {str(g) for g in wl.get("groups", [])}:
-                    continue
-            ov = modes.get(str(cid)) or {}
-            if ov.get("paused") or ov.get("proactive") is False:
-                continue
-            out.append((ct, cid))
-        else:
-            if not cfg.get("proactive_private_enabled"):
-                continue
-            if not (isinstance(pc, dict) and pc.get("enabled")):
-                continue
-            if not pc.get("allow_all") and \
-                    str(cid) not in {str(q) for q in pc.get("qq_whitelist", [])}:
-                continue
-            out.append((ct, cid))
-    return out
+def _in_silent_window(cfg, kind, lt):
+    """主动发消息禁用时段判定（支持跨午夜；留空=不禁用）。"""
+    def m(key):
+        try:
+            h, mi = str(cfg.get(key, "")).strip().split(":")
+            v = int(h) * 60 + int(mi)
+            return v if 0 <= v < 24 * 60 else None
+        except (ValueError, AttributeError):
+            return None
+    s = m("proactive_%s_silent_start" % kind)
+    e = m("proactive_%s_silent_end" % kind)
+    if s is None or e is None or s == e:
+        return False
+    cur = lt.tm_hour * 60 + lt.tm_min
+    return s <= cur < e if s < e else (cur >= s or cur < e)
 
 
-def _proactive_compose(daemon, chat_type, chat_id):
-    """构造一次主动发消息的 LLM 调用；模型认为不合适可输出 [SKIP]。"""
-    data, active = load_persona_collection()
-    persona_name, global_base = data["active"], data["global"]
-    persona = data["persona"]
-    style = read_const(STYLE_PATH)
-    ev = evolved_notes(persona_name) if persona_name else {"enabled": False, "notes": []}
-    evolved_block = ("\n\n## 自进化风格观察\n" + "\n".join("- %s" % n for n in ev["notes"][-12:])
-                     if ev["enabled"] and ev["notes"] else "")
-    mem_scope, mem_id = (("group", chat_id) if chat_type == "group"
-                         else ("contact", chat_id))
-    mems = memory_snippets(mem_scope, mem_id)
-    mem_block = ("\n\n## 长期记忆\n" + "\n".join(mems[-8:])) if mems else ""
-    lt = time.localtime()
-    tstr = "%d-%02d-%02d 周%d %02d:%02d" % (lt.tm_year, lt.tm_mon, lt.tm_mday,
-                                            lt.tm_wday + 1, lt.tm_hour, lt.tm_min)
-    hist = daemon.history(chat_type, chat_id, limit=14)
-    lines = ["%s(QQ:%s): %s" % ("你" if h.get("is_bot") else str(h.get("sender_name", "?")),
-                                h.get("sender_id", "?"), str(h.get("text", ""))[:100])
-             for h in hist]
-    hist_block = "\n".join(lines[-12:]) or "（暂无）"
-    label = "群 %s" % chat_id if chat_type == "group" else "私聊对象(QQ:%s)" % chat_id
-    system = (
-        "你是QQ里的AI机器人。身份由「全局通用设定」和「当前人设」唯一决定，"
-        "严格按人设行动。\n\n## 全局通用设定\n%s\n\n## 当前人设\n%s%s%s\n\n"
-        "## 硬性规则\n"
-        "- 输出是QQ聊天文本：禁止Markdown，口语化，遵守人设语气\n"
-        "- 绝对禁止任何脏话粗口（任何语境都不行），用\"哎呀/天哪\"表达情绪\n"
-        "- 想连发多条用 [[SPLIT]] 分隔（最多2条）；想发表情包单独一行 [STICKER:表情包id]\n"
-        "- 出现值得长期记住的关于某人的信息可单独一行 [记忆@对方QQ号] 内容\n"
-        "%s\n"
-        "## 本次任务（主动发消息）\n"
-        "现在是 %s。这不是回复——你要主动在%s开个话头或说句话：结合最近对话、"
-        "你的记忆和当前时间（深夜/清早就不该打扰，输出 [SKIP]；饭点可以聊聊吃的；"
-        "对方之前提过的事可以关心一句），输出一句自然、简短、贴合人设的话，"
-        "不要复读之前说过的内容。如果没有合适的话可说，只输出 [SKIP]。"
-        % (global_base or "（无）", persona or "（无）",
-           ("\n\n## 说话风格卡\n" + style) if style else "",
-           evolved_block, mem_block, tstr, label))
-    content = "【%s | 最近对话】\n%s\n\n【现在】请你主动发一条消息。" % (label, hist_block)
-    return [{"role": "system", "content": system},
-            {"role": "user", "content": content}], active
+def _proactive_pick(cfg, kind, pool, now):
+    """某一类（group/private）的主动判定：开关/间隔/时段/概率通过则返回目标。"""
+    st = _proactive_state[kind]
+    if now - st["last_attempt"] < 60:
+        return None
+    st["last_attempt"] = now
+    try:
+        min_iv = max(300, int(cfg.get("proactive_%s_min_interval_sec" % kind, 1800)))
+    except (TypeError, ValueError):
+        min_iv = 1800
+    if now - st["last_sent"] < min_iv:
+        return None
+    if _in_silent_window(cfg, kind, time.localtime()):
+        return None
+    try:
+        prob = min(1.0, max(0.0, float(cfg.get("proactive_%s_probability" % kind, 0.1))))
+    except (TypeError, ValueError):
+        prob = 0.1
+    import secrets
+    if prob <= 0 or secrets.randbelow(10000) >= int(prob * 10000):
+        return None
+    want = "group" if kind == "groups" else "private"
+    pool = [t for t in pool if t[0] == want]
+    if not pool:
+        return None
+    return secrets.choice(pool)
 
 
 def _proactive_tick(daemon):
-    """主动发消息节拍器（主循环每次迭代调用，内部 60s 节流）：
-    到达最小间隔后掷概率骰子，命中则选一个活跃目标生成并发送。"""
+    """主动发消息节拍器（主循环每次迭代调用）：群/私聊各自独立判定
+    （开关、频率、概率、禁用时段），共用安静模式与输出守卫。"""
     cfg = load_json_const(REPLY_CONFIG_PATH, {})
-    if not (cfg.get("proactive_groups_enabled")
-            or cfg.get("proactive_private_enabled")):
+    kinds = [k for k in ("groups", "private")
+             if cfg.get("proactive_%s_enabled" % k)]
+    if not kinds:
         return
     now = time.time()
-    if now - _proactive_state["last_attempt"] < 60:
-        return
-    _proactive_state["last_attempt"] = now
-    try:
-        prob = min(1.0, max(0.0, float(cfg.get("proactive_probability", 0.1))))
-    except (TypeError, ValueError):
-        prob = 0.1
-    try:
-        min_iv = max(300, int(cfg.get("proactive_min_interval_sec", 1800)))
-    except (TypeError, ValueError):
-        min_iv = 1800
-    if now - _proactive_state["last_sent"] < min_iv:
-        return
-    lt = time.localtime()
-    if lt.tm_hour < 8:
-        return  # 深夜静默（0-8 点不打扰）
     st = daemon.status() or {}
     if st.get("quiet_until", 0) > now:
         return  # 安静模式：不主动打扰
-    import secrets
-    if secrets.randbelow(10000) >= int(prob * 10000):
-        return
     targets = _proactive_targets(daemon, cfg)
-    if not targets:
+    picked = None
+    for kind in kinds:
+        picked = _proactive_pick(cfg, kind, targets, now)
+        if picked:
+            break
+    if not picked:
         return
-    chat_type, chat_id = secrets.choice(targets)
-    _proactive_state["last_sent"] = now
+    chat_type, chat_id = picked
+    _proactive_state["groups" if chat_type == "group" else "private"]["last_sent"] = now
     out("AGENT_PROACTIVE_TRY chat=%s/%s" % (chat_type, chat_id))
     try:
         msgs, active = _proactive_compose(daemon, chat_type, chat_id)
