@@ -1041,7 +1041,7 @@ def _parse_agent_lines(lines):
         elif ln.startswith("AGENT_READY "):
             out.append({"src": "agent", "level": "info", "ts": ts, "text": "大脑就绪 " + ln[12:140]})
         elif ln.startswith("AGENT_MODEL_FAIL"):
-            out.append({"src": "agent", "level": "warn", "ts": ts, "text": "模型失败 " + ln[18:150]})
+            out.append({"src": "agent", "level": "warn", "ts": ts, "text": "模型失败 " + ln[17:150]})
         elif ln.startswith("AGENT_VISION_FAIL"):
             out.append({"src": "agent", "level": "warn", "ts": ts, "text": "视觉失败 " + ln[18:150]})
         elif ln.startswith("AGENT_ERROR "):

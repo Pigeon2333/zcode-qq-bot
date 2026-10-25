@@ -1323,6 +1323,7 @@ def call_vision(messages_text, image_urls):
         cool = _cooldown_sec(detail)
         out("AGENT_VISION_FAIL model=%s http=%d cool=%ds %s" % (m, status, cool, detail))
         RT.cooldown(m, cool); tried.append(m)
+    raise RuntimeError("视觉调用：模型链全部不可用: %s" % ",".join(tried) or "链为空")
 
 
 def evolve_tick(daemon, msg, persona):
