@@ -130,10 +130,11 @@ class Runtime:
                 "current_model": self.current_model,
             }
 
-    def take_model(self):
+    def take_model(self, skip=0):
+        """取链中下一个可用模型；skip 跳过链首 N 个（高峰降耗时跳过旗舰）。"""
         with self.lock:
             now = time.time()
-            for m in self.chain:
+            for m in self.chain[skip:]:
                 if self.cooldowns.get(m, 0) <= now:
                     return m
             return None
@@ -289,10 +290,12 @@ def glm_chat(model, messages, timeout=40, extra_body=None):
 
 
 def call_glm_with_fallback(messages, text_ctx=""):
-    """按模型链尝试：失败模型冷却 5 分钟，自动切换下一个。"""
+    """按模型链尝试：失败模型冷却（按错误分级），自动切换下一个。
+    高峰降耗生效时跳过链首旗舰，从第二个模型开始用。"""
     tried = []
+    skip = 1 if (econ_on() and len(RT.snapshot()["chain"]) > 1) else 0
     while True:
-        model = RT.take_model()
+        model = RT.take_model(skip)
         if model is None:
             raise RuntimeError("模型链全部不可用（冷却中）: %s" % ", ".join(tried) or "链为空")
         try:
@@ -387,6 +390,12 @@ def feature_enabled(key):
     """主人功能开关（task_bridge/remote_control/draw/daily_review；默认开启）。"""
     cfg = load_json_const(REPLY_CONFIG_PATH, {})
     return bool(cfg.get(key, True))
+
+
+def econ_on():
+    """高峰降耗此刻是否生效（关思考/跳过链首旗舰；判定在 qq_common.econ_active）。"""
+    import qq_common as C
+    return C.econ_active(load_json_const(REPLY_CONFIG_PATH, {}))
 
 
 _SEARCH_STRONG = ("搜一下", "搜索", "搜下", "帮我搜", "查一下", "帮我查", "查查")
@@ -910,7 +919,10 @@ def resolve_thinking(model, text=""):
     - 手动：按模型配置，未配置用默认（默认开·最高）
     返回 (thinking_dict, max_tokens)。思考开启时放大 max_tokens，
     防止思考消耗挤占回答导致空回复（实测 600 会被烧光）。
+    高峰降耗生效时无条件关闭思考（最直接的省 token 手段）。
     """
+    if econ_on():
+        return {"thinking": {"type": "disabled"}}, 600
     cfg = load_thinking_config()
     auto = bool(cfg.get("_auto", False))
     if auto:
@@ -1213,7 +1225,7 @@ def call_vision(messages_text, image_urls):
     # 留空：按模型链尝试（与文本链同源，429/失效自动冷却切换）
     tried = []
     while True:
-        m = RT.take_model()
+        m = RT.take_model(1 if (econ_on() and len(RT.snapshot()["chain"]) > 1) else 0)
         if m is None:
             raise RuntimeError("视觉调用：模型链全部不可用: %s" % ",".join(tried))
         try:

@@ -12,6 +12,7 @@
 import json
 import os
 import pathlib
+import time
 import winreg
 
 # 脚本目录（本文件所在目录），所有业务脚本与其同级
@@ -88,3 +89,40 @@ def qqnt_dir_resolved(cfg=None):
     if d and os.path.isfile(os.path.join(d, "QQ.exe")):
         return d
     return detect_qqnt_dir()
+
+
+# ---------------- 高峰降耗（econ）：daemon 与 agent 共用的生效判定 ----------------
+
+def _hhmm_to_min(s, default):
+    try:
+        h, m = str(s).strip().split(":")
+        v = int(h) * 60 + int(m)
+        return v if 0 <= v < 24 * 60 else default
+    except (ValueError, AttributeError):
+        return default
+
+
+def econ_active(cfg):
+    """高峰降耗此刻是否生效（reply_config 的 econ_* 字段）。
+    三态：econ_mode_override = on 强制生效 / off 强制关闭 / auto（默认）按时间表——
+    总开关 econ_enabled 开启 + （可选仅工作日）+ start<=now<end（支持跨午夜）。
+    任何解析异常一律返回 False（宁可多耗不错杀回复）。"""
+    try:
+        ovr = str(cfg.get("econ_mode_override") or "auto")
+        if ovr == "on":
+            return True
+        if ovr == "off":
+            return False
+        if not cfg.get("econ_enabled"):
+            return False
+        lt = time.localtime()
+        if cfg.get("econ_workdays_only", True) and lt.tm_wday >= 5:
+            return False
+        cur = lt.tm_hour * 60 + lt.tm_min
+        s = _hhmm_to_min(cfg.get("econ_start", "14:00"), 14 * 60)
+        e = _hhmm_to_min(cfg.get("econ_end", "18:00"), 18 * 60)
+        if s <= e:
+            return s <= cur < e
+        return cur >= s or cur < e  # 跨午夜时段（如 22:00-06:00）
+    except Exception:
+        return False

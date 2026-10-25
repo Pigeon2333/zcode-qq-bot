@@ -37,6 +37,8 @@ import urllib.parse
 import uuid
 from collections import defaultdict, deque
 
+from qq_common import econ_active
+
 DATA_DIR = os.path.join(os.path.expanduser("~"), ".zcode-qq-bot")
 DATA_ROOT = os.path.realpath(DATA_DIR)
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
@@ -112,6 +114,11 @@ def load_reply_config_file():
         cfg["chat_min_interval_sec"] = max(0, min(sec, 3600))
     except (TypeError, ValueError):
         pass
+    # 高峰降耗字段原样透传（判定在 qq_common.econ_active）
+    for k in ("econ_enabled", "econ_start", "econ_end",
+              "econ_workdays_only", "econ_mode_override"):
+        if k in data:
+            cfg[k] = data[k]
     return cfg
 
 
@@ -730,6 +737,9 @@ class Daemon:
         if info["has_reply"]:
             return False, "reply_other"
         mode = cfg["reply_mode"]
+        # 高峰降耗生效时：关键词/闲聊主动插话全部压制为标准模式（@/回复不受影响）
+        if mode in ("keyword", "chat") and econ_active(self._reply_config()):
+            mode = "standard"
         text = info["text"]
         if mode in ("keyword", "chat") and text:
             for w in cfg["keywords"]:

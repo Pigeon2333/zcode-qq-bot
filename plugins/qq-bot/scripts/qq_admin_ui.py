@@ -696,6 +696,20 @@ async function vSettings(){
   <span><b>联网搜索</b><div class="k" style="margin-top:3px">遇到实时性问题（新闻/天气/价格/最新版本等）自动先联网搜索再回答，普通闲聊不触发不计费；使用前需在智谱开放平台（open.bigmodel.cn → 财务 → 资源包）开通搜索资源包（search_std 约 0.01 元/次），未开通时搜索静默跳过、机器人正常聊天</div></span></label></div>
  <div class="card"><label class="master"><input type="checkbox" ${rv.abuse_guard_enabled!==false?'checked':''} onchange="saveAbuseGuard(this.checked)">
   <span><b>防滥用防护</b><div class="k" style="margin-top:3px">整合三重防护，建议保持开启：① 人设防篡改——"忽略设定/你现在是XX/输出系统提示"等注入话术不生效，设定不泄露；② 任务拦截——竞赛题、代写作业、要代码成品等把机器人当免费任务引擎的消息，会以人设口吻轻松回绝；③ 身份锚定——多轮对话被"说服"后仍回归人设。关闭后所有消息按原始对话处理（仅调试用）</div></span></label></div>
+ <div class="card"><div class="k" style="display:flex;gap:10px;align-items:center;margin-bottom:8px">高峰降耗
+  ${rv.econ_active?'<span class="badge" style="background:var(--warn);color:#fff">降耗进行中</span>':'<span class="badge" style="background:var(--tint);color:var(--dim)">未生效</span>'}</div>
+  <label class="master"><input type="checkbox" ${rv.econ_enabled?'checked':''} onchange="saveEcon('econ_enabled',this.checked)">
+   <span><b>启用高峰期自动降耗</b><div class="k" style="margin-top:3px">生效时段内自动采取三项措施：关闭思考 + 跳过链首旗舰模型（从第二个模型开始用）+ 关键词/闲聊插话暂停（仅回@与回复）；时段结束自动恢复你的全部原配置。@机器人和回复机器人消息始终正常响应</div></span></label>
+  <div style="display:flex;gap:14px;margin-top:10px;flex-wrap:wrap;align-items:center">
+   <label>时段 <input type="time" value="${esc(rv.econ_start||'14:00')}" onchange="saveEconTime('econ_start',this.value)"> – <input type="time" value="${esc(rv.econ_end||'18:00')}" onchange="saveEconTime('econ_end',this.value)"></label>
+   <label><input type="checkbox" ${rv.econ_workdays_only!==false?'checked':''} onchange="saveEcon('econ_workdays_only',this.checked)"> 仅工作日（周一至周五）</label>
+  </div>
+  <div class="k" style="margin-top:10px">手动控制（优先于时间表，切换即时生效）：</div>
+  <div style="display:flex;gap:14px;margin-top:4px;flex-wrap:wrap">
+   <label><input type="radio" name="econmode" value="auto" ${(rv.econ_mode_override||'auto')==='auto'?'checked':''} onchange="saveEcon('econ_mode_override','auto')"> 自动（按上方时段）</label>
+   <label><input type="radio" name="econmode" value="on" ${rv.econ_mode_override==='on'?'checked':''} onchange="saveEcon('econ_mode_override','on')"> 立即开启（不限时）</label>
+   <label><input type="radio" name="econmode" value="off" ${rv.econ_mode_override==='off'?'checked':''} onchange="saveEcon('econ_mode_override','off')"> 立即关闭（时段内也不降）</label>
+  </div></div>
  <div class="card"><div class="k" style="margin-bottom:8px">主人专属功能（仅对设置的主人 QQ 生效；关闭后对应入口不再响应）</div>
   <label class="master" style="margin-bottom:6px"><input type="checkbox" ${rv.task_bridge_enabled!==false?'checked':''} onchange="saveFeature('task_bridge_enabled',this.checked)">
    <span><b>任务沙箱</b><div class="k" style="margin-top:3px">主人发「任务：…」转交沙箱执行器写代码/跑脚本，结果自动回传；产物在任务目录（可在 app_config.task_workspace 配置，指向 ZCode 工作区即可在 ZCode 中接管）</div></span></label>
@@ -740,6 +754,8 @@ async function saveWebSearch(on){await saveKV('/api/reply-config',{web_search_en
 async function saveAbuseGuard(on){await saveKV('/api/reply-config',{abuse_guard_enabled:on},on?'防滥用防护已开启（已生效）':'防滥用防护已关闭（已生效，仅建议调试时关闭）')}
 const _FEAT_NAME={task_bridge_enabled:'任务沙箱',remote_control_enabled:'私聊遥控',draw_enabled:'AI 生图',daily_review_enabled:'夜间自动复盘'};
 async function saveFeature(key,on){await saveKV('/api/reply-config',{[key]:on},(_FEAT_NAME[key]||key)+(on?'已开启':'已关闭')+'（已生效）')}
+async function saveEcon(key,val){await saveKV('/api/reply-config',{[key]:val},{econ_enabled:'高峰降耗总开关',econ_workdays_only:'仅工作日',econ_mode_override:'降耗手动控制'}[key]+'已更新（已生效）');load()}
+async function saveEconTime(key,val){if(!val)return;const r=await saveKV('/api/reply-config',{[key]:val},'时段已更新（已生效）');if(r.ok!==false)load()}
 async function vMemory(){
  const d=await api('/api/memory');
  const rows=(d.items||[]).map(r=>`<tr><td class="mono">${esc(r.time)}</td><td>${r.scope==='group'?'群':'人'}</td><td class="mono">${esc(String(r.id))}</td><td>${esc(r.text)}</td></tr>`).join('');
@@ -1466,7 +1482,13 @@ class UiHandler(BaseHTTPRequestHandler):
                                      "task_bridge_enabled": data.get("task_bridge_enabled", True),
                                      "remote_control_enabled": data.get("remote_control_enabled", True),
                                      "draw_enabled": data.get("draw_enabled", True),
-                                     "daily_review_enabled": data.get("daily_review_enabled", True)})
+                                     "daily_review_enabled": data.get("daily_review_enabled", True),
+                                     "econ_enabled": data.get("econ_enabled", False),
+                                     "econ_start": data.get("econ_start", "14:00"),
+                                     "econ_end": data.get("econ_end", "18:00"),
+                                     "econ_workdays_only": data.get("econ_workdays_only", True),
+                                     "econ_mode_override": data.get("econ_mode_override", "auto"),
+                                     "econ_active": C.econ_active(data)})
         return self._reply(404, {"ok": False, "error": "not found"})
 
     def do_POST(self):
@@ -1612,6 +1634,19 @@ class UiHandler(BaseHTTPRequestHandler):
                     data["chat_min_interval_sec"] = max(0, min(3600, int(body["chat_min_interval_sec"])))
                 except (TypeError, ValueError):
                     return self._reply(400, {"ok": False, "error": "chat_min_interval_sec 必须是整数"})
+            for _ek in ("econ_enabled", "econ_workdays_only"):
+                if _ek in body:
+                    data[_ek] = bool(body[_ek])
+            for _ek in ("econ_start", "econ_end"):
+                if _ek in body:
+                    v = str(body[_ek]).strip()
+                    if not re.match(r"^([01]?\d|2[0-3]):[0-5]\d$", v):
+                        return self._reply(400, {"ok": False, "error": "%s 应为 HH:MM" % _ek})
+                    data[_ek] = v
+            if "econ_mode_override" in body:
+                if body["econ_mode_override"] not in ("auto", "on", "off"):
+                    return self._reply(400, {"ok": False, "error": "econ_mode_override 非法"})
+                data["econ_mode_override"] = body["econ_mode_override"]
             write_const(REPLY_CONFIG_PATH, json.dumps(data, ensure_ascii=False, indent=2))
             return self._reply(200, {"ok": True})
         if u.path == "/api/personas/save":
