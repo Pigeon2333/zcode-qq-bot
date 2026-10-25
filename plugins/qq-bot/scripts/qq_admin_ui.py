@@ -541,10 +541,11 @@ async function del(i){const c=getChain();const m=c[i];c.splice(i,1);
  postChainReorder(c)}
 function addm(){const v=$('#newm').value.trim();if(!v)return;const c=getChain();c.push(v);postChainReorder(c)}
 async function vGroups(){
- const [g,c,gm]=await Promise.all([
+ const [g,c,gm,rv]=await Promise.all([
   api('/api/groups').catch(()=>({})),
   api('/api/reply-config').catch(()=>({})),
   api('/api/group-modes').catch(()=>({modes:{}})),
+  api('/api/reply-config').catch(()=>({})),
  ]);
  _gmModes=gm.modes||{};_gmGlobal=c;
  const on=g.enabled!==false, allOn=!!g.allow_all, m=c.reply_mode||'standard';
@@ -613,7 +614,10 @@ async function vGroups(){
  </div>`;
 }
 async function vPrivate(){
- const c=await api('/api/private-config');
+ const [c,rv]=await Promise.all([
+  api('/api/private-config').catch(()=>({})),
+  api('/api/reply-config').catch(()=>({})),
+ ]);
  const on=c.enabled, all=c.allow_all;
  const rows=(c.qq_whitelist||[]).map((x,i)=>`<div class="row"><span class="no">${i+1}.</span>
   <input value="${esc(x)}" data-i="${i}" style="flex:1" placeholder="QQ号" onchange="savePrivate()">
