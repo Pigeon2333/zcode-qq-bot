@@ -48,18 +48,107 @@ def _confirm_exit_all():
         root.withdraw()
         root.attributes("-topmost", True)
         ok = mb.askyesnocancel(
-            "ZCode QQ机器人",
-            "确定要关闭应用并停止机器人吗？\n\n"
-            "「是」= 停止 NapCat/daemon/agent 并退出\n"
-            "「否」= 仅退出应用，机器人保持运行\n"
-            "「取消」= 什么都不做，回到应用")
+            APP_NAME,
+            "关闭本应用时是否连机器人一起停止？\n\n"
+            "是：停止机器人并退出（下次启动需重新登录）\n"
+            "否：仅退出本应用，机器人保持运行\n"
+            "取消：不关闭")
         root.destroy()
         return ok
     except Exception:
         return None
 
 
+# ---------------- 单实例锁：命名 Mutex + 唤醒事件（防止托盘堆叠） ----------------
+_MUTEX_NAME = "ZCodeQQBot::single-instance"
+_WAKE_NAME = "ZCodeQQBot::wake"
+_ERROR_ALREADY_EXISTS = 183
+_mutex_handle = None
+
+if sys.platform == "win32":
+    import ctypes
+    from ctypes import wintypes
+    _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _k32.CreateMutexW.restype = wintypes.HANDLE
+    _k32.CreateMutexW.argtypes = [wintypes.LPCVOID, wintypes.BOOL, wintypes.LPCWSTR]
+    _k32.CreateEventW.restype = wintypes.HANDLE
+    _k32.CreateEventW.argtypes = [wintypes.LPCVOID, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
+    _k32.OpenEventW.restype = wintypes.HANDLE
+    _k32.OpenEventW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+    _k32.SetEvent.argtypes = [wintypes.HANDLE]
+    _k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    _k32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+
+def _acquire_single_instance():
+    """获取全局唯一锁；已有实例在运行返回 False（锁机制异常时放行，避免误杀）。"""
+    global _mutex_handle
+    if sys.platform != "win32":
+        return True
+    try:
+        h = _k32.CreateMutexW(None, False, _MUTEX_NAME)
+        if ctypes.get_last_error() == _ERROR_ALREADY_EXISTS:
+            if h:
+                _k32.CloseHandle(h)
+            return False
+        _mutex_handle = h  # 保活到进程结束
+        return True
+    except Exception:
+        return True
+
+
+def _signal_existing():
+    """唤醒已运行实例的窗口（旧版本实例无唤醒事件时返回 False）。"""
+    if sys.platform != "win32":
+        return False
+    try:
+        h = _k32.OpenEventW(0x0002, False, _WAKE_NAME)  # EVENT_MODIFY_STATE
+        if not h:
+            return False
+        _k32.SetEvent(h)
+        _k32.CloseHandle(h)
+        return True
+    except Exception:
+        return False
+
+
+def _wake_listener(show_fn):
+    """常驻线程：二次启动的实例触发唤醒事件后，把窗口带回前台。"""
+    if sys.platform != "win32":
+        return
+    try:
+        h = _k32.CreateEventW(None, False, False, _WAKE_NAME)
+        if not h:
+            return
+        while True:
+            if _k32.WaitForSingleObject(h, 1000) == 0:  # WAIT_OBJECT_0
+                try:
+                    show_fn()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
+def _notify_already_running(woke):
+    try:
+        import tkinter.messagebox as mb
+        from tkinter import Tk
+        root = Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        mb.showinfo(APP_NAME, "应用已在运行，已为你唤出原窗口。" if woke else
+                    "应用已在运行：请从系统托盘找回窗口（本次重复启动已阻止）。")
+        root.destroy()
+    except Exception:
+        pass
+
+
 def main():
+    # 单实例锁：已有实例运行时唤出原窗口并退出，杜绝托盘图标堆叠
+    if not _acquire_single_instance():
+        _notify_already_running(_signal_existing())
+        return
     if sys.stdout and hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     os.makedirs(os.path.join(C.DATA_DIR, "logs"), exist_ok=True)
@@ -104,6 +193,16 @@ def main():
             was_up = up
 
     threading.Thread(target=_ui_watchdog, daemon=True).start()
+
+    def _show_all_windows():
+        for w in webview.windows:
+            try:
+                w.show()
+            except Exception:
+                pass
+
+    threading.Thread(target=_wake_listener, args=(_show_all_windows,),
+                     daemon=True).start()
 
     # 关闭行为处理：pywebview 6 用 closing 事件拦截
     close_state = {"action": None}
