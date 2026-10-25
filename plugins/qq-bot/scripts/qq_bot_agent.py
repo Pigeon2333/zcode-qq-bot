@@ -2027,17 +2027,21 @@ def _backup_data():
     """每日数据快照：关键数据文件复制到 backups/<日期>/，保留最近 30 份。
     人设/风格/自进化/记忆/分群与回复配置都可从此恢复（密钥类文件不备份）。"""
     import shutil
-    names = ["persona_collection.json", "style.md", "evolved.json",
-             "memory_stream.jsonl", "group_reply_modes.json",
-             "reply_config.json", "private_config.json",
-             "group_whitelist.json", "model_chain.json", "app_config.json"]
+    names = ["style.md", "evolved.json", "memory_stream.jsonl",
+             "group_reply_modes.json", "reply_config.json",
+             "private_config.json", "group_whitelist.json",
+             "model_chain.json", "app_config.json"]
+    # 人设合集真实路径在 personas/ 子目录
+    subdirs = {"personas/collection.json"}
     bdir = os.path.join(DATA_DIR, "backups", time.strftime("%Y%m%d"))
     try:
         os.makedirs(bdir, exist_ok=True)
-        for n in names:
+        for n in names + list(subdirs):
             src = os.path.join(DATA_DIR, n)
             if os.path.isfile(src):
-                shutil.copy2(src, os.path.join(bdir, n))
+                dstf = os.path.join(bdir, os.path.basename(n))
+                os.makedirs(os.path.dirname(dstf), exist_ok=True)
+                shutil.copy2(src, dstf)
         root = os.path.join(DATA_DIR, "backups")
         days = sorted(x for x in os.listdir(root) if x.isdigit())
         for old in days[:-30]:
