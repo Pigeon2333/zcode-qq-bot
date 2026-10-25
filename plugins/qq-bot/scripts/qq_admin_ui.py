@@ -39,6 +39,7 @@ REPLY_CONFIG_PATH = os.path.join(DATA_DIR, "reply_config.json")
 PERSONA_COLLECTION_PATH = os.path.join(DATA_DIR, "personas", "collection.json")
 STYLE_PATH = os.path.join(DATA_DIR, "styles", "current_style.md")
 MEMORY_STREAM_PATH = os.path.join(DATA_DIR, "memory_stream.jsonl")
+KEYS_PATH = os.path.join(DATA_DIR, "api_keys.json")
 STICKERS_PATH = os.path.join(DATA_DIR, "stickers.json")
 EVOLVED_PATH = os.path.join(DATA_DIR, "styles", "evolved.json")
 STICKERS_ROOT = pathlib.Path(os.path.join(DATA_DIR, "stickers"))
@@ -409,22 +410,33 @@ async function refreshRunlog(){
 }
 function setRunlogSrc(v){_runlogSrc=v;vRunlog()}
 async function vModels(){
- const [c,a,u,tl,rv]=await Promise.all([
+ const [c,a,u,tl,rv,kl]=await Promise.all([
   api('/api/config').catch(()=>({models:[],thinking:{}})),
   api('/api/agent-status').catch(()=>({ok:false})),
   api('/api/usage').catch(()=>({})),
   api('/api/token-limit').catch(()=>({})),
   api('/api/reply-config').catch(()=>({})),
+  api('/api/keys').catch(()=>({keys:[]})),
  ]);
+ const keysL=kl.keys||[];
  const th=c.thinking||{};
  const dft=th._default||{enabled:true,level:'high'};
  const thKey=(m)=>{const e=th[m];if(!e)return '';return e.enabled?e.level:'off'};
  const thOpt=(v)=>{const map={'':'跟随默认','off':'关闭思考','high':'思考·高','low':'思考·低'};
   return Object.keys(map).map(k=>'<option value="'+k+'"'+(v===k?' selected':'')+'>'+map[k]+'</option>').join('')};
- const rows=(c.models||[]).map((m,i)=>{const v=thKey(m);return `<div class="row ${a.cooldowns&&a.cooldowns[m]>0?'cool':''}"><span class="no">${i+1}.</span>
-  <input value="${esc(m)}" data-i="${i}" style="flex:1" onchange="saveModels()">
+ const entries=(c.models||[]).map(x=>typeof x==='string'?{model:x,key:''}:{model:String(x.model||''),key:String(x.key||'')});
+ const ckOf=e=>(e.key||'main')+':'+e.model;
+ const keySel=(e,i)=>{
+  const opts=['<option value=""'+(!e.key?' selected':'')+'>主 Key</option>']
+   +keysL.map(k=>`<option value="${esc(k.id)}"${e.key===k.id?' selected':''}>${esc(k.label||k.id)}</option>`).join('')
+   +(e.key&&!keysL.some(k=>k.id===e.key)?`<option value="${esc(e.key)}" selected>（Key 已删除）</option>`:'');
+  return `<select class="mini" data-k="${i}" style="max-width:110px" onchange="saveModels()" title="此模型使用的 API Key">${opts.join('')}</select>`};
+ const rows=entries.map((e,i)=>{const v=thKey(e.model);const cd=a.cooldowns&&a.cooldowns[ckOf(e)]>0;
+  return `<div class="row ${cd?'cool':''}"><span class="no">${i+1}.</span>
+  <input value="${esc(e.model)}" data-i="${i}" style="flex:1;min-width:120px" onchange="saveModels()">
+  ${keySel(e,i)}
   <select class="mini" data-th="${i}" onchange="saveThinking()">${thOpt(v)}</select>
-  <span class="mono">${a.cooldowns&&a.cooldowns[m]>0?('冷却'+a.cooldowns[m]+'s'):(a.current_model===m?'当前':'')}</span>
+  <span class="mono">${cd?('冷却'+a.cooldowns[ckOf(e)]+'s'):(a.current_model===e.model?'当前':'')}</span>
   <button class="act ghost" onclick="mv(${i},-1)">↑</button><button class="act ghost" onclick="mv(${i},1)">↓</button>
   <button class="act ghost" onclick="del(${i})">✕</button></div>`}).join('');
  const stat=(label,v,calls)=>`<div class="card" style="flex:1;min-width:150px"><div class="k">${label}</div>
@@ -474,18 +486,30 @@ async function vModels(){
    <input id="tlmax" type="number" min="1000" step="1000" value="${rv.token_limit_max||100000}" style="width:110px" onchange="saveLimitMax()"> tokens
    <span class="k" id="tlimit-usage"></span>
   </div>
-  <div class="k" style="margin-top:8px">参考（本机实测）：普通群聊回复约 0.15万–0.3万 tokens/条（含上下文与人设）；长文/开思考约 0.5万–1万/条；看图另加约 0.1万–0.2万。例如每小时 30 万 ≈ 100–200 条普通回复。窗口 1–24 小时可调。</div></div>`;
+  <div class="k" style="margin-top:8px">参考（本机实测）：普通群聊回复约 0.15万–0.3万 tokens/条（含上下文与人设）；长文/开思考约 0.5万–1万/条；看图另加约 0.1万–0.2万。例如每小时 30 万 ≈ 100–200 条普通回复。窗口 1–24 小时可调。</div></div>
+ <div class="card"><div class="k">备用 API Key（模型链每行可下拉选用，实现跨账号降级——如企业 Key 额度到顶自动切个人 Key 的免费模型；主 Key 在「设置」页维护）</div>
+  <div style="margin-top:10px">${keysL.map(k=>`<div class="row"><input value="${esc(k.label||'')}" data-kid="${esc(k.id)}" style="flex:1" onchange="renameKey('${esc(k.id)}',this)">
+   <span class="mono" style="flex:none;width:150px">${esc(k.mask||'')}</span>
+   <button class="act ghost danger" onclick="delKey('${esc(k.id)}')">删除</button></div>`).join('')||'<i class="k">暂无备用 Key</i>'}</div>
+  <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+   <input id="nklabel" placeholder="备注，如：个人" style="width:130px">
+   <input id="nkval" type="password" placeholder="粘贴 API Key" style="flex:1;min-width:220px">
+   <button class="act" onclick="addKey()">添加</button></div>
+  <div class="k" style="margin-top:6px">Key 只保存在本机数据目录（不进源码），界面仅显示掩码；删除某个 Key 前请先在模型链中移除引用它的条目（引用已删 Key 的条目会被自动跳过）。</div></div>`;
  _usageCache=u;renderTrend();
  if(tl&&tl.ok!==false)renderLimitUsage(tl);
 }
-function getChain(){return [...document.querySelectorAll('.chain input')].map(x=>x.value.trim()).filter(Boolean)}
+function getEntries(){return [...document.querySelectorAll('.chain input')].map(inp=>{
+ const row=inp.closest('.row');const sel=row?row.querySelector('select[data-k]'):null;
+ return {model:inp.value.trim(),key:sel?sel.value:''}}).filter(e=>e.model)}
+function getChain(){return getEntries().map(e=>e.key?{model:e.model,key:e.key}:e.model)}
 async function saveModels(){await saveKV('/api/config',{models:getChain()},'模型链已保存（agent 已热加载）')}
 async function saveThinking(){
  const th={};
  const dv=$('#thdef')?$('#thdef').value:'high';
  th._default=dv==='off'?{enabled:false,level:'high'}:{enabled:true,level:dv};
  if($('#thauto'))th._auto=$('#thauto').checked;
- const names=getChain();
+ const names=getEntries().map(e=>e.model);
  document.querySelectorAll('.chain select[data-th]').forEach(sel=>{
   const i=+sel.dataset.th;const v=sel.value;const m=names[i];
   if(m&&v!=='')th[m]=v==='off'?{enabled:false,level:'high'}:{enabled:true,level:v};
@@ -817,6 +841,18 @@ function renderLimitUsage(u){
  if(b)b.outerHTML=u.hold?'<span id="tlimit-badge" class="badge" style="background:var(--err);color:#fff">已达上限 · 已停响应</span>'
   :'<span id="tlimit-badge" class="badge" style="background:var(--tint);color:var(--dim)">'+(u.enabled?'限额中':'未启用')+'</span>';
 }
+async function addKey(){
+ const label=$('#nklabel').value.trim(),key=$('#nkval').value.trim();
+ if(!key){toast('请先粘贴 API Key',false);return}
+ const r=await saveKV('/api/keys/add',{label,key},'备用 Key 已添加（模型链行下拉即可选用）');
+ if(r.ok!==false){load()}}
+async function delKey(id){
+ if(!await dlgConfirm({title:'删除备用 Key',body:'删除该 Key？模型链中引用它的条目将被自动跳过（可随时重新添加并绑定）。',okText:'删除',danger:true}))return;
+ const r=await saveKV('/api/keys/del',{id},'备用 Key 已删除');
+ if(r.ok!==false)load()}
+async function renameKey(id,el){
+ const r=await saveKV('/api/keys/rename',{id,label:el.value.trim()},'备注已更新');
+ if(r.ok===false)load()}
 async function vMemory(){
  const d=await api('/api/memory');
  const rows=(d.items||[]).map(r=>`<tr><td class="mono">${esc(r.time)}</td><td>${r.scope==='group'?'群':'人'}</td><td class="mono">${esc(String(r.id))}</td><td>${esc(r.text)}</td>
@@ -1389,6 +1425,15 @@ class UiHandler(BaseHTTPRequestHandler):
             modes = {str(k): v for k, v in data.items() if isinstance(v, dict)} \
                 if isinstance(data, dict) else {}
             return self._reply(200, {"ok": True, "modes": modes})
+        if u.path == "/api/keys":
+            data = load_json_const(KEYS_PATH, {})
+            out = []
+            for e in (data.get("keys") or []):
+                if isinstance(e, dict) and e.get("id"):
+                    k = str(e.get("key", ""))
+                    out.append({"id": e["id"], "label": str(e.get("label", "")),
+                                "mask": (k[:6] + "…" + k[-4:]) if len(k) > 14 else "…"})
+            return self._reply(200, {"ok": True, "keys": out})
         if u.path == "/api/runlog":
             src = q.get("src", "all")
             if src not in ("all", "daemon", "agent", "boot"):
@@ -1639,11 +1684,23 @@ class UiHandler(BaseHTTPRequestHandler):
             cfg = load_json_const(MODEL_CHAIN_PATH, {})
             if "models" in body:
                 models = body.get("models")
+                def _entry_ok(x):
+                    if isinstance(x, str):
+                        return bool(x.strip())
+                    return isinstance(x, dict) and bool(str(x.get("model", "")).strip())
                 if not isinstance(models, list) or not models or \
-                        not all(isinstance(m, str) and m.strip() for m in models[:8]):
-                    return self._reply(400, {"ok": False, "error": "models 必须是非空字符串数组(<=8)"})
+                        not all(_entry_ok(m) for m in models[:8]):
+                    return self._reply(400, {"ok": False, "error": "models 必须是非空数组(<=8)：模型名或{model,key}"})
                 # 智谱模型名大小写敏感，统一转小写防止手滑（大写名会被平台报套餐失效）
-                cfg["models"] = [m.strip().lower() for m in models]
+                norm = []
+                for m in models:
+                    if isinstance(m, dict):
+                        kid = str(m.get("key", "")).strip()[:40]
+                        norm.append({"model": str(m["model"]).strip().lower(),
+                                     **({"key": kid} if kid else {})})
+                    else:
+                        norm.append(str(m).strip().lower())
+                cfg["models"] = norm
             if "vision_model" in body:
                 vm = str(body.get("vision_model", "")).strip()
                 if len(vm) > 60:
@@ -2130,6 +2187,34 @@ class UiHandler(BaseHTTPRequestHandler):
                 write_const(STYLE_PATH, text)
             else:
                 return self._reply(400, {"ok": False, "error": "kind 必须是 persona|style"})
+            return self._reply(200, {"ok": True})
+        if u.path in ("/api/keys/add", "/api/keys/del", "/api/keys/rename"):
+            data = load_json_const(KEYS_PATH, {})
+            keys = data.get("keys") if isinstance(data.get("keys"), list) else []
+            if u.path == "/api/keys/add":
+                key = str(body.get("key", "")).strip()
+                label = str(body.get("label", "")).strip()[:20]
+                if len(key) < 20 or len(key) > 120 or any(c.isspace() for c in key):
+                    return self._reply(400, {"ok": False, "error": "Key 格式非法（20-120字符，无空白）"})
+                if len(keys) >= 10:
+                    return self._reply(400, {"ok": False, "error": "备用 Key 最多 10 个"})
+                nid = "k%d" % (max([int(e["id"][1:]) for e in keys
+                                    if isinstance(e, dict) and str(e.get("id", "")).startswith("k")
+                                    and str(e["id"])[1:].isdigit()] or [0]) + 1)
+                keys.append({"id": nid, "label": label or ("Key " + nid[1:]), "key": key})
+            else:
+                kid = str(body.get("id", "")).strip()
+                hit = [e for e in keys if isinstance(e, dict) and e.get("id") == kid]
+                if not hit:
+                    return self._reply(400, {"ok": False, "error": "Key 不存在"})
+                if u.path == "/api/keys/del":
+                    keys.remove(hit[0])
+                else:
+                    nl = str(body.get("label", "")).strip()[:20]
+                    if not nl:
+                        return self._reply(400, {"ok": False, "error": "备注不能为空"})
+                    hit[0]["label"] = nl
+            write_const(KEYS_PATH, json.dumps({"keys": keys}, ensure_ascii=False, indent=2))
             return self._reply(200, {"ok": True})
         if u.path == "/api/memory/clear":
             write_const(MEMORY_STREAM_PATH, "")

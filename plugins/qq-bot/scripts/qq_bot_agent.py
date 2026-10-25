@@ -60,9 +60,10 @@ if not _usage_log.handlers:
     _usage_log.propagate = False
 
 
-def log_usage(model, usage):
-    """记录一次成功调用的 token 用量（常量路径 JSONL 追加）。"""
+def log_usage(model, usage, kid="main"):
+    """记录一次成功调用的 token 用量（常量路径 JSONL 追加；key=所用 Key id）。"""
     rec = {"ts": int(time.time()), "model": str(model),
+           "key": str(kid or "main"),
            "prompt_tokens": int(usage.get("prompt_tokens", 0) or 0),
            "completion_tokens": int(usage.get("completion_tokens", 0) or 0),
            "total_tokens": int(usage.get("total_tokens", 0) or 0)}
@@ -110,36 +111,35 @@ class Runtime:
         self.processed_since_evolve = 0
         self.current_model = None
 
+    @staticmethod
+    def _entry_model(e):
+        return str(e.get("model", "")).strip() if isinstance(e, dict) else str(e).strip()
+
     def reload_chain(self):
         cfg = load_json_const(MODEL_CHAIN_PATH, {})
         with self.lock:
-            models = cfg.get("models")
-            if isinstance(models, list) and models and all(isinstance(m, str) for m in models):
-                self.chain = models[:6]
+            entries = cfg.get("models")
+            if isinstance(entries, list) and entries and all(
+                    (isinstance(x, str) and x.strip())
+                    or (isinstance(x, dict) and str(x.get("model", "")).strip())
+                    for x in entries):
+                self.chain = entries[:8]
             self.paused = bool(cfg.get("paused", False))
             # 冷启动默认展示链首为当前模型（处理首条消息后更新为实际值）
-            if self.current_model is None or self.current_model not in self.chain:
-                self.current_model = self.chain[0] if self.chain else None
+            names = [self._entry_model(e) for e in self.chain]
+            if self.current_model is None or self.current_model not in names:
+                self.current_model = names[0] if names else None
 
     def snapshot(self):
         with self.lock:
             return {
-                "chain": list(self.chain),
+                "chain": [self._entry_model(e) for e in self.chain],
                 "paused": self.paused,
                 "cooldowns": {m: max(0, int(t - time.time())) for m, t in self.cooldowns.items()},
                 "processed": self.processed,
                 "errors": self.errors,
                 "current_model": self.current_model,
             }
-
-    def take_model(self, skip=0):
-        """取链中下一个可用模型；skip 跳过链首 N 个（高峰降耗时跳过旗舰）。"""
-        with self.lock:
-            now = time.time()
-            for m in self.chain[skip:]:
-                if self.cooldowns.get(m, 0) <= now:
-                    return m
-            return None
 
     def cooldown(self, model, seconds=None):
         with self.lock:
@@ -263,12 +263,62 @@ def glm_key():
     return key or read_const(API_KEY_PATH)
 
 
-def glm_chat(model, messages, timeout=40, extra_body=None):
+API_KEYS_PATH = os.path.join(DATA_DIR, "api_keys.json")
+
+
+def load_api_keys():
+    """备用 key 池（api_keys.json，管理 UI 维护）：{id: {"label","key"}}。"""
+    data = load_json_const(API_KEYS_PATH, {})
+    keys = data.get("keys") if isinstance(data, dict) else None
+    if not isinstance(keys, list):
+        return {}
+    out = {}
+    for e in keys:
+        if isinstance(e, dict) and str(e.get("id", "")).strip() \
+                and str(e.get("key", "")).strip():
+            out[str(e["id"]).strip()] = {
+                "label": str(e.get("label", "")).strip()[:20],
+                "key": str(e["key"]).strip()}
+    return out
+
+
+def _chain_candidates():
+    """模型链 → 按序候选 [(kid, key_value, model)]。
+    条目为 "model"（主 Key）或 {"model":..., "key": 备用id}；备用 key 已删除
+    或缺失时跳过该条目。kid 用于冷却键（'main' / 备用 id）。"""
+    cfg = load_json_const(MODEL_CHAIN_PATH, {})
+    models = cfg.get("models")
+    if not isinstance(models, list) or not models:
+        models = list(FALLBACK_CHAIN)
+    keys = load_api_keys()
+    cands = []
+    for e in models[:8]:
+        if isinstance(e, dict):
+            model = str(e.get("model", "")).strip()
+            kid = str(e.get("key", "")).strip()
+        else:
+            model, kid = str(e).strip(), ""
+        if not model:
+            continue
+        if kid:
+            ent = keys.get(kid)
+            if not ent:
+                continue
+            cands.append((kid, ent["key"], model))
+        else:
+            kv = glm_key()
+            if kv:
+                cands.append(("main", kv, model))
+    return cands
+
+
+def glm_chat(model, messages, timeout=40, extra_body=None, key=None):
     """调用智谱 OpenAI 兼容接口（常量主机 + TLS），返回 (status, data)。
 
     extra_body: 附加参数（thinking/max_tokens 覆盖等）。
+    key: 指定 API Key（多 Key 降级用）；缺省用主 Key。
     """
-    key = glm_key()
+    key = key or glm_key()
     if not key:
         raise RuntimeError("缺少 API key：请录入 ~/.zcode-qq-bot/zhipu_api_key")
     body = json.dumps({
@@ -292,41 +342,44 @@ def glm_chat(model, messages, timeout=40, extra_body=None):
 
 
 def call_glm_with_fallback(messages, text_ctx=""):
-    """按模型链尝试：失败模型冷却（按错误分级），自动切换下一个。
-    高峰降耗生效时跳过链首旗舰，从第二个模型开始用。"""
+    """按模型链候选序尝试（每条目可绑定不同 API Key，可跨 Key 降级）；
+    失败按错误分级冷却，429/失效自动切下一个。"""
     tried = []
-    skip = 1 if (econ_on() and len(RT.snapshot()["chain"]) > 1) else 0
-    while True:
-        model = RT.take_model(skip)
-        if model is None:
-            raise RuntimeError("模型链全部不可用（冷却中）: %s" % ", ".join(tried) or "链为空")
+    cands = _chain_candidates()
+    if econ_on() and len(cands) > 1:
+        cands = cands[1:]
+    now = time.time()
+    for kid, kv, model in cands:
+        ck = "%s:%s" % (kid, model)
+        if RT.cooldowns.get(ck, 0) > now:
+            tried.append("%s@%s(冷却)" % (model, kid))
+            continue
         try:
             th, mt = resolve_thinking(model, text_ctx)
-            status, data = glm_chat(model, messages,
+            status, data = glm_chat(model, messages, key=kv,
                                     extra_body={**th, "max_tokens": mt})
         except (OSError, ValueError) as e:
-            RT.cooldown(model)
-            tried.append(model)
-            out("AGENT_MODEL_FAIL model=%s net=%r" % (model, e))
+            RT.cooldown(ck)
+            tried.append("%s@%s" % (model, kid))
+            out("AGENT_MODEL_FAIL model=%s key=%s net=%r" % (model, kid, e))
             continue
         if status == 200:
             try:
                 text = data["choices"][0]["message"]["content"] or ""
             except (KeyError, IndexError, TypeError):
-                RT.cooldown(model)
-                tried.append(model)
+                RT.cooldown(ck)
+                tried.append("%s@%s" % (model, kid))
                 continue
             RT.set_current(model)
-            log_usage(model, data.get("usage") or {})
+            log_usage(model, data.get("usage") or {}, kid)
             return model, text
         detail = str(data.get("error", {}).get("message", ""))[:80]
         cool = _cooldown_sec(detail)
-        out("AGENT_MODEL_FAIL model=%s http=%d cool=%ds %s" % (model, status, cool, detail))
-        RT.cooldown(model, cool)
-        tried.append(model)
-        if status == 400 and "模型不存在" in detail:
-            # 链里配了不存在的模型名：只冷却该模型，继续尝试其余
-            continue
+        out("AGENT_MODEL_FAIL model=%s key=%s http=%d cool=%ds %s"
+            % (model, kid, status, cool, detail))
+        RT.cooldown(ck, cool)
+        tried.append("%s@%s" % (model, kid))
+    raise RuntimeError("模型链全部不可用（冷却中）: %s" % ", ".join(tried))
 
 
 def memory_snippets(scope, cid, limit=12):
@@ -1279,34 +1332,35 @@ def call_vision(messages_text, image_urls):
         log_usage(vm, data.get("usage") or {})
         return vm, text
 
-    # 留空：按模型链顺序尝试（429/失效冷却切换；纯文本模型发图 400 → 学习跳过不冷却）
+    # 留空：按候选序尝试（条目可跨 Key；429/失效冷却切换；纯文本模型 400 → 学习跳过不冷却）
     tried = []
-    chain = list(RT.snapshot()["chain"])
-    if econ_on() and len(chain) > 1:
-        chain = chain[1:]
-    for m in chain:
+    cands = _chain_candidates()
+    if econ_on() and len(cands) > 1:
+        cands = cands[1:]
+    for kid, kv, m in cands:
+        ck = "%s:%s" % (kid, m)
         if m in _NO_VISION_MODELS:
             tried.append(m + "(纯文本)")
             continue
-        now_cd = RT.snapshot()["cooldowns"].get(m, 0)
-        if now_cd > 0:
+        now_cd = RT.cooldowns.get(ck, 0)
+        if now_cd > time.time():
             tried.append(m + "(冷却)")
             continue
         try:
             th, mt = resolve_thinking(m, "")
-            status, data = glm_chat(m, vmsgs, timeout=60,
+            status, data = glm_chat(m, vmsgs, timeout=60, key=kv,
                                     extra_body={**th, "max_tokens": max(mt, 1024)})
         except (OSError, ValueError) as e:
-            RT.cooldown(m); tried.append(m)
-            out("AGENT_VISION_FAIL model=%s net=%r" % (m, e))
+            RT.cooldown(ck); tried.append(m)
+            out("AGENT_VISION_FAIL model=%s key=%s net=%r" % (m, kid, e))
             continue
         if status == 200:
             try:
                 text = data["choices"][0]["message"]["content"] or ""
             except (KeyError, IndexError, TypeError):
-                RT.cooldown(m); tried.append(m); continue
+                RT.cooldown(ck); tried.append(m); continue
             RT.set_current(m)
-            log_usage(m, data.get("usage") or {})
+            log_usage(m, data.get("usage") or {}, kid)
             return m, text
         detail = str(data.get("error", {}).get("message", ""))[:80]
         # content.type 400 = 该模型不支持图像输入：记入学习集直接跳过，不冷却
@@ -1321,7 +1375,7 @@ def call_vision(messages_text, image_urls):
             tried.append(m)
             continue
         cool = _cooldown_sec(detail)
-        out("AGENT_VISION_FAIL model=%s http=%d cool=%ds %s" % (m, status, cool, detail))
+        out("AGENT_VISION_FAIL model=%s key=%s http=%d cool=%ds %s" % (m, kid, status, cool, detail))
         RT.cooldown(m, cool); tried.append(m)
     raise RuntimeError("视觉调用：模型链全部不可用: %s" % ",".join(tried) or "链为空")
 
