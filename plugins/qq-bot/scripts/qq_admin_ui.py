@@ -151,6 +151,16 @@ button.act:disabled{opacity:.45;cursor:default}
 button.act:disabled:hover{background:var(--btn)}
 .hint-save{color:var(--dim);font-size:12px;margin:-10px 0 14px;display:flex;gap:6px;align-items:center}
 .hint-save::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--ok);flex:none}
+/* 启动闪屏（ZCode 风格品牌动画；watchdog 刷新不重播） */
+#splash{position:fixed;inset:0;background:var(--bg);z-index:300;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;transition:opacity .35s}
+#splash.off{opacity:0;pointer-events:none}
+#splash .mark{width:76px;height:76px;border-radius:17px;background:var(--btn);color:var(--btn-fg);display:flex;align-items:center;justify-content:center;font-size:36px;font-weight:700;font-family:inherit;animation:spIn .5s cubic-bezier(.2,.9,.3,1.25)}
+#splash .nm{color:var(--fg);font-size:15px;letter-spacing:.5px;animation:spFade .45s .18s both}
+#splash .bar{width:180px;height:3px;background:var(--tint);border-radius:2px;overflow:hidden;animation:spFade .45s .25s both}
+#splash .bar i{display:block;height:100%;background:var(--btn);width:0;animation:spBar .75s .2s ease-out forwards}
+@keyframes spIn{from{opacity:0;transform:scale(.55)}to{opacity:1;transform:scale(1)}}
+@keyframes spFade{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+@keyframes spBar{to{width:100%}}
 /* 自制弹窗（替代浏览器原生 confirm/prompt，双主题自适应） */
 .dlg-mask{position:fixed;inset:0;background:color-mix(in srgb,var(--fg) 22%,transparent);backdrop-filter:blur(2px);z-index:200;display:flex;align-items:center;justify-content:center;padding:24px}
 .dlg{background:var(--card);border:1px solid var(--line2);border-radius:12px;width:100%;max-width:400px;padding:20px 20px 16px;animation:dlgIn .16s ease}
@@ -194,6 +204,7 @@ select.mini,input.mini{padding:4px 8px;font-size:12.5px}
 </main>
 </div>
 <div id="toast"></div>
+<div id="splash"><div class="mark">Z/</div><div class="nm">ZCode QQ机器人</div><div class="bar"><i></i></div></div>
 <script>
 const $=s=>document.querySelector(s);
 let TAB='status';
@@ -257,6 +268,13 @@ async function load(){try{if(TAB==='status')await vStatus();else if(TAB==='runlo
 document.querySelectorAll('#nav button').forEach(b=>b.onclick=async()=>{if(!await dirtyGuard())return;document.querySelectorAll('#nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');TAB=b.dataset.t;if(TAB!=='runlog'&&_runlogTimer){clearInterval(_runlogTimer);_runlogTimer=null}skeleton();load()});
 const _urlTab=new URLSearchParams(location.search).get('tab');
 if(_urlTab&&TITLES[_urlTab]){TAB=_urlTab;document.querySelectorAll('#nav button').forEach(x=>x.classList.toggle('on',x.dataset.t===_urlTab));}
+/* 启动闪屏：每次新窗口首播，UI 自愈刷新（reload）不重播 */
+(function(){
+ const s=document.getElementById('splash');if(!s)return;
+ if(sessionStorage.getItem('splashed')){s.remove();return}
+ sessionStorage.setItem('splashed','1');
+ setTimeout(()=>{s.classList.add('off');setTimeout(()=>s.remove(),380)},980)
+})();
 const _sysDark=window.matchMedia('(prefers-color-scheme: dark)');
 const _themeIco={auto:'&#9681;',light:'&#9728;',dark:'&#9789;'};
 function applyThemePref(pref){

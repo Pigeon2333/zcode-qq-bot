@@ -261,15 +261,9 @@ def _start_tray():
                     pass
 
         def quit_app(icon=None, item=None):
-            try:
-                icon.stop()
-            except Exception:
-                pass
-            for w in webview.windows:
-                try:
-                    w.destroy()
-                except Exception:
-                    pass
+            # 菜单回调跑在 pystray 托盘消息线程里：串行 icon.stop()+destroy
+            # 要等消息循环清场才返回（体感 1-2 秒延迟）。直接硬退进程：
+            # 托盘图标随进程终止被系统回收，机器人组件是独立进程不受影响。
             os._exit(0)
 
         tray = pystray.Icon(
