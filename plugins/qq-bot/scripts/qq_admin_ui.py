@@ -467,7 +467,9 @@ function drawTrend(series){
 }
 function mv(i,d){const c=getChain();const j=i+d;if(j<0||j>=c.length)return;[c[i],c[j]]=[c[j],c[i]];postChainReorder(c)}
 async function postChainReorder(c){await api('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({models:c})});load()}
-function del(i){const c=getChain();c.splice(i,1);postChainReorder(c)}
+async function del(i){const c=getChain();const m=c[i];c.splice(i,1);
+ if(!await dlgConfirm({title:'移除模型',body:'从降级链移除「'+(m||'')+'」？（链中剩余模型仍正常工作，可随时重新添加）',okText:'移除',danger:true}))return;
+ postChainReorder(c)}
 function addm(){const v=$('#newm').value.trim();if(!v)return;const c=getChain();c.push(v);postChainReorder(c)}
 async function vGroups(){
  const [g,c,gm]=await Promise.all([
@@ -551,7 +553,9 @@ async function savePrivate(){
  const r=await api('/api/private-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
  toast(r.ok?'私聊白名单已生效（'+getPQ().length+' 个 QQ）':'保存失败: '+(r.error||''),r.ok!==false)
 }
-function delpq(i){const c=getPQ();c.splice(i,1);postPQ(c)}
+async function delpq(i){const c=getPQ();const q=c[i];c.splice(i,1);
+ if(!await dlgConfirm({title:'移除私聊白名单',body:'移除 QQ '+q+'？机器人将不再回复该账号的私信（可随时重新添加）。',okText:'移除',danger:true}))return;
+ postPQ(c)}
 async function postPQ(c){const a=await api('/api/private-config');await api('/api/private-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:a.enabled,allow_all:a.allow_all,qq_whitelist:c})});load()}
 function addpq(){const v=$('#newpq').value.trim();if(!v)return;const c=getPQ();c.push(v);postPQ(c)}
 function getGroups(){return [...document.querySelectorAll('.chain input.gin')].map(x=>x.value.trim()).filter(x=>/^\d{5,12}$/.test(x))}
@@ -566,7 +570,7 @@ async function saveGroups(fromToggle){
  toast(r.ok===false?('保存失败: '+(r.error||'')):(c.length+' 个群已生效'),r.ok!==false);
  if(fromToggle)load()}
 async function delg(i){const c=getGroups();const gid=c[i];c.splice(i,1);
- if(gid&&_gmModes[gid]&&!await dlgConfirm({title:'删除群并清除分群设置',body:'群 '+gid+' 设有分群模式覆盖，删除白名单会一并清除（重新添加后需重配）。确定删除？',okText:'删除',danger:true}))return;
+ if(!gid||!await dlgConfirm({title:'删除白名单群',body:'删除群 '+gid+'？机器人将不再响应该群消息'+(_gmModes[gid]?'\n注意：该群已配置分群模式覆盖，将一并清除（重新添加后需重配）':'')+'。',okText:'删除',danger:true}))return;
  postGroupsReorder(c);
  if(gid&&_gmModes[gid])api('/api/group-modes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:gid,override:null})})}
 async function postGroupsReorder(c){const a=await api('/api/groups');await api('/api/groups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:a.enabled!==false,allow_all:a.allow_all,groups:c})});load()}
