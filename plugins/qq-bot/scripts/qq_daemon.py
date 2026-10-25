@@ -114,9 +114,9 @@ def load_reply_config_file():
         cfg["chat_min_interval_sec"] = max(0, min(sec, 3600))
     except (TypeError, ValueError):
         pass
-    # 高峰降耗字段原样透传（判定在 qq_common.econ_active）
-    for k in ("econ_enabled", "econ_start", "econ_end",
-              "econ_workdays_only", "econ_mode_override"):
+    # 高峰降耗字段原样透传（判定在 qq_common.econ_active；后两项为旧字段兼容）
+    for k in ("econ_enabled", "econ_manual", "econ_start", "econ_end",
+              "econ_days", "econ_workdays_only", "econ_mode_override"):
         if k in data:
             cfg[k] = data[k]
     return cfg

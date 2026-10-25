@@ -699,16 +699,16 @@ async function vSettings(){
  <div class="card"><div class="k" style="display:flex;gap:10px;align-items:center;margin-bottom:8px">高峰降耗
   ${rv.econ_active?'<span class="badge" style="background:var(--warn);color:#fff">降耗进行中</span>':'<span class="badge" style="background:var(--tint);color:var(--dim)">未生效</span>'}</div>
   <label class="master"><input type="checkbox" ${rv.econ_enabled?'checked':''} onchange="saveEcon('econ_enabled',this.checked)">
-   <span><b>启用高峰期自动降耗</b><div class="k" style="margin-top:3px">生效时段内自动采取三项措施：关闭思考 + 跳过链首旗舰模型（从第二个模型开始用）+ 关键词/闲聊插话暂停（仅回@与回复）；时段结束自动恢复你的全部原配置。@机器人和回复机器人消息始终正常响应</div></span></label>
+   <span><b>启用高峰期降耗</b><div class="k" style="margin-top:3px">生效时自动采取三项措施：关闭思考 + 跳过链首旗舰模型（从第二个模型开始用）+ 关键词/闲聊插话暂停（仅回@与回复）；不生效时自动恢复你的全部原配置。@机器人和回复机器人消息始终正常响应</div></span></label>
+  <div class="k" style="margin-top:10px">开启方式（想彻底关闭就取消上方勾选）：</div>
+  <div style="display:flex;gap:14px;margin-top:4px;flex-wrap:wrap">
+   <label><input type="radio" name="econmode" value="auto" ${!rv.econ_manual?'checked':''} onchange="saveEcon('econ_manual',false)"> 按下方时段定时开启</label>
+   <label><input type="radio" name="econmode" value="on" ${rv.econ_manual?'checked':''} onchange="saveEcon('econ_manual',true)"> 立即开启（不限时）</label>
+  </div>
   <div style="display:flex;gap:14px;margin-top:10px;flex-wrap:wrap;align-items:center">
    <label>时段 <input type="time" value="${esc(rv.econ_start||'14:00')}" onchange="saveEconTime('econ_start',this.value)"> – <input type="time" value="${esc(rv.econ_end||'18:00')}" onchange="saveEconTime('econ_end',this.value)"></label>
-   <label><input type="checkbox" ${rv.econ_workdays_only!==false?'checked':''} onchange="saveEcon('econ_workdays_only',this.checked)"> 仅工作日（周一至周五）</label>
-  </div>
-  <div class="k" style="margin-top:10px">手动控制（优先于时间表，切换即时生效）：</div>
-  <div style="display:flex;gap:14px;margin-top:4px;flex-wrap:wrap">
-   <label><input type="radio" name="econmode" value="auto" ${(rv.econ_mode_override||'auto')==='auto'?'checked':''} onchange="saveEcon('econ_mode_override','auto')"> 自动（按上方时段）</label>
-   <label><input type="radio" name="econmode" value="on" ${rv.econ_mode_override==='on'?'checked':''} onchange="saveEcon('econ_mode_override','on')"> 立即开启（不限时）</label>
-   <label><input type="radio" name="econmode" value="off" ${rv.econ_mode_override==='off'?'checked':''} onchange="saveEcon('econ_mode_override','off')"> 立即关闭（时段内也不降）</label>
+   <span style="display:inline-flex;gap:2px;align-items:center">${['一','二','三','四','五','六','日'].map((d,i)=>`<label style="margin:0"><input type="checkbox" class="ecday" data-d="${i}" ${(rv.econ_days||[]).includes(i)?'checked':''} onchange="saveEconDays()"> 周${d}</label>`).join('')}</span>
+   <span class="k">（全不选=每天）</span>
   </div></div>
  <div class="card"><div class="k" style="margin-bottom:8px">主人专属功能（仅对设置的主人 QQ 生效；关闭后对应入口不再响应）</div>
   <label class="master" style="margin-bottom:6px"><input type="checkbox" ${rv.task_bridge_enabled!==false?'checked':''} onchange="saveFeature('task_bridge_enabled',this.checked)">
@@ -754,7 +754,8 @@ async function saveWebSearch(on){await saveKV('/api/reply-config',{web_search_en
 async function saveAbuseGuard(on){await saveKV('/api/reply-config',{abuse_guard_enabled:on},on?'防滥用防护已开启（已生效）':'防滥用防护已关闭（已生效，仅建议调试时关闭）')}
 const _FEAT_NAME={task_bridge_enabled:'任务沙箱',remote_control_enabled:'私聊遥控',draw_enabled:'AI 生图',daily_review_enabled:'夜间自动复盘'};
 async function saveFeature(key,on){await saveKV('/api/reply-config',{[key]:on},(_FEAT_NAME[key]||key)+(on?'已开启':'已关闭')+'（已生效）')}
-async function saveEcon(key,val){await saveKV('/api/reply-config',{[key]:val},{econ_enabled:'高峰降耗总开关',econ_workdays_only:'仅工作日',econ_mode_override:'降耗手动控制'}[key]+'已更新（已生效）');load()}
+async function saveEcon(key,val){await saveKV('/api/reply-config',{[key]:val},{econ_enabled:'高峰降耗总开关',econ_manual:'开启方式',econ_days:'生效日'}[key]+'已更新（已生效）');load()}
+async function saveEconDays(){const days=[...document.querySelectorAll('.ecday')].filter(x=>x.checked).map(x=>+x.dataset.d);await saveEcon('econ_days',days)}
 async function saveEconTime(key,val){if(!val)return;const r=await saveKV('/api/reply-config',{[key]:val},'时段已更新（已生效）');if(r.ok!==false)load()}
 async function vMemory(){
  const d=await api('/api/memory');
@@ -1484,10 +1485,10 @@ class UiHandler(BaseHTTPRequestHandler):
                                      "draw_enabled": data.get("draw_enabled", True),
                                      "daily_review_enabled": data.get("daily_review_enabled", True),
                                      "econ_enabled": data.get("econ_enabled", False),
+                                     "econ_manual": bool(data.get("econ_manual", False)),
                                      "econ_start": data.get("econ_start", "14:00"),
                                      "econ_end": data.get("econ_end", "18:00"),
-                                     "econ_workdays_only": data.get("econ_workdays_only", True),
-                                     "econ_mode_override": data.get("econ_mode_override", "auto"),
+                                     "econ_days": data.get("econ_days", [0, 1, 2, 3, 4]),
                                      "econ_active": C.econ_active(data)})
         return self._reply(404, {"ok": False, "error": "not found"})
 
@@ -1634,19 +1635,27 @@ class UiHandler(BaseHTTPRequestHandler):
                     data["chat_min_interval_sec"] = max(0, min(3600, int(body["chat_min_interval_sec"])))
                 except (TypeError, ValueError):
                     return self._reply(400, {"ok": False, "error": "chat_min_interval_sec 必须是整数"})
-            for _ek in ("econ_enabled", "econ_workdays_only"):
-                if _ek in body:
-                    data[_ek] = bool(body[_ek])
+            if "econ_enabled" in body:
+                data["econ_enabled"] = bool(body["econ_enabled"])
+                if not data["econ_enabled"]:
+                    data["econ_manual"] = False
+            if "econ_manual" in body:
+                data["econ_manual"] = bool(body["econ_manual"])
             for _ek in ("econ_start", "econ_end"):
                 if _ek in body:
                     v = str(body[_ek]).strip()
                     if not re.match(r"^([01]?\d|2[0-3]):[0-5]\d$", v):
                         return self._reply(400, {"ok": False, "error": "%s 应为 HH:MM" % _ek})
                     data[_ek] = v
-            if "econ_mode_override" in body:
-                if body["econ_mode_override"] not in ("auto", "on", "off"):
-                    return self._reply(400, {"ok": False, "error": "econ_mode_override 非法"})
-                data["econ_mode_override"] = body["econ_mode_override"]
+            if "econ_days" in body:
+                days = body["econ_days"]
+                if not isinstance(days, list) or len(days) > 7 or \
+                        not all(isinstance(d, int) and 0 <= d <= 6 for d in days):
+                    return self._reply(400, {"ok": False, "error": "econ_days 应为 0-6 的星期数组"})
+                data["econ_days"] = sorted(set(days))
+            # 新模型落库时清掉旧三态/仅工作日字段
+            for _old in ("econ_workdays_only", "econ_mode_override"):
+                data.pop(_old, None)
             write_const(REPLY_CONFIG_PATH, json.dumps(data, ensure_ascii=False, indent=2))
             return self._reply(200, {"ok": True})
         if u.path == "/api/personas/save":

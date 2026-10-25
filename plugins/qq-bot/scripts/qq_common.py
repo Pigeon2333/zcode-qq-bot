@@ -104,20 +104,27 @@ def _hhmm_to_min(s, default):
 
 def econ_active(cfg):
     """高峰降耗此刻是否生效（reply_config 的 econ_* 字段）。
-    三态：econ_mode_override = on 强制生效 / off 强制关闭 / auto（默认）按时间表——
-    总开关 econ_enabled 开启 + （可选仅工作日）+ start<=now<end（支持跨午夜）。
-    任何解析异常一律返回 False（宁可多耗不错杀回复）。"""
+    econ_enabled 总开关关闭 → 不生效；econ_manual=true 立即开启（不限时）；
+    否则按时间表：econ_days 命中当天（0=周一…6=周日，空=每天）+ start<=now<end（支持跨午夜）。
+    兼容旧字段：econ_mode_override="on" / econ_workdays_only。异常一律 False。"""
     try:
-        ovr = str(cfg.get("econ_mode_override") or "auto")
-        if ovr == "on":
-            return True
-        if ovr == "off":
-            return False
         if not cfg.get("econ_enabled"):
             return False
+        if cfg.get("econ_manual"):
+            return True
+        if str(cfg.get("econ_mode_override") or "") == "on":  # 旧三态兼容
+            return True
         lt = time.localtime()
-        if cfg.get("econ_workdays_only", True) and lt.tm_wday >= 5:
-            return False
+        days = cfg.get("econ_days")
+        if isinstance(days, list) and days:
+            try:
+                allowed = [int(d) for d in days]
+            except (TypeError, ValueError):
+                allowed = []
+            if allowed and lt.tm_wday not in allowed:
+                return False
+        elif days is None and cfg.get("econ_workdays_only", True) and lt.tm_wday >= 5:
+            return False  # 旧仅工作日开关兼容
         cur = lt.tm_hour * 60 + lt.tm_min
         s = _hhmm_to_min(cfg.get("econ_start", "14:00"), 14 * 60)
         e = _hhmm_to_min(cfg.get("econ_end", "18:00"), 18 * 60)
