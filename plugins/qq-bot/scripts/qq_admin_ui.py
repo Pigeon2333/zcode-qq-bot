@@ -426,9 +426,10 @@ async function vModels(){
   return Object.keys(map).map(k=>'<option value="'+k+'"'+(v===k?' selected':'')+'>'+map[k]+'</option>').join('')};
  const entries=(c.models||[]).map(x=>typeof x==='string'?{model:x,key:''}:{model:String(x.model||''),key:String(x.key||'')});
  const ckOf=e=>(e.key||'main')+':'+e.model;
+ const primL=(keysL.find(k=>k.primary)||{}).label||'默认';
  const keySel=(e,i)=>{
-  const opts=['<option value=""'+(!e.key?' selected':'')+'>主 Key</option>']
-   +keysL.map(k=>`<option value="${esc(k.id)}"${e.key===k.id?' selected':''}>${esc(k.label||k.id)}</option>`).join('')
+  const opts='<option value=""'+(!e.key?' selected':'')+'>主 Key：'+esc(primL)+'</option>'
+   +keysL.map(k=>`<option value="${esc(k.id)}"${e.key===k.id?' selected':''}>${k.primary?'★ ':''}${esc(k.label||k.id)}${k.primary?'（主）':''}</option>`).join('')
    +(e.key&&!keysL.some(k=>k.id===e.key)?`<option value="${esc(e.key)}" selected>（Key 已删除）</option>`:'');
   return `<select class="mini" data-k="${i}" style="max-width:110px" onchange="saveModels()" title="此模型使用的 API Key">${opts}</select>`};
  const rows=entries.map((e,i)=>{const v=thKey(e.model);const cd=a.cooldowns&&a.cooldowns[ckOf(e)]>0;
@@ -486,16 +487,7 @@ async function vModels(){
    <input id="tlmax" type="number" min="1000" step="1000" value="${rv.token_limit_max||100000}" style="width:110px" onchange="saveLimitMax()"> tokens
    <span class="k" id="tlimit-usage"></span>
   </div>
-  <div class="k" style="margin-top:8px">参考（本机实测）：普通群聊回复约 0.15万–0.3万 tokens/条（含上下文与人设）；长文/开思考约 0.5万–1万/条；看图另加约 0.1万–0.2万。例如每小时 30 万 ≈ 100–200 条普通回复。窗口 1–24 小时可调。</div></div>
- <div class="card"><div class="k">备用 API Key（模型链每行可下拉选用，实现跨账号降级——如企业 Key 额度到顶自动切个人 Key 的免费模型；主 Key 在「设置」页维护）</div>
-  <div style="margin-top:10px">${keysL.map(k=>`<div class="row"><input value="${esc(k.label||'')}" data-kid="${esc(k.id)}" style="flex:1" onchange="renameKey('${esc(k.id)}',this)">
-   <span class="mono" style="flex:none;width:150px">${esc(k.mask||'')}</span>
-   <button class="act ghost danger" onclick="delKey('${esc(k.id)}')">删除</button></div>`).join('')||'<i class="k">暂无备用 Key</i>'}</div>
-  <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
-   <input id="nklabel" placeholder="备注，如：个人" style="width:130px">
-   <input id="nkval" type="password" placeholder="粘贴 API Key" style="flex:1;min-width:220px">
-   <button class="act" onclick="addKey()">添加</button></div>
-  <div class="k" style="margin-top:6px">Key 只保存在本机数据目录（不进源码），界面仅显示掩码；删除某个 Key 前请先在模型链中移除引用它的条目（引用已删 Key 的条目会被自动跳过）。</div></div>`;
+  <div class="k" style="margin-top:8px">参考（本机实测）：普通群聊回复约 0.15万–0.3万 tokens/条（含上下文与人设）；长文/开思考约 0.5万–1万/条；看图另加约 0.1万–0.2万。例如每小时 30 万 ≈ 100–200 条普通回复。窗口 1–24 小时可调。</div></div>`;
  _usageCache=u;renderTrend();
  if(tl&&tl.ok!==false)renderLimitUsage(tl);
 }
@@ -746,7 +738,12 @@ async function toggleEvolved(name,on){await api('/api/evolved/toggle',{method:'P
 async function clearEvolved(name){if(!await dlgConfirm({title:'清空风格观察',body:'清空「'+name+'」的全部风格观察？',okText:'清空',danger:true}))return;await api('/api/evolved/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});toast('已清空');load()}
 async function saveFile(kind){const t=$('#fedit').value;const r=await saveKV('/api/file?kind='+kind,{text:t},'已保存（agent 下一轮生效）');if(r.ok!==false)dirtyOff('bsavef')}
 async function vSettings(){
- const c=await api('/api/app-config');const k=await api('/api/apikey-status');const rv=await api('/api/reply-config');
+ const [c,rv,kl]=await Promise.all([
+  api('/api/app-config').catch(()=>({})),
+  api('/api/reply-config').catch(()=>({})),
+  api('/api/keys').catch(()=>({keys:[]})),
+ ]);
+ const keysL=kl.keys||[];
  $('#view').innerHTML=head('运行环境、密钥与启动行为')+saveHint(_SAVE_HINT)+
  `<div class="card"><div class="k">运行环境（首次使用请核对；每项改动回车/失焦后自动保存，端口改动重启各组件后生效）</div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px">
@@ -761,10 +758,17 @@ async function vSettings(){
    <label>agent <input id="pagn" type="number" value="${c.agent_admin_port}" style="width:76px" onchange="saveEnv('pagn','agent_admin_port',1)"></label>
    <label>管理台 <input id="pui" type="number" value="${c.ui_port}" style="width:76px" onchange="saveEnv('pui','ui_port',1)"></label>
   </div></div>
- <div class="card"><div class="k">智谱 API Key（${k.set?'已配置':'未配置'}${k.mask?'：'+k.mask:''}）</div>
-  <div style="display:flex;gap:8px;margin-top:8px"><input id="skey" type="password" style="flex:1" placeholder="粘贴 open.bigmodel.cn 的 API Key">
-  <button class="act" onclick="saveKey()">保存 Key</button></div>
-  <div class="k" style="margin-top:6px">Key 仅保存在本机 ~/.zcode-qq-bot/zhipu_api_key，不会出现在源码或聊天记录。</div></div>
+ <div class="card"><div class="k">API Key（智谱开放平台获取；多个 Key 时选一个「主」——生图/联网搜索/模型链未指定 Key 的条目都用主 Key；模型链每行可在「模型管理」单独指定 Key）</div>
+  <div style="margin-top:10px">${keysL.map(k=>`<div class="row">
+   <label style="margin:0;flex:none;white-space:nowrap"><input type="radio" name="primkey" ${k.primary?'checked':''} onchange="setPrimary('${esc(k.id)}')"> 主</label>
+   <input value="${esc(k.label||'')}" data-kid="${esc(k.id)}" style="flex:1" onchange="renameKey('${esc(k.id)}',this)">
+   <span class="mono" style="flex:none;width:150px">${esc(k.mask||'')}</span>
+   <button class="act ghost danger" onclick="delKey('${esc(k.id)}')">删除</button></div>`).join('')||'<i class="k">尚未配置任何 Key</i>'}</div>
+  <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+   <input id="nklabel" placeholder="备注，如：企业/个人" style="width:130px">
+   <input id="nkval" type="password" placeholder="粘贴 API Key" style="flex:1;min-width:220px">
+   <button class="act" onclick="addKey()">添加 Key</button></div>
+  <div class="k" style="margin-top:6px">Key 仅保存在本机数据目录（不进源码），列表仅显示掩码；第一个添加的自动成为主 Key，删除主 Key 后自动切到剩余第一个。模型链中引用某 Key 的条目在该 Key 被删除后会被自动跳过。</div></div>
  <div class="card"><label class="master"><input type="checkbox" ${rv.vision_enabled?'checked':''} onchange="saveVision(this.checked)">
   <span><b>看图模式</b><div class="k" style="margin-top:3px">开启后，消息里的图片会交给视觉模型识别并回应（群聊与私聊均生效）；视觉模型在「模型管理」页配置，识别失败自动降级纯文本</div></span></label></div>
  <div class="card"><label class="master"><input type="checkbox" ${rv.web_search_enabled?'checked':''} onchange="saveWebSearch(this.checked)">
@@ -812,9 +816,6 @@ async function S_autostartRegistry(){if(_autoReg===null){try{const r=await api('
 async function saveEnv(id,key,port,msg){
  const v=$('#'+id).value.trim();
  await saveKV('/api/app-config',{[key]:port?+v:v},msg||(port?'端口已保存（重启各组件后生效）':null))}
-async function saveKey(){const v=$('#skey').value.trim();if(!v){toast('请先粘贴 Key',false);return}
- const r=await api('/api/apikey',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:v})});
- $('#skey').value='';toast(r.ok?'Key 已保存，agent 下一轮即用新 Key':'保存失败',r.ok!==false);load()}
 async function saveAuto(on){const r=await api('/api/autostart',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enable:on})});_autoReg=on;toast(r.message||'已更新')}
 async function savePowerOn(on){await saveKV('/api/app-config',{auto_power_on:on},on?'已开启：打开应用即自动启动机器人（已生效）':'已关闭：需在「状态」页手动启动（已生效）')}
 async function saveCloseAction(v){await saveKV('/api/app-config',{close_action:v},'关闭行为已保存（已生效）')}
@@ -844,15 +845,18 @@ function renderLimitUsage(u){
 async function addKey(){
  const label=$('#nklabel').value.trim(),key=$('#nkval').value.trim();
  if(!key){toast('请先粘贴 API Key',false);return}
- const r=await saveKV('/api/keys/add',{label,key},'备用 Key 已添加（模型链行下拉即可选用）');
+ const r=await saveKV('/api/keys/add',{label,key},'Key 已添加（第一个自动成为主 Key）');
  if(r.ok!==false){load()}}
 async function delKey(id){
- if(!await dlgConfirm({title:'删除备用 Key',body:'删除该 Key？模型链中引用它的条目将被自动跳过（可随时重新添加并绑定）。',okText:'删除',danger:true}))return;
- const r=await saveKV('/api/keys/del',{id},'备用 Key 已删除');
+ if(!await dlgConfirm({title:'删除 Key',body:'删除该 Key？模型链中引用它的条目将被自动跳过（可随时重新添加并绑定）。',okText:'删除',danger:true}))return;
+ const r=await saveKV('/api/keys/del',{id},'Key 已删除');
  if(r.ok!==false)load()}
 async function renameKey(id,el){
  const r=await saveKV('/api/keys/rename',{id,label:el.value.trim()},'备注已更新');
  if(r.ok===false)load()}
+async function setPrimary(id){
+ const r=await saveKV('/api/keys/primary',{id},'主 Key 已切换（生图/搜索/未指定条目即用新主 Key）');
+ if(r.ok!==false)load()}
 async function vMemory(){
  const d=await api('/api/memory');
  const rows=(d.items||[]).map(r=>`<tr><td class="mono">${esc(r.time)}</td><td>${r.scope==='group'?'群':'人'}</td><td class="mono">${esc(String(r.id))}</td><td>${esc(r.text)}</td>
@@ -1427,12 +1431,30 @@ class UiHandler(BaseHTTPRequestHandler):
             return self._reply(200, {"ok": True, "modes": modes})
         if u.path == "/api/keys":
             data = load_json_const(KEYS_PATH, {})
+            keys = data.get("keys") if isinstance(data.get("keys"), list) else []
+            primary = str(data.get("primary", "")).strip()
+            # 一次性迁移：尚无备用 Key 且旧主 Key 文件存在 → 收编为 k1 并设主
+            if not keys:
+                legacy = ""
+                try:
+                    with open(os.path.join(C.DATA_DIR, "zhipu_api_key"),
+                              "r", encoding="utf-8") as f:
+                        legacy = f.read().strip()
+                except OSError:
+                    pass
+                if legacy:
+                    keys = [{"id": "k1", "label": "默认", "key": legacy}]
+                    primary = "k1"
+                    write_const(KEYS_PATH, json.dumps(
+                        {"keys": keys, "primary": primary},
+                        ensure_ascii=False, indent=2))
             out = []
-            for e in (data.get("keys") or []):
+            for e in keys:
                 if isinstance(e, dict) and e.get("id"):
                     k = str(e.get("key", ""))
                     out.append({"id": e["id"], "label": str(e.get("label", "")),
-                                "mask": (k[:6] + "…" + k[-4:]) if len(k) > 14 else "…"})
+                                "mask": (k[:6] + "…" + k[-4:]) if len(k) > 14 else "…",
+                                "primary": e["id"] == primary})
             return self._reply(200, {"ok": True, "keys": out})
         if u.path == "/api/runlog":
             src = q.get("src", "all")
@@ -2188,20 +2210,29 @@ class UiHandler(BaseHTTPRequestHandler):
             else:
                 return self._reply(400, {"ok": False, "error": "kind 必须是 persona|style"})
             return self._reply(200, {"ok": True})
-        if u.path in ("/api/keys/add", "/api/keys/del", "/api/keys/rename"):
+        if u.path in ("/api/keys/add", "/api/keys/del", "/api/keys/rename",
+                      "/api/keys/primary"):
             data = load_json_const(KEYS_PATH, {})
             keys = data.get("keys") if isinstance(data.get("keys"), list) else []
+            primary = str(data.get("primary", "")).strip()
             if u.path == "/api/keys/add":
                 key = str(body.get("key", "")).strip()
                 label = str(body.get("label", "")).strip()[:20]
                 if len(key) < 20 or len(key) > 120 or any(c.isspace() for c in key):
                     return self._reply(400, {"ok": False, "error": "Key 格式非法（20-120字符，无空白）"})
                 if len(keys) >= 10:
-                    return self._reply(400, {"ok": False, "error": "备用 Key 最多 10 个"})
+                    return self._reply(400, {"ok": False, "error": "Key 最多 10 个"})
                 nid = "k%d" % (max([int(e["id"][1:]) for e in keys
                                     if isinstance(e, dict) and str(e.get("id", "")).startswith("k")
                                     and str(e["id"])[1:].isdigit()] or [0]) + 1)
                 keys.append({"id": nid, "label": label or ("Key " + nid[1:]), "key": key})
+                if not primary:
+                    primary = nid  # 第一个 Key 自动成为主 Key
+            elif u.path == "/api/keys/primary":
+                kid = str(body.get("id", "")).strip()
+                if not any(isinstance(e, dict) and e.get("id") == kid for e in keys):
+                    return self._reply(400, {"ok": False, "error": "Key 不存在"})
+                primary = kid
             else:
                 kid = str(body.get("id", "")).strip()
                 hit = [e for e in keys if isinstance(e, dict) and e.get("id") == kid]
@@ -2209,12 +2240,15 @@ class UiHandler(BaseHTTPRequestHandler):
                     return self._reply(400, {"ok": False, "error": "Key 不存在"})
                 if u.path == "/api/keys/del":
                     keys.remove(hit[0])
+                    if primary == kid:
+                        primary = keys[0]["id"] if keys and isinstance(keys[0], dict) else ""
                 else:
                     nl = str(body.get("label", "")).strip()[:20]
                     if not nl:
                         return self._reply(400, {"ok": False, "error": "备注不能为空"})
                     hit[0]["label"] = nl
-            write_const(KEYS_PATH, json.dumps({"keys": keys}, ensure_ascii=False, indent=2))
+            write_const(KEYS_PATH, json.dumps(
+                {"keys": keys, "primary": primary}, ensure_ascii=False, indent=2))
             return self._reply(200, {"ok": True})
         if u.path == "/api/memory/clear":
             write_const(MEMORY_STREAM_PATH, "")

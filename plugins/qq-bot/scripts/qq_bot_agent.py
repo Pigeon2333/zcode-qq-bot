@@ -259,8 +259,19 @@ class DaemonClient:
 
 
 def glm_key():
-    key = os.environ.get("ZHIPU_API_KEY", "").strip()
-    return key or read_const(API_KEY_PATH)
+    """主 Key：环境变量 > api_keys.json 的 primary 条目 > 旧 zhipu_api_key 文件。"""
+    env = os.environ.get("ZHIPU_API_KEY", "").strip()
+    if env:
+        return env
+    data = load_json_const(API_KEYS_PATH, {})
+    pid = str(data.get("primary", "")).strip() if isinstance(data, dict) else ""
+    if pid:
+        for e in data.get("keys") or []:
+            if isinstance(e, dict) and e.get("id") == pid:
+                k = str(e.get("key", "")).strip()
+                if k:
+                    return k
+    return read_const(API_KEY_PATH)
 
 
 API_KEYS_PATH = os.path.join(DATA_DIR, "api_keys.json")
@@ -1302,6 +1313,38 @@ def parse_reply(text):
     return parts[:4], sticker_ids[:2], memo_text
 
 
+def _norm_dup(s):
+    return re.sub(r"\s+", "", str(s or ""))
+
+
+def _dedup_reply(daemon, msg, texts):
+    """复读守卫：与最近 bot 消息重复的段落剔除（含截断变体与「你:」前缀
+    抄历史两种形态）；全部重复时返回空列表（调用方静默跳过）。
+    背景：模型偶发把上下文里自己的旧回复原样再输出，进入历史后滚雪球。"""
+    history = daemon.history(msg["chat_type"], msg["chat_id"], limit=12)
+    recent = [_norm_dup(h.get("text")) for h in history if h.get("is_bot")]
+    recent = [t for t in recent if len(t) >= 24][-4:]
+    if not recent:
+        return texts, 0
+    fresh, dropped = [], 0
+    for t in texts:
+        segs = [s.strip() for s in re.split(r"(?m)^\s*你[:：]|\n{2,}", str(t)) if s.strip()]
+        keep = []
+        for s in segs:
+            n = _norm_dup(s)
+            n2 = _norm_dup(re.sub(r"^\s*你[:：]\s*", "", s))
+            dup = any(len(n) >= 24 and (n in r or r in n)
+                      or len(n2) >= 24 and (n2 in r or r in n2)
+                      for r in recent)
+            if dup:
+                dropped += 1
+            else:
+                keep.append(s)
+        if keep:
+            fresh.append("\n\n".join(keep))
+    return fresh, dropped
+
+
 def persist_memo(scope, cid, text):
     _append_memory({"ts": int(time.time()), "scope": scope,
                     "id": str(cid), "text": text})
@@ -1524,6 +1567,21 @@ def process(daemon, msg):
         out("AGENT_SKIP msg_id=%s chat=%s/%s (chat_random 不感兴趣)"
             % (msg["id"], msg["chat_type"], msg["chat_id"]))
         return
+    # 复读守卫：剔除与最近发言重复的段落，全重复则静默跳过
+    try:
+        texts, dropped = _dedup_reply(daemon, msg, texts)
+        if dropped:
+            out("AGENT_DUP_DROP msg_id=%s dropped=%d/%d chat=%s/%s"
+                % (msg["id"], dropped, dropped + len(texts),
+                   msg["chat_type"], msg["chat_id"]))
+        if not texts and not stickers:
+            daemon.ack([msg["id"]])
+            RT.count_processed()
+            out("AGENT_DUP_SKIP msg_id=%s chat=%s/%s (回复与近期发言重复，避免复读)"
+                % (msg["id"], msg["chat_type"], msg["chat_id"]))
+            return
+    except Exception as e:
+        out("AGENT_DUP_GUARD_FAIL %r" % e)
     try:
         if texts:
             # 被@或被回复的针对性回应：引用原消息（更像真人回话）；其余触发不引用
