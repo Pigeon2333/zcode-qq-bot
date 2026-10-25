@@ -409,10 +409,12 @@ async function refreshRunlog(){
 }
 function setRunlogSrc(v){_runlogSrc=v;vRunlog()}
 async function vModels(){
- const [c,a,u]=await Promise.all([
+ const [c,a,u,tl,rv]=await Promise.all([
   api('/api/config').catch(()=>({models:[],thinking:{}})),
   api('/api/agent-status').catch(()=>({ok:false})),
   api('/api/usage').catch(()=>({})),
+  api('/api/token-limit').catch(()=>({})),
+  api('/api/reply-config').catch(()=>({})),
  ]);
  const th=c.thinking||{};
  const dft=th._default||{enabled:true,level:'high'};
@@ -462,8 +464,19 @@ async function vModels(){
   <div class="k" style="margin-top:6px">逐模型覆盖：在下方模型链每行的下拉里单独设置（默认=跟随上面的默认思考），选择即保存。</div></div>
  <div class="card"><div class="k">模型降级链（自上而下尝试；429/失效自动冷却5分钟切下一个；改名/排序/删除即时保存）</div>
  <div class="chain" style="margin-top:10px">${rows||'<i class="k">空</i>'}</div>
- <div style="margin-top:10px;display:flex;gap:8px"><input id="newm" placeholder="模型名，如 glm-5.3-flash" onkeydown="if(event.key==='Enter')addm()"><button class="act" onclick="addm()">添加</button></div></div>`;
+ <div style="margin-top:10px;display:flex;gap:8px"><input id="newm" placeholder="模型名，如 glm-5.3-flash" onkeydown="if(event.key==='Enter')addm()"><button class="act" onclick="addm()">添加</button></div></div>
+ <div class="card"><div class="k" style="display:flex;gap:10px;align-items:center;margin-bottom:8px">限额管理
+  <span id="tlimit-badge"></span></div>
+  <div class="k">防止机器人用量过大挤占同套餐其他业务：窗口内 token 消耗达到上限后，机器人停止一切响应（主人私聊遥控指令除外），窗口滚动后自动恢复</div>
+  <div style="display:flex;gap:14px;margin-top:10px;flex-wrap:wrap;align-items:center">
+   <label><input type="checkbox" ${rv.token_limit_enabled?'checked':''} onchange="saveLimit('token_limit_enabled',this.checked?1:0)"> 启用 token 限额</label>
+   <label>每 <input id="tlhours" type="number" min="1" max="24" value="${rv.token_limit_hours||1}" style="width:56px" onchange="saveLimitHours()"> 小时最多消耗</label>
+   <input id="tlmax" type="number" min="1000" step="1000" value="${rv.token_limit_max||100000}" style="width:110px" onchange="saveLimitMax()"> tokens
+   <span class="k" id="tlimit-usage"></span>
+  </div>
+  <div class="k" style="margin-top:8px">参考（本机实测）：普通群聊回复约 0.15万–0.3万 tokens/条（含上下文与人设）；长文/开思考约 0.5万–1万/条；看图另加约 0.1万–0.2万。例如每小时 30 万 ≈ 100–200 条普通回复。窗口 1–24 小时可调。</div></div>`;
  _usageCache=u;renderTrend();
+ if(tl&&tl.ok!==false)renderLimitUsage(tl);
 }
 function getChain(){return [...document.querySelectorAll('.chain input')].map(x=>x.value.trim()).filter(Boolean)}
 async function saveModels(){await saveKV('/api/config',{models:getChain()},'模型链已保存（agent 已热加载）')}
@@ -795,6 +808,15 @@ async function saveFeature(key,on){await saveKV('/api/reply-config',{[key]:on},(
 async function saveEcon(key,val){await saveKV('/api/reply-config',{[key]:val},{econ_enabled:'高峰降耗总开关',econ_manual:'开启方式',econ_days:'生效日'}[key]+'已更新（已生效）');load()}
 async function saveEconDays(){const days=[...document.querySelectorAll('.ecday')].filter(x=>x.checked).map(x=>+x.dataset.d);await saveEcon('econ_days',days)}
 async function saveEconTime(key,val){if(!val)return;const r=await saveKV('/api/reply-config',{[key]:val},'时段已更新（已生效）');if(r.ok!==false)load()}
+async function saveLimit(key,val){await saveKV('/api/reply-config',{[key]:val},{token_limit_enabled:'token 限额'}[key]+'已更新（已生效）');load()}
+async function saveLimitHours(){const v=parseInt($('#tlhours').value)||1;await saveKV('/api/reply-config',{token_limit_hours:Math.max(1,Math.min(24,v))},'限额窗口已更新（已生效）');load()}
+async function saveLimitMax(){const v=parseInt($('#tlmax').value)||0;await saveKV('/api/reply-config',{token_limit_max:Math.max(1000,v)},'限额上限已更新（已生效）');load()}
+function renderLimitUsage(u){
+ const b=document.getElementById('tlimit-badge'),el=document.getElementById('tlimit-usage');if(!el)return;
+ el.textContent=u.enabled?('本窗口已用 '+u.used.toLocaleString()+' / '+u.cap.toLocaleString()+' tokens（'+(u.cap?Math.min(100,Math.round(u.used/u.cap*100)):0)+'%）'):'';
+ if(b)b.outerHTML=u.hold?'<span id="tlimit-badge" class="badge" style="background:var(--err);color:#fff">已达上限 · 已停响应</span>'
+  :'<span id="tlimit-badge" class="badge" style="background:var(--tint);color:var(--dim)">'+(u.enabled?'限额中':'未启用')+'</span>';
+}
 async function vMemory(){
  const d=await api('/api/memory');
  const rows=(d.items||[]).map(r=>`<tr><td class="mono">${esc(r.time)}</td><td>${r.scope==='group'?'群':'人'}</td><td class="mono">${esc(String(r.id))}</td><td>${esc(r.text)}</td>
@@ -1579,7 +1601,35 @@ class UiHandler(BaseHTTPRequestHandler):
                                      "econ_start": data.get("econ_start", "14:00"),
                                      "econ_end": data.get("econ_end", "18:00"),
                                      "econ_days": data.get("econ_days", [0, 1, 2, 3, 4]),
-                                     "econ_active": C.econ_active(data)})
+                                     "econ_active": C.econ_active(data),
+                                     "token_limit_enabled": data.get("token_limit_enabled", False),
+                                     "token_limit_hours": data.get("token_limit_hours", 1),
+                                     "token_limit_max": data.get("token_limit_max", 100000)})
+        if u.path == "/api/token-limit":
+            cfg = load_json_const(REPLY_CONFIG_PATH, {})
+            enabled = bool(cfg.get("token_limit_enabled"))
+            try:
+                hours = max(1, min(24, int(cfg.get("token_limit_hours", 1))))
+                cap = int(cfg.get("token_limit_max", 0))
+            except (TypeError, ValueError):
+                hours, cap = 1, 0
+            cutoff = time.time() - hours * 3600
+            used = 0
+            try:
+                with open(os.path.join(C.DATA_DIR, "usage_log.jsonl"),
+                          "r", encoding="utf-8") as f:
+                    for ln in f:
+                        try:
+                            r = json.loads(ln)
+                        except ValueError:
+                            continue
+                        if r.get("ts", 0) >= cutoff:
+                            used += int(r.get("total_tokens", 0) or 0)
+            except OSError:
+                pass
+            return self._reply(200, {"ok": True, "enabled": enabled, "used": used,
+                                     "cap": cap, "hours": hours,
+                                     "hold": bool(enabled and cap > 0 and used >= cap)})
         return self._reply(404, {"ok": False, "error": "not found"})
 
     def do_POST(self):
@@ -1746,6 +1796,18 @@ class UiHandler(BaseHTTPRequestHandler):
             # 新模型落库时清掉旧三态/仅工作日字段
             for _old in ("econ_workdays_only", "econ_mode_override"):
                 data.pop(_old, None)
+            if "token_limit_enabled" in body:
+                data["token_limit_enabled"] = bool(body["token_limit_enabled"])
+            if "token_limit_hours" in body:
+                try:
+                    data["token_limit_hours"] = max(1, min(24, int(body["token_limit_hours"])))
+                except (TypeError, ValueError):
+                    return self._reply(400, {"ok": False, "error": "窗口应为 1-24 小时"})
+            if "token_limit_max" in body:
+                try:
+                    data["token_limit_max"] = max(1000, min(2000000000, int(body["token_limit_max"])))
+                except (TypeError, ValueError):
+                    return self._reply(400, {"ok": False, "error": "上限应为 tokens 整数（≥1000）"})
             write_const(REPLY_CONFIG_PATH, json.dumps(data, ensure_ascii=False, indent=2))
             return self._reply(200, {"ok": True})
         if u.path == "/api/personas/save":

@@ -400,6 +400,59 @@ def econ_on():
     return C.econ_active(load_json_const(REPLY_CONFIG_PATH, {}))
 
 
+def token_limit_state():
+    """限额状态：(是否到达上限, 本窗口已用, 上限, 窗口小时)。
+    窗口 = 最近 N 小时滚动求和（usage_log.jsonl 的 total_tokens）。"""
+    cfg = load_json_const(REPLY_CONFIG_PATH, {})
+    if not cfg.get("token_limit_enabled"):
+        return False, 0, 0, 0
+    try:
+        hours = max(1, min(24, int(cfg.get("token_limit_hours", 1))))
+        cap = int(cfg.get("token_limit_max", 0))
+    except (TypeError, ValueError):
+        return False, 0, 0, 0
+    if cap <= 0:
+        return False, 0, cap, hours
+    cutoff = time.time() - hours * 3600
+    used = 0
+    try:
+        with open(USAGE_LOG_PATH, "r", encoding="utf-8") as f:
+            for ln in f:
+                try:
+                    r = json.loads(ln)
+                except ValueError:
+                    continue
+                if r.get("ts", 0) >= cutoff:
+                    used += int(r.get("total_tokens", 0) or 0)
+    except OSError:
+        pass
+    return used >= cap, used, cap, hours
+
+
+_limit_notify_ts = [0.0]
+
+
+def _notify_limit_owner(daemon, used, cap, hours):
+    """到达限额时给主人私聊发一次提醒（30 分钟内不重复）。"""
+    if time.time() - _limit_notify_ts[0] < 1800 or not is_owner_qq_set():
+        return
+    _limit_notify_ts[0] = time.time()
+    try:
+        daemon.send("private", owner_qq(),
+                    ["⚠️ token 限额已满：%d / %d（窗口 %d 小时），机器人已暂停一切响应。\n"
+                     "窗口滚动后会自动恢复；也可在控制台「模型管理 → 限额管理」调整或关闭。"
+                     % (used, cap, hours)])
+    except Exception as e:
+        out("AGENT_LIMIT_NOTIFY_FAIL %r" % e)
+
+
+def is_owner_qq_set():
+    try:
+        return bool(owner_qq())
+    except Exception:
+        return False
+
+
 _SEARCH_STRONG = ("搜一下", "搜索", "搜下", "帮我搜", "查一下", "帮我查", "查查")
 _SEARCH_WEAK = ("最新", "新闻", "天气", "汇率", "股价", "价格", "多少钱", "发布了",
                 "新版本", "近期", "最近有", "今天有", "现在有")
@@ -705,6 +758,9 @@ def _download_image(url, dest_path):
         return True
     except (OSError, ValueError):
         return False
+
+
+_NO_VISION_MODELS = set()  # 运行中学习到的纯文本模型（发图必 400，视觉轮询直接跳过）
 
 
 def generate_image(prompt):
@@ -1223,12 +1279,19 @@ def call_vision(messages_text, image_urls):
         log_usage(vm, data.get("usage") or {})
         return vm, text
 
-    # 留空：按模型链尝试（与文本链同源，429/失效自动冷却切换）
+    # 留空：按模型链顺序尝试（429/失效冷却切换；纯文本模型发图 400 → 学习跳过不冷却）
     tried = []
-    while True:
-        m = RT.take_model(1 if (econ_on() and len(RT.snapshot()["chain"]) > 1) else 0)
-        if m is None:
-            raise RuntimeError("视觉调用：模型链全部不可用: %s" % ",".join(tried))
+    chain = list(RT.snapshot()["chain"])
+    if econ_on() and len(chain) > 1:
+        chain = chain[1:]
+    for m in chain:
+        if m in _NO_VISION_MODELS:
+            tried.append(m + "(纯文本)")
+            continue
+        now_cd = RT.snapshot()["cooldowns"].get(m, 0)
+        if now_cd > 0:
+            tried.append(m + "(冷却)")
+            continue
         try:
             th, mt = resolve_thinking(m, "")
             status, data = glm_chat(m, vmsgs, timeout=60,
@@ -1246,11 +1309,20 @@ def call_vision(messages_text, image_urls):
             log_usage(m, data.get("usage") or {})
             return m, text
         detail = str(data.get("error", {}).get("message", ""))[:80]
+        # content.type 400 = 该模型不支持图像输入：记入学习集直接跳过，不冷却
+        # （冷却会连累它之后的纯文本回复）
+        if status == 400 and ("取值范围" in detail or "content" in detail.lower()
+                              or "模型不存在" in detail or "image" in detail.lower()):
+            if "取值范围" in detail or "content" in detail.lower():
+                _NO_VISION_MODELS.add(m)
+                out("AGENT_VISION_SKIP model=%s 纯文本模型不支持图像输入" % m)
+            else:
+                out("AGENT_VISION_FAIL model=%s http=400 %s" % (m, detail))
+            tried.append(m)
+            continue
         cool = _cooldown_sec(detail)
         out("AGENT_VISION_FAIL model=%s http=%d cool=%ds %s" % (m, status, cool, detail))
         RT.cooldown(m, cool); tried.append(m)
-        if status == 400 and ("模型不存在" in detail or "image" in detail.lower()):
-            continue  # 该模型不支持图像/不存在：冷却后试下一个
 
 
 def evolve_tick(daemon, msg, persona):
@@ -1284,8 +1356,8 @@ def evolve_tick(daemon, msg, persona):
 
 def process(daemon, msg):
     t0 = time.time()
-    # 主人专属通道：私聊遥控指令（B）与任务能力桥（A）；不影响普通群聊
-    if is_owner(msg):
+    owner = is_owner(msg)
+    if owner:
         # 主人让安静（群里@说"歇一会/闭嘴"等，或私聊原文）→ 真实静默，@仍响应
         if _QUIET_WORDS_RE.search(str(msg.get("text") or "")) \
                 and len(str(msg.get("text") or "")) <= 40:
@@ -1296,6 +1368,30 @@ def process(daemon, msg):
             RT.count_processed()
             out("AGENT_QUIET owner chat=%s/%s" % (msg["chat_type"], msg["chat_id"]))
             return
+    # 限额：到达上限停止一切响应（对所有人生效，防挤占同套餐其他业务）；
+    # 唯一例外是主人私聊遥控指令——管理通道本身不耗 token，且是解除限额的入口
+    hold, used, cap, hours = token_limit_state()
+    if hold:
+        if owner and msg["chat_type"] == "private" \
+                and feature_enabled("remote_control_enabled"):
+            handled, cmd_reply = owner_command(msg, daemon)
+            if handled:
+                try:
+                    daemon.send("private", msg["chat_id"], [cmd_reply])
+                except Exception as e:
+                    out("AGENT_OWNER_CMD_FAIL %r" % e)
+                daemon.ack([msg["id"]])
+                RT.count_processed()
+                out("AGENT_OWNER_CMD msg_id=%s chat=private/%s cmd=%.30s"
+                    % (msg["id"], msg["chat_id"], str(msg.get("text", ""))))
+                return
+        _notify_limit_owner(daemon, used, cap, hours)
+        daemon.ack([msg["id"]])
+        RT.count_processed()
+        out("AGENT_LIMIT_HOLD msg_id=%s chat=%s/%s used=%d cap=%d win=%dh owner=%s"
+            % (msg["id"], msg["chat_type"], msg["chat_id"], used, cap, hours, owner))
+        return
+    if owner:
         if feature_enabled("draw_enabled") and _handle_draw(daemon, msg):
             daemon.ack([msg["id"]])
             RT.count_processed()
