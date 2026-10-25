@@ -220,6 +220,18 @@ function dlgPrompt(o){return new Promise(res=>{
  _dlgWire(m,()=>res(inp.value.trim()),()=>res(null));
  inp.onkeydown=e=>{if(e.key==='Enter'){m.remove();res(inp.value.trim())}};
  setTimeout(()=>{inp.focus();if(o.value)inp.select()},30)})}
+function dlgText(o){return new Promise(res=>{
+ const m=document.createElement('div');m.className='dlg-mask';
+ m.innerHTML='<div class="dlg" role="dialog" aria-modal="true"><h3></h3><div class="dlg-body"></div>'
+  +'<textarea rows="4" style="width:100%;margin-top:12px;resize:vertical"></textarea>'
+  +'<div class="dlg-btns"><button class="act ghost">取消</button><button class="act">'+(o.okText||'保存')+'</button></div></div>';
+ m.querySelector('h3').textContent=o.title||'';
+ m.querySelector('.dlg-body').textContent=o.body||'';
+ const ta=m.querySelector('textarea');if(o.value!=null)ta.value=o.value;
+ ta.maxLength=o.maxlen||300;
+ document.body.appendChild(m);
+ _dlgWire(m,()=>res(ta.value.trim()),()=>res(null));
+ setTimeout(()=>{ta.focus()},30)})}
 async function api(p,opts){const r=await fetch(p,opts);return r.json()}
 /* ---- 统一保存交互 ----
    规则：开关/选项/模式卡/列表增删 = 点击即保存即生效；
@@ -759,12 +771,47 @@ async function saveEconDays(){const days=[...document.querySelectorAll('.ecday')
 async function saveEconTime(key,val){if(!val)return;const r=await saveKV('/api/reply-config',{[key]:val},'时段已更新（已生效）');if(r.ok!==false)load()}
 async function vMemory(){
  const d=await api('/api/memory');
- const rows=(d.items||[]).map(r=>`<tr><td class="mono">${esc(r.time)}</td><td>${r.scope==='group'?'群':'人'}</td><td class="mono">${esc(String(r.id))}</td><td>${esc(r.text)}</td></tr>`).join('');
- $('#view').innerHTML=head('长期记忆流水（自治大脑自动写入；含 md 记忆文件之外的高频流水）')+
+ const rows=(d.items||[]).map(r=>`<tr><td class="mono">${esc(r.time)}</td><td>${r.scope==='group'?'群':'人'}</td><td class="mono">${esc(String(r.id))}</td><td>${esc(r.text)}</td>
+  <td><button class="act ghost" style="margin:0;padding:3px 10px;font-size:12px" onclick="editMemo(${r.idx})">编辑</button>
+  <button class="act ghost danger" style="margin:0;padding:3px 10px;font-size:12px" onclick="delMemo(${r.idx})">删除</button></td></tr>`).join('');
+ $('#view').innerHTML=head('长期记忆流水（自治大脑自动写入；改动即时生效，机器人下一轮对话即用新记忆）')+saveHint('每条记忆可单独编辑/删除（删除需确认）；也可手动新增一条（选择群或联系人）。'+`当前展示最近 100 条。`)+
  `<div class="card">
- <table><tr><th>时间</th><th>类型</th><th>对象</th><th>内容</th></tr>${rows||'<tr><td colspan=4 class="k">空</td></tr>'}</table>
- <button class="act ghost danger" onclick="clearMem()">清空全部记忆流水</button></div>`;
+ <table><tr><th>时间</th><th>类型</th><th>对象</th><th>内容</th><th>操作</th></tr>${rows||'<tr><td colspan=5 class="k">空</td></tr>'}</table>
+ <div style="display:flex;gap:8px"><button class="act" onclick="addMemo()">手动新增一条记忆</button>
+ <button class="act ghost danger" onclick="clearMem()">清空全部记忆流水</button></div></div>`;
 }
+async function editMemo(idx){
+ const d=await api('/api/memory');
+ const it=(d.items||[]).find(x=>x.idx===idx);if(!it)return;
+ const t=await dlgText({title:'编辑记忆',body:'对象：'+(it.scope==='group'?'群 ':'联系人 ')+it.id+'（时间 '+it.time+'）',value:it.text,okText:'保存',maxlen:300});
+ if(t===null||!t)return;
+ const r=await saveKV('/api/memory/update',{idx:+idx,text:t},'记忆已更新（即时生效）');
+ if(r.ok!==false)load()}
+async function delMemo(idx){
+ if(!await dlgConfirm({title:'删除记忆',body:'删除这条记忆？机器人将不再记得此事（不可恢复）。',okText:'删除',danger:true}))return;
+ const r=await saveKV('/api/memory/delete',{idx:+idx},'记忆已删除（即时生效）');
+ if(r.ok!==false)load()}
+async function addMemo(){
+ const m=document.createElement('div');m.className='dlg-mask';
+ m.innerHTML='<div class="dlg" role="dialog"><h3>手动新增记忆</h3>'
+  +'<div class="dlg-body">给指定群或联系人写入一条记忆，机器人与其对话时会记得。例如：群 661206749 →「周三有小组作业讨论」。</div>'
+  +'<div style="display:flex;gap:8px;margin-top:12px;align-items:center">'
+  +'<select class="mini"><option value="group">群</option><option value="contact">联系人</option></select>'
+  +'<input placeholder="群号/QQ号" style="width:130px">'
+  +'</div><textarea rows="3" style="width:100%;margin-top:10px;resize:vertical" maxlength="300" placeholder="记忆内容（不超过300字）"></textarea>'
+  +'<div class="dlg-btns"><button class="act ghost">取消</button><button class="act">写入</button></div></div>';
+ document.body.appendChild(m);
+ const sel=m.querySelector('select'),cid=m.querySelector('input'),ta=m.querySelector('textarea');
+ const close=()=>m.remove();
+ m.querySelector('.dlg-btns .ghost').onclick=close;
+ m.querySelector('.dlg-btns .act').onclick=async()=>{
+  if(!/^\d{5,12}$/.test(cid.value.trim())||!ta.value.trim()){toast('对象需为群号/QQ号，内容不能为空',false);return}
+  close();
+  const r=await saveKV('/api/memory/add',{scope:sel.value,id:cid.value.trim(),text:ta.value.trim()},'记忆已写入（即时生效）');
+  if(r.ok!==false)load()};
+ m.onclick=e=>{if(e.target===m)close()};
+ m.onkeydown=e=>{if(e.key==='Escape')close()};
+ setTimeout(()=>cid.focus(),30)}
 async function clearMem(){if(!await dlgConfirm({title:'清空记忆流水',body:'确认清空记忆流水？此操作不可恢复。',okText:'清空',danger:true}))return;await api('/api/memory/clear',{method:'POST'});toast('记忆流水已清空');load()}
 let _curPool=null;
 async function vStickers(){
@@ -1342,11 +1389,12 @@ class UiHandler(BaseHTTPRequestHandler):
             items = []
             try:
                 with open(MEMORY_STREAM_PATH, "r", encoding="utf-8") as f:
-                    for ln in f:
+                    for i, ln in enumerate(f):
                         try:
                             r = json.loads(ln)
                         except ValueError:
                             continue
+                        r["idx"] = i  # 文件全局行号（编辑/删除定位用）
                         r["time"] = time.strftime(
                             "%m-%d %H:%M", time.localtime(r.get("ts", 0)))
                         items.append(r)
@@ -1982,6 +2030,66 @@ class UiHandler(BaseHTTPRequestHandler):
         if u.path == "/api/memory/clear":
             write_const(MEMORY_STREAM_PATH, "")
             return self._reply(200, {"ok": True})
+        if u.path in ("/api/memory/update", "/api/memory/delete",
+                      "/api/memory/add"):
+            def _lines():
+                try:
+                    with open(MEMORY_STREAM_PATH, "r", encoding="utf-8") as f:
+                        return f.readlines()
+                except OSError:
+                    return []
+
+            def _flush(lines):
+                tmp = pathlib.Path(MEMORY_STREAM_PATH + ".tmp")
+                tmp.write_text("".join(lines), encoding="utf-8")
+                last = None
+                for _ in range(3):  # 与 agent 追加写的微竞态：短暂重试
+                    try:
+                        os.replace(str(tmp), MEMORY_STREAM_PATH)
+                        return
+                    except PermissionError as e:
+                        last = e
+                        time.sleep(0.2)
+                raise last
+
+            try:
+                if u.path == "/api/memory/update":
+                    idx = int(body.get("idx", -1))
+                    text = str(body.get("text", "")).strip()
+                    if idx < 0 or not text or len(text) > 300:
+                        return self._reply(400, {"ok": False,
+                                                 "error": "idx/text 非法（1-300字）"})
+                    lines = _lines()
+                    if idx >= len(lines):
+                        return self._reply(400, {"ok": False, "error": "记忆行不存在"})
+                    rec = json.loads(lines[idx])
+                    rec["text"] = text
+                    lines[idx] = json.dumps(rec, ensure_ascii=False) + "\n"
+                    _flush(lines)
+                elif u.path == "/api/memory/delete":
+                    idx = int(body.get("idx", -1))
+                    lines = _lines()
+                    if idx < 0 or idx >= len(lines):
+                        return self._reply(400, {"ok": False, "error": "记忆行不存在"})
+                    del lines[idx]
+                    _flush(lines)
+                else:  # add
+                    scope = body.get("scope")
+                    cid = str(body.get("id", "")).strip()
+                    text = str(body.get("text", "")).strip()
+                    if scope not in ("group", "contact") or \
+                            not cid.isdigit() or len(cid) > 12 or \
+                            not text or len(text) > 300:
+                        return self._reply(400, {"ok": False,
+                                                 "error": "scope/id/text 非法（1-300字）"})
+                    rec = {"ts": int(time.time()), "scope": scope,
+                           "id": cid, "text": text}
+                    _lines_append = _lines()
+                    _lines_append.append(json.dumps(rec, ensure_ascii=False) + "\n")
+                    _flush(_lines_append)
+                return self._reply(200, {"ok": True})
+            except (ValueError, OSError) as e:
+                return self._reply(400, {"ok": False, "error": repr(e)})
         return self._reply(404, {"ok": False, "error": "not found"})
 
 

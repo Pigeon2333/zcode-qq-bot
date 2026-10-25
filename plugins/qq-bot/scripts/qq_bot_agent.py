@@ -86,13 +86,15 @@ COOLDOWN_SECONDS = 300
 
 BOT_NAME = "藤原妹紅"
 
-_persist_log = logging.getLogger("memory")
-_persist_log.setLevel(logging.INFO)
-if not _persist_log.handlers:
-    _handler = logging.FileHandler(MEMORY_STREAM_PATH, encoding="utf-8")
-    _handler.setFormatter(logging.Formatter("%(message)s"))
-    _persist_log.addHandler(_handler)
-    _persist_log.propagate = False
+
+def _append_memory(rec):
+    """追加一条记忆到 JSONL：每次即开即闭（不用常驻 FileHandler——
+    长期持有句柄会挡住管理 UI 对该文件的原子重写，Windows 下 replace 被拒）。"""
+    try:
+        with open(MEMORY_STREAM_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
 
 
 class Runtime:
@@ -1192,9 +1194,8 @@ def parse_reply(text):
 
 
 def persist_memo(scope, cid, text):
-    rec = json.dumps({"ts": int(time.time()), "scope": scope,
-                      "id": str(cid), "text": text}, ensure_ascii=False)
-    _persist_log.info(rec)
+    _append_memory({"ts": int(time.time()), "scope": scope,
+                    "id": str(cid), "text": text})
 
 
 def call_vision(messages_text, image_urls):
