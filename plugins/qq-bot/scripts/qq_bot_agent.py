@@ -1020,6 +1020,11 @@ def build_messages(daemon, msg):
                     "这条消息不是发给你的，是你在旁观群聊时随机注意到的。"
                     "结合上下文严格判断是否该开口，以下情况必须只输出 [SKIP]（四个词的方括号，"
                     "不输出其他任何内容）：\n"
+                    "- 「现在」这条标了「回复某某的消息」或「@的不是你」——对方明确在跟另一个人"
+                    "说话，你插进去就是打断，必须 [SKIP]\n"
+                    "- 消息开头在叫某个人的名字/称呼（不是叫你）——那是点名别人，不是在跟你说话\n"
+                    "- 别人之间的一问一答（问吃什么/问作业/让对方看某样东西/互相寒暄）——"
+                    "哪怕你知道答案也不是在问你\n"
                     "- 话题与你无关，你本来不会想说这句话\n"
                     "- 是其他两个人/几个人正在互相讨论的对话，你插进去会打断他们\n"
                     "- 没有人叫你、问你、接你的话\n"
@@ -1057,10 +1062,20 @@ def build_messages(daemon, msg):
         hist_lines.append("%s: %s" % (name, str(h.get("text", ""))[:100]))
     hist_block = "\n".join(hist_lines[-14:]) if hist_lines else "（暂无）"
 
+    rt = msg.get("reply_to") or None
     if msg["chat_type"] == "group":
         speaker = "%s(QQ:%s)" % (msg["sender_name"], msg["sender_id"])
-        content = "【群 %s | 最近对话】\n%s\n\n【现在】%s 对你说：%s" % (
-            msg["chat_name"], hist_block, speaker, msg["text"] or "（发了一张图/表情）")
+        if msg.get("at_me"):
+            lead = "%s @你说：" % speaker
+        elif rt:
+            lead = "%s 回复%s的消息「%s」说：" % (
+                speaker, rt.get("sender_name") or "某人", (rt.get("text") or "")[:40])
+        elif msg.get("at_users"):
+            lead = "%s（@的是QQ:%s，不是你）说：" % (speaker, msg["at_users"][0])
+        else:
+            lead = "%s 说：" % speaker
+        content = "【群 %s | 最近对话】\n%s\n\n【现在】%s%s" % (
+            msg["chat_name"], hist_block, lead, msg["text"] or "（发了一张图/表情）")
     else:
         content = "【私聊 | 最近对话】\n%s\n\n【现在】对方(QQ:%s)对你说：%s" % (
             hist_block, msg["sender_id"], msg["text"] or "（发了一张图/表情）")

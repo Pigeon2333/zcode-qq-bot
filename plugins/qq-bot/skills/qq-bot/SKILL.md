@@ -15,6 +15,7 @@ QQ ←→ NapCat Shell(OneBot v11 WS :3001) ←→ qq_daemon.py(:39763 消息管
                                              ↕ HTTP 收件箱轮询
 qq_bot_agent.py(:39764 自治大脑)
   路由顺序: 主人通道(画图→私聊遥控→任务桥) → 防滥用 → 搜索注入 → 视觉 → 文本链
+  结构性防插嘴(daemon): @别人(at_other)/回复别人(reply_other)的消息不进任何主动插话抽样; reply_to 摘要随消息传给 agent
   模型链降级+思考模式 / 人设+全局设定 / 长期记忆 / 三库表情包 / 夜间复盘线程
      ↕ spawn                        ↕ HTTP(回环)
 qq_task_worker.py(沙箱执行器)     qq_admin_ui.py(:39765 管理台)

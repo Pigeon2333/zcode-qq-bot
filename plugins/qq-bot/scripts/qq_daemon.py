@@ -555,6 +555,15 @@ class Daemon:
 
         with self.lock:
             self.seq += 1
+            # 回复目标上下文：被回复的消息若还在内存历史里，取摘要给 agent 判定用
+            reply_to = None
+            if info["has_reply"] and info["reply_id"]:
+                for rec in reversed(self.mem_history.get(
+                        "%s_%s" % (chat_type, chat_id), [])):
+                    if str(rec.get("message_id")) == str(info["reply_id"]):
+                        reply_to = {"sender_name": rec.get("sender_name"),
+                                    "text": str(rec.get("text") or "")[:60]}
+                        break
             item = {
                 "id": self.seq,
                 "ts": ev.get("time") or now_ts(),
@@ -568,8 +577,10 @@ class Daemon:
                 "trigger_reason": reason,
                 "text": info["text"],
                 "at_me": info["at_me"],
+                "at_users": info["at_users"][:5],
                 "image_urls": info["image_urls"][:6],
                 "has_reply": info["has_reply"],
+                "reply_to": reply_to,
                 "face_count": info["face_count"],
                 "has_record": info["record"],
             }
@@ -711,6 +722,12 @@ class Daemon:
             quiet_until = self.quiet_until
         if quiet_until and time.time() < quiet_until:
             return False, "quiet"
+        # 结构性防插嘴：消息明确指向他人时，主动插话一律不触发
+        # （@我/回复我的消息在上面已放行；走到这里说明没@我也没回复我）
+        if info["at_users"] and not info["at_me"]:
+            return False, "at_other"
+        if info["has_reply"]:
+            return False, "reply_other"
         mode = cfg["reply_mode"]
         text = info["text"]
         if mode in ("keyword", "chat") and text:
