@@ -430,7 +430,7 @@ async function vModels(){
   const opts=['<option value=""'+(!e.key?' selected':'')+'>主 Key</option>']
    +keysL.map(k=>`<option value="${esc(k.id)}"${e.key===k.id?' selected':''}>${esc(k.label||k.id)}</option>`).join('')
    +(e.key&&!keysL.some(k=>k.id===e.key)?`<option value="${esc(e.key)}" selected>（Key 已删除）</option>`:'');
-  return `<select class="mini" data-k="${i}" style="max-width:110px" onchange="saveModels()" title="此模型使用的 API Key">${opts.join('')}</select>`};
+  return `<select class="mini" data-k="${i}" style="max-width:110px" onchange="saveModels()" title="此模型使用的 API Key">${opts}</select>`};
  const rows=entries.map((e,i)=>{const v=thKey(e.model);const cd=a.cooldowns&&a.cooldowns[ckOf(e)]>0;
   return `<div class="row ${cd?'cool':''}"><span class="no">${i+1}.</span>
   <input value="${esc(e.model)}" data-i="${i}" style="flex:1;min-width:120px" onchange="saveModels()">
