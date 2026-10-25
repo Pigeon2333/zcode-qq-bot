@@ -328,7 +328,11 @@ async function powerOn(){
  else{toast('启动任务已开始：每一步进度在状态页实时显示')}
  load();
 }
-async function powerOff(napcatToo){if(napcatToo&&!await dlgConfirm({title:'停止 NapCat',body:'确认连 NapCat 一起停止？（下次启动需重新登录）',okText:'全部停止',danger:true}))return;const r=await api('/api/power/off',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({include_napcat:!!napcatToo})});toast('已停止');load()}
+async function powerOff(napcatToo){
+ if(!await dlgConfirm(napcatToo
+  ?{title:'停止 NapCat',body:'确认连 NapCat 一起停止？（下次启动需重新登录）',okText:'全部停止',danger:true}
+  :{title:'停止机器人',body:'大脑与消息管道将停止，机器人不再响应任何消息（QQ 登录保留，可随时重新启动）。',okText:'停止',danger:true}))return;
+ const r=await api('/api/power/off',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({include_napcat:!!napcatToo})});toast('已停止');load()}
 async function togglePause(){const a=await api('/api/agent-status');await api('/api/pause',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paused:!a.paused})});toast('已'+(!a.paused?'暂停':'恢复'));load()}
 let _runlogTimer=null,_runlogSrc='all';
 const _lvlColor={ok:'var(--ok)',err:'var(--err)',warn:'var(--warn)',info:'var(--fg)',dim:'var(--dim)'};
@@ -561,7 +565,9 @@ async function saveGroups(fromToggle){
  const r=await api('/api/groups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:cur.enabled!==false,allow_all:$('#allowall')?$('#allowall').checked:!!cur.allow_all,groups:c})});
  toast(r.ok===false?('保存失败: '+(r.error||'')):(c.length+' 个群已生效'),r.ok!==false);
  if(fromToggle)load()}
-function delg(i){const c=getGroups();const gid=c[i];c.splice(i,1);postGroupsReorder(c);
+async function delg(i){const c=getGroups();const gid=c[i];c.splice(i,1);
+ if(gid&&_gmModes[gid]&&!await dlgConfirm({title:'删除群并清除分群设置',body:'群 '+gid+' 设有分群模式覆盖，删除白名单会一并清除（重新添加后需重配）。确定删除？',okText:'删除',danger:true}))return;
+ postGroupsReorder(c);
  if(gid&&_gmModes[gid])api('/api/group-modes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:gid,override:null})})}
 async function postGroupsReorder(c){const a=await api('/api/groups');await api('/api/groups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:a.enabled!==false,allow_all:a.allow_all,groups:c})});load()}
 function addg(){const v=$('#newg').value.trim();if(!v)return;const c=getGroups();c.push(v);postGroupsReorder(c)}

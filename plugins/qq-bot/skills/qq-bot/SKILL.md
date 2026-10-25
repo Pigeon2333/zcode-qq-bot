@@ -62,6 +62,11 @@ qq_task_worker.py(沙箱执行器)     qq_admin_ui.py(:39765 管理台)
    （node --check 对非 .js 扩展名拒绝且 Mimosa 拦 .js 落盘，new Function 编译不执行是绕法）
 2. 编辑工具只用 Edit/Write（bash heredoc 曾多次把 `\n`/`\x00`/JS 块写坏）
 3. 数据文件路径段校验用黑名单式 `[/:*?"<>|\x00]`（白名单式会拒绝中文人设名）
+4. **高危操作必须有二次确认**（自制 `dlgConfirm({danger:true})`，禁用原生 confirm/prompt）：
+   - 必须确认：内容不可再生的删除（人设/表情文件/记忆流水/风格观察）、服务中断（停止组件）、
+     放弃未保存修改、连带数据丢失的配置删除（如删白名单群会连带清分群覆盖）
+   - 不强制：可秒级重输的纯配置增删（模型链条目、白名单行）、可逆开关
+   - 桌面关闭路径（qq_app exit_all）保留 tkinter 系统确认（JS 拦不住窗口关闭）
 4. 对外请求：http.client + 常量主机；动态 URL 必须先 scheme/host 校验（拒环回/私有地址）
 5. **绝不为了单测改写生产配置文件**（曾覆盖又误删 reply_config.json，靠记忆恢复）
 6. Mimosa 钩子对 `subprocess shell=True` 拼接、未校验 open 动态路径会拦——参数列表 +
