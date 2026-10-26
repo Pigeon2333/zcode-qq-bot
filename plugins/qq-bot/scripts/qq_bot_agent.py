@@ -256,10 +256,13 @@ class DaemonClient:
         """安静模式：minutes>0 持续；0 取消（@/回复机器人不受影响）。"""
         return self._request("POST", "/quiet", {"minutes": float(minutes)})
 
-    def send_image(self, chat_type, chat_id, file_path, caption=""):
+    def send_image(self, chat_type, chat_id, file_path, caption="", wait=False,
+                   allow_any=False):
         return self._request("POST", "/send-image", {
             "chat_type": chat_type, "chat_id": chat_id,
-            "file": file_path, "caption": caption})
+            "file": file_path, "caption": caption, "wait": bool(wait),
+            "allow_any": bool(allow_any)},
+            timeout=90)
 
     def ack(self, ids):
         return self._request("POST", "/ack", {"ids": ids})
@@ -2421,7 +2424,10 @@ _DEVCTRL_TOOLS_DOC = """## 设备操控模式（协议二已连线，主人已�
 - 不需要动作（任务完成/纯聊天/汇报结果）时：直接输出给主人看的话——保持人设、
   口语自然，把刚拿到的结果讲清楚；此时禁止出现 [CMD]。
 要点：拿不准路径就先 find/list 再 read/send，一步一步来；多步任务做完后用人设
-口吻简短汇报；主人闲聊就正常聊；禁止声称自己无法操作电脑（你已授权）。"""
+口吻简短汇报；主人闲聊就正常聊；禁止声称自己无法操作电脑（你已授权）。
+诚实铁律：动作结果是什么就转达什么——find 无匹配就说没找到，send 失败就说
+失败（可以顺带建议重试或换个文件），绝对禁止在失败结果之后对主人说\"已发送/
+已找到/搞定了\"。"""
 
 
 def _devctrl_history_block(daemon, msg, n=10, w=80):
@@ -2443,8 +2449,9 @@ def _devctrl_step(daemon, reply_to, action, arg):
     arg = str(arg or "").strip()
     if action == "find":
         results = _devctrl_search(arg[:100])
+        # 完整路径不截断：模型要原样复制给 read/send，截断会产生不存在的残路径
         return "find「%s」→ %d 条：%s" % (arg[:60], len(results),
-            ("；".join(x[:120] for x in results[:8]) if results else "无匹配"))
+            ("；".join(results[:6]) if results else "无匹配"))
     if action == "read":
         fp = arg[:260]
         if _is_protected(fp):
@@ -2459,9 +2466,16 @@ def _devctrl_step(daemon, reply_to, action, arg):
         if _is_protected(fp):
             return "send 拒绝：%s 在保护目录内" % fp
         if not os.path.isfile(fp):
-            return "send 失败：文件不存在 %s（可先 find）" % fp
-        daemon.send_image(reply_to[0], reply_to[1], fp)
-        return "send 已送达：%s" % os.path.basename(fp)
+            return "send 失败：文件不存在 %s（路径要原样复制 find 给的结果，别自己猜）" % fp
+        try:
+            res = daemon.send_image(reply_to[0], reply_to[1], fp,
+                                    wait=True, allow_any=True) or {}
+        except Exception as e:
+            return "send 失败：%r" % e
+        if res.get("ok"):
+            return "send 发送成功（QQ 已确认送达）：%s" % os.path.basename(fp)
+        return "send 发送失败：%s ——必须如实告诉主人失败了，不能说已发送" % str(
+            res.get("error", "未知错误"))[:160]
     if action == "list":
         d = arg[:260] or os.path.expanduser("~")
         if _is_protected(d):

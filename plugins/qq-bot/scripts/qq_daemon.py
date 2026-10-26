@@ -967,15 +967,50 @@ class Daemon:
         threading.Thread(target=self._drain_send_queue, daemon=True).start()
         return {"queued": n}
 
-    def send_image(self, chat_type, chat_id, file_path, caption=None):
-        p = resolve_media_file(file_path)
+    def send_image(self, chat_type, chat_id, file_path, caption=None, wait=False,
+                   allow_any=False):
+        if allow_any:
+            # 设备操控通道：owner 已授权且保护目录在 agent 侧校验，
+            # 允许任意本机可读文件；仅做存在性与基本解析
+            ap = os.path.abspath(str(file_path))
+            if not os.path.isfile(ap):
+                raise ValueError("文件不存在: %s" % ap)
+            p = ap
+        else:
+            p = resolve_media_file(file_path)
         chat_key = "%s_%s" % (chat_type, chat_id)
         if not self._rate_ok(chat_key):
             raise RuntimeError("触发每分钟限流，请稍后再发")
-        self.send_queue.append({"chat_type": chat_type, "chat_id": chat_id, "kind": "image",
-                                "file": p, "text": caption or "", "delay": 0})
+        job = {"chat_type": chat_type, "chat_id": chat_id, "kind": "image",
+               "file": p, "text": caption or "", "delay": 0}
+        ev = threading.Event() if wait else None
+        if wait:
+            job["done"] = ev
+            job["result"] = {"ok": False, "error": "发送超时未回执"}
+        self.send_queue.append(job)
         threading.Thread(target=self._drain_send_queue, daemon=True).start()
-        return {"queued": 1}
+        if not wait:
+            return {"queued": 1}
+        # 同步等待真实回执（超时类失败自动重试一次）
+        for attempt in range(2):
+            if ev.wait(40):
+                res = job.get("result") or {}
+                if res.get("ok") or attempt == 1:
+                    return res
+                err = str(res.get("error", ""))
+                out("AGENT_LOG {\"msg\": \"send_image_retry\", \"detail\": %s}"
+                    % json.dumps(err[:120]))
+                job2 = dict(job)
+                ev2 = threading.Event()
+                job2["done"] = ev2
+                job2["result"] = {"ok": False, "error": "发送超时未回执"}
+                self.send_queue.append(job2)
+                job = job2
+                ev = ev2
+                threading.Thread(target=self._drain_send_queue, daemon=True).start()
+            else:
+                return {"ok": False, "error": "等待发送回执超时（40s）"}
+        return job.get("result") or {"ok": False, "error": "发送失败"}
 
     def _drain_send_queue(self):
         with self._drain_lock:
@@ -985,8 +1020,15 @@ class Daemon:
                     time.sleep(job["delay"])
                 try:
                     self._send_one(job)
+                    if job.get("done") is not None:
+                        job["result"] = {"ok": True}
                 except Exception as e:
                     out("AGENT_LOG {\"msg\": \"send_failed\", \"detail\": %s}" % json.dumps(repr(e)))
+                    if job.get("done") is not None:
+                        job["result"] = {"ok": False, "error": repr(e)[:200]}
+                finally:
+                    if job.get("done") is not None:
+                        job["done"].set()
 
     def _send_one(self, job):
         chat_type, chat_id = job["chat_type"], job["chat_id"]
@@ -1217,7 +1259,9 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
                 return self._reply(200, {"ok": True, **res})
             if u.path == "/send-image":
                 res = d.send_image(body["chat_type"], body["chat_id"],
-                                   body["file"], body.get("caption"))
+                                   body["file"], body.get("caption"),
+                                   wait=bool(body.get("wait")),
+                                   allow_any=bool(body.get("allow_any")))
                 return self._reply(200, {"ok": True, **res})
             if u.path == "/test/inject":
                 d._dispatch_ws_event(body["event"])
