@@ -275,27 +275,37 @@ class DaemonClient:
         return r.get("chats", []) if r.get("ok") else []
 
 
-def glm_key():
-    """主 Key：环境变量 > api_keys.json 的 primary 条目 > 旧 zhipu_api_key 文件。"""
-    env = os.environ.get("ZHIPU_API_KEY", "").strip()
-    if env:
-        return env
+def glm_key(provider="zhipu"):
+    """主 Key（按供应商）：环境变量 > primary 条目 > 同供应商首个 > 旧文件。
+    智谱专属功能（生图/联网搜索/视觉兜底）固定取 zhipu。"""
+    if provider == "zhipu":
+        env = os.environ.get("ZHIPU_API_KEY", "").strip()
+        if env:
+            return env
     data = load_json_const(API_KEYS_PATH, {})
+    entries = data.get("keys") if isinstance(data, dict) else None
     pid = str(data.get("primary", "")).strip() if isinstance(data, dict) else ""
-    if pid:
-        for e in data.get("keys") or []:
-            if isinstance(e, dict) and e.get("id") == pid:
+    if isinstance(entries, list):
+        for e in entries:
+            if isinstance(e, dict) and e.get("id") == pid \
+                    and str(e.get("provider") or "zhipu") == provider:
                 k = str(e.get("key", "")).strip()
                 if k:
                     return k
-    return read_const(API_KEY_PATH)
+        for e in entries:
+            if isinstance(e, dict) and str(e.get("provider") or "zhipu") == provider:
+                k = str(e.get("key", "")).strip()
+                if k:
+                    return k
+    return read_const(API_KEY_PATH) if provider == "zhipu" else ""
 
 
 API_KEYS_PATH = os.path.join(DATA_DIR, "api_keys.json")
 
 
 def load_api_keys():
-    """备用 key 池（api_keys.json，管理 UI 维护）：{id: {"label","key"}}。"""
+    """备用 key 池（api_keys.json，管理 UI 维护）：
+    {id: {"label","key","provider","base_url"}}（旧数据无 provider → 智谱）。"""
     data = load_json_const(API_KEYS_PATH, {})
     keys = data.get("keys") if isinstance(data, dict) else None
     if not isinstance(keys, list):
@@ -304,9 +314,15 @@ def load_api_keys():
     for e in keys:
         if isinstance(e, dict) and str(e.get("id", "")).strip() \
                 and str(e.get("key", "")).strip():
+            prov = str(e.get("provider") or "zhipu").strip().lower()
+            if prov not in C.API_PROVIDERS and prov != "custom":
+                prov = "zhipu"
             out[str(e["id"]).strip()] = {
                 "label": str(e.get("label", "")).strip()[:20],
-                "key": str(e["key"]).strip()}
+                "key": str(e["key"]).strip(),
+                "provider": prov,
+                "base_url": str(e.get("base_url", "")).strip()[:300],
+            }
     return out
 
 
@@ -342,7 +358,8 @@ def _chain_candidates():
             ent = keys.get(kid)
             if not ent:
                 continue
-            kv = ent["key"]
+            kv = {"key": ent["key"], "provider": ent.get("provider", "zhipu"),
+                  "base_url": ent.get("base_url", "")}
         else:
             kv = glm_key()
         if not kv:
@@ -362,14 +379,30 @@ def _chain_candidates():
 
 
 def glm_chat(model, messages, timeout=40, extra_body=None, key=None):
-    """调用智谱 OpenAI 兼容接口（常量主机 + TLS），返回 (status, data)。
+    """调用 OpenAI 兼容接口，返回 (status, data)。
 
+    key 支持三种形态：
+      None/str  → 主 Key（智谱端点；str 也可能是环境变量或旧数据）
+      dict      → 凭证对象 {"key","provider","base_url"}（模型链多供应商条目）
     extra_body: 附加参数（thinking/max_tokens 覆盖等）。
-    key: 指定 API Key（多 Key 降级用）；缺省用主 Key。
     """
-    key = key or glm_key()
-    if not key:
-        raise RuntimeError("缺少 API key：请录入 ~/.zcode-qq-bot/zhipu_api_key")
+    provider, base_url = "zhipu", ""
+    if isinstance(key, dict):
+        cred = str(key.get("key") or "").strip()
+        provider = str(key.get("provider") or "zhipu")
+        base_url = str(key.get("base_url") or "")
+    else:
+        cred = (key or glm_key() or "").strip()
+    if not cred:
+        raise RuntimeError("缺少 API key：请在控制台设置页录入")
+    base, path = C.provider_endpoint(provider, base_url)
+    u = urllib.parse.urlsplit(base)
+    scheme = u.scheme or "https"
+    if scheme not in ("http", "https") or not u.hostname:
+        raise RuntimeError("API 端点非法：%s" % base)
+    if not C.safe_api_host(u.hostname):
+        raise RuntimeError("API 主机被拒绝（禁止内网/环回地址）：%s" % u.hostname)
+    port = u.port or (443 if scheme == "https" else 80)
     body = json.dumps({
         "model": model,
         "messages": messages,
@@ -377,12 +410,15 @@ def glm_chat(model, messages, timeout=40, extra_body=None, key=None):
         "max_tokens": 600,
         **(extra_body or {}),
     }).encode("utf-8")
-    ctx = ssl.create_default_context()
-    conn = http.client.HTTPSConnection(GLM_HOST, 443, timeout=timeout, context=ctx)
+    if scheme == "https":
+        conn = http.client.HTTPSConnection(u.hostname, port, timeout=timeout,
+                                           context=ssl.create_default_context())
+    else:
+        conn = http.client.HTTPConnection(u.hostname, port, timeout=timeout)
     try:
-        conn.request("POST", GLM_URL_PATH, body=body, headers={
+        conn.request("POST", path, body=body, headers={
             "Content-Type": "application/json",
-            "Authorization": "Bearer " + key,
+            "Authorization": "Bearer " + cred,
         })
         resp = conn.getresponse()
         return resp.status, json.loads(resp.read().decode("utf-8"))

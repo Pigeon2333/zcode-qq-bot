@@ -71,6 +71,41 @@ BACKUP_FILES = [
 # 密钥类（api_keys.json / zhipu_api_key / token / ws_token）刻意不备份：备份目录
 # 可能被用户指向网盘同步盘，避免明文密钥外泄。
 
+# 多供应商注册表（chat/completions 均为 OpenAI 兼容）
+# custom 供应商的 base 由 Key 条目自带 base_url。
+API_PROVIDERS = {
+    "zhipu": {"label": "智谱", "base": "https://open.bigmodel.cn",
+              "path": "/api/paas/v4/chat/completions"},
+    "deepseek": {"label": "DeepSeek", "base": "https://api.deepseek.com",
+                 "path": "/v1/chat/completions"},
+}
+
+
+def safe_api_host(host):
+    """API 主机安全校验：拒绝 localhost/环回/私网/保留地址（防 SSRF 打内网服务）。"""
+    import ipaddress
+    import socket
+    h = str(host or "").strip().rstrip(".")
+    if not h or h.lower() in ("localhost",) or h.endswith(".local"):
+        return False
+    try:
+        addr = ipaddress.ip_address(socket.gethostbyname(h))
+        return not (addr.is_private or addr.is_loopback or addr.is_reserved
+                    or addr.is_link_local or addr.is_multicast or addr.is_unspecified)
+    except (OSError, ValueError):
+        return False
+
+
+def provider_endpoint(provider, base_url=""):
+    """供应商 → (base, path)。custom 必须给 base_url；未知供应商回落智谱。"""
+    p = API_PROVIDERS.get(str(provider or "zhipu").lower())
+    if p:
+        return p["base"], p["path"]
+    b = str(base_url or "").strip()
+    if b:
+        return b.rstrip("/"), "/chat/completions"
+    return API_PROVIDERS["zhipu"]["base"], API_PROVIDERS["zhipu"]["path"]
+
 
 def detect_qqnt_dir():
     """从注册表探测 QQNT 安装目录（NapCat launcher 同款逻辑）。"""

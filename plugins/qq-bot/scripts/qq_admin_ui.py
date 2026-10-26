@@ -730,8 +730,8 @@ function chainOf(entries){return entries.map(e=>(e.key||e.ctx||e.maxout)?{model:
 async function editModel(i){
  const creating=i<0;const e=creating?{model:'',key:'',ctx:'',think:'',maxout:''}:Object.assign({},window._mEntries[i]);
  const keysL=window._mKeys||[];
- const keyOpts='<option value=""'+(!e.key?' selected':'')+'>主 Key</option>'
-  +keysL.map(k=>`<option value="${esc(k.id)}"${e.key===k.id?' selected':''}>${k.primary?'★ ':''}${esc(k.label||k.id)}</option>`).join('');
+ const keyOpts='<option value=""'+(!e.key?' selected':'')+'>主 Key（智谱）</option>'
+  +keysL.map(k=>`<option value="${esc(k.id)}"${e.key===k.id?' selected':''}>${k.primary?'★ ':''}${esc(k.label||k.id)}（${esc(k.provider_label||'智谱')}）</option>`).join('');
  const thOpts=['','off','high','low'].map(v=>'<option value="'+v+'"'+((e.think||'')===v?' selected':'')+'>'+({'' :'跟随默认','off':'关闭思考','high':'思考·高','low':'思考·低'})[v]+'</option>').join('');
  const row=(label,inner,hint)=>'<div style="margin-top:10px"><div class="k" style="margin-bottom:4px">'+label+'</div>'+inner+(hint?'<div class="k" style="margin-top:3px">'+hint+'</div>':'')+'</div>';
  const m=document.createElement('div');m.className='dlg-mask';
@@ -1126,14 +1126,26 @@ async function vSettings(){
  <div class="card"><div class="k">API Key（智谱开放平台获取；多个 Key 时选一个「主」——生图/联网搜索/模型链未指定 Key 的条目都用主 Key；模型链每行可在「模型管理」单独指定 Key）</div>
   <div style="margin-top:10px">${keysL.map(k=>`<div class="row">
    <label style="margin:0;flex:none;white-space:nowrap"><input type="radio" name="primkey" ${k.primary?'checked':''} onchange="setPrimary('${esc(k.id)}')"> 主</label>
+   <span class="badge" style="flex:none;background:var(--tint);color:var(--dim)">${esc(k.provider_label||'智谱')}</span>
    <input value="${esc(k.label||'')}" data-kid="${esc(k.id)}" style="flex:1" onchange="renameKey('${esc(k.id)}',this)">
-   <span class="mono" style="flex:none;width:150px">${esc(k.mask||'')}</span>
+   <span class="mono" style="flex:none;width:150px">${esc(k.mask||'')}${k.base_url?'<br><span class="k mono" style="font-size:11px">'+esc(k.base_url)+'</span>':''}</span>
+   <select class="mini" style="flex:none;width:92px" title="该 Key 的供应商" onchange="setKeyProvider('${esc(k.id)}',this.value)">
+    <option value="zhipu"${k.provider!=='deepseek'&&k.provider!=='custom'?' selected':''}>智谱</option>
+    <option value="deepseek"${k.provider==='deepseek'?' selected':''}>DeepSeek</option>
+    <option value="custom"${k.provider==='custom'?' selected':''}>自定义</option>
+   </select>
    <button class="act ghost danger" onclick="delKey('${esc(k.id)}')">删除</button></div>`).join('')||'<i class="k">尚未配置任何 Key</i>'}</div>
-  <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
-   <input id="nklabel" placeholder="备注，如：企业/个人" style="width:130px">
-   <input id="nkval" type="password" placeholder="粘贴 API Key" style="flex:1;min-width:220px">
+  <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+   <input id="nklabel" placeholder="备注，如：企业/个人" style="width:120px">
+   <select id="nkprov" class="mini" style="width:110px" onchange="document.getElementById('nkbase').style.display=this.value==='custom'?'':'none'">
+    <option value="zhipu">智谱</option>
+    <option value="deepseek">DeepSeek</option>
+    <option value="custom">自定义兼容</option>
+   </select>
+   <input id="nkbase" placeholder="Base URL，如 https://api.xxx.com/v1" style="flex:1;min-width:200px;display:none">
+   <input id="nkval" type="password" placeholder="粘贴 API Key" style="flex:1;min-width:180px">
    <button class="act" onclick="addKey()">添加 Key</button></div>
-  <div class="k" style="margin-top:6px">Key 仅保存在本机数据目录（不进源码），列表仅显示掩码；第一个添加的自动成为主 Key，删除主 Key 后自动切到剩余第一个。模型链中引用某 Key 的条目在该 Key 被删除后会被自动跳过。</div></div>
+  <div class="k" style="margin-top:6px">支持多供应商（OpenAI 兼容接口）：智谱、DeepSeek（模型名 deepseek-chat / deepseek-reasoner）、自定义（填 Base URL，禁止内网地址）。主 Key 与生图/联网搜索固定用智谱 Key；模型链每行可绑定任意 Key。Key 仅保存在本机数据目录（不进源码），列表仅显示掩码；第一个添加的自动成为主 Key，删除主 Key 后自动切到剩余第一个。</div></div>
  <div class="card"><label class="master"><input type="checkbox" ${rv.lean_ctx_enabled!==false?'checked':''} onchange="saveLeanCtx(this.checked)">
    <span><b>精简上下文（推荐开启）</b><div class="k" style="margin-top:3px">开启后：旁观消息先经约 0.5k token 的轻量判定决定是否开口（决定开口才用全量提示词生成），回复时按各模型的上下文档位裁剪历史与记忆——人设/风格/安全规则始终全量，回复质量不受影响。关闭后：每次调用都带完整系统提示与更多历史记忆（追求最佳表现，token 消耗大约 +50%~80%，旁观评估为主增量）</div></span></label></div>
  <div class="card"><label class="master"><input type="checkbox" ${rv.wait_gate_enabled!==false?'checked':''} onchange="saveKV('/api/reply-config',{wait_gate_enabled:this.checked?1:0},'等说完协议已'+(this.checked?'开启':'关闭'));load()">
@@ -1274,9 +1286,19 @@ function renderLimitUsage(u){
 }
 async function addKey(){
  const label=$('#nklabel').value.trim(),key=$('#nkval').value.trim();
+ const provider=$('#nkprov')?$('#nkprov').value:'zhipu';
+ const base_url=$('#nkbase')?$('#nkbase').value.trim():'';
  if(!key){toast('请先粘贴 API Key',false);return}
- const r=await saveKV('/api/keys/add',{label,key},'Key 已添加（第一个自动成为主 Key）');
+ if(provider==='custom'&&!base_url){toast('自定义供应商需填 Base URL',false);return}
+ const r=await saveKV('/api/keys/add',{label,key,provider,base_url},'Key 已添加（第一个自动成为主 Key）');
  if(r.ok!==false){load()}}
+async function setKeyProvider(id,prov){
+ let base_url='';
+ if(prov==='custom'){
+  base_url=await dlgPrompt({title:'自定义供应商',body:'填写 OpenAI 兼容 Base URL（http/https，禁止内网地址）：',placeholder:'https://api.xxx.com/v1',okText:'保存'});
+  if(!base_url){load();return}}
+ const r=await saveKV('/api/keys/rename',{id,provider:prov,base_url},'该 Key 供应商已改为 '+(prov==='zhipu'?'智谱':(prov==='deepseek'?'DeepSeek':'自定义')));
+ if(r.ok!==false)load()}
 async function delKey(id){
  if(!await dlgConfirm({title:'删除 Key',body:'删除该 Key？模型链中引用它的条目将被自动跳过（可随时重新添加并绑定）。',okText:'删除',danger:true}))return;
  const r=await saveKV('/api/keys/del',{id},'Key 已删除');
@@ -1882,9 +1904,15 @@ class UiHandler(BaseHTTPRequestHandler):
             for e in keys:
                 if isinstance(e, dict) and e.get("id"):
                     k = str(e.get("key", ""))
+                    prov = str(e.get("provider") or "zhipu")
                     out.append({"id": e["id"], "label": str(e.get("label", "")),
                                 "mask": (k[:6] + "…" + k[-4:]) if len(k) > 14 else "…",
-                                "primary": e["id"] == primary})
+                                "primary": e["id"] == primary,
+                                "provider": prov,
+                                "provider_label": C.API_PROVIDERS.get(
+                                    prov, {}).get("label", "自定义"),
+                                "base_url": str(e.get("base_url", ""))[:120]
+                                if prov == "custom" else ""})
             return self._reply(200, {"ok": True, "keys": out})
         if u.path == "/api/runlog":
             src = q.get("src", "all")
@@ -2884,14 +2912,28 @@ class UiHandler(BaseHTTPRequestHandler):
             if u.path == "/api/keys/add":
                 key = str(body.get("key", "")).strip()
                 label = str(body.get("label", "")).strip()[:20]
-                if len(key) < 20 or len(key) > 120 or any(c.isspace() for c in key):
-                    return self._reply(400, {"ok": False, "error": "Key 格式非法（20-120字符，无空白）"})
+                provider = str(body.get("provider") or "zhipu").strip().lower()
+                base_url = str(body.get("base_url") or "").strip()[:300]
+                if provider not in ("zhipu", "deepseek", "custom"):
+                    return self._reply(400, {"ok": False, "error": "供应商非法"})
+                if provider == "custom":
+                    u2 = urllib.parse.urlsplit(base_url)
+                    if u2.scheme not in ("http", "https") or not u2.hostname:
+                        return self._reply(400, {"ok": False, "error": "自定义供应商需填 Base URL（http/https）"})
+                    if not C.safe_api_host(u2.hostname):
+                        return self._reply(400, {"ok": False, "error": "Base URL 主机被拒绝（禁止内网/环回地址）"})
+                if len(key) < 20 or len(key) > 200 or any(c.isspace() for c in key):
+                    return self._reply(400, {"ok": False, "error": "Key 格式非法（20-200字符，无空白）"})
                 if len(keys) >= 10:
                     return self._reply(400, {"ok": False, "error": "Key 最多 10 个"})
                 nid = "k%d" % (max([int(e["id"][1:]) for e in keys
                                     if isinstance(e, dict) and str(e.get("id", "")).startswith("k")
                                     and str(e["id"])[1:].isdigit()] or [0]) + 1)
-                keys.append({"id": nid, "label": label or ("Key " + nid[1:]), "key": key})
+                ent = {"id": nid, "label": label or ("Key " + nid[1:]), "key": key,
+                       "provider": provider}
+                if provider == "custom":
+                    ent["base_url"] = base_url
+                keys.append(ent)
                 if not primary:
                     primary = nid  # 第一个 Key 自动成为主 Key
             elif u.path == "/api/keys/primary":
@@ -2910,9 +2952,22 @@ class UiHandler(BaseHTTPRequestHandler):
                         primary = keys[0]["id"] if keys and isinstance(keys[0], dict) else ""
                 else:
                     nl = str(body.get("label", "")).strip()[:20]
-                    if not nl:
-                        return self._reply(400, {"ok": False, "error": "备注不能为空"})
-                    hit[0]["label"] = nl
+                    if nl:
+                        hit[0]["label"] = nl
+                    if "provider" in body:
+                        prov = str(body.get("provider") or "zhipu").strip().lower()
+                        if prov not in ("zhipu", "deepseek", "custom"):
+                            return self._reply(400, {"ok": False, "error": "供应商非法"})
+                        if prov == "custom":
+                            b = str(body.get("base_url") or "").strip()[:300]
+                            u3 = urllib.parse.urlsplit(b)
+                            if u3.scheme not in ("http", "https") or not u3.hostname \
+                                    or not C.safe_api_host(u3.hostname):
+                                return self._reply(400, {"ok": False, "error": "自定义供应商 Base URL 非法（需 http/https 公网主机）"})
+                            hit[0]["base_url"] = b
+                        else:
+                            hit[0].pop("base_url", None)
+                        hit[0]["provider"] = prov
             write_const(KEYS_PATH, json.dumps(
                 {"keys": keys, "primary": primary}, ensure_ascii=False, indent=2))
             return self._reply(200, {"ok": True})
