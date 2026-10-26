@@ -516,6 +516,8 @@ class Daemon:
         self.stats = {"received": 0, "triggered": 0, "sent": 0, "dropped_rate": 0}
         self.quiet_until = 0.0  # 安静模式截止时间戳（0=关闭；@/回复不受影响）
         self.ws_last_ok = time.time()  # 动作通道最近一次成功响应
+        self._group_names = None       # {group_id: group_name} 缓存
+        self._group_names_ts = 0.0
         self.ws = WSClient(
             ws_url, token,
             on_event=self._dispatch_ws_event,
@@ -1059,6 +1061,30 @@ class Daemon:
             "data_dir": DATA_DIR,
         }
 
+    def group_names(self, max_age=600):
+        """群号→群名映射（get_group_list，10 分钟缓存；失败返回旧值或空）。"""
+        with self.lock:
+            fresh = self._group_names is not None \
+                and time.time() - self._group_names_ts < max_age
+            if fresh:
+                return self._group_names
+        try:
+            data = self._call_action("get_group_list", {}, timeout=12)
+            names = {}
+            for g in data if isinstance(data, list) else []:
+                if isinstance(g, dict) and g.get("group_id"):
+                    names[str(g["group_id"])] = str(g.get("group_name") or "")
+            with self.lock:
+                self._group_names = names
+                self._group_names_ts = time.time()
+            out("AGENT_LOG {\"msg\": \"group_list\", \"count\": %d}" % len(names))
+            return names
+        except Exception as e:
+            out("AGENT_LOG {\"msg\": \"group_list_fail\", \"detail\": %s}"
+                % json.dumps(repr(e)[:120]))
+            with self.lock:
+                return self._group_names or {}
+
     def _probe_loop(self):
         """动作通道探活（45s 一次）：get_login_info 探测 NapCat 是否仍响应。
         连续 2 次失败且连接显示在线 = 半死连接 → 硬复位 socket 触发重连。
@@ -1142,6 +1168,9 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
             if u.path == "/recent-chats":
                 return self._reply(200, {"ok": True,
                                          "chats": self.daemon.recent_chats()})
+            if u.path == "/group-list":
+                return self._reply(200, {"ok": True,
+                                         "names": self.daemon.group_names()})
             if u.path == "/history":
                 recs = self.daemon.history(
                     q.get("chat_type", "group"), q.get("chat_id", ""),

@@ -378,6 +378,34 @@ def _chain_candidates():
     return cands
 
 
+def _api_conn(hostname, port, scheme, timeout):
+    """建 API 连接；配置了 api_proxy 时经 HTTP CONNECT 隧道出站
+    （境外供应商 OpenAI/Grok/Gemini 国内直连不可达时用）。"""
+    ctx = ssl.create_default_context()
+    try:
+        px = str(C.load_app_config().get("api_proxy") or "").strip()
+    except Exception:
+        px = ""
+    if px:
+        if "//" not in px:
+            px = "http://" + px
+        u = urllib.parse.urlsplit(px)
+        phost, pport = u.hostname, u.port or 80
+        if phost and u.scheme in ("http", "https"):
+            if scheme == "https":
+                conn = http.client.HTTPSConnection(
+                    phost, pport, timeout=timeout, context=ctx)
+                conn.set_tunnel(hostname, port)
+            else:
+                conn = http.client.HTTPConnection(phost, pport, timeout=timeout)
+                conn.set_tunnel(hostname, port)
+            return conn
+    if scheme == "https":
+        return http.client.HTTPSConnection(hostname, port, timeout=timeout,
+                                           context=ctx)
+    return http.client.HTTPConnection(hostname, port, timeout=timeout)
+
+
 def glm_chat(model, messages, timeout=40, extra_body=None, key=None):
     """调用 OpenAI 兼容接口，返回 (status, data)。
 
@@ -410,11 +438,7 @@ def glm_chat(model, messages, timeout=40, extra_body=None, key=None):
         "max_tokens": 600,
         **(extra_body or {}),
     }).encode("utf-8")
-    if scheme == "https":
-        conn = http.client.HTTPSConnection(u.hostname, port, timeout=timeout,
-                                           context=ssl.create_default_context())
-    else:
-        conn = http.client.HTTPConnection(u.hostname, port, timeout=timeout)
+    conn = _api_conn(u.hostname, port, scheme, timeout)
     try:
         conn.request("POST", path, body=body, headers={
             "Content-Type": "application/json",

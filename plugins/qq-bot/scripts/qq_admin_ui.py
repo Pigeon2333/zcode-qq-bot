@@ -766,13 +766,16 @@ async function editModel(i){
   const r=await saveKV('/api/config',{models:chainOf(window._mEntries),thinking:think},(creating?'已添加 ':'已保存 ')+model+'（agent 已热加载）');
   load()}}
 async function vGroups(){
- const [g,c,gm,rv]=await Promise.all([
+ const [g,c,gm,rv,gnr]=await Promise.all([
   api('/api/groups').catch(()=>({})),
   api('/api/reply-config').catch(()=>({})),
   api('/api/group-modes').catch(()=>({modes:{}})),
   api('/api/reply-config').catch(()=>({})),
+  api('/api/group-names').catch(()=>({names:{}})),
  ]);
  _gmModes=gm.modes||{};_gmGlobal=c;rvState=rv;
+ const gn=(gnr&&gnr.names)||{};
+ const gname=x=>gn[String(x)]||'';
  const on=g.enabled!==false, allOn=!!g.allow_all, m=c.reply_mode||'standard';
  const rows=(g.groups||[]).map((x,i)=>{
   const ov=_gmModes[x]||{};
@@ -793,6 +796,7 @@ async function vGroups(){
   }
   return `<div class="gm-wrap"><div class="row"><span class="no">${i+1}.</span>
    <input class="gin" value="${esc(x)}" data-i="${i}" style="flex:1;min-width:110px" placeholder="群号" onchange="saveGroups()">
+   <span class="k" style="flex:none;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(gname(x))||'群名未获取（机器人需在该群内）'}">${esc(gname(x))||'<i>未获取</i>'}</span>
    <select class="mini" style="width:116px;flex:none" title="该群回复模式" onchange="rowGmMode(this)">
     ${opt('','跟随全局')}${opt('standard','标准')}${opt('keyword','关键词')}${opt('chat','闲聊')}${opt('paused','暂停回应')}
    </select>
@@ -1156,23 +1160,35 @@ async function vSettings(){
    <span class="badge" style="flex:none;background:var(--tint);color:var(--dim)">${esc(k.provider_label||'智谱')}</span>
    <input value="${esc(k.label||'')}" data-kid="${esc(k.id)}" style="flex:1" onchange="renameKey('${esc(k.id)}',this)">
    <span class="mono" style="flex:none;width:150px">${esc(k.mask||'')}${k.base_url?'<br><span class="k mono" style="font-size:11px">'+esc(k.base_url)+'</span>':''}</span>
-   <select class="mini" style="flex:none;width:92px" title="该 Key 的供应商" onchange="setKeyProvider('${esc(k.id)}',this.value)">
-    <option value="zhipu"${k.provider!=='deepseek'&&k.provider!=='custom'?' selected':''}>智谱</option>
+   <select class="mini" style="flex:none;width:96px" title="该 Key 的供应商" onchange="setKeyProvider('${esc(k.id)}',this.value)">
+    <option value="zhipu"${k.provider!=='deepseek'&&k.provider!=='kimi'&&k.provider!=='openai'&&k.provider!=='grok'&&k.provider!=='gemini'&&k.provider!=='custom'?' selected':''}>智谱</option>
     <option value="deepseek"${k.provider==='deepseek'?' selected':''}>DeepSeek</option>
+    <option value="kimi"${k.provider==='kimi'?' selected':''}>Kimi</option>
+    <option value="openai"${k.provider==='openai'?' selected':''}>OpenAI</option>
+    <option value="grok"${k.provider==='grok'?' selected':''}>Grok</option>
+    <option value="gemini"${k.provider==='gemini'?' selected':''}>Gemini</option>
     <option value="custom"${k.provider==='custom'?' selected':''}>自定义</option>
    </select>
    <button class="act ghost danger" onclick="delKey('${esc(k.id)}')">删除</button></div>`).join('')||'<i class="k">尚未配置任何 Key</i>'}</div>
   <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
    <input id="nklabel" placeholder="备注，如：企业/个人" style="width:120px">
-   <select id="nkprov" class="mini" style="width:110px" onchange="document.getElementById('nkbase').style.display=this.value==='custom'?'':'none'">
+   <select id="nkprov" class="mini" style="width:118px" onchange="document.getElementById('nkbase').style.display=this.value==='custom'?'':'none'">
     <option value="zhipu">智谱</option>
     <option value="deepseek">DeepSeek</option>
+    <option value="kimi">Kimi</option>
+    <option value="openai">OpenAI</option>
+    <option value="grok">Grok</option>
+    <option value="gemini">Gemini</option>
     <option value="custom">自定义兼容</option>
    </select>
    <input id="nkbase" placeholder="Base URL，如 https://api.xxx.com/v1" style="flex:1;min-width:200px;display:none">
    <input id="nkval" type="password" placeholder="粘贴 API Key" style="flex:1;min-width:180px">
    <button class="act" onclick="addKey()">添加 Key</button></div>
-  <div class="k" style="margin-top:6px">支持多供应商（OpenAI 兼容接口）：智谱、DeepSeek（模型名 deepseek-chat / deepseek-reasoner）、自定义（填 Base URL，禁止内网地址）。主 Key 与生图/联网搜索固定用智谱 Key；模型链每行可绑定任意 Key。Key 仅保存在本机数据目录（不进源码），列表仅显示掩码；第一个添加的自动成为主 Key，删除主 Key 后自动切到剩余第一个。</div></div>
+  <div class="k" style="margin-top:6px">预制供应商（OpenAI 兼容）：智谱、DeepSeek（deepseek-chat / deepseek-reasoner）、Kimi（moonshot-v1-8k…）、OpenAI（gpt-4o 等）、Grok（grok-2 等）、Gemini（gemini-2.0-flash 等）、自定义（填 Base URL，禁止内网地址）。智谱/DeepSeek/Kimi 国内直连；OpenAI/Grok/Gemini 需在下方配置 API 代理后使用。主 Key 与生图/联网搜索固定用智谱 Key；模型链每行可绑定任意 Key。Key 仅存本机数据目录，列表仅显示掩码。</div>
+  <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+   <span class="k" style="flex:none">API 代理（可选）</span>
+   <input id="apiproxy" value="${esc(String(c.api_proxy||''))}" style="width:240px" placeholder="http://127.0.0.1:7890（Clash 等本地代理）" onchange="saveKV('/api/app-config',{api_proxy:this.value.trim()},'API 代理已保存（即时生效；留空=直连）')">
+   <span class="k">供 OpenAI / Grok / Gemini 等境外供应商出站用；国内供应商建议留空直连</span></div></div>
  <div class="card"><label class="master"><input type="checkbox" ${rv.lean_ctx_enabled!==false?'checked':''} onchange="saveLeanCtx(this.checked)">
    <span><b>精简上下文（推荐开启）</b><div class="k" style="margin-top:3px">开启后：旁观消息先经约 0.5k token 的轻量判定决定是否开口（决定开口才用全量提示词生成），回复时按各模型的上下文档位裁剪历史与记忆——人设/风格/安全规则始终全量，回复质量不受影响。关闭后：每次调用都带完整系统提示与更多历史记忆（追求最佳表现，token 消耗大约 +50%~80%，旁观评估为主增量）</div></span></label></div>
  <div class="card"><div class="k" style="display:flex;gap:10px;align-items:center;margin-bottom:8px">高峰降耗
@@ -2242,6 +2258,10 @@ class UiHandler(BaseHTTPRequestHandler):
             return self._reply(200, {"ok": True, "enabled": enabled, "used": used,
                                      "cap": cap, "hours": hours,
                                      "hold": bool(enabled and cap > 0 and used >= cap)})
+        if u.path == "/api/group-names":
+            r = proxy_get("127.0.0.1", PORTS["daemon"], "/group-list",
+                          read_const(TOKEN_PATH), timeout=15)
+            return self._reply(200, r if isinstance(r, dict) else {"ok": False})
         if u.path == "/api/watchdog":
             cfg = C.load_app_config()
             with _wd_lock:
@@ -2762,6 +2782,15 @@ class UiHandler(BaseHTTPRequestHandler):
                     cleaned[k] = bool(cfg_in[k])
             if "backup_dir" in cfg_in:
                 cleaned["backup_dir"] = str(cfg_in["backup_dir"]).strip()[:260]
+            if "api_proxy" in cfg_in:
+                px = str(cfg_in["api_proxy"]).strip()[:120]
+                if px:
+                    if "//" not in px:
+                        px = "http://" + px
+                    up = urllib.parse.urlsplit(px)
+                    if up.scheme not in ("http", "https") or not up.hostname:
+                        return self._reply(400, {"ok": False, "error": "代理格式应为 host:port 或 http://host:port"})
+                cleaned["api_proxy"] = px
             for k in ("backup_keep_days", "backup_keep_copies"):
                 if k in cfg_in:
                     try:
@@ -3011,7 +3040,8 @@ class UiHandler(BaseHTTPRequestHandler):
                 label = str(body.get("label", "")).strip()[:20]
                 provider = str(body.get("provider") or "zhipu").strip().lower()
                 base_url = str(body.get("base_url") or "").strip()[:300]
-                if provider not in ("zhipu", "deepseek", "custom"):
+                if provider not in ("zhipu", "deepseek", "kimi", "openai",
+                                    "grok", "gemini", "custom"):
                     return self._reply(400, {"ok": False, "error": "供应商非法"})
                 if provider == "custom":
                     u2 = urllib.parse.urlsplit(base_url)
@@ -3053,7 +3083,8 @@ class UiHandler(BaseHTTPRequestHandler):
                         hit[0]["label"] = nl
                     if "provider" in body:
                         prov = str(body.get("provider") or "zhipu").strip().lower()
-                        if prov not in ("zhipu", "deepseek", "custom"):
+                        if prov not in ("zhipu", "deepseek", "kimi", "openai",
+                                        "grok", "gemini", "custom"):
                             return self._reply(400, {"ok": False, "error": "供应商非法"})
                         if prov == "custom":
                             b = str(body.get("base_url") or "").strip()[:300]

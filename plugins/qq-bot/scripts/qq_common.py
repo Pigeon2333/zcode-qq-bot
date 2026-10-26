@@ -56,6 +56,7 @@ DEFAULT_CONFIG = {
     "bot_name_value": "智谱娘",
     "owner_name_enabled": False,   # 固定主人称呼（开=覆盖人设里对主人的叫法）
     "owner_name_value": "主人",
+    "api_proxy": "",               # API 出站代理（http://host:port；供 OpenAI/Grok/Gemini 等境外供应商用）
 }
 
 # 备份/恢复统一文件清单（basename 冲突无；子目录文件扁平存放）
@@ -78,11 +79,20 @@ BACKUP_FILES = [
 
 # 多供应商注册表（chat/completions 均为 OpenAI 兼容）
 # custom 供应商的 base 由 Key 条目自带 base_url。
+# 注：openai/grok/gemini 国内直连不可达，需在设置里配 API 代理。
 API_PROVIDERS = {
     "zhipu": {"label": "智谱", "base": "https://open.bigmodel.cn",
               "path": "/api/paas/v4/chat/completions"},
     "deepseek": {"label": "DeepSeek", "base": "https://api.deepseek.com",
                  "path": "/v1/chat/completions"},
+    "kimi": {"label": "Kimi 月之暗面", "base": "https://api.moonshot.cn",
+             "path": "/v1/chat/completions"},
+    "openai": {"label": "OpenAI", "base": "https://api.openai.com",
+               "path": "/v1/chat/completions"},
+    "grok": {"label": "xAI Grok", "base": "https://api.x.ai",
+             "path": "/v1/chat/completions"},
+    "gemini": {"label": "Gemini", "base": "https://generativelanguage.googleapis.com",
+               "path": "/v1beta/openai/chat/completions"},
 }
 
 
