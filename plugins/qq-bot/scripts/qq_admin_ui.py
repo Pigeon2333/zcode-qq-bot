@@ -424,7 +424,7 @@ async function vModels(){
  const thKey=(m)=>{const e=th[m];if(!e)return '';return e.enabled?e.level:'off'};
  const thOpt=(v)=>{const map={'':'跟随默认','off':'关闭思考','high':'思考·高','low':'思考·低'};
   return Object.keys(map).map(k=>'<option value="'+k+'"'+(v===k?' selected':'')+'>'+map[k]+'</option>').join('')};
- const entries=(c.models||[]).map(x=>typeof x==='string'?{model:x,key:''}:{model:String(x.model||''),key:String(x.key||'')});
+ const entries=(c.models||[]).map(x=>typeof x==='string'?{model:x,key:'',ctx:''}:{model:String(x.model||''),key:String(x.key||''),ctx:x.ctx||''});
  const ckOf=e=>(e.key||'main')+':'+e.model;
  const primL=(keysL.find(k=>k.primary)||{}).label||'默认';
  const keySel=(e,i)=>{
@@ -436,6 +436,7 @@ async function vModels(){
   return `<div class="row ${cd?'cool':''}"><span class="no">${i+1}.</span>
   <input value="${esc(e.model)}" data-i="${i}" style="flex:1;min-width:120px" onchange="saveModels()">
   ${keySel(e,i)}
+  <input type="number" min="4" max="128" data-ctx="${i}" value="${e.ctx||''}" placeholder="128" title="上下文档位（千token，留空=按模型默认）" style="width:56px;flex:none" onchange="saveModels()">
   <select class="mini" data-th="${i}" onchange="saveThinking()">${thOpt(v)}</select>
   <span class="mono">${cd?('冷却'+a.cooldowns[ckOf(e)]+'s'):(a.current_model===e.model?'当前':'')}</span>
   <button class="act ghost" onclick="mv(${i},-1)">↑</button><button class="act ghost" onclick="mv(${i},1)">↓</button>
@@ -491,10 +492,12 @@ async function vModels(){
  _usageCache=u;renderTrend();
  if(tl&&tl.ok!==false)renderLimitUsage(tl);
 }
-function getEntries(){return [...document.querySelectorAll('.chain input')].map(inp=>{
+function getEntries(){return [...document.querySelectorAll('.chain .row>input:not([data-ctx])')].map(inp=>{
  const row=inp.closest('.row');const sel=row?row.querySelector('select[data-k]'):null;
- return {model:inp.value.trim(),key:sel?sel.value:''}}).filter(e=>e.model)}
-function getChain(){return getEntries().map(e=>e.key?{model:e.model,key:e.key}:e.model)}
+ const ci=row?row.querySelector('input[data-ctx]'):null;
+ const ctx=ci?parseInt(ci.value)||0:0;
+ return {model:inp.value.trim(),key:sel?sel.value:'',...(ctx?{ctx:Math.max(4,Math.min(128,ctx))}:{})}}).filter(e=>e.model)}
+function getChain(){return getEntries().map(e=>(e.key||e.ctx)?{model:e.model,...(e.key?{key:e.key}:{}),...(e.ctx?{ctx:e.ctx}:{})}:e.model)}
 async function saveModels(){await saveKV('/api/config',{models:getChain()},'模型链已保存（agent 已热加载）')}
 async function saveThinking(){
  const th={};
@@ -1795,8 +1798,13 @@ class UiHandler(BaseHTTPRequestHandler):
                 for m in models:
                     if isinstance(m, dict):
                         kid = str(m.get("key", "")).strip()[:40]
+                        try:
+                            ctx = max(4, min(128, int(m.get("ctx", 0))))
+                        except (TypeError, ValueError):
+                            ctx = 0
                         norm.append({"model": str(m["model"]).strip().lower(),
-                                     **({"key": kid} if kid else {})})
+                                     **({"key": kid} if kid else {}),
+                                     **({"ctx": ctx} if ctx else {})})
                     else:
                         norm.append(str(m).strip().lower())
                 cfg["models"] = norm

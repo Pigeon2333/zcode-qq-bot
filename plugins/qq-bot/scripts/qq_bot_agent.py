@@ -303,6 +303,16 @@ def load_api_keys():
     return out
 
 
+def _model_default_ctx(model):
+    """模型默认上下文档位（千 token）：4.6v 系小窗口，flash/旗舰 128k。"""
+    m = str(model).lower()
+    if "4.6v" in m:
+        return 8
+    if "flash" in m or "4.6" in m or "5.3" in m:
+        return 128
+    return 32
+
+
 def _chain_candidates():
     """模型链 → 按序候选 [(kid, key_value, model)]。
     条目为 "model"（主 Key）或 {"model":..., "key": 备用id}；备用 key 已删除
@@ -325,11 +335,17 @@ def _chain_candidates():
             ent = keys.get(kid)
             if not ent:
                 continue
-            cands.append((kid, ent["key"], model))
+            kv = ent["key"]
         else:
             kv = glm_key()
-            if kv:
-                cands.append(("main", kv, model))
+        if not kv:
+            continue
+        ctx = e.get("ctx") if isinstance(e, dict) else None
+        try:
+            ctx = max(4, min(128, int(ctx))) if ctx else _model_default_ctx(model)
+        except (TypeError, ValueError):
+            ctx = _model_default_ctx(model)
+        cands.append((kid, kv, model, ctx))
     return cands
 
 
@@ -370,7 +386,7 @@ def call_glm_with_fallback(messages, text_ctx=""):
     if econ_on() and len(cands) > 1:
         cands = cands[1:]
     now = time.time()
-    for kid, kv, model in cands:
+    for kid, kv, model, _ctx in cands:
         ck = "%s:%s" % (kid, model)
         if RT.cooldowns.get(ck, 0) > now:
             tried.append("%s@%s(冷却)" % (model, kid))
@@ -1196,7 +1212,9 @@ def _interrupt_gate(daemon, msg, persona_name):
     return "Y" not in ans
 
 
-def build_messages(daemon, msg):
+def build_messages(daemon, msg, ctx_k=32):
+    """按上下文档位（ctx_k=千 token 预算）装配消息：
+    ≥16k 全量 / 8-16k 标准 / <8k 精简（历史更短、记忆更少、安全段压缩）。"""
     """返回 (messages, active_persona_name)。"""
     pc, active_name = load_persona_collection()
     persona = pc.get("persona", "")
@@ -1251,24 +1269,36 @@ def build_messages(daemon, msg):
             "不要解题、不要输出代码/长答案/解题步骤，用人设的口吻一两句话轻松回绝"
             "（可以无奈、调皮、吐槽对方想白嫖AI劳动力），然后自然结束；"
             "不追问任务细节，不表示\"稍后帮你做\"。")
+    # 上下文档位：全量 ≥16k：hist10×80+记忆5/4；标准 8-16k：hist8×70+4/3；精简 <8k：hist6×60+3/2
+    try:
+        ctx_k = float(ctx_k)
+    except (TypeError, ValueError):
+        ctx_k = 32
+    if ctx_k >= 16:
+        n_hist, c_hist, n_gmem, n_cmem = 10, 80, 5, 4
+    elif ctx_k >= 8:
+        n_hist, c_hist, n_gmem, n_cmem = 8, 70, 4, 3
+    else:
+        n_hist, c_hist, n_gmem, n_cmem = 6, 60, 3, 2
+
     g_mem = memory_snippets("group", msg["chat_id"])
     c_mem = memory_snippets("contact", msg["sender_id"])
     mem_block = ""
     if g_mem or c_mem:
         mem_block = "\n\n## 长期记忆（此前互动积累）"
         if g_mem:
-            mem_block += "\n### 关于本群\n" + "\n".join(g_mem[-5:])
+            mem_block += "\n### 关于本群\n" + "\n".join(g_mem[-n_gmem:])
         if c_mem:
-            mem_block += "\n### 关于发言者\n" + "\n".join(c_mem[-4:])
+            mem_block += "\n### 关于发言者\n" + "\n".join(c_mem[-n_cmem:])
 
-    history = daemon.history(msg["chat_type"], msg["chat_id"], limit=12)
+    history = daemon.history(msg["chat_type"], msg["chat_id"], limit=n_hist + 2)
     hist_lines = []
     for h in history:
         name = "你" if h.get("is_bot") else str(h.get("sender_name", "?"))
         # 历史 带 QQ：模型标注 [记忆@QQ] 时需要知道每句话是谁说的
         hist_lines.append("%s(QQ:%s): %s" % (
-            name, h.get("sender_id", "?"), str(h.get("text", ""))[:80]))
-    hist_block = "\n".join(hist_lines[-10:]) if hist_lines else "（暂无）"
+            name, h.get("sender_id", "?"), str(h.get("text", ""))[:c_hist]))
+    hist_block = "\n".join(hist_lines[-n_hist:]) if hist_lines else "（暂无）"
 
     rt = msg.get("reply_to") or None
     if msg["chat_type"] == "group":
@@ -1717,7 +1747,7 @@ def call_vision(messages_text, image_urls):
     cands = _chain_candidates()
     if econ_on() and len(cands) > 1:
         cands = cands[1:]
-    for kid, kv, m in cands:
+    for kid, kv, m, _ctx in cands:
         ck = "%s:%s" % (kid, m)
         if m in _NO_VISION_MODELS:
             tried.append(m + "(纯文本)")
@@ -1868,7 +1898,10 @@ def process(daemon, msg):
             out("AGENT_GATE_SKIP msg_id=%s chat=%s/%s (轻量判定不插话)"
                 % (msg["id"], msg["chat_type"], msg["chat_id"]))
             return
-    messages, active_persona = build_messages(daemon, msg)
+    # 上下文档位 = 链中第一个可尝试条目的 ctx（千 token），预算感知裁剪历史/记忆
+    _cands = _chain_candidates()
+    _ctx_k = _cands[0][3] if _cands else 32
+    messages, active_persona = build_messages(daemon, msg, ctx_k=_ctx_k)
     # 联网搜索（两步法）：启发式判定 → 智谱搜索 API → 结果注入 system
     if web_search_enabled() and needs_search(msg.get("text")):
         sres = web_search(msg.get("text"))
