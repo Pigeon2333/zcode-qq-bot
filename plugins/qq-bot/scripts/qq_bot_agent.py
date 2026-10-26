@@ -2205,8 +2205,19 @@ def _backup_data():
                 dstf = os.path.join(bdir, os.path.basename(name))
                 shutil.copy2(src, dstf)
                 n += 1
-        days = sorted(x for x in os.listdir(dest_root) if x.isdigit())
-        for old in days[:-30]:
+        # 双条件清理：超过保留天数 或 超过保留份数（最旧的先清）
+        try:
+            keep_days = max(1, int(cfg.get("backup_keep_days", 30)))
+        except (TypeError, ValueError):
+            keep_days = 30
+        try:
+            keep_copies = max(1, int(cfg.get("backup_keep_copies", 30)))
+        except (TypeError, ValueError):
+            keep_copies = 30
+        cutoff = time.strftime("%Y%m%d", time.localtime(time.time() - keep_days * 86400))
+        days = sorted(x for x in os.listdir(dest_root) if x.isdigit() and len(x) == 8)
+        doomed = [d for d in days if d < cutoff] + days[:-keep_copies] if len(days) > keep_copies else [d for d in days if d < cutoff]
+        for old in doomed:
             shutil.rmtree(os.path.join(dest_root, old), ignore_errors=True)
         out("AGENT_BACKUP_OK %s (%d files)" % (bdir, n))
     except OSError as e:

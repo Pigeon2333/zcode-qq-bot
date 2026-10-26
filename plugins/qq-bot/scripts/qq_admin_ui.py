@@ -503,6 +503,13 @@ async function saveThinking(){
  await saveKV('/api/config',{thinking:th},'思考设置已保存（已生效）')}
 async function saveVisionModel(){await saveKV('/api/config',{vision_model:$('#vmodel').value.trim()},'视觉模型已保存（即时生效）')}
 async function saveLeanCtx(on){await saveKV('/api/reply-config',{lean_ctx_enabled:on},on?'精简上下文已开启（平均省 30%~45% 消耗）':'已切换全量上下文（消耗约 +50%~80%，表现最佳）')}
+async function pickBackupDir(){
+ const r=await api('/api/pick-dir',{method:'POST'});
+ if(r.ok&&r.dir){$('#bkdir').value=r.dir;await saveNight('backup_dir',r.dir)}}
+async function backupNow(){
+ toast('正在执行备份…');
+ const r=await api('/api/backup-now',{method:'POST'});
+ toast(r.ok?'备份完成（目录见运行日志 AGENT_BACKUP_OK）':'备份失败',r.ok!==false)}
 async function saveNight(key,val){
  const msg={review_time:'复盘时间',backup_enabled:'自动备份',backup_time:'备份时间',backup_dir:'备份目录'}[key]+'已更新（次日生效）';
  const r=await saveKV('/api/app-config',{[key]:key==='backup_dir'?String(val).trim():val},msg);
@@ -873,14 +880,24 @@ async function vSettings(){
  <div class="card"><div class="k">启动行为</div>
   <div style="margin-top:8px"><label class="master"><input type="checkbox" id="spoweron" ${c.auto_power_on?'checked':''} onchange="savePowerOn(this.checked)">
    <span>打开本应用时自动启动机器人<div class="k" style="margin-top:2px">与上一项同时勾选时，开机会先启动应用、紧接着自动启动机器人</div></span></label></div></div>
- <div class="card"><div class="k" style="margin-bottom:8px">夜间任务（复盘与备份各自按设定时间触发；错过当天会在 2 小时窗口内补跑）</div>
-  <div style="display:flex;gap:14px;margin-top:6px;flex-wrap:wrap;align-items:center">
-   <label>复盘时间 <input type="time" value="${esc(c.review_time||'03:30')}" onchange="saveNight('review_time',this.value)"></label>
-   <label>自动备份 <input type="checkbox" ${c.backup_enabled!==false?'checked':''} onchange="saveNight('backup_enabled',this.checked?1:0)"></label>
+ <div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">自动复盘<span class="badge" style="background:var(--tint);color:var(--dim)">夜间自动执行</span></div>
+  <label class="master"><input type="checkbox" ${rv.daily_review_enabled!==false?'checked':''} onchange="saveKV('/api/reply-config',{daily_review_enabled:this.checked?1:0},'自动复盘已'+(this.checked?'开启':'关闭'));load()">
+   <span><b>启用自动复盘</b><div class="k" style="margin-top:3px">每天在设定时间自动汇总自上次复盘以来的机器人表现（回复/沉默/错误次数），由 AI 提炼 1-2 条说话风格观察写入自进化，并向主人私聊发送一份简短日报。覆盖范围：全部群聊与私聊的回复质量数据（不记录聊天内容本身）</div></span></label>
+  <div style="margin-top:8px"><label>触发时间 <input type="time" value="${esc(c.review_time||'03:30')}" onchange="saveNight('review_time',this.value)"></label>
+  <span class="k" style="margin-left:8px">错过当天会在 2 小时窗口内补跑</span></div></div>
+ <div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">自动备份<span class="badge" style="background:var(--tint);color:var(--dim)">每日快照 · 可随时恢复</span></div>
+  <label class="master"><input type="checkbox" ${c.backup_enabled!==false?'checked':''} onchange="saveNight('backup_enabled',this.checked?1:0)">
+   <span><b>启用自动备份</b><div class="k" style="margin-top:3px">把人设、风格卡、自进化观察、长期记忆、回复/分群/白名单等关键数据文件复制一份到备份目录；误删或数据损坏时可从备份一键恢复（密钥类文件出于安全不备份）</div></span></label>
+  <div style="display:flex;gap:14px;margin-top:8px;flex-wrap:wrap;align-items:center">
    <label>备份时间 <input type="time" value="${esc(c.backup_time||'04:00')}" onchange="saveNight('backup_time',this.value)"></label>
+   <label>保留天数 <input type="number" min="1" max="365" value="${c.backup_keep_days||30}" style="width:56px" onchange="saveNight('backup_keep_days',parseInt(this.value)||30)"> 天</label>
+   <label>保留份数 <input type="number" min="1" max="365" value="${c.backup_keep_copies||30}" style="width:56px" onchange="saveNight('backup_keep_copies',parseInt(this.value)||30)"> 份</label>
   </div>
-  <div style="margin-top:8px"><div class="k" style="margin-bottom:4px">备份目录（留空 = 默认 ~/.zcode-qq-bot/backups；自定义目录不存在会自动创建，保留最近 30 天）</div>
-  <input value="${esc(String(c.backup_dir||''))}" placeholder="如 D:\ZCode\qq-bot-backups" style="width:100%" onchange="saveNight('backup_dir',this.value)"></div></div>
+  <div style="margin-top:8px"><div class="k" style="margin-bottom:4px">备份目录（留空 = 默认 ~/.zcode-qq-bot/backups）</div>
+  <div style="display:flex;gap:8px"><input id="bkdir" value="${esc(String(c.backup_dir||''))}" placeholder="如 D:\ZCode\qq-bot-backups" style="flex:1" onchange="saveNight('backup_dir',this.value)">
+  <button class="act ghost" style="margin:0" onclick="pickBackupDir()">浏览…</button>
+  <button class="act ghost" style="margin:0" onclick="backupNow()">立即备份</button></div>
+  <div class="k" style="margin-top:4px">超过保留天数或保留份数的旧备份自动清理（最旧的先清）</div></div></div>
  <div class="card"><div class="k">关闭本应用时</div>
   <div style="margin-top:8px">
    <label style="display:block;margin:6px 0"><input type="radio" name="cact" value="tray" ${(!c.close_action||c.close_action==='tray')?'checked':''} onchange="saveCloseAction(this.value)"> 最小化到系统托盘，机器人继续在后台（推荐；托盘图标可重新打开窗口）</label>
@@ -1538,6 +1555,29 @@ class UiHandler(BaseHTTPRequestHandler):
             modes = {str(k): v for k, v in data.items() if isinstance(v, dict)} \
                 if isinstance(data, dict) else {}
             return self._reply(200, {"ok": True, "modes": modes})
+        if u.path == "/api/pick-dir":
+            def _pick():
+                try:
+                    import tkinter as tk
+                    from tkinter import filedialog
+                    root = tk.Tk()
+                    root.withdraw()
+                    root.attributes("-topmost", True)
+                    d = filedialog.askdirectory(title="选择备份目录")
+                    root.destroy()
+                    return d or ""
+                except Exception:
+                    return ""
+            import threading as _th
+            box = {}
+            t = _th.Thread(target=lambda: box.update(d=_pick()), daemon=True)
+            t.start()
+            t.join(timeout=120)
+            return self._reply(200, {"ok": True, "dir": box.get("d", "")})
+        if u.path == "/api/backup-now":
+            import qq_bot_agent as _A
+            _A._backup_data()
+            return self._reply(200, {"ok": True})
         if u.path == "/api/keys":
             data = load_json_const(KEYS_PATH, {})
             keys = data.get("keys") if isinstance(data.get("keys"), list) else []

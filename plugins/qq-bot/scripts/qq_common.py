@@ -39,6 +39,8 @@ DEFAULT_CONFIG = {
     "backup_enabled": True,    # 每日数据快照开关
     "backup_time": "04:00",    # 备份触发时间（HH:MM）
     "backup_dir": "",          # 备份目录（空=~/.zcode-qq-bot/backups）
+    "backup_keep_days": 30,    # 备份保留天数（超过自动清理）
+    "backup_keep_copies": 30,  # 每个备份保留份数（超过自动清理最旧的）
 }
 
 
