@@ -51,6 +51,7 @@ DEFAULT_CONFIG = {
     "watchdog_enabled": True,      # NapCat 活性看门狗（半死连接检测）
     "watchdog_mode": "auto",       # auto=自动恢复（重连+重启 NapCat）| alert=仅告警
     "watchdog_interval": 120,      # 探测间隔秒（60-600）
+    "qq_status_auto": False,       # 自动设置 QQ 在线状态（上线→在线；手动停止前→离开）
 }
 
 # 备份/恢复统一文件清单（basename 冲突无；子目录文件扁平存放）

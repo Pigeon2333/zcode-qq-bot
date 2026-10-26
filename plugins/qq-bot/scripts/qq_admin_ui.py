@@ -1206,6 +1206,14 @@ async function vSettings(){
   <button class="act ghost" style="margin:0" onclick="backupNow()">立即备份</button>
   <button class="act" style="margin:0" onclick="restorePicker()">从备份恢复…</button></div>
   <div class="k" style="margin-top:4px">备份范围：人设合集、风格卡、自进化观察、长期记忆、回复/分群/私聊/白名单配置、模型链、表情包索引（含视觉描述缓存）、设备操控流程、定时任务、主动消息状态、用量流水、本页应用设置。密钥类文件（API Key/token）出于安全不备份，恢复后如缺失需重新填写。超过保留天数或保留份数的旧备份自动清理（最旧的先清）</div></div></div>
+ <div class="card"><div class="k" style="margin-bottom:8px">QQ 在线状态</div>
+  <label class="master"><input type="checkbox" ${c.qq_status_auto?'checked':''} onchange="saveKV('/api/app-config',{qq_status_auto:this.checked?1:0},'QQ 在线状态自动设置已'+(this.checked?'开启':'关闭'));load()">
+   <span><b>自动设置在线状态</b><div class="k" style="margin-top:3px">机器人上线登录成功后自动把 QQ 状态设为「在线」；手动停止机器人（状态页停止/全部停止）前自动设为「离开」，让群里的人一眼看出机器人是否在岗。依赖 NapCat 扩展能力，若你的 NapCat 版本不支持会记录失败到运行日志、不影响其他功能</div></span></label>
+  <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+   <span class="k">手动测试：</span>
+   <button class="act ghost" style="margin:0" onclick="setQQStatus('online')">设为在线</button>
+   <button class="act ghost" style="margin:0" onclick="setQQStatus('away')">设为离开</button>
+   <span class="k">（不管开关是否开启都可手动设置；QQ 客户端上即时可见）</span></div></div>
  <div class="card"><div class="k" style="margin-bottom:8px">NapCat 活性看门狗<span class="badge" style="background:var(--tint);color:var(--dim)">防消息推送静默失联</span></div>
   <label class="master"><input type="checkbox" ${c.watchdog_enabled!==false?'checked':''} onchange="saveKV('/api/app-config',{watchdog_enabled:this.checked?1:0},'看门狗已'+(this.checked?'开启':'关闭'));load()">
    <span><b>启用看门狗</b><div class="k" style="margin-top:3px">定期探测 NapCat 消息通道是否真的活着（TCP 连着但对端不响应/不推事件的「半死」状态，控制台显示在线但机器人实际收不到消息）；探测到失联会在「状态」页告警并私聊通知主人</div></span></label>
@@ -1299,6 +1307,10 @@ async function setKeyProvider(id,prov){
   if(!base_url){load();return}}
  const r=await saveKV('/api/keys/rename',{id,provider:prov,base_url},'该 Key 供应商已改为 '+(prov==='zhipu'?'智谱':(prov==='deepseek'?'DeepSeek':'自定义')));
  if(r.ok!==false)load()}
+async function setQQStatus(kind){
+ const r=await api('/api/qq-status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind})}).catch(()=>({ok:false,error:'请求失败'}));
+ if(r.ok===false){toast('设置失败：'+(r.detail||r.error||''),false);return}
+ toast('QQ 状态已设为'+(kind==='online'?'在线':'离开'))}
 async function delKey(id){
  if(!await dlgConfirm({title:'删除 Key',body:'删除该 Key？模型链中引用它的条目将被自动跳过（可随时重新添加并绑定）。',okText:'删除',danger:true}))return;
  const r=await saveKV('/api/keys/del',{id},'Key 已删除');
@@ -2249,6 +2261,19 @@ class UiHandler(BaseHTTPRequestHandler):
             import qq_bot_agent as _A
             _A._backup_data()
             return self._reply(200, {"ok": True})
+        if u.path == "/api/qq-status":
+            # 代理 daemon 的 QQ 在线状态设置（set_online_status NapCat 动作）
+            kind = "away" if str(body.get("kind")) == "away" else "online"
+            conn = http.client.HTTPConnection("127.0.0.1", PORTS["daemon"], timeout=12)
+            try:
+                payload = json.dumps({"kind": kind}).encode("utf-8")
+                conn.request("POST", "/qq-status", body=payload, headers={
+                    "Content-Type": "application/json",
+                    "X-QQBot-Token": read_const(TOKEN_PATH)})
+                r = json.loads(conn.getresponse().read().decode("utf-8"))
+            finally:
+                conn.close()
+            return self._reply(200, r)
         if u.path == "/api/backup-restore":
             name = str(body.get("name") or "").strip()
             if not name or any(c in name for c in '\\/:*?"<>|') or name in (".", ".."):
@@ -2667,7 +2692,8 @@ class UiHandler(BaseHTTPRequestHandler):
                 if k in cfg_in:
                     v = str(cfg_in[k]).strip()
                     cleaned[k] = v if len(v) == 5 and v[2] == ":" and v[:2].isdigit() and v[3:].isdigit() else ""
-            for k in ("backup_enabled", "sched_pause_enabled", "watchdog_enabled"):
+            for k in ("backup_enabled", "sched_pause_enabled", "watchdog_enabled",
+                      "qq_status_auto"):
                 if k in cfg_in:
                     cleaned[k] = bool(cfg_in[k])
             if "backup_dir" in cfg_in:

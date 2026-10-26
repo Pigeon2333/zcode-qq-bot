@@ -37,7 +37,7 @@ import urllib.parse
 import uuid
 from collections import defaultdict, deque
 
-from qq_common import econ_active
+from qq_common import econ_active, load_app_config
 
 DATA_DIR = os.path.join(os.path.expanduser("~"), ".zcode-qq-bot")
 DATA_ROOT = os.path.realpath(DATA_DIR)
@@ -559,6 +559,7 @@ class Daemon:
                     self.login = {"user_id": data.get("user_id"), "nickname": data.get("nickname", "")}
                 out("AGENT_LOG {\"msg\": \"login\", \"nickname\": %s, \"user_id\": %s}"
                     % (json.dumps(self.login["nickname"], ensure_ascii=False), self.login["user_id"]))
+                self._auto_status("online")
                 return
             except Exception:
                 time.sleep(2)
@@ -874,6 +875,38 @@ class Daemon:
 
     # ---------- OneBot 动作调用 ----------
 
+    # ---------- QQ 在线状态 ----------
+
+    def set_qq_status(self, kind):
+        """设置机器人 QQ 在线状态（NapCat set_online_status，
+        必填 status/ext_status/battery_status；在线=10 离开=30）。
+        kind: online=在线 | away=离开。返回 (ok, detail)。"""
+        params = {
+            "online": {"status": 10, "ext_status": 0, "battery_status": 0},
+            "away": {"status": 30, "ext_status": 0, "battery_status": 0},
+        }.get(kind)
+        if not params:
+            return False, "kind 非法"
+        try:
+            self._call_action("set_online_status", params, timeout=6)
+            out("AGENT_LOG {\"msg\": \"qq_status\", \"kind\": %s}" % json.dumps(kind))
+            return True, "set_online_status"
+        except Exception as e:
+            detail = repr(e)[:120]
+            out("AGENT_LOG {\"msg\": \"qq_status_fail\", \"kind\": %s, \"detail\": %s}"
+                % (json.dumps(kind), json.dumps(detail, ensure_ascii=False)))
+            return False, detail
+
+    def _auto_status(self, kind):
+        """开关开启时异步设置状态（登录成功→在线；退出前→离开）。"""
+        try:
+            if not load_app_config().get("qq_status_auto"):
+                return
+            threading.Thread(target=lambda: self.set_qq_status(kind),
+                             daemon=True).start()
+        except Exception:
+            pass
+
     def _call_action(self, action, params, timeout=None):
         echo = "e" + uuid.uuid4().hex[:12]
         got = threading.Event()
@@ -1133,6 +1166,12 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
                     until = d.quiet_until
                 out("AGENT_LOG {\"msg\": \"quiet\", \"until\": %s}" % until)
                 return self._reply(200, {"ok": True, "quiet_until": until})
+            if u.path == "/qq-status":
+                kind = str(body.get("kind") or "").strip()
+                if kind not in ("online", "away"):
+                    return self._reply(400, {"ok": False, "error": "kind 必须是 online|away"})
+                ok, detail = d.set_qq_status(kind)
+                return self._reply(200, {"ok": ok, "kind": kind, "detail": detail})
             if u.path == "/send":
                 res = d.send_texts(body["chat_type"], body["chat_id"], body["texts"],
                                    reply_message_id=body.get("reply_message_id"))
@@ -1154,6 +1193,12 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
 
     def _delayed_stop(self):
         time.sleep(0.3)
+        # 退出前尽力把状态切到离开（开关开启时；同步短超时，不阻塞退出）
+        try:
+            if load_app_config().get("qq_status_auto") and self.ws.connected:
+                self.set_qq_status("away")
+        except Exception:
+            pass
         self.server.daemon.stop_flag.set()
         self.server.daemon.ws.close()
         threading.Thread(target=lambda: (time.sleep(0.8), os._exit(0)), daemon=True).start()
