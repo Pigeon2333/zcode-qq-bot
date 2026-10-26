@@ -499,6 +499,12 @@ def econ_on():
     return C.econ_active(load_json_const(REPLY_CONFIG_PATH, {}))
 
 
+def lean_ctx_on():
+    """精简上下文总开关（默认开启）。关闭=每次全量系统提示+完整历史记忆。"""
+    cfg = load_json_const(REPLY_CONFIG_PATH, {})
+    return cfg.get("lean_ctx_enabled", True)
+
+
 def token_limit_state():
     """限额状态：(是否到达上限, 本窗口已用, 上限, 窗口小时)。
     窗口 = 最近 N 小时滚动求和（usage_log.jsonl 的 total_tokens）。"""
@@ -1274,7 +1280,9 @@ def build_messages(daemon, msg, ctx_k=32):
         ctx_k = float(ctx_k)
     except (TypeError, ValueError):
         ctx_k = 32
-    if ctx_k >= 16:
+    if ctx_k >= 90:      # 全量档（精简上下文关闭）：最完整历史与记忆
+        n_hist, c_hist, n_gmem, n_cmem = 14, 100, 8, 6
+    elif ctx_k >= 16:
         n_hist, c_hist, n_gmem, n_cmem = 10, 80, 5, 4
     elif ctx_k >= 8:
         n_hist, c_hist, n_gmem, n_cmem = 8, 70, 4, 3
@@ -1888,9 +1896,10 @@ def process(daemon, msg):
             out("AGENT_TASK_ACCEPT msg_id=%s chat=%s/%s" % (
                 msg["id"], msg["chat_type"], msg["chat_id"]))
             return
-    # 旁观(chat_random)两段式判定：先轻量判定值不值得开口（省 token 大头），
-    # 通过才走全量提示词生成回复——回复质量不受影响
-    if msg.get("trigger_reason") == "chat_random" and chat_anti_interrupt_enabled():
+    # 旁观(chat_random)两段式判定（精简上下文开启时）：先轻量判定值不值得开口，
+    # 通过才走全量提示词生成回复——回复质量不受影响；开关关闭则直接全量流程
+    if msg.get("trigger_reason") == "chat_random" and chat_anti_interrupt_enabled() \
+            and lean_ctx_on():
         _pcoll, _pname = load_persona_collection()
         if _interrupt_gate(daemon, msg, _pname or "智谱娘"):
             daemon.ack([msg["id"]])
@@ -1898,9 +1907,13 @@ def process(daemon, msg):
             out("AGENT_GATE_SKIP msg_id=%s chat=%s/%s (轻量判定不插话)"
                 % (msg["id"], msg["chat_type"], msg["chat_id"]))
             return
-    # 上下文档位 = 链中第一个可尝试条目的 ctx（千 token），预算感知裁剪历史/记忆
-    _cands = _chain_candidates()
-    _ctx_k = _cands[0][3] if _cands else 32
+    # 上下文档位 = 链中第一个可尝试条目的 ctx（千 token），预算感知裁剪历史/记忆；
+    # 精简上下文关闭时固定全量档（hist14×100 + 记忆8/6）
+    if lean_ctx_on():
+        _cands = _chain_candidates()
+        _ctx_k = _cands[0][3] if _cands else 32
+    else:
+        _ctx_k = 99
     messages, active_persona = build_messages(daemon, msg, ctx_k=_ctx_k)
     # 联网搜索（两步法）：启发式判定 → 智谱搜索 API → 结果注入 system
     if web_search_enabled() and needs_search(msg.get("text")):

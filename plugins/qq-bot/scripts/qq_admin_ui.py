@@ -424,22 +424,19 @@ async function vModels(){
  const thKey=(m)=>{const e=th[m];if(!e)return '';return e.enabled?e.level:'off'};
  const thOpt=(v)=>{const map={'':'跟随默认','off':'关闭思考','high':'思考·高','low':'思考·低'};
   return Object.keys(map).map(k=>'<option value="'+k+'"'+(v===k?' selected':'')+'>'+map[k]+'</option>').join('')};
- const entries=(c.models||[]).map(x=>typeof x==='string'?{model:x,key:'',ctx:''}:{model:String(x.model||''),key:String(x.key||''),ctx:x.ctx||''});
- const ckOf=e=>(e.key||'main')+':'+e.model;
- const primL=(keysL.find(k=>k.primary)||{}).label||'默认';
- const keySel=(e,i)=>{
-  const opts='<option value=""'+(!e.key?' selected':'')+'>主 Key：'+esc(primL)+'</option>'
-   +keysL.map(k=>`<option value="${esc(k.id)}"${e.key===k.id?' selected':''}>${k.primary?'★ ':''}${esc(k.label||k.id)}${k.primary?'（主）':''}</option>`).join('')
-   +(e.key&&!keysL.some(k=>k.id===e.key)?`<option value="${esc(e.key)}" selected>（Key 已删除）</option>`:'');
-  return `<select class="mini" data-k="${i}" style="max-width:110px" onchange="saveModels()" title="此模型使用的 API Key">${opts}</select>`};
- const rows=entries.map((e,i)=>{const v=thKey(e.model);const cd=a.cooldowns&&a.cooldowns[ckOf(e)]>0;
+ const entries=(c.models||[]).map(x=>{const base=typeof x==='string'?{model:x,key:'',ctx:''}:{model:String(x.model||''),key:String(x.key||''),ctx:x.ctx||''};
+  base.think=thKey(base.model);return base});
+ window._mEntries=entries;window._mKeys=keysL;window._mThink=th;
+ const keyLabel=e=>{if(!e.key)return '主Key';const k=keysL.find(x=>x.id===e.key);return k?(k.primary?'★':'')+esc(k.label||k.id):'（Key已删）'};
+ const thName={'':'默认','off':'不思考','high':'思考·高','low':'思考·低'};
+ const rows=entries.map((e,i)=>{const v=thKey(e.model);const ck=(e.key||'main')+':'+e.model;
+  const cd=a.cooldowns&&a.cooldowns[ck]>0;
   return `<div class="row ${cd?'cool':''}"><span class="no">${i+1}.</span>
-  <input value="${esc(e.model)}" data-i="${i}" style="flex:1;min-width:120px" onchange="saveModels()">
-  ${keySel(e,i)}
-  <input type="number" min="4" max="128" data-ctx="${i}" value="${e.ctx||''}" placeholder="128" title="上下文档位（千token，留空=按模型默认）" style="width:56px;flex:none" onchange="saveModels()">
-  <select class="mini" data-th="${i}" onchange="saveThinking()">${thOpt(v)}</select>
-  <span class="mono">${cd?('冷却'+a.cooldowns[ckOf(e)]+'s'):(a.current_model===e.model?'当前':'')}</span>
+  <b style="flex:1;min-width:120px;font-weight:500">${esc(e.model)}</b>
+  <span class="k mono" style="flex:none">${esc(keyLabel(e))}${e.ctx?' · '+esc(e.ctx)+'k':''} · ${thName[v]||'默认'}</span>
+  <span class="mono">${cd?('冷却'+a.cooldowns[ck]+'s'):(a.current_model===e.model?'当前':'')}</span>
   <button class="act ghost" onclick="mv(${i},-1)">↑</button><button class="act ghost" onclick="mv(${i},1)">↓</button>
+  <button class="act ghost" onclick="editModel(${i})">编辑</button>
   <button class="act ghost" onclick="del(${i})">✕</button></div>`}).join('');
  const stat=(label,v,calls)=>`<div class="card" style="flex:1;min-width:150px"><div class="k">${label}</div>
   <div style="font-size:22px;font-weight:500;margin-top:4px" class="tabular-nums">${(v||0).toLocaleString()} <span style="font-size:12px;color:var(--dim)">tokens</span></div>
@@ -475,10 +472,10 @@ async function vModels(){
    <label class="master" style="margin-top:8px"><input type="checkbox" id="thauto" ${th._auto?'checked':''} onchange="saveThinking()">
     <span><b>自动思考</b><div class="k" style="margin-top:2px">按消息难度自动决定：简单寒暄不思考秒回；长文/推理/技术难题开最高思考；开启后忽略逐模型设置</div></span></label>
   </div>
-  <div class="k" style="margin-top:6px">逐模型覆盖：在下方模型链每行的下拉里单独设置（默认=跟随上面的默认思考），选择即保存。</div></div>
- <div class="card"><div class="k">模型降级链（自上而下尝试；429/失效自动冷却5分钟切下一个；改名/排序/删除即时保存）</div>
+  <div class="k" style="margin-top:6px">逐模型覆盖：点模型行「编辑」在弹窗中单独设置（默认=跟随上面的默认思考）。</div></div>
+ <div class="card"><div class="k">模型降级链（自上而下尝试；429/失效自动冷却切下一个；点「编辑」修改模型名 / API Key / 上下文档位 / 思考模式）</div>
  <div class="chain" style="margin-top:10px">${rows||'<i class="k">空</i>'}</div>
- <div style="margin-top:10px;display:flex;gap:8px"><input id="newm" placeholder="模型名，如 glm-5.3-flash" onkeydown="if(event.key==='Enter')addm()"><button class="act" onclick="addm()">添加</button></div></div>
+ <div style="margin-top:10px;display:flex;gap:8px"><button class="act" onclick="editModel(-1)">＋ 添加模型</button></div></div>
  <div class="card"><div class="k" style="display:flex;gap:10px;align-items:center;margin-bottom:8px">限额管理
   <span id="tlimit-badge"></span></div>
   <div class="k">防止机器人用量过大挤占同套餐其他业务：窗口内 token 消耗达到上限后，机器人停止一切响应（主人私聊遥控指令除外），窗口滚动后自动恢复</div>
@@ -492,25 +489,20 @@ async function vModels(){
  _usageCache=u;renderTrend();
  if(tl&&tl.ok!==false)renderLimitUsage(tl);
 }
-function getEntries(){return [...document.querySelectorAll('.chain .row>input:not([data-ctx])')].map(inp=>{
- const row=inp.closest('.row');const sel=row?row.querySelector('select[data-k]'):null;
- const ci=row?row.querySelector('input[data-ctx]'):null;
- const ctx=ci?parseInt(ci.value)||0:0;
- return {model:inp.value.trim(),key:sel?sel.value:'',...(ctx?{ctx:Math.max(4,Math.min(128,ctx))}:{})}}).filter(e=>e.model)}
-function getChain(){return getEntries().map(e=>(e.key||e.ctx)?{model:e.model,...(e.key?{key:e.key}:{}),...(e.ctx?{ctx:e.ctx}:{})}:e.model)}
+function getEntries(){return window._mEntries||[]}
+function getChain(){return chainOf(getEntries())}
 async function saveModels(){await saveKV('/api/config',{models:getChain()},'模型链已保存（agent 已热加载）')}
 async function saveThinking(){
  const th={};
  const dv=$('#thdef')?$('#thdef').value:'high';
  th._default=dv==='off'?{enabled:false,level:'high'}:{enabled:true,level:dv};
  if($('#thauto'))th._auto=$('#thauto').checked;
- const names=getEntries().map(e=>e.model);
- document.querySelectorAll('.chain select[data-th]').forEach(sel=>{
-  const i=+sel.dataset.th;const v=sel.value;const m=names[i];
-  if(m&&v!=='')th[m]=v==='off'?{enabled:false,level:'high'}:{enabled:true,level:v};
+ (window._mEntries||[]).forEach(e=>{
+  if(e.think)th[e.model]=e.think==='off'?{enabled:false,level:'high'}:{enabled:true,level:e.think};
  });
  await saveKV('/api/config',{thinking:th},'思考设置已保存（已生效）')}
 async function saveVisionModel(){await saveKV('/api/config',{vision_model:$('#vmodel').value.trim()},'视觉模型已保存（即时生效）')}
+async function saveLeanCtx(on){await saveKV('/api/reply-config',{lean_ctx_enabled:on},on?'精简上下文已开启（平均省 30%~45% 消耗）':'已切换全量上下文（消耗约 +50%~80%，表现最佳）')}
 let _trendRange='d30',_usageCache=null;
 function setTrendRange(r){_trendRange=r;if(_usageCache){renderTrend()}}
 function renderTrend(){
@@ -537,12 +529,50 @@ function drawTrend(series){
  el.innerHTML='<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:'+H+'px" role="img" aria-label="token调用趋势">'+grid+labels+xticks+
   '<path d="'+area+'" fill="var(--acc)" opacity="0.12"/><path d="'+path+'" fill="none" stroke="var(--acc)" stroke-width="2"/>'+dots+'</svg>';
 }
-function mv(i,d){const c=getChain();const j=i+d;if(j<0||j>=c.length)return;[c[i],c[j]]=[c[j],c[i]];postChainReorder(c)}
-async function postChainReorder(c){await api('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({models:c})});load()}
-async function del(i){const c=getChain();const m=c[i];c.splice(i,1);
+function mv(i,d){const e=window._mEntries||[];const j=i+d;if(j<0||j>=e.length)return;[e[i],e[j]]=[e[j],e[i]];postChainReorder()}
+async function postChainReorder(){await saveKV('/api/config',{models:chainOf(window._mEntries||[])},'模型链已更新（agent 已热加载）');load()}
+async function del(i){const e=window._mEntries||[];const m=e[i]&&e[i].model;
  if(!await dlgConfirm({title:'移除模型',body:'从降级链移除「'+(m||'')+'」？（链中剩余模型仍正常工作，可随时重新添加）',okText:'移除',danger:true}))return;
- postChainReorder(c)}
-function addm(){const v=$('#newm').value.trim();if(!v)return;const c=getChain();c.push(v);postChainReorder(c)}
+ e.splice(i,1);postChainReorder()}
+function chainOf(entries){return entries.map(e=>(e.key||e.ctx)?{model:e.model,...(e.key?{key:e.key}:{}),...(e.ctx?{ctx:e.ctx}:{})}:e.model)}
+async function editModel(i){
+ const creating=i<0;const e=creating?{model:'',key:'',ctx:'',think:''}:Object.assign({},window._mEntries[i]);
+ const keysL=window._mKeys||[];
+ const keyOpts='<option value=""'+(!e.key?' selected':'')+'>主 Key</option>'
+  +keysL.map(k=>`<option value="${esc(k.id)}"${e.key===k.id?' selected':''}>${k.primary?'★ ':''}${esc(k.label||k.id)}</option>`).join('');
+ const thOpts=['','off','high','low'].map(v=>'<option value="'+v+'"'+((e.think||'')===v?' selected':'')+'>'+({'' :'跟随默认','off':'关闭思考','high':'思考·高','low':'思考·低'})[v]+'</option>').join('');
+ const m=document.createElement('div');m.className='dlg-mask';
+ m.innerHTML='<div class="dlg" role="dialog" style="max-width:430px"><h3>'+(creating?'添加模型':'编辑模型')+'</h3>'
+  +'<div class="dlg-body">模型降级链条目的全部设置；上下文档位控制注入的历史与记忆规模（人设/风格永不裁剪）。</div>'
+  +'<div style="margin-top:12px"><div class="k" style="margin-bottom:4px">模型名</div>'
+  +'<input id="em_model" value="'+esc(e.model)+'" placeholder="如 glm-5.3-flash" style="width:100%"></div>'
+  +'<div style="display:flex;gap:10px;margin-top:10px">'
+  +'<div style="flex:1"><div class="k" style="margin-bottom:4px">API Key</div><select id="em_key" class="mini" style="width:100%">'+keyOpts+'</select></div>'
+  +'<div style="width:110px"><div class="k" style="margin-bottom:4px">上下文 (k)</div><input id="em_ctx" type="number" min="4" max="128" value="'+(e.ctx||'')+'" placeholder="默认" style="width:100%"></div>'
+  +'<div style="width:120px"><div class="k" style="margin-bottom:4px">思考模式</div><select id="em_th" class="mini" style="width:100%">'+thOpts+'</select></div>'
+  +'</div><div class="dlg-btns"><button class="act ghost">取消</button><button class="act">'+(creating?'添加':'保存')+'</button></div></div>';
+ document.body.appendChild(m);
+ const close=()=>m.remove();
+ m.querySelector('.dlg-btns .ghost').onclick=close;
+ m.onclick=ev=>{if(ev.target===m)close()};
+ m.onkeydown=ev=>{if(ev.key==='Escape')close()};
+ m.querySelector('.dlg-btns .act:not(.ghost)').onclick=async()=>{
+  const model=document.getElementById('em_model').value.trim().toLowerCase();
+  const key=document.getElementById('em_key').value;
+  const ctx=parseInt(document.getElementById('em_ctx').value)||0;
+  const th=document.getElementById('em_th').value;
+  if(!model){toast('模型名不能为空',false);return}
+  close();
+  const ent={model,key,ctx:ctx?Math.max(4,Math.min(128,ctx)):'',think:th};
+  if(creating){(window._mEntries=window._mEntries||[]).push(ent)}
+  else{window._mEntries[i]=ent}
+  // models + 该模型思考覆盖 一并保存
+  const think=Object.assign({},window._mThink||{});
+  if(th)think[model]=th==='off'?{enabled:false,level:'high'}:{enabled:true,level:th};
+  else delete think[model];
+  window._mThink=think;
+  const r=await saveKV('/api/config',{models:chainOf(window._mEntries),thinking:think},(creating?'已添加 ':'已保存 ')+model+'（agent 已热加载）');
+  load()}}
 async function vGroups(){
  const [g,c,gm,rv]=await Promise.all([
   api('/api/groups').catch(()=>({})),
@@ -803,6 +833,8 @@ async function vSettings(){
    <input id="nkval" type="password" placeholder="粘贴 API Key" style="flex:1;min-width:220px">
    <button class="act" onclick="addKey()">添加 Key</button></div>
   <div class="k" style="margin-top:6px">Key 仅保存在本机数据目录（不进源码），列表仅显示掩码；第一个添加的自动成为主 Key，删除主 Key 后自动切到剩余第一个。模型链中引用某 Key 的条目在该 Key 被删除后会被自动跳过。</div></div>
+ <div class="card"><label class="master"><input type="checkbox" ${rv.lean_ctx_enabled!==false?'checked':''} onchange="saveLeanCtx(this.checked)">
+   <span><b>精简上下文（推荐开启）</b><div class="k" style="margin-top:3px">开启后：旁观消息先经约 0.5k token 的轻量判定决定是否开口（决定开口才用全量提示词生成），回复时按各模型的上下文档位裁剪历史与记忆——人设/风格/安全规则始终全量，回复质量不受影响。关闭后：每次调用都带完整系统提示与更多历史记忆（追求最佳表现，token 消耗大约 +50%~80%，旁观评估为主增量）</div></span></label></div>
  <div class="card"><label class="master"><input type="checkbox" ${rv.vision_enabled?'checked':''} onchange="saveVision(this.checked)">
   <span><b>看图模式</b><div class="k" style="margin-top:3px">开启后，消息里的图片会交给视觉模型识别并回应（群聊与私聊均生效）；视觉模型在「模型管理」页配置，识别失败自动降级纯文本</div></span></label></div>
  <div class="card"><label class="master"><input type="checkbox" ${rv.web_search_enabled?'checked':''} onchange="saveWebSearch(this.checked)">
@@ -1747,6 +1779,7 @@ class UiHandler(BaseHTTPRequestHandler):
                                                                                     data.get("proactive_min_interval_sec", 1800)),
                                      "proactive_groups_silent_start": data.get("proactive_groups_silent_start", "22:00"),
                                      "proactive_groups_silent_end": data.get("proactive_groups_silent_end", "08:00"),
+                                     "lean_ctx_enabled": data.get("lean_ctx_enabled", True),
                                      "proactive_private_silent_start": data.get("proactive_private_silent_start", "22:00"),
                                      "proactive_private_silent_end": data.get("proactive_private_silent_end", "08:00"),
                                      "token_limit_enabled": data.get("token_limit_enabled", False),
@@ -1993,6 +2026,8 @@ class UiHandler(BaseHTTPRequestHandler):
                     return self._reply(400, {"ok": False, "error": "上限应为 tokens 整数（≥1000）"})
             if "proactive_groups_enabled" in body:
                 data["proactive_groups_enabled"] = bool(body["proactive_groups_enabled"])
+            if "lean_ctx_enabled" in body:
+                data["lean_ctx_enabled"] = bool(body["lean_ctx_enabled"])
             if "proactive_private_enabled" in body:
                 data["proactive_private_enabled"] = bool(body["proactive_private_enabled"])
             for _pk in ("proactive_groups_probability", "proactive_private_probability"):
