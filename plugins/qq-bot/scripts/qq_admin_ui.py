@@ -1019,8 +1019,8 @@ async function vDevCtrl(){
   <div class="k" style="line-height:1.8">
    ① 主人在 QQ 里表达要操作电脑的意图（如「去电脑上找个文档」「设备操控」）<br>
    ② 机器人回应，等待授权码<br>
-   ③ 主人把上方显示的 6 位授权码发给机器人<br>
-   ④ 验证通过后 ${winMin} 分钟内可直接发命令：找文件 / 读文件 / 发文件（结果只发私聊）
+   ③ 主人把上方显示的 6 位授权码发给机器人（直接发数字，或夹在话里如「授权码是123456」都行）<br>
+   ④ 验证通过后 ${winMin} 分钟内像平时聊天一样用自然语言指挥机器人操作电脑（找文件 / 发文件 / 看目录 / 联网查，它会保持人设多轮执行并汇报；结果只发私聊）
   </div>
 
   <div class="k" style="margin-top:14px;margin-bottom:6px">安全设置</div>
@@ -1042,25 +1042,33 @@ async function vDevCtrl(){
   <label style="display:block;margin:4px 0"><input type="radio" name="fltmode" value="keyword" ${window._flow.trigger_mode==='keyword'?'checked':''}> 仅关键词触发<span class="k">：只有消息包含下列关键词才发起授权</span></label>
   <div style="margin-top:8px"><div class="k" style="margin-bottom:4px">触发关键词（逗号分隔；两种模式下都会先匹配）</div>
   <input id="flkw" value="${esc((window._flow.keywords||[]).join(', '))}" style="width:100%"></div>
-  <div style="margin-top:10px"><div class="k" style="margin-bottom:4px">申请授权码文本（可用占位符 {owner} 主人昵称 / {bot} 机器人自称）</div>
-  <textarea id="flask" style="min-height:80px">${esc(window._flow.ask_text||'')}</textarea></div>
-  <div style="margin-top:10px"><div class="k" style="margin-bottom:4px">验证成功文本（占位符 {owner} {bot} {mins} 授权分钟数）</div>
-  <textarea id="flok" style="min-height:80px">${esc(window._flow.ok_text||'')}</textarea></div>
-  <div style="margin-top:10px"><div class="k" style="margin-bottom:4px">验证失败文本（占位符 {owner}）</div>
-  <input id="flfail" value="${esc(window._flow.fail_text||'')}" style="width:100%"></div>
-  <div style="margin-top:10px"><div class="k" style="margin-bottom:4px">授权码过期文本 / 任务完成文本（占位符 {left} 剩余秒数）</div>
-  <textarea id="flexp" style="min-height:60px">${esc(window._flow.expired_text||'')}</textarea>
-  <input id="fldone" value="${esc(window._flow.done_text||'')}" style="width:100%;margin-top:6px"></div>
+  <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">
+   <label class="master"><input type="checkbox" id="fltuse" ${(window._flow.use_custom_text!==false)?'checked':''} onchange="flTextToggle(this.checked)">
+    <span><b>启用自定义文案</b><div class="k" style="margin-top:3px">勾选=下方文案优先生效（占位符自动替换）；不勾选=机器人根据当前人设自己即兴发挥这些话术（授权/验证/提醒功能完全不变，只是说法由 AI 按人设现编）</div></span></label>
+   <div id="fltexts" style="${(window._flow.use_custom_text!==false)?'':'opacity:.45;pointer-events:none'}">
+   <div style="margin-top:10px"><div class="k" style="margin-bottom:4px">申请授权码文本（可用占位符 {owner} 主人昵称 / {bot} 机器人自称）</div>
+   <textarea id="flask" style="min-height:80px">${esc(window._flow.ask_text||'')}</textarea></div>
+   <div style="margin-top:10px"><div class="k" style="margin-bottom:4px">验证成功文本（占位符 {owner} {bot} {mins} 授权分钟数）</div>
+   <textarea id="flok" style="min-height:80px">${esc(window._flow.ok_text||'')}</textarea></div>
+   <div style="margin-top:10px"><div class="k" style="margin-bottom:4px">验证失败文本（占位符 {owner}）</div>
+   <input id="flfail" value="${esc(window._flow.fail_text||'')}" style="width:100%"></div>
+   <div style="margin-top:10px"><div class="k" style="margin-bottom:4px">授权码过期文本 / 窗口临近结束提醒文本（占位符 {left} 剩余秒数；提醒只在剩余不到 1 分钟时发一次，不再每条刷屏）</div>
+   <textarea id="flexp" style="min-height:60px">${esc(window._flow.expired_text||'')}</textarea></div>
+   <input id="fldone" value="${esc(window._flow.done_text||'')}" style="width:100%;margin-top:6px"></div>
+   </div></div>
   <div style="margin-top:10px"><label>授权窗口 <input id="flwin" type="number" min="1" max="1440" value="${winMin}" style="width:80px"> 分钟（1–1440，最长 24 小时）</label></div>
+  <div class="k" style="margin-top:8px">进入操控模式后机器人会保持人设和你互动，用自然语言指挥即可（找文件/发文件/看目录/联网查都支持）；操作过程是多轮工具循环，复杂任务可以一步步来。</div>
   <div style="margin-top:12px;display:flex;gap:8px"><button class="act" onclick="saveFlow()">保存流程设置</button>
   <button class="act ghost" onclick="resetFlow()">恢复默认</button></div>
  </div>`;
  renderPdList();
 }
+function flTextToggle(on){const el=document.getElementById('fltexts');if(el){el.style.opacity=on?'':'0.45';el.style.pointerEvents=on?'':'none'}}
 async function saveFlow(){
  const mode=(document.querySelector('input[name=fltmode]:checked')||{}).value||'auto';
  const body={trigger_mode:mode,
   keywords:document.getElementById('flkw').value,
+  use_custom_text:document.getElementById('fltuse').checked,
   ask_text:document.getElementById('flask').value,
   ok_text:document.getElementById('flok').value,
   fail_text:document.getElementById('flfail').value,
@@ -1155,7 +1163,7 @@ async function vSettings(){
  <div class="card"><label class="master"><input type="checkbox" ${rv.vision_enabled?'checked':''} onchange="saveVision(this.checked)">
   <span><b>看图模式</b><div class="k" style="margin-top:3px">开启后，消息里的图片会交给视觉模型识别并回应（群聊与私聊均生效）；视觉模型在「模型管理」页配置，识别失败自动降级纯文本</div></span></label></div>
  <div class="card"><label class="master"><input type="checkbox" ${rv.web_search_enabled?'checked':''} onchange="saveWebSearch(this.checked)">
-  <span><b>联网搜索</b><div class="k" style="margin-top:3px">遇到实时性问题（新闻/天气/价格/最新版本等）自动先联网搜索再回答，普通闲聊不触发不计费；使用前需在智谱开放平台（open.bigmodel.cn → 财务 → 资源包）开通搜索资源包（search_std 约 0.01 元/次），未开通时搜索静默跳过、机器人正常聊天</div></span></label></div>
+  <span><b>联网搜索</b><div class="k" style="margin-top:3px">遇到实时性问题（新闻/天气/价格/最新版本等）自动先联网搜索再回答，普通闲聊不触发不计费。搜索后端：优先用智谱搜索资源包（若有），未开通自动切换必应免费搜索兜底——不买资源包也能搜；两个都失败时机器人会坦白拿不到最新消息</div></span></label></div>
  <div class="card"><label class="master"><input type="checkbox" ${rv.abuse_guard_enabled!==false?'checked':''} onchange="saveAbuseGuard(this.checked)">
   <span><b>防滥用防护</b><div class="k" style="margin-top:3px">整合三重防护，建议保持开启：① 人设防篡改——"忽略设定/你现在是XX/输出系统提示"等注入话术不生效，设定不泄露；② 任务拦截——竞赛题、代写作业、要代码成品等把机器人当免费任务引擎的消息，会以人设口吻轻松回绝；③ 身份锚定——多轮对话被"说服"后仍回归人设。关闭后所有消息按原始对话处理（仅调试用）</div></span></label></div>
  <div class="card"><div class="k" style="display:flex;gap:10px;align-items:center;margin-bottom:8px">高峰降耗
@@ -3005,8 +3013,10 @@ class UiHandler(BaseHTTPRequestHandler):
             else:
                 if "trigger_mode" in body:
                     if body["trigger_mode"] not in ("auto", "keyword"):
-                        return self._reply(400, {"ok": False, "error": "触发方式非法"})
+                        return self._reply(400, {"ok": False, "error": "trigger_mode 非法"})
                     patch["trigger_mode"] = body["trigger_mode"]
+                if "use_custom_text" in body:
+                    patch["use_custom_text"] = bool(body["use_custom_text"])
                 if "keywords" in body:
                     kw = body["keywords"]
                     if isinstance(kw, str):

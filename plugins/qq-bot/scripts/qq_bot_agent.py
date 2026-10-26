@@ -698,6 +698,66 @@ def web_search(query):
     return "\n".join(lines)
 
 
+_BING_TITLE_RE = re.compile(r'<h2><a[^>]*href="([^"]+)"[^>]*>(.*?)</a></h2>', re.S)
+_BING_SNIP_RE = re.compile(r'<p class="b_lineclamp[^"]*"[^>]*>(.*?)</p>', re.S)
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def html_txt(s):
+    import html as _h
+    return _h.unescape(str(s or ""))
+
+
+def _free_search(query, count=5):
+    """必应中国网页版免费搜索兜底（无 Key 无资源包，国内直连）。返回结果文本或空。"""
+    q = str(query).strip()[:80]
+    if not q:
+        return ""
+    ctx = ssl.create_default_context()
+    conn = http.client.HTTPSConnection("cn.bing.com", 443, timeout=15, context=ctx)
+    try:
+        conn.request("GET", "/search?q=" + urllib.parse.quote(q) + "&mkt=zh-CN", headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 Chrome/124.0 Safari/537.36",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+        })
+        resp = conn.getresponse()
+        if resp.status != 200:
+            return ""
+        html = resp.read().decode("utf-8", "replace")
+    except (OSError, ValueError):
+        return ""
+    finally:
+        conn.close()
+    hits = _BING_TITLE_RE.findall(html)[:count]
+    snips = _BING_SNIP_RE.findall(html)[:count * 2]
+    lines = []
+    for i, (url, title) in enumerate(hits):
+        t = html_txt(_TAG_RE.sub("", title)).strip()[:60]
+        s = html_txt(_TAG_RE.sub("", snips[i])).strip()[:180] if i < len(snips) else ""
+        host = urllib.parse.urlsplit(url).netloc[:40]
+        if t:
+            lines.append("- %s：%s（%s）" % (t, s, host))
+    return "\n".join(lines)
+
+
+def search_web(query):
+    """统一搜索入口：智谱资源包优先，失败/未开通自动回落必应免费搜索。"""
+    try:
+        r = web_search(query)
+        if r:
+            return r, "zhipu"
+    except Exception:
+        pass
+    try:
+        r = _free_search(query)
+        if r:
+            return r, "bing"
+    except Exception:
+        pass
+    return "", ""
+
+
 # ---------------- 主人专属：私聊遥控（B）与任务能力桥（A） ----------------
 
 def owner_qq():
@@ -1545,6 +1605,12 @@ def build_messages(daemon, msg, ctx_k=32):
             "没有自动触发，简短引导对方用「画：描述」格式重发——"
             "绝对不要说自己不会画画/没有画图功能；群员要求画画时，"
             "以人设口吻说明画图只对主人开放\n")
+    if not _device_ctrl_enabled():
+        draw_rule += (
+            "- 你具备「设备操控」能力（帮主人操作电脑找/读/发文件），但当前未开启："
+            "若有人（包括主人）要求你操作电脑/找文件/发文件，按人设回应并说明"
+            "这个功能现在没开、主人可以在电脑控制台开启——"
+            "绝对不要说自己\"没有这个功能/做不到/不是这种机器人\"\n")
     _tinfo = C.tz_now_info()
     _time_line = ("【当前真实时间：%s %s %s（24小时制 %s，时区 %s）】"
                   "请注意区分上午/下午/凌晨，不要搞错时间。"
@@ -2065,6 +2131,7 @@ _DEFAULT_FLOW = {
                      "请在电脑控制台「设备操控」页查看当前码"),
     "done_text": "协议二：任务完成\n（授权窗口剩余 {left} 秒）",
     "auth_window_sec": 120,
+    "use_custom_text": True,  # True=用上面文案模板 | False=模型按人设即兴（功能不变）
 }
 
 
@@ -2096,7 +2163,10 @@ def save_devctrl_flow(patch):
     cur = devctrl_flow()
     for k in _DEFAULT_FLOW:
         if k in patch:
-            cur[k] = patch[k]
+            if k == "use_custom_text":
+                cur[k] = bool(patch[k])
+            else:
+                cur[k] = patch[k]
     write_const(DEVCTRL_FLOW_PATH,
                 json.dumps(cur, ensure_ascii=False, indent=2))
     return cur
@@ -2166,8 +2236,188 @@ def _device_ctrl_enabled():
     return bool(C.load_app_config().get("device_ctrl_enabled"))
 
 
+def _persona_stack_text():
+    """人设全栈紧凑版（人设/全局/风格/自进化/时间），供设备操控循环与即兴文案共用。"""
+    pc, active_name = load_persona_collection()
+    persona = pc.get("persona", "") or "你是QQ机器人「智谱娘」。"
+    parts = ["【当前人设：%s】\n%s" % (active_name or "智谱娘", persona)]
+    if pc.get("global"):
+        parts.append("## 全局通用设定\n%s" % pc["global"])
+    style = read_const(STYLE_PATH)
+    if style:
+        parts.append("## 说话风格卡（严格模仿语言风格，不改变身份）\n%s" % style)
+    ev = evolved_notes(active_name) if active_name else {"enabled": False, "notes": []}
+    if ev["enabled"] and ev["notes"]:
+        parts.append("## 自进化风格观察\n" + "\n".join("- %s" % n for n in ev["notes"][-10:]))
+    try:
+        parts.append(C.tz_now_info()["line"])
+    except Exception:
+        pass
+    return "\n\n".join(parts)
+
+
+def _persona_say(instruction, fallback):
+    """让模型按人设即兴说一句话（自定义文案关闭时用）；失败回落 fallback。"""
+    try:
+        system = (_persona_stack_text() +
+                  "\n\n## 任务\n用你一贯的人设语气完成下面的沟通，只输出要说的话本身"
+                  "（口语、自然、不要引号、不要任何标记或动作指令）：\n" + instruction)
+        _m, t = call_glm_with_fallback(
+            [{"role": "system", "content": system},
+             {"role": "user", "content": "说吧"}], "")
+        t = str(t or "").strip()
+        if t and "[SKIP]" not in t and "[CMD]" not in t:
+            return t[:300]
+    except Exception:
+        pass
+    return fallback
+
+
+_DEVCTRL_SESSION = {"msgs": [], "noticed": False}
+
+_DEVCTRL_TOOLS_DOC = """## 设备操控模式（协议二已连线，主人已授权）
+主人现在可以直接指挥你操作他的电脑。保持上面的人设与语气和主人互动，同时用动作完成要求。
+每轮回复格式（严格遵守）：
+- 需要操作时，只输出动作行（每行一条，最多3条；动作行之外不要输出任何文字）：
+  [CMD] find <文件名关键词>      按文件名在主人的常用目录里找文件
+  [CMD] read <路径>              读取文件内容（前2000字）
+  [CMD] send <路径>              把文件发给主人（会立即送达）
+  [CMD] list <目录>              列出目录内容（主人没指定就看桌面/主目录）
+  [CMD] searchweb <搜索词>       联网搜索实时信息
+  动作结果会在下一轮给你，看到结果后再决定下一步。
+- 不需要动作（任务完成/纯聊天/汇报结果）时：直接输出给主人看的话——保持人设、
+  口语自然，把刚拿到的结果讲清楚；此时禁止出现 [CMD]。
+要点：拿不准路径就先 find/list 再 read/send，一步一步来；多步任务做完后用人设
+口吻简短汇报；主人闲聊就正常聊；禁止声称自己无法操作电脑（你已授权）。"""
+
+
+def _devctrl_history_block(daemon, msg, n=10, w=80):
+    try:
+        hist = daemon.history(msg.get("chat_type"), msg.get("chat_id"), limit=n)
+        lines = []
+        for rec in hist or []:
+            t = str(rec.get("text") or "").replace("\n", " ")[:w]
+            if t:
+                who = "你" if rec.get("is_bot") else rec.get("sender_name", "?")
+                lines.append("%s: %s" % (who, t))
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
+def _devctrl_step(daemon, reply_to, action, arg):
+    """执行单个设备动作，返回结果文本（发文件动作直接送达，其余文本回喂循环）。"""
+    arg = str(arg or "").strip()
+    if action == "find":
+        results = _devctrl_search(arg[:100])
+        return "find「%s」→ %d 条：%s" % (arg[:60], len(results),
+            ("；".join(x[:120] for x in results[:8]) if results else "无匹配"))
+    if action == "read":
+        fp = arg[:260]
+        if _is_protected(fp):
+            return "read 拒绝：%s 在保护目录内" % fp
+        try:
+            content = open(fp, "r", encoding="utf-8", errors="replace").read(2000)
+            return "read %s 前2000字：\n%s" % (fp, content)
+        except OSError as e:
+            return "read 失败：%r" % e
+    if action == "send":
+        fp = arg[:260]
+        if _is_protected(fp):
+            return "send 拒绝：%s 在保护目录内" % fp
+        if not os.path.isfile(fp):
+            return "send 失败：文件不存在 %s（可先 find）" % fp
+        daemon.send_image(reply_to[0], reply_to[1], fp)
+        return "send 已送达：%s" % os.path.basename(fp)
+    if action == "list":
+        d = arg[:260] or os.path.expanduser("~")
+        if _is_protected(d):
+            return "list 拒绝：%s 在保护目录内" % d
+        if not os.path.isdir(d):
+            return "list 失败：目录不存在 %s" % d
+        try:
+            return ("list %s：%s" % (d, "；".join(sorted(os.listdir(d))[:40]) or "（空）"))
+        except OSError as e:
+            return "list 失败：%r" % e
+    if action == "searchweb":
+        res, backend = search_web(arg[:80])
+        return ("searchweb「%s」(%s)：%s" % (arg[:60], backend or "无结果",
+                res.replace("\n", " ｜ ")[:900] if res else "无结果"))
+    return "不支持的动作 %s" % action
+
+
+def devctrl_agent_loop(daemon, msg, reply_to, flow):
+    """ZCode 式工具循环：人设全栈系统提示 + 多轮 [CMD] 动作 + 结果回喂，
+    最终以人设口吻汇报。会话记忆保跨轮上下文。"""
+    import re as _re
+    owner_nick = str(msg.get("sender_name") or owner_qq() or "主人")
+    text = str(msg.get("text") or "").strip()
+    win = int(flow.get("auth_window_sec", 120))
+    system = (_persona_stack_text() + "\n\n" + _DEVCTRL_TOOLS_DOC +
+              "\n\n## 安全\n保护目录（系统目录+主人设置）不可读/发；"
+              "所有结果与文件只发主人私聊，绝不在群里复述敏感内容。")
+    hist = _devctrl_history_block(daemon, msg)
+    sess_msgs = list(_DEVCTRL_SESSION["msgs"])[-24:]
+    user_parts = []
+    if hist:
+        user_parts.append("【最近对话背景】\n" + hist)
+    user_parts.append("【主人说】" + text)
+    messages = [{"role": "system", "content": system}]
+    messages += sess_msgs
+    messages.append({"role": "user", "content": "\n\n".join(user_parts)})
+    final = ""
+    try:
+        for _round in range(6):
+            _m, reply = call_glm_with_fallback(messages, "")
+            reply = str(reply or "").strip()
+            cmds = _re.findall(r"^\s*\[CMD\]\s*(\w+)\s+(.+?)\s*$", reply, _re.M)
+            body = _re.sub(r"^\s*\[CMD\].*$", "", reply, flags=_re.M).strip()
+            if not cmds:
+                final = body or reply
+                break
+            results = []
+            for act, a in cmds[:3]:
+                results.append(_devctrl_step(daemon, reply_to, act.lower(), a))
+                out("AGENT_DEVCTRL_STEP %s %.40s" % (act.lower(), a))
+            messages.append({"role": "assistant", "content": reply})
+            messages.append({"role": "user",
+                             "content": "【动作结果】\n" + "\n".join(results)})
+        if not final:
+            final = _persona_say(
+                "刚帮主人操作完电脑，用一两句话自然汇报一下结果。", "搞定了～")
+        if final:
+            kept, _drop = _dedup_reply(daemon, msg, [final])
+            final = kept[0].strip() if kept and kept[0] else ""
+        if final:
+            final = (final.replace("**", "").replace("### ", "")
+                     .replace("## ", "").replace("# ", "").strip())
+        final = _PROFANITY_RE.sub("", final).strip() if final else ""
+        if final:
+            daemon.send(reply_to[0], reply_to[1], [final[:1500]])
+        _DEVCTRL_SESSION["msgs"] = (messages[-24:] +
+                                    [{"role": "assistant", "content": final}])[-24:]
+    except Exception as e:
+        out("AGENT_DEVCTRL_LOOP_ERR %r" % e)
+        daemon.send(reply_to[0], reply_to[1],
+                    [_persona_say("刚才操作电脑时出了点小故障，跟主人说一声并让他稍后再试。",
+                                  "刚才操作出了点问题，稍后再试试？")])
+    # 窗口临近结束提醒一次（<60s），之后不再刷屏
+    left = int(_DEVCTRL_AUTH["ok_until"] - time.time())
+    if 0 < left <= 60 and not _DEVCTRL_SESSION["noticed"]:
+        _DEVCTRL_SESSION["noticed"] = True
+        if flow.get("use_custom_text", True):
+            daemon.send(reply_to[0], reply_to[1],
+                        [_render_flow(flow["done_text"], owner=owner_nick, left=left)])
+        else:
+            daemon.send(reply_to[0], reply_to[1],
+                        [_persona_say("授权窗口只剩%d秒就要关了，提醒主人如果有后续操作"
+                                      "赶紧说。" % left, "（授权窗口马上结束）")])
+    elif left > 60:
+        _DEVCTRL_SESSION["noticed"] = False
+
+
 def _handle_devctrl(daemon, msg):
-    """设备操控入口：授权码验证 + 命令执行（文案与触发方式可配置）。"""
+    """设备操控入口：宽松授权码验证 + ZCode 式工具循环（人设保持）。"""
     if not _device_ctrl_enabled() or not is_owner(msg):
         return False
     text = str(msg.get("text") or "").strip()
@@ -2176,157 +2426,53 @@ def _handle_devctrl(daemon, msg):
     owner_nick = str(msg.get("sender_name") or owner_qq() or "主人")
     bot_name = _bot_self_name()
     win = int(flow.get("auth_window_sec", 120))
+    use_custom = bool(flow.get("use_custom_text", True))
+    reply_to = ("private", str(msg.get("sender_id") or owner_qq()))
 
-    def _send(tmpl, **kw):
-        daemon.send(msg["chat_type"], msg["chat_id"],
-                    [_render_flow(tmpl, owner=owner_nick, bot=bot_name, **kw)])
+    def _say(tmpl_key, fallback, **kw):
+        """流程话术：自定义开启→模板渲染；关闭→模型按人设即兴。"""
+        if use_custom:
+            daemon.send(msg["chat_type"], msg["chat_id"],
+                        [_render_flow(flow[tmpl_key], owner=owner_nick,
+                                      bot=bot_name, **kw)])
+        else:
+            daemon.send(msg["chat_type"], msg["chat_id"],
+                        [_persona_say(fallback[0], _render_flow(
+                            _DEFAULT_FLOW[tmpl_key], owner=owner_nick,
+                            bot=bot_name, **kw))])
 
-    # 主人直接发 6 位数字 → 授权码验证
-    if _re.fullmatch(r"\d{6}", text) and cfg_2fa_on():
+    in_window = _DEVCTRL_AUTH["ok_until"] > time.time()
+    # 宽松授权码识别：消息里出现独立的 6 位数字即视为尝试（未授权时）
+    m_code = None if in_window else _re.search(r"(?<!\d)(\d{6})(?!\d)", text)
+    if m_code and cfg_2fa_on():
+        code = m_code.group(1)
         if not _DEVCTRL_CODE["code"] or time.time() > _DEVCTRL_CODE["expires"]:
-            _send(flow["expired_text"])
+            _say("expired_text", ("用你的话告诉主人：授权码过期了，让他去电脑控制台"
+                                  "「设备操控」页看当前的新码再发来。", ""))
             return True
-        if text != _DEVCTRL_CODE["code"]:
-            _send(flow["fail_text"])
+        if code != _DEVCTRL_CODE["code"]:
+            _say("fail_text", ("用你的话告诉主人授权码不对，让他重新输一次（就刚才那句话里的数字不对）。", ""))
             return True
         _DEVCTRL_CODE["code"] = C.gen_auth_code()
         _DEVCTRL_CODE["expires"] = time.time() + 300
         _DEVCTRL_AUTH["ok_until"] = time.time() + win
-        _send(flow["ok_text"], mins=win // 60 or 1)
+        _DEVCTRL_SESSION.update({"msgs": [], "noticed": False})
+        _say("ok_text", ("连线成功！用你的语气告诉主人：接下来 %d 分钟内直接用自然语言"
+                         "指挥你操作电脑就行（找文件/发文件/看目录/联网查都行），顺便"
+                         "随口带一句刚才那句授权码说得挺顺。" % max(1, win // 60),
+                         ), mins=max(1, win // 60))
         out("AGENT_DEVCTRL_LINKED window=%ds" % win)
         return True
-    # 已授权窗口内：只拦截真正的设备命令，其余消息照常走聊天（也不再重复索码）
-    if _DEVCTRL_AUTH["ok_until"] > time.time():
-        m_cmd = _re.match(r"^(找文件|读文件|发文件|列目录)\s+(.+)$", text, _re.S)
-        if m_cmd:
-            reply_to = ("private", str(msg.get("sender_id") or owner_qq()))
-            _devctrl_run(daemon, msg, reply_to, flow,
-                         m_cmd.group(1), m_cmd.group(2).strip())
-            return True
-        # 自然语言：小模型解析成动作；解析为 chat 则放行普通聊天
-        act = _devctrl_parse(text)
-        out("AGENT_DEVCTRL_PARSE action=%s arg=%.40s" % (act.get("action"), act.get("arg", "")))
-        if act.get("action") in ("search", "read", "send", "list"):
-            reply_to = ("private", str(msg.get("sender_id") or owner_qq()))
-            _devctrl_run(daemon, msg, reply_to, flow,
-                         act.get("action"), str(act.get("arg") or ""))
-            return True
-        return False
-    m = _re.match(r"^设备\s+(\d{6})\s*[|｜]\s*(.+)$", text, _re.S)
-    if not m:
-        # 触发判定（关键词 / 自主判断）→ 发协议一索码
-        if _devctrl_should_ask(text, str(flow.get("trigger_mode") or "auto"), flow):
-            _send(flow["ask_text"])
-            return True
-        return False
-    code, cmd = m.group(1), m.group(2).strip()
-    if cfg_2fa_on():
-        if not _DEVCTRL_CODE["code"] or time.time() > _DEVCTRL_CODE["expires"]:
-            _send(flow["expired_text"])
-            return True
-        if code != _DEVCTRL_CODE["code"]:
-            _send(flow["fail_text"])
-            return True
-        _DEVCTRL_CODE["code"] = C.gen_auth_code()
-        _DEVCTRL_CODE["expires"] = time.time() + 300
-    # 强制私聊返回结果（隐私不出群）
-    reply_to = ("private", str(msg.get("sender_id") or owner_qq()))
-    import re as _re2
-    m2 = _re2.match(r"^(找文件|读文件|发文件|列目录)\s+(.+)$", cmd, _re2.S)
-    _ACT_CN = {"找文件": "search", "读文件": "read", "发文件": "send", "列目录": "list"}
-    if m2:
-        act, arg = _ACT_CN[m2.group(1)], m2.group(2).strip()
-    else:
-        p = _devctrl_parse(cmd)
-        act, arg = p.get("action"), str(p.get("arg") or "")
-    _devctrl_run(daemon, msg, reply_to, flow, act, arg)
-    return True
-
-
-
-def _devctrl_parse(text):
-    """自然语言 → 设备动作。小模型输出 JSON；任何失败都回落 chat（放行普通聊天）。
-    只做意图归类，不产生副作用；保护目录校验仍在执行层。"""
-    import re as _re
-    try:
-        prompt = (
-            "你是设备指令解析器。主人正在授权窗口内指挥机器人操作他的电脑。"
-            "把主人的话解析成一个动作，只输出一行 JSON，不要输出其他内容：" + chr(10) +
-            '{"action":"search|read|send|list|chat","arg":"..."}' + chr(10) +
-            "search=按文件名关键词找文件（arg=名称关键词）；"
-            "read=读取文件内容（arg=文件路径）；"
-            "send=把文件发给主人（arg=文件路径）；"
-            "list=列出目录内容（arg=目录路径，主人没说就填 ~ ）；"
-            "chat=与设备操作无关的普通聊天（arg 留空）。"
-            "主人说：「%s」" % str(text)[:200])
-        status, data = call_glm_with_fallback(
-            [{"role": "user", "content": prompt}])
-        raw = str(data or "")
-        m = _re.search(r"\{[^{}]*\}", raw, _re.S)
-        if not m:
-            return {"action": "chat", "arg": ""}
-        obj = json.loads(m.group(0))
-        act = str(obj.get("action") or "chat").lower()
-        if act not in ("search", "read", "send", "list"):
-            return {"action": "chat", "arg": ""}
-        return {"action": act, "arg": str(obj.get("arg") or "")[:260]}
-    except Exception as e:
-        out("AGENT_DEVCTRL_PARSE_ERR %r" % e)
-        return {"action": "chat", "arg": ""}
-
-
-def _devctrl_run(daemon, msg, reply_to, flow, action, arg):
-    """执行单个设备动作（search/read/send/list），完成后回 done_text。"""
-    arg = str(arg or "").strip()
-    if action == "search":
-        pattern = arg[:100]
-        results = _devctrl_search(pattern)
-        daemon.send(reply_to[0], reply_to[1], [
-            ("搜索「%s」结果（%d 条）：" % (pattern, len(results))) + chr(10) +
-            (chr(10).join(results[:10]) if results else "（无匹配）")])
-    elif action == "read":
-        fp = arg[:260]
-        if _is_protected(fp):
-            daemon.send(reply_to[0], reply_to[1], ["该路径在保护目录内，拒绝读取"])
-        else:
-            try:
-                content = open(fp, "r", encoding="utf-8", errors="replace").read(2000)
-                daemon.send(reply_to[0], reply_to[1],
-                            ["文件内容（前2000字）：" + chr(10) + content])
-            except OSError as e:
-                daemon.send(reply_to[0], reply_to[1], ["读取失败：%r" % e])
-    elif action == "send":
-        fp = arg[:260]
-        if _is_protected(fp):
-            daemon.send(reply_to[0], reply_to[1], ["该路径在保护目录内，拒绝发送"])
-        elif not os.path.isfile(fp):
-            daemon.send(reply_to[0], reply_to[1], ["文件不存在：%s" % fp])
-        else:
-            daemon.send_image(reply_to[0], reply_to[1], fp)
-            daemon.send(reply_to[0], reply_to[1], ["已发送：%s" % os.path.basename(fp)])
-    elif action == "list":
-        d = arg[:260] or os.path.expanduser("~")
-        if _is_protected(d):
-            daemon.send(reply_to[0], reply_to[1], ["该目录在保护目录内，拒绝列出"])
-        elif not os.path.isdir(d):
-            daemon.send(reply_to[0], reply_to[1], ["目录不存在：%s" % d])
-        else:
-            try:
-                entries = sorted(os.listdir(d))[:40]
-                daemon.send(reply_to[0], reply_to[1],
-                            [("目录 %s 内容（前40项）：" % d) + chr(10) +
-                             (chr(10).join(entries) if entries else "（空目录）")])
-            except OSError as e:
-                daemon.send(reply_to[0], reply_to[1], ["列目录失败：%r" % e])
-    else:
-        daemon.send(reply_to[0], reply_to[1],
-                    ["不支持的动作。可用：找文件/读文件/发文件/列目录，或直接用自然语言说"])
-    out("AGENT_DEVCTRL action=%s arg=%.40s" % (action, arg))
-    left = int(_DEVCTRL_AUTH["ok_until"] - time.time())
-    daemon.send(reply_to[0], reply_to[1],
-                [_render_flow(flow["done_text"],
-                              owner=str(msg.get("sender_name") or owner_qq()),
-                              left=left)])
+    # 已授权窗口内：一切消息进入工具循环（人设互动 + 设备动作）
+    if in_window:
+        devctrl_agent_loop(daemon, msg, reply_to, flow)
+        return True
+    # 触发判定（关键词 / 自主判断）→ 索码
+    if _devctrl_should_ask(text, str(flow.get("trigger_mode") or "auto"), flow):
+        _say("ask_text", ("用你的语气向主人发起设备操控的「协议一」：需要他提供电脑控制台"
+                          "「设备操控」页上显示的 6 位授权码才能连线（提醒他直接把数字发过来）。", ""))
+        return True
+    return False
 
 
 def _devctrl_search(pattern):
@@ -2593,14 +2739,15 @@ def process(daemon, msg):
     else:
         _ctx_k = 99
     messages, active_persona = build_messages(daemon, msg, ctx_k=_ctx_k)
-    # 联网搜索（两步法）：启发式判定 → 智谱搜索 API → 结果注入 system
+    # 联网搜索（两步法）：启发式判定 → 智谱资源包优先，DDG 免费兜底 → 注入 system
     if web_search_enabled() and needs_search(msg.get("text")):
-        sres = web_search(msg.get("text"))
+        sres, sbackend = search_web(msg.get("text"))
         if sres:
             messages[0]["content"] += (
                 "\n\n## 联网搜索结果（刚刚实时搜索到的资料，回答时以此为准，"
                 "用聊天口吻自然转述，不要堆链接、不要提\"搜索结果\"字样）\n" + sres)
-            out("AGENT_SEARCH msg_id=%s query=%.40s" % (msg["id"], msg.get("text", "")))
+            out("AGENT_SEARCH msg_id=%s backend=%s query=%.40s"
+                % (msg["id"], sbackend, msg.get("text", "")))
         else:
             out("AGENT_SEARCH_EMPTY msg_id=%s" % msg["id"])
     reply = None
