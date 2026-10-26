@@ -42,7 +42,7 @@ from qq_common import econ_active, load_app_config
 DATA_DIR = os.path.join(os.path.expanduser("~"), ".zcode-qq-bot")
 DATA_ROOT = os.path.realpath(DATA_DIR)
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
-MEDIA_SUBDIRS = ("cache/images", "stickers")  # 允许发送的图片所在数据目录子集
+MEDIA_SUBDIRS = ("cache/images", "images", "stickers")  # 允许发送的图片所在数据目录子集（images=AI生成图）
 GROUP_WHITELIST_PATH = os.path.realpath(os.path.join(DATA_DIR, "group_whitelist.json"))
 PRIVATE_CONFIG_PATH = os.path.realpath(os.path.join(DATA_DIR, "private_config.json"))
 

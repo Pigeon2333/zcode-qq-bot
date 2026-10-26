@@ -1263,12 +1263,24 @@ def _draw_execute(daemon, msg, prompt):
     def _run():
         try:
             path = generate_image(prompt)
-            if path:
-                daemon.send_image(msg["chat_type"], msg["chat_id"], path)
-                out("AGENT_DRAW_OK chat=%s/%s" % (msg["chat_type"], msg["chat_id"]))
-            else:
+            if not path:
                 daemon.send(msg["chat_type"], msg["chat_id"],
                             ["这图画不出来，可能是描述太抽象或服务开了小差，换个说法试试？"])
+                return
+            res = daemon.send_image(msg["chat_type"], msg["chat_id"], path,
+                                    wait=True) or {}
+            if not res.get("ok"):
+                out("AGENT_DRAW_SEND_FAIL %s（重试一次）" % str(res.get("error"))[:120])
+                res = daemon.send_image(msg["chat_type"], msg["chat_id"], path,
+                                        wait=True) or {}
+            if res.get("ok"):
+                out("AGENT_DRAW_OK chat=%s/%s" % (msg["chat_type"], msg["chat_id"]))
+            else:
+                out("AGENT_DRAW_SEND_FAIL %s" % str(res.get("error"))[:160])
+                daemon.send(msg["chat_type"], msg["chat_id"], [
+                    "图画好了但发不出去（%s）——过会儿跟我说\"把刚才画的发我\"我再试一次，"
+                    "或者到电脑控制台看运行日志找原因"
+                    % str(res.get("error", "未知错误"))[:80]])
         except Exception as e:
             out("AGENT_DRAW_ERR %r" % e)
 
@@ -1871,10 +1883,11 @@ MEMO_RE = re.compile(r"^\s*\[记忆\]\s*(.+)$", re.M)
 MEMO_ANY_RE = re.compile(r"\[记忆(@[^\]\n]{0,60})?\]\s*([^\[\n]{1,100})")
 _MEMO_QQ_RE = re.compile(r"(\d{5,12})")
 _WAIT_LEAK_RE = re.compile(r"\[\s*WAIT\s*(:\s*\d{1,3})?\s*\]", re.I)
-# [画: 描述] / [DRAW: desc] —— 模型自主补触发画图的标记（整行或行内均可，提取后剥离）
-_DRAW_MARK_RE = re.compile(r"\[\s*(?:画|DRAW)\s*[:：]\s*([^\]\n]{1,100})\s*\]",
-                           re.I)
-_DRAW_LEAK_RE = re.compile(r"\[\s*(?:画|DRAW)\s*[:：][^\]\n]{0,100}\]", re.I)
+# [画: 描述] / [DRAW: desc] —— 模型自主补触发画图的标记（描述可跨行/较长，提取后剥离）
+_DRAW_MARK_RE = re.compile(r"\[\s*(?:画|DRAW)\s*[:：]\s*([^\]]{1,300}?)\s*\]",
+                           re.I | re.S)
+_DRAW_LEAK_RE = re.compile(r"\[\s*(?:画|DRAW)\s*[:：][^\]]{0,300}\]",
+                           re.I | re.S)
 
 
 def parse_reply(text):
@@ -1885,7 +1898,7 @@ def parse_reply(text):
     text = _WAIT_LEAK_RE.sub("", text)  # 等说完关闭/漏写时兜底剥离，绝不泄漏给用户
     # [画: 描述] 标记：模型自主补触发画图（系统没自动识别但主人明显想画时）
     dm = _DRAW_MARK_RE.search(text)
-    draw = dm.group(1).strip()[:100] if dm else None
+    draw = re.sub(r"\s+", " ", dm.group(1)).strip()[:100] if dm else None
     text = _DRAW_MARK_RE.sub("", text)
     text = _DRAW_LEAK_RE.sub("", text)  # 变体兜底剥离
     mm = MEMO_ANY_RE.search(text)
