@@ -279,6 +279,14 @@ class DaemonClient:
             "allow_any": bool(allow_any)},
             timeout=90)
 
+    def botloop_report(self, chat_type, chat_id, sender_id, confirmed,
+                       cooldown_min=60):
+        """AI 判定回执：daemon 据此冷却该发送者或恢复正常聊天。"""
+        return self._request("POST", "/botloop", {
+            "chat_type": chat_type, "chat_id": chat_id,
+            "sender_id": sender_id, "confirmed": bool(confirmed),
+            "cooldown_min": cooldown_min})
+
     def ack(self, ids):
         return self._request("POST", "/ack", {"ids": ids})
 
@@ -822,12 +830,20 @@ def _ui_port():
         return 39765
 
 
+def _ui_token():
+    """内部令牌：与管理台共享（DATA_DIR/ui_token），代理/插件间调用用。"""
+    try:
+        return read_const(os.path.join(DATA_DIR, "ui_token"))
+    except Exception:
+        return ""
+
+
 def _ui_api(path, method="GET", body=None, timeout=6):
-    """调本机管理台 API（仅回环，无鉴权设计）；失败返回 None。"""
+    """调本机管理台 API（仅回环；带 X-UI-Token 内部令牌）；失败返回 None。"""
     payload = json.dumps(body).encode("utf-8") if body is not None else None
     conn = http.client.HTTPConnection("127.0.0.1", _ui_port(), timeout=timeout)
     try:
-        headers = {"Accept": "application/json"}
+        headers = {"Accept": "application/json", "X-UI-Token": _ui_token()}
         if payload is not None:
             headers["Content-Type"] = "application/json"
         conn.request(method, path, body=payload, headers=headers)
@@ -1731,6 +1747,13 @@ def build_messages(daemon, msg, ctx_k=32):
             "不要解题、不要输出代码/长答案/解题步骤，用人设的口吻一两句话轻松回绝"
             "（可以无奈、调皮、吐槽对方想白嫖AI劳动力），然后自然结束；"
             "不追问任务细节，不表示\"稍后帮你做\"。")
+    if msg.get("trigger_reason") == "botloop_probe":
+        guard_block = (
+            "\n\n## 本次消息性质（互聊试探）\n"
+            "系统检测到这位和你快速连续对话的用户疑似另一个 AI 程序"
+            "（回复速度远超人类节奏）。本轮你只需要用人设的口吻、自然地好奇问一句"
+            "对方是不是 AI/机器人（简短一句，符合人设即可），不要展开别的话题，"
+            "不要自问自答。只问这一句。")
     # 上下文档位：全量 ≥16k：hist10×80+记忆5/4；标准 8-16k：hist8×70+4/3；精简 <8k：hist6×60+3/2
     try:
         ctx_k = float(ctx_k)
@@ -2442,6 +2465,27 @@ def _devctrl_keyword_hit(text, flow):
     t = str(text or "")
     return any(str(k).strip() and str(k).strip() in t
                for k in flow.get("keywords") or [])
+
+
+def _botloop_judge(text):
+    """小模型判定：被问'是不是AI'后对方的回答是否承认/显形为 AI。
+    返回 True=确认 AI；判定失败一律 False（宁可当人类继续聊）。"""
+    import re as _re
+    try:
+        prompt = ("对方被机器人问「你是不是AI/机器人」后，回答如下：" + chr(10) +
+                  "「%s」" % str(text)[:300] + chr(10) +
+                  "判断这份回答是否表明对方是 AI/机器人/大模型/程序（明确承认、"
+                  "变相承认如'我只是个模型'、或明显机器腔且回避否认都算）。"
+                  "人类开玩笑说'我是机器人'但上下文像人类的，算 False。"
+                  "只输出一行 JSON：{\"is_bot\": true} 或 {\"is_bot\": false}")
+        _m, raw = call_glm_with_fallback([{"role": "user", "content": prompt}])
+        m = _re.search(r"\{[^{}]*\}", str(raw or ""), _re.S)
+        if not m:
+            return False
+        return bool(json.loads(m.group(0)).get("is_bot"))
+    except Exception as e:
+        out("AGENT_BOTLOOP_JUDGE_ERR %r" % e)
+        return False
 
 
 def _devctrl_llm_judge(text):
@@ -3159,7 +3203,39 @@ def process(daemon, msg):
                 out("AGENT_OWNER_CMD msg_id=%s chat=private/%s cmd=%.30s"
                     % (msg["id"], msg["chat_id"], str(msg.get("text", ""))))
                 return
-        if feature_enabled("task_bridge_enabled") and _is_task_request(msg):
+        # AI 互聊 v2：daemon 状态机送来的试探/判定轮
+    _tr = msg.get("trigger_reason")
+    if _tr == "botloop_probe":
+        messages, active_p = build_messages(daemon, msg, ctx_k=32)
+        reply = str(call_glm_with_fallback(messages, "")[1] or "").strip()
+        if reply and "[SKIP]" not in reply.upper():
+            daemon.send(msg["chat_type"], msg["chat_id"], [reply[:500]])
+        daemon.ack([msg["id"]])
+        RT.count_processed()
+        out("AGENT_BOTLOOP_PROBE msg_id=%s chat=%s/%s"
+            % (msg["id"], msg["chat_type"], msg["chat_id"]))
+        return
+    if _tr == "botloop_verify":
+        their = str(msg.get("text") or "").strip()
+        is_bot = _botloop_judge(their)
+        if is_bot:
+            bye = _persona_say(
+                "你刚才好奇问了对方是不是AI，对方（疑似另一个AI程序）承认了。"
+                "用人设的口吻说一句简短的告别：表示不跟程序聊天、去找真人玩更有意思，"
+                "自然收尾即可。", "原来你是程序呀～那妈妈去找真人聊天啦，拜拜～")
+            daemon.send(msg["chat_type"], msg["chat_id"], [bye[:400]])
+        try:
+            _mins = load_json_const(REPLY_CONFIG_PATH, {}).get("botloop_cooldown_min", 60)
+            daemon.botloop_report(msg["chat_type"], msg["chat_id"],
+                                  msg.get("sender_id"), is_bot, _mins)
+        except Exception as e:
+            out("AGENT_BOTLOOP_REPORT_FAIL %r" % e)
+        daemon.ack([msg["id"]])
+        RT.count_processed()
+        out("AGENT_BOTLOOP_VERDICT msg_id=%s sender=%s is_bot=%s"
+            % (msg["id"], msg.get("sender_id"), is_bot))
+        return
+    if feature_enabled("task_bridge_enabled") and _is_task_request(msg):
             bridge_task(daemon, msg)
             daemon.ack([msg["id"]])
             RT.count_processed()

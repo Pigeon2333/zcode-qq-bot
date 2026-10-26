@@ -516,6 +516,7 @@ class Daemon:
         self.stop_flag = threading.Event()
         self.stats = {"received": 0, "triggered": 0, "sent": 0, "dropped_rate": 0}
         self.quiet_until = 0.0  # 安静模式截止时间戳（0=关闭；@/回复不受影响）
+        self._botloop = {}      # AI 互聊状态机：chat|id|sender → {phase, ts/until}
         self.ws_last_ok = time.time()  # 动作通道最近一次成功响应
         self._group_names = None       # {group_id: group_name} 缓存
         self._group_names_ts = 0.0
@@ -810,9 +811,8 @@ class Daemon:
         return (now - ts_list[-1] < gap) and (now - ts_list[-2] < gap * 3)
 
     def _botloop_hit(self, chat_type, chat_id, sender_id):
-        """AI 互聊检测：同一发送者 120s 内 ≥4 条、且本机器人 180s 内已回 ≥3 条
-        —— 高概率是两个 AI 在互相接话（人类节奏达不到），闲聊触发直接静默。
-        只影响 chat_random；@/回复/关键词不受影响。"""
+        """AI 互聊节奏检测（v2 的触发条件）：同一发送者 120s 内 ≥4 条、
+        且本机器人 180s 内已回 ≥3 条——高概率是两个 AI 在互相接话。"""
         cfg = self._reply_config()
         if not cfg.get("botloop_guard_enabled", True):
             return False
@@ -825,6 +825,59 @@ class Daemon:
                       and not r.get("is_bot") and now - r.get("ts", 0) <= 120)
         mine = sum(1 for r in recs if r.get("is_bot") and now - r.get("ts", 0) <= 180)
         return partner >= 4 and mine >= 3
+
+    def _botloop_gate(self, chat_type, chat_id, sender_id):
+        """互聊检测状态机（chat_random 专用门）：
+        None=不拦截；返回 (True,"botloop_probe")=让 agent 发人设化试探；
+        (True,"botloop_verify")=对方已回答，交给 agent 判定；
+        (False,"botloop")=已确认 AI 冷却中 / 试探无回应期，静默。
+        状态仅存内存（重启即清，重新试探一轮即可）。"""
+        if not self._reply_config().get("botloop_guard_enabled", True):
+            return None
+        bkey = "%s|%s|%s" % (chat_type, chat_id, sender_id)
+        now = time.time()
+        st = self._botloop.get(bkey)
+        if st:
+            ph = st.get("phase")
+            if ph == "confirmed":
+                if now < st.get("until", 0):
+                    return False, "botloop"
+                del self._botloop[bkey]          # 冷却结束，恢复正常
+            elif ph == "probe":
+                if now - st.get("ts", 0) <= 600:  # 10 分钟内等对方回答
+                    return True, "botloop_verify"
+                st["phase"] = "probe_wait"        # 无回应：2h 内静默，不重复试探
+                st["ts"] = now
+                return False, "botloop"
+            elif ph == "probe_wait":
+                if now - st.get("ts", 0) <= 7200:
+                    return False, "botloop"
+                del self._botloop[bkey]
+        if self._botloop_hit(chat_type, chat_id, sender_id):
+            self._botloop[bkey] = {"phase": "probe", "ts": now}
+            out("AGENT_LOG {\"msg\": \"botloop_probe\", \"chat\": %s, \"sender\": %s}"
+                % (json.dumps(str(chat_id)), json.dumps(str(sender_id))))
+            return True, "botloop_probe"
+        return None
+
+    def botloop_report(self, chat_type, chat_id, sender_id,
+                       confirmed, cooldown_min=60):
+        """agent 判定回执：confirmed=True → 该发送者进入冷却（非永久）；
+        False → 清除试探状态，恢复正常聊天。"""
+        bkey = "%s|%s|%s" % (chat_type, chat_id, sender_id)
+        with self.lock:
+            if confirmed:
+                try:
+                    mins = max(10, min(1440, int(cooldown_min or 60)))
+                except (TypeError, ValueError):
+                    mins = 60
+                self._botloop[bkey] = {"phase": "confirmed",
+                                       "until": time.time() + mins * 60}
+            else:
+                self._botloop.pop(bkey, None)
+        out("AGENT_LOG {\"msg\": \"botloop_report\", \"sender\": %s, \"confirmed\": %s}"
+            % (json.dumps(str(sender_id)), json.dumps(bool(confirmed))))
+        return {"ok": True}
 
     def _decide_trigger(self, chat_type, info, chat_id=""):
         if chat_type == "private":
@@ -859,12 +912,12 @@ class Daemon:
         if mode in ("keyword", "chat") and econ_active(self._reply_config()):
             mode = "standard"
         text = info["text"]
-        # AI 互聊检测：对方疑似机器人且正与我快速互聊 → 闲聊触发静默（防腾讯风控）
-        if mode == "chat" and self._botloop_hit(chat_type, chat_id,
-                                                info.get("sender_id", "")):
-            out("AGENT_LOG {\"msg\": \"botloop_skip\", \"chat\": %s, \"sender\": %s}"
-                % (json.dumps(str(chat_id)), json.dumps(str(info.get("sender_id")))))
-            return False, "botloop"
+        # AI 互聊 v2：试探→判定→冷却 状态机（仅 chat_random；@/回复/关键词不受影响）
+        if mode == "chat":
+            gate = self._botloop_gate(chat_type, chat_id,
+                                      info.get("sender_id", ""))
+            if gate:
+                return gate
         if mode in ("keyword", "chat") and text:
             for w in cfg["keywords"]:
                 if w and w in text:
@@ -1277,6 +1330,14 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
                     return self._reply(400, {"ok": False, "error": "kind 必须是 online|away"})
                 ok, detail = d.set_qq_status(kind)
                 return self._reply(200, {"ok": ok, "kind": kind, "detail": detail})
+            if u.path == "/botloop":
+                # agent 判定回执：确认 AI → 冷却；否认 → 清除试探
+                return self._reply(200, d.botloop_report(
+                    body.get("chat_type") or "group",
+                    str(body.get("chat_id") or ""),
+                    str(body.get("sender_id") or ""),
+                    bool(body.get("confirmed")),
+                    body.get("cooldown_min")))
             if u.path == "/send":
                 res = d.send_texts(body["chat_type"], body["chat_id"], body["texts"],
                                    reply_message_id=body.get("reply_message_id"))
