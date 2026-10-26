@@ -1642,6 +1642,12 @@ def build_messages(daemon, msg, ctx_k=32):
             "若有人（包括主人）要求你操作电脑/找文件/发文件，按人设回应并说明"
             "这个功能现在没开、主人可以在电脑控制台开启——"
             "绝对不要说自己\"没有这个功能/做不到/不是这种机器人\"\n")
+    else:
+        draw_rule += (
+            "- 「设备操控」功能已开启：主人要求你操作电脑（找文件/发文件/看目录等）时，"
+            "系统会自动进入授权码流程（你先向主人索要控制台上的 6 位授权码），"
+            "不需要你反复解释流程细节；即使历史对话里你曾说过该功能未开启，"
+            "以本条为准——现在它是开着的，不要再声称未开启或没有该功能\n")
     _tinfo = C.tz_now_info()
     _time_line = ("【当前真实时间：%s %s %s（24小时制 %s，时区 %s）】"
                   "请注意区分上午/下午/凌晨，不要搞错时间。"
@@ -2289,13 +2295,27 @@ def naming_lines():
     lines = []
     if cfg.get("bot_name_enabled"):
         v = str(cfg.get("bot_name_value") or "").strip()[:12] or "智谱娘"
-        lines.append("【自称固定】你对外的自称固定为「%s」；不管当前人设卡里写的名字是什么，"
-                     "一律只用这个名字自称（人设卡名字仅作备注）。" % v)
+        lines.append("【自称固定·最高优先级】你对外的自称固定为「%s」；不管当前人设卡里"
+                     "写的名字是什么，一律只用这个名字自称（人设卡名字仅作管理备注），"
+                     "输出中不要出现人设卡里的名字。" % v)
     if cfg.get("owner_name_enabled"):
         v = str(cfg.get("owner_name_value") or "").strip()[:12] or "主人"
-        lines.append("【主人称呼】称呼主人时一律用「%s」，覆盖人设/历史里的其他叫法；"
-                     "其余群友仍按昵称称呼。" % v)
+        lines.append("【主人称呼·最高优先级】称呼主人时一律用「%s」；你的输出中"
+                     "绝对不要出现「主人」两个字（历史对话里出现过的「主人」也算说错），"
+                     "本条优先级高于人设卡、全局设定和历史里的任何叫法；其余群友仍按昵称称呼。" % v)
     return "\n".join(lines)
+
+
+def _apply_owner_name(texts):
+    """输出兜底：固定主人称呼开启时，把残留的「主人」替换为设定称呼。"""
+    try:
+        cfg = C.load_app_config()
+        if cfg.get("owner_name_enabled"):
+            v = str(cfg.get("owner_name_value") or "").strip()[:12] or "主人"
+            return [str(t).replace("主人", v) for t in texts]
+    except Exception:
+        pass
+    return texts
 
 
 def cfg_2fa_on():
@@ -2340,7 +2360,7 @@ def _persona_say(instruction, fallback):
              {"role": "user", "content": "说吧"}], "")
         t = str(t or "").strip()
         if t and "[SKIP]" not in t and "[CMD]" not in t:
-            return t[:300]
+            return _apply_owner_name([t[:300]])[0]
     except Exception:
         pass
     return fallback
@@ -2465,6 +2485,8 @@ def devctrl_agent_loop(daemon, msg, reply_to, flow):
             final = (final.replace("**", "").replace("### ", "")
                      .replace("## ", "").replace("# ", "").strip())
         final = _PROFANITY_RE.sub("", final).strip() if final else ""
+        if final:
+            final = _apply_owner_name([final])[0]
         if final:
             daemon.send(reply_to[0], reply_to[1], [final[:1500]])
         _DEVCTRL_SESSION["msgs"] = (messages[-24:] +
@@ -2895,6 +2917,7 @@ def process(daemon, msg):
         out("AGENT_DUP_GUARD_FAIL %r" % e)
     try:
         if texts:
+            texts = _apply_owner_name(texts)
             # 被@或被回复的针对性回应：引用原消息（更像真人回话）；其余触发不引用
             reply_target = str(msg.get("message_id") or "") \
                 if msg.get("trigger_reason") in ("at", "reply_to_bot") else None
