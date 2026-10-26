@@ -868,7 +868,7 @@ async function vDevCtrl(){
    <span><b>动态授权码（2FA）</b><div class="k" style="margin-top:3px">每次操控需授权码验证，一次用完自动换新；关闭后只需主人 QQ 即可操控——极不推荐</div></span></label>
 
   <div class="k" style="margin-top:10px;margin-bottom:4px">额外保护目录（每行一个路径；这些目录下的文件永远不会被搜索/读取/发送）</div>
-  <textarea id="pdevdirs" style="min-height:70px" placeholder="D:\私密文档\${nl}E:\备份">${esc((c.device_ctrl_protected_dirs||[]).join(nl))}</textarea>
+  <textarea id="pdevdirs" style="min-height:70px" placeholder="D:\私密文档\${String.fromCharCode(10)}E:\备份">${esc((c.device_ctrl_protected_dirs||[]).join(String.fromCharCode(10)))}</textarea>
   <button class="act" onclick="saveDevDirs()">保存保护目录</button>
   <div class="k" style="margin-top:6px">系统目录自动保护：Windows / Program Files / ProgramData / AppData（不可移除）</div>
  </div>`;
