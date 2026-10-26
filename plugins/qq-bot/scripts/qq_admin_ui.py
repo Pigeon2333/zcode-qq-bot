@@ -845,6 +845,10 @@ async function vSettings(){
   <div class="k" style="margin-top:6px">Key 仅保存在本机数据目录（不进源码），列表仅显示掩码；第一个添加的自动成为主 Key，删除主 Key 后自动切到剩余第一个。模型链中引用某 Key 的条目在该 Key 被删除后会被自动跳过。</div></div>
  <div class="card"><label class="master"><input type="checkbox" ${rv.lean_ctx_enabled!==false?'checked':''} onchange="saveLeanCtx(this.checked)">
    <span><b>精简上下文（推荐开启）</b><div class="k" style="margin-top:3px">开启后：旁观消息先经约 0.5k token 的轻量判定决定是否开口（决定开口才用全量提示词生成），回复时按各模型的上下文档位裁剪历史与记忆——人设/风格/安全规则始终全量，回复质量不受影响。关闭后：每次调用都带完整系统提示与更多历史记忆（追求最佳表现，token 消耗大约 +50%~80%，旁观评估为主增量）</div></span></label></div>
+ <div class="card"><label class="master"><input type="checkbox" ${rv.wait_gate_enabled!==false?'checked':''} onchange="saveKV('/api/reply-config',{wait_gate_enabled:this.checked?1:0},'等说完协议已'+(this.checked?'开启':'关闭'));load()">
+  <span><b>等说完协议（推荐开启）</b><div class="k" style="margin-top:3px">AI 回复前会判断对方这条消息是否是叙述的中间部分（语义没说完、刚开头就断、明显还有下文）。如果判断对方还在说，AI 会先安静等对方说完再回复——避免在别人一句话还没打完时就急着插嘴打断。对完整的问题和闲聊不影响（立刻回复），零额外消耗，仅增加一条判断规则</div></span></label></div>
+ <div class="card"><label class="master"><input type="checkbox" ${rv.burst_merge_enabled!==false?'checked':''} onchange="saveKV('/api/reply-config',{burst_merge_enabled:this.checked?1:0},'碎片合并已'+(this.checked?'开启':'关闭'));load()">
+  <span><b>碎片合并（推荐开启）</b><div class="k" style="margin-top:3px">QQ 聊天习惯一句话一句话地发。开启后，如果有人在 3 秒内连发了 2 条以上消息（正在打字中），机器人的主动插话会暂缓，等此人停下来后再处理——多条碎片合并成一次回复，上下文更完整。被 @ 和被回复的消息不受影响（始终立刻回应），仅影响关键词/闲聊的主动插话时机，零额外消耗</div></span></label></div>
  <div class="card"><label class="master"><input type="checkbox" ${rv.vision_enabled?'checked':''} onchange="saveVision(this.checked)">
   <span><b>看图模式</b><div class="k" style="margin-top:3px">开启后，消息里的图片会交给视觉模型识别并回应（群聊与私聊均生效）；视觉模型在「模型管理」页配置，识别失败自动降级纯文本</div></span></label></div>
  <div class="card"><label class="master"><input type="checkbox" ${rv.web_search_enabled?'checked':''} onchange="saveWebSearch(this.checked)">
@@ -1808,6 +1812,8 @@ class UiHandler(BaseHTTPRequestHandler):
                                      "proactive_groups_silent_start": data.get("proactive_groups_silent_start", "22:00"),
                                      "proactive_groups_silent_end": data.get("proactive_groups_silent_end", "08:00"),
                                      "lean_ctx_enabled": data.get("lean_ctx_enabled", True),
+                                     "wait_gate_enabled": data.get("wait_gate_enabled", True),
+                                     "burst_merge_enabled": data.get("burst_merge_enabled", True),
                                      "proactive_private_silent_start": data.get("proactive_private_silent_start", "22:00"),
                                      "proactive_private_silent_end": data.get("proactive_private_silent_end", "08:00"),
                                      "token_limit_enabled": data.get("token_limit_enabled", False),
@@ -2084,6 +2090,10 @@ class UiHandler(BaseHTTPRequestHandler):
                 data["proactive_groups_enabled"] = bool(body["proactive_groups_enabled"])
             if "lean_ctx_enabled" in body:
                 data["lean_ctx_enabled"] = bool(body["lean_ctx_enabled"])
+            if "wait_gate_enabled" in body:
+                data["wait_gate_enabled"] = bool(body["wait_gate_enabled"])
+            if "burst_merge_enabled" in body:
+                data["burst_merge_enabled"] = bool(body["burst_merge_enabled"])
             if "proactive_private_enabled" in body:
                 data["proactive_private_enabled"] = bool(body["proactive_private_enabled"])
             for _pk in ("proactive_groups_probability", "proactive_private_probability"):

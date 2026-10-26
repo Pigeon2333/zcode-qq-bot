@@ -116,7 +116,8 @@ def load_reply_config_file():
         pass
     # 高峰降耗字段原样透传（判定在 qq_common.econ_active；后两项为旧字段兼容）
     for k in ("econ_enabled", "econ_manual", "econ_start", "econ_end",
-              "econ_days", "econ_workdays_only", "econ_mode_override"):
+              "econ_days", "econ_workdays_only", "econ_mode_override",
+              "wait_gate_enabled", "burst_merge_enabled"):
         if k in data:
             cfg[k] = data[k]
     return cfg
@@ -712,6 +713,23 @@ class Daemon:
             pass
         return cfg
 
+    def _is_bursting(self, chat_type, chat_id, sender_id, gap=3.0):
+        """碎片合并判定：此人 gap 秒内在同一会话连发了 2+ 条消息（还在打字中）。
+        开启 burst_merge 后，主动触发（关键词/闲聊）在连发期间暂缓处理。"""
+        if not self._reply_config().get("burst_merge_enabled", True):
+            return False
+        key = "%s_%s" % (chat_type, chat_id)
+        with self.lock:
+            dq = self.mem_history.get(key, deque())
+            ts_list = [r.get("ts", 0) for r in list(dq)[-6:]
+                       if str(r.get("sender_id")) == str(sender_id)
+                       and not r.get("is_bot")]
+        if len(ts_list) < 2:
+            return False
+        now = time.time()
+        # 最后一条距今 < gap 且倒数第二条距今 < gap*3 → 连发中
+        return (now - ts_list[-1] < gap) and (now - ts_list[-2] < gap * 3)
+
     def _decide_trigger(self, chat_type, info, chat_id=""):
         if chat_type == "private":
             return True, "private"
@@ -736,6 +754,10 @@ class Daemon:
             return False, "at_other"
         if info["has_reply"]:
             return False, "reply_other"
+        # 碎片合并：此人还在连发中，主动插话暂缓（@/回复不受影响；
+        # 等此人静默 gap 秒后下一条自然走正常触发，上下文也更完整）
+        if self._is_bursting(chat_type, chat_id, info.get("sender_id", "")):
+            return False, "burst_wait"
         mode = cfg["reply_mode"]
         # 高峰降耗生效时：关键词/闲聊主动插话全部压制为标准模式（@/回复不受影响）
         if mode in ("keyword", "chat") and econ_active(self._reply_config()):

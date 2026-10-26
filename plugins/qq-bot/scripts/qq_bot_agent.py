@@ -513,6 +513,12 @@ def econ_on():
     return C.econ_active(load_json_const(REPLY_CONFIG_PATH, {}))
 
 
+def wait_gate_enabled():
+    """等说完协议开关（reply_config.wait_gate_enabled，默认开启）。"""
+    cfg = load_json_const(REPLY_CONFIG_PATH, {})
+    return cfg.get("wait_gate_enabled", True)
+
+
 def lean_ctx_on():
     """精简上下文总开关（默认开启）。关闭=每次全量系统提示+完整历史记忆。"""
     cfg = load_json_const(REPLY_CONFIG_PATH, {})
@@ -1484,6 +1490,10 @@ def build_messages(daemon, msg, ctx_k=32):
         "- 若上下文附有「联网搜索结果」：实时性问题以搜索内容为准回答，"
         "用聊天口吻自然转述，不堆链接、不提\"搜索\"字样；没有搜索结果且被问实时信息时，"
         "大方承认自己拿不到最新消息\n"
+        "- 等说完协议：如果【现在】这条消息看起来是对方叙述的中间部分——"
+        "语义悬而未决(如[然后我发现...]就断了)、刚开头就停、或明显还有下文——"
+        "输出 [WAIT] 表示先等对方把话说完(对方下一条来时你会看到更完整语境,"
+        "那时再回复更自然)。已完整表达完毕的消息不要 WAIT\n"
         "- 觉得自己刚才话太多、或对方明显嫌你吵/让你少说点时，可以在回复末尾"
         "单独一行输出 [QUIET]（可带分钟如 [QUIET:15]，默认10）——这会真实生效："
         "期间你不再主动插话，被@和被回复时仍会正常回答。不要输出给普通提问\n\n"
@@ -1508,6 +1518,8 @@ _MEMO_QQ_RE = re.compile(r"(\d{5,12})")
 def parse_reply(text):
     if "[SKIP]" in text.upper().replace(" ", ""):
         return None, [], None
+    if "[WAIT]" in text.upper().replace(" ", "") and wait_gate_enabled():
+        return "WAIT", [], None
     mm = MEMO_ANY_RE.search(text)
     memo = None
     if mm:
@@ -2087,6 +2099,12 @@ def process(daemon, msg):
         except Exception as e:
             out("AGENT_QUIET_SELF_FAIL %r" % e)
     texts, stickers, memo = parse_reply(reply)
+    if texts == "WAIT":
+        daemon.ack([msg["id"]])
+        RT.count_processed()
+        out("AGENT_WAIT msg_id=%s chat=%s/%s (对方话没说完，先等)"
+            % (msg["id"], msg["chat_type"], msg["chat_id"]))
+        return
     # 硬频控：同会话 3 分钟内已发过表情则丢弃本次（防高频）
     now_t = time.time()
     last_t = _sticker_rate.get("%s_%s" % (msg["chat_type"], msg["chat_id"]), 0)
