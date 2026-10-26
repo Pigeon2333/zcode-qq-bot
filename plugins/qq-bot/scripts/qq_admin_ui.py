@@ -1677,6 +1677,10 @@ class UiHandler(BaseHTTPRequestHandler):
             return self._reply(200, {"ok": True, "enabled": enabled, "used": used,
                                      "cap": cap, "hours": hours,
                                      "hold": bool(enabled and cap > 0 and used >= cap)})
+        if u.path == "/api/devctrl-flow":
+            import qq_bot_agent as _A
+            return self._reply(200, {"ok": True, "flow": _A.devctrl_flow(),
+                                     "defaults": _A._DEFAULT_FLOW})
         return self._reply(404, {"ok": False, "error": "not found"})
 
     def do_POST(self):
@@ -1701,10 +1705,6 @@ class UiHandler(BaseHTTPRequestHandler):
             t.start()
             t.join(timeout=120)
             return self._reply(200, {"ok": True, "dir": box.get("d", "")})
-        if u.path == "/api/devctrl-flow":
-            import qq_bot_agent as _A
-            return self._reply(200, {"ok": True, "flow": _A.devctrl_flow(),
-                                     "defaults": _A._DEFAULT_FLOW})
         if u.path == "/api/devctrl-code":
             # 控制台常显授权码：确保当前有一个有效码（无则生成）
             import qq_bot_agent as _A
