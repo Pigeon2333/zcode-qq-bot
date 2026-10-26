@@ -118,7 +118,7 @@ def load_reply_config_file():
     # 高峰降耗字段原样透传（判定在 qq_common.econ_active；后两项为旧字段兼容）
     for k in ("econ_enabled", "econ_manual", "econ_start", "econ_end",
               "econ_days", "econ_workdays_only", "econ_mode_override",
-              "wait_gate_enabled", "burst_merge_enabled"):
+              "wait_gate_enabled", "burst_merge_enabled", "botloop_guard_enabled"):
         if k in data:
             cfg[k] = data[k]
     return cfg
@@ -809,6 +809,23 @@ class Daemon:
         # 最后一条距今 < gap 且倒数第二条距今 < gap*3 → 连发中
         return (now - ts_list[-1] < gap) and (now - ts_list[-2] < gap * 3)
 
+    def _botloop_hit(self, chat_type, chat_id, sender_id):
+        """AI 互聊检测：同一发送者 120s 内 ≥4 条、且本机器人 180s 内已回 ≥3 条
+        —— 高概率是两个 AI 在互相接话（人类节奏达不到），闲聊触发直接静默。
+        只影响 chat_random；@/回复/关键词不受影响。"""
+        cfg = self._reply_config()
+        if not cfg.get("botloop_guard_enabled", True):
+            return False
+        key = "%s_%s" % (chat_type, chat_id)
+        now = now_ts()
+        with self.lock:
+            recs = list(self.mem_history.get(key, []) or [])
+        partner = sum(1 for r in recs
+                      if str(r.get("sender_id")) == str(sender_id)
+                      and not r.get("is_bot") and now - r.get("ts", 0) <= 120)
+        mine = sum(1 for r in recs if r.get("is_bot") and now - r.get("ts", 0) <= 180)
+        return partner >= 4 and mine >= 3
+
     def _decide_trigger(self, chat_type, info, chat_id=""):
         if chat_type == "private":
             return True, "private"
@@ -842,6 +859,12 @@ class Daemon:
         if mode in ("keyword", "chat") and econ_active(self._reply_config()):
             mode = "standard"
         text = info["text"]
+        # AI 互聊检测：对方疑似机器人且正与我快速互聊 → 闲聊触发静默（防腾讯风控）
+        if mode == "chat" and self._botloop_hit(chat_type, chat_id,
+                                                info.get("sender_id", "")):
+            out("AGENT_LOG {\"msg\": \"botloop_skip\", \"chat\": %s, \"sender\": %s}"
+                % (json.dumps(str(chat_id)), json.dumps(str(info.get("sender_id")))))
+            return False, "botloop"
         if mode in ("keyword", "chat") and text:
             for w in cfg["keywords"]:
                 if w and w in text:
