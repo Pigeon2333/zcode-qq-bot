@@ -1581,8 +1581,32 @@ def _dedup_reply(daemon, msg, texts):
 GROUP_WL_PATH = os.path.join(DATA_DIR, "group_whitelist.json")
 GROUP_MODES_AGENT_PATH = os.path.join(DATA_DIR, "group_reply_modes.json")
 PRIVATE_CFG_PATH = os.path.join(DATA_DIR, "private_config.json")
+_PROACTIVE_STATE_PATH = os.path.join(DATA_DIR, "proactive_state.json")
 _proactive_state = {"groups": {"last_attempt": 0.0, "last_sent": 0.0},
                     "private": {"last_attempt": 0.0, "last_sent": 0.0}}
+
+
+def _proactive_state_load():
+    """启动时从磁盘恢复各目标的 last_sent（agent 重启不清零间隔计时）。"""
+    try:
+        d = json.loads(read_const(_PROACTIVE_STATE_PATH, "{}"))
+        if isinstance(d, dict):
+            for k, v in d.items():
+                if k.startswith("g:") and isinstance(v, dict):
+                    _proactive_state[k] = {"last_sent": float(v.get("last_sent", 0))}
+    except (ValueError, OSError):
+        pass
+
+
+def _proactive_state_save():
+    """持久化 per-target last_sent（幂等；写入开销极低）。"""
+    try:
+        data = {k: {"last_sent": v.get("last_sent", 0)}
+                for k, v in _proactive_state.items() if k.startswith("g:")}
+        write_const(_PROACTIVE_STATE_PATH,
+                    json.dumps(data, ensure_ascii=False))
+    except (OSError, ValueError):
+        pass
 
 
 def _in_silent_window(cfg, kind, lt):
@@ -1751,6 +1775,7 @@ def _proactive_tick(daemon):
     chat_type, chat_id = picked
     _proactive_state.setdefault("g:%s:%s" % (chat_type, chat_id),
                               {"last_sent": 0.0})["last_sent"] = now
+    _proactive_state_save()
     out("AGENT_PROACTIVE_TRY chat=%s/%s" % (chat_type, chat_id))
     try:
         msgs, active = _proactive_compose(daemon, chat_type, chat_id)
@@ -2377,6 +2402,7 @@ def main():
         sys.exit(1)
     RT.reload_chain()
     start_admin_server(args.admin_port)
+    _proactive_state_load()
     threading.Thread(target=lambda: (time.sleep(15), describe_all_stickers()), daemon=True).start()
     threading.Thread(target=_daily_review_loop, args=(daemon,), daemon=True).start()
     out("AGENT_READY chain=%s daemon=127.0.0.1:%d admin=127.0.0.1:%d"
