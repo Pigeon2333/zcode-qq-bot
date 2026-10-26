@@ -345,6 +345,15 @@ class WSClient:
         except OSError:
             pass
 
+    def reset(self):
+        """硬复位：只断开当前 socket（不置 _stop），让 run_forever 走重连。
+        用于「半死连接」：TCP 在但对端既不响应动作也不推事件。"""
+        try:
+            if self.sock:
+                self.sock.close()
+        except OSError:
+            pass
+
     def run_forever(self):
         """阻塞式：连接 -> 收事件 -> 断线自动重连（指数退避，上限 60s）。"""
         backoff = 1
@@ -502,6 +511,7 @@ class Daemon:
         self.stop_flag = threading.Event()
         self.stats = {"received": 0, "triggered": 0, "sent": 0, "dropped_rate": 0}
         self.quiet_until = 0.0  # 安静模式截止时间戳（0=关闭；@/回复不受影响）
+        self.ws_last_ok = time.time()  # 动作通道最近一次成功响应
         self.ws = WSClient(
             ws_url, token,
             on_event=self._dispatch_ws_event,
@@ -995,17 +1005,46 @@ class Daemon:
         return {"acked_max": self.acked_max}
 
     def status(self):
+        last_ok = self.ws_last_ok
         return {
             "running": True,
             "pid": os.getpid(),
             "uptime": now_ts() - self.start_time,
             "ws_url": self.ws.url,
             "ws_connected": self.ws.connected,
+            "ws_last_ok": last_ok,
+            # 动作通道探活：超过 3 个探测周期无成功响应 = 半死
+            "ws_alive": bool(last_ok) and (now_ts() - last_ok) < 180,
             "login": self.login,
             "inbox_pending": len(self.inbox),
             "stats": self.stats,
             "data_dir": DATA_DIR,
         }
+
+    def _probe_loop(self):
+        """动作通道探活（45s 一次）：get_login_info 探测 NapCat 是否仍响应。
+        连续 2 次失败且连接显示在线 = 半死连接 → 硬复位 socket 触发重连。"""
+        fails = 0
+        while not self.stop_flag.is_set():
+            time.sleep(45)
+            if self.stop_flag.is_set() or not self.ws.connected:
+                fails = 0
+                continue
+            try:
+                self._call_action("get_login_info", {}, timeout=8)
+                self.ws_last_ok = time.time()
+                fails = 0
+            except Exception as e:
+                fails += 1
+                out("AGENT_LOG {\"msg\": \"ws_probe_fail\", \"detail\": %s, \"fails\": %d}"
+                    % (json.dumps(repr(e)[:120]), fails))
+                if fails >= 2:
+                    out("AGENT_LOG {\"msg\": \"ws_probe_reset\", \"detail\": \"半死连接，硬复位重连\"}")
+                    try:
+                        self.ws.reset()
+                    except Exception:
+                        pass
+                    fails = 0
 
 
 # ---------------------------------------------------------------------------
@@ -1155,6 +1194,7 @@ def main():
     out(json.dumps({"daemon_ready": True, "pid": os.getpid(), "ctl_port": args.port,
                     "ws_url": args.ws_url, "data_dir": DATA_DIR}, ensure_ascii=False))
     threading.Thread(target=d.ws.run_forever, daemon=True).start()
+    threading.Thread(target=d._probe_loop, daemon=True).start()
     try:
         while not d.stop_flag.is_set():
             ctl.handle_request()

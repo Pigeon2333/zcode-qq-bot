@@ -48,7 +48,28 @@ DEFAULT_CONFIG = {
     "sched_pause_enabled": False,  # 定时暂停（时段内停止一切回复+零消耗）
     "sched_pause_start": "23:00",  # 暂停开始时间
     "sched_pause_end": "07:00",    # 暂停结束时间（支持跨午夜）
+    "watchdog_enabled": True,      # NapCat 活性看门狗（半死连接检测）
+    "watchdog_mode": "auto",       # auto=自动恢复（重连+重启 NapCat）| alert=仅告警
+    "watchdog_interval": 120,      # 探测间隔秒（60-600）
 }
+
+# 备份/恢复统一文件清单（basename 冲突无；子目录文件扁平存放）
+BACKUP_FILES = [
+    "styles/current_style.md",   # 风格卡真实路径（根目录 style.md 是 0 字节占位）
+    "styles/evolved.json",       # 自进化风格（同上，根目录同名文件非真实数据）
+    "memory_stream.jsonl",
+    "group_reply_modes.json", "reply_config.json",
+    "private_config.json", "group_whitelist.json",
+    "model_chain.json", "app_config.json",
+    "stickers.json",            # 表情包三库索引+视觉描述缓存
+    "device_ctrl_flow.json",    # 设备操控流程自定义
+    "cron_tasks.json",          # 定时任务
+    "proactive_state.json",     # 主动消息发送状态
+    "personas/collection.json", # 人设合集（含激活项）
+    "usage_log.jsonl",          # token 用量流水（统计）
+]
+# 密钥类（api_keys.json / zhipu_api_key / token / ws_token）刻意不备份：备份目录
+# 可能被用户指向网盘同步盘，避免明文密钥外泄。
 
 
 def detect_qqnt_dir():

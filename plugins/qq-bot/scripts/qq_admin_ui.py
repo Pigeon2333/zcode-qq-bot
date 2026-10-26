@@ -19,6 +19,7 @@ import json
 import os
 import pathlib
 import re
+import shutil
 import sys
 import threading
 import time
@@ -55,6 +56,121 @@ PORTS = {"daemon": DEFAULT_DAEMON_PORT, "agent": DEFAULT_AGENT_PORT}
 _boot_lock = threading.Lock()
 _boot_state = {"running": False, "done": False, "failed": False,
                "started_at": 0.0, "final": "", "steps": []}
+
+# NapCat 活性看门狗（UI 进程内运行：能调 power_off/on 做整机恢复而不自杀）
+_wd_lock = threading.Lock()
+_wd_state = {"events": [], "strikes": 0, "last_check": 0.0, "busy": False,
+             "last_result": ""}
+
+
+def _wd_event(kind, detail):
+    with _wd_lock:
+        _wd_state["events"].insert(0, {"ts": time.time(), "kind": kind,
+                                       "detail": str(detail)[:200]})
+        del _wd_state["events"][20:]
+
+
+def _wd_notify_owner(cfg, text):
+    """尽力把看门狗事件私聊告知主人（daemon 可用才会成功，失败忽略）。"""
+    owner = str(cfg.get("owner_qq") or "").strip()
+    if not owner:
+        return
+    try:
+        token = read_const(TOKEN_PATH)
+        conn = http.client.HTTPConnection("127.0.0.1", PORTS["daemon"], timeout=8)
+        body = json.dumps({"chat_type": "private", "chat_id": owner,
+                           "texts": [text]}, ensure_ascii=False).encode("utf-8")
+        conn.request("POST", "/send", body, {"Content-Type": "application/json",
+                                             "X-QQBot-Token": token})
+        conn.getresponse().read()
+        conn.close()
+    except Exception:
+        pass
+
+
+def _wd_recover(cfg):
+    """自动恢复：整机电源周期（NapCat+daemon+agent）。仅在 UI 进程执行安全。"""
+    with _wd_lock:
+        if _wd_state["busy"]:
+            return "上一次恢复仍在进行"
+        _wd_state["busy"] = True
+    try:
+        S.power_off(cfg, include_napcat=True)
+        time.sleep(2)
+        notes = S.power_on(cfg)
+        ok = any(n.get("component") == "napcat" and n.get("ok") for n in notes)
+        result = "已自动重启 NapCat 与组件" + ("（成功）" if ok else "（WS 未就绪，登录可能需要扫码）")
+        _wd_event("recover", result)
+        _wd_notify_owner(cfg, "看门狗：检测到 NapCat 消息推送失联，" + result)
+        return result
+    finally:
+        with _wd_lock:
+            _wd_state["busy"] = False
+
+
+def _wd_check_once():
+    """单次健康检查。返回 (healthy, detail)。连续异常累计 strikes，达阈值动作。"""
+    cfg = C.load_app_config()
+    if not cfg.get("watchdog_enabled"):
+        return True, "disabled"
+    with _boot_lock:
+        if _boot_state["running"]:
+            return True, "boot-in-progress"
+    daemon_up = S.port_open(PORTS["daemon"])
+    napcat_up = S.port_open(6099)
+    if not daemon_up and not napcat_up:
+        with _wd_lock:  # 用户主动停止的全部组件：不算故障
+            _wd_state["strikes"] = 0
+        return True, "all-stopped"
+    healthy, detail = True, ""
+    if daemon_up:
+        r = proxy_get("127.0.0.1", PORTS["daemon"], "/status",
+                      read_const(TOKEN_PATH), timeout=4)
+        if not r.get("ok"):
+            healthy, detail = False, "daemon /status 异常"
+        elif not r.get("ws_connected"):
+            healthy, detail = False, "WS 未连接（重连中）"
+        elif r.get("ws_alive") is False:  # 老版本 daemon 无此字段时不误报
+            healthy, detail = False, "WS 半死（动作通道无响应）"
+    else:
+        healthy, detail = False, "daemon 未运行（NapCat 仍在线）"
+    with _wd_lock:
+        _wd_state["last_check"] = time.time()
+        if healthy:
+            _wd_state["strikes"] = 0
+            _wd_state["last_result"] = "正常"
+            return True, "ok"
+        _wd_state["strikes"] += 1
+        strikes = _wd_state["strikes"]
+    _wd_event("alert", "第 %d 次探测异常：%s" % (strikes, detail))
+    if strikes >= 2:
+        mode = str(cfg.get("watchdog_mode") or "auto")
+        if mode == "auto":
+            result = _wd_recover(cfg)
+            with _wd_lock:
+                _wd_state["strikes"] = 0
+                _wd_state["last_result"] = result
+            return False, result
+        _wd_notify_owner(cfg, "看门狗：检测到机器人推送异常（%s）。当前为仅告警模式，请到控制台手动重启。" % detail)
+        with _wd_lock:
+            _wd_state["last_result"] = "告警：%s" % detail
+    return healthy, detail
+
+
+def _watchdog_loop():
+    while True:
+        try:
+            cfg = C.load_app_config()
+            interval = int(cfg.get("watchdog_interval") or 120)
+            interval = max(60, min(600, interval))
+        except Exception:
+            interval = 120
+        time.sleep(interval)
+        try:
+            _wd_check_once()
+        except Exception:
+            pass
+
 
 PAGE = r"""<!DOCTYPE html>
 <html lang="zh"><head><meta charset="utf-8">
@@ -331,15 +447,25 @@ function manageBootTimer(b){
  }else if(_bootTimer){clearInterval(_bootTimer);_bootTimer=null}
 }
 async function vStatus(){
- const [d,a,b,c]=await Promise.all([
+ const [d,a,b,c,wd]=await Promise.all([
   api('/api/daemon-status').catch(()=>({ok:false})),
   api('/api/agent-status').catch(()=>({ok:false})),
   api('/api/power/status').catch(()=>({})),
   api('/api/app-config').catch(()=>({})),
+  api('/api/watchdog').catch(()=>({enabled:false})),
  ]);
  manageBootTimer(b);
  const ws=d.ws_connected, login=d.login||{};
  const booting=!!(b&&b.running);
+ const wdEvents=(wd.events||[]).slice(0,5).map(e=>'<div class="k mono" style="margin-top:3px">'+new Date(e.ts*1000).toLocaleTimeString()+' ['+esc(e.kind)+'] '+esc(e.detail)+'</div>').join('');
+ const wdOk=wd.enabled&&!(wd.strikes>0);
+ const wdCard=wd.enabled?
+  '<div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:6px">NapCat 看门狗 '
+  +'<span class="badge '+(wdOk?'b-ok':'b-bad')+'">'+(wdOk?'正常':'告警中 ×'+wd.strikes)+'</span>'
+  +'<span class="badge" style="background:var(--tint);color:var(--dim)">'+(wd.mode==='alert'?'仅告警':'自动恢复')+' · 每 '+(wd.interval||120)+'s</span></div>'
+  +(wd.last_check?'<div class="k">最近检查：'+new Date(wd.last_check*1000).toLocaleTimeString()+' · '+(wd.last_result||'正常')+'</div>':'<div class="k">等待首次检查…</div>')
+  +(wdEvents?'<div style="margin-top:6px"><div class="k">最近事件：</div>'+wdEvents+'</div>':'')
+  +'</div>':'';
  $('#view').innerHTML=head('组件运行状态与机器人开关')+
  ` <div class="card"><div class="kv">
   <div><span class="k">消息管道</span> <span class="badge ${d.ok?'b-ok':'b-bad'}">${d.ok?'运行':'停止'}</span></div>
@@ -370,6 +496,7 @@ async function vStatus(){
   </span>
   <div class="k" style="margin-top:4px">时段内机器人完全停止一切活动（零消耗，同手动暂停），时段结束自动恢复。支持跨午夜（如 23:00–07:00）。恢复后不补发暂停期间消息。与安静模式/分群暂停/仅私聊模式不同：这是全局一刀切。</div>
  </div></div>
+ ${wdCard}
  <div class="card"><div class="k">收发统计</div><div class="kv" style="margin-top:8px">
   <div>收到 ${d.stats?.received??0}</div><div>触发 ${d.stats?.triggered??0}</div>
   <div>已发 ${d.stats?.sent??0}</div><div>限流丢弃 ${d.stats?.dropped_rate??0}</div>
@@ -529,6 +656,31 @@ async function backupNow(){
  toast('正在执行备份…');
  const r=await api('/api/backup-now',{method:'POST'});
  toast(r.ok?'备份完成（目录见运行日志 AGENT_BACKUP_OK）':'备份失败',r.ok!==false)}
+async function restorePicker(){
+ const d=await api('/api/backups').catch(()=>({backups:[]}));
+ const list=d.backups||[];
+ if(!list.length){toast('备份目录中没有可用的备份',false);return}
+ const m=document.createElement('div');m.className='dlg-mask';
+ const rows=list.map((b,i)=>'<label style="display:block;margin:6px 0"><input type="radio" name="rbsel" value="'+esc(b.name)+'"'+(i===0?' checked':'')+'> '+esc(b.name)+'（'+b.files+' 个文件 · '+new Date(b.mtime*1000).toLocaleString()+'）</label>').join('');
+ m.innerHTML='<div class="dlg" role="dialog" style="max-width:420px;max-height:80vh;overflow-y:auto"><h3>从备份恢复</h3>'
+  +'<div class="dlg-body">选择一个备份，恢复会<b style="color:var(--err)">覆盖当前全部人设/记忆/配置/表情包索引等数据</b>（密钥不受影响）。目录：'+esc(d.root||'')+'</div>'
+  +'<div style="margin-top:10px">'+rows+'</div>'
+  +'<div class="dlg-btns"><button class="act ghost">取消</button><button class="act dlg-danger">恢复此备份</button></div></div>';
+ document.body.appendChild(m);
+ const close=()=>m.remove();
+ m.querySelector('.dlg-btns .ghost').onclick=close;
+ m.onclick=ev=>{if(ev.target===m)close()};
+ m.onkeydown=ev=>{if(ev.key==='Escape')close()};
+ m.querySelector('.dlg-btns .act:not(.ghost)').onclick=async()=>{
+  const sel=(m.querySelector('input[name=rbsel]:checked')||{}).value;
+  close();
+  if(!sel)return;
+  if(!await dlgConfirm({title:'确认恢复备份',body:'将用备份「'+sel+'」覆盖当前全部数据（人设、记忆、配置、表情包索引等）。此操作不可撤销，确定继续？',okText:'覆盖并恢复',danger:true}))return;
+  toast('正在恢复…');
+  const r=await api('/api/backup-restore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:sel})});
+  if(r.ok===false){toast('恢复失败: '+(r.error||''),false);return}
+  toast('已恢复 '+r.count+' 个文件（配置已即时生效；建议重启 agent 确认）');
+  load()}}
 async function toggleDevCtrl(on){
  const box=document.getElementById('devon');
  if(on&&!await dlgConfirm({title:'开启设备操控',body:'⚠ 这是一项高危功能：开启后主人可以从 QQ 远程搜索、读取、发送你电脑上的文件。' + String.fromCharCode(10) + String.fromCharCode(10) + '已内置保护：仅主人可用、结果只发私聊、系统目录+你的保护目录不可触达、默认需动态授权码。' + String.fromCharCode(10) + String.fromCharCode(10) + '确定开启？',okText:'确认开启（我已了解风险）',danger:true})){
@@ -1039,8 +1191,17 @@ async function vSettings(){
   <div style="margin-top:8px"><div class="k" style="margin-bottom:4px">备份目录（留空 = 默认 ~/.zcode-qq-bot/backups）</div>
   <div style="display:flex;gap:8px"><input id="bkdir" value="${esc(String(c.backup_dir||''))}" placeholder="如 D:\ZCode\qq-bot-backups" style="flex:1" onchange="saveNight('backup_dir',this.value)">
   <button class="act ghost" style="margin:0" onclick="pickBackupDir()">浏览…</button>
-  <button class="act ghost" style="margin:0" onclick="backupNow()">立即备份</button></div>
-  <div class="k" style="margin-top:4px">超过保留天数或保留份数的旧备份自动清理（最旧的先清）</div></div></div>
+  <button class="act ghost" style="margin:0" onclick="backupNow()">立即备份</button>
+  <button class="act" style="margin:0" onclick="restorePicker()">从备份恢复…</button></div>
+  <div class="k" style="margin-top:4px">备份范围：人设合集、风格卡、自进化观察、长期记忆、回复/分群/私聊/白名单配置、模型链、表情包索引（含视觉描述缓存）、设备操控流程、定时任务、主动消息状态、用量流水、本页应用设置。密钥类文件（API Key/token）出于安全不备份，恢复后如缺失需重新填写。超过保留天数或保留份数的旧备份自动清理（最旧的先清）</div></div></div>
+ <div class="card"><div class="k" style="margin-bottom:8px">NapCat 活性看门狗<span class="badge" style="background:var(--tint);color:var(--dim)">防消息推送静默失联</span></div>
+  <label class="master"><input type="checkbox" ${c.watchdog_enabled!==false?'checked':''} onchange="saveKV('/api/app-config',{watchdog_enabled:this.checked?1:0},'看门狗已'+(this.checked?'开启':'关闭'));load()">
+   <span><b>启用看门狗</b><div class="k" style="margin-top:3px">定期探测 NapCat 消息通道是否真的活着（TCP 连着但对端不响应/不推事件的「半死」状态，控制台显示在线但机器人实际收不到消息）；探测到失联会在「状态」页告警并私聊通知主人</div></span></label>
+  <div class="k" style="margin-top:10px">探测到失联后：</div>
+  <label style="display:block;margin:4px 0"><input type="radio" name="wdmode" value="auto" ${(c.watchdog_mode||'auto')==='auto'?'checked':''} onchange="saveKV('/api/app-config',{watchdog_mode:'auto'},'看门狗模式：自动恢复');load()"> 自动恢复<span class="k">：先由 daemon 自动重连；重连无效则自动重启 NapCat 与组件（需要重新登录时会打开扫码页）</span></label>
+  <label style="display:block;margin:4px 0"><input type="radio" name="wdmode" value="alert" ${c.watchdog_mode==='alert'?'checked':''} onchange="saveKV('/api/app-config',{watchdog_mode:'alert'},'看门狗模式：仅告警');load()"> 仅告警<span class="k">：只通知，不做任何重启，等主人到控制台手动处理</span></label>
+  <div style="margin-top:8px"><label>探测间隔 <input type="number" min="60" max="600" step="30" value="${c.watchdog_interval||120}" style="width:70px" onchange="saveKV('/api/app-config',{watchdog_interval:Math.max(60,Math.min(600,parseInt(this.value)||120))},'探测间隔已保存');load()"> 秒（连续 2 次异常才触发动作）</label></div>
+  <div class="k" style="margin-top:6px">当前状态可在「状态」页查看（含最近事件）</div></div>
  <div class="card"><div class="k">关闭本应用时</div>
   <div style="margin-top:8px">
    <label style="display:block;margin:6px 0"><input type="radio" name="cact" value="tray" ${(!c.close_action||c.close_action==='tray')?'checked':''} onchange="saveCloseAction(this.value)"> 最小化到系统托盘，机器人继续在后台（推荐；托盘图标可重新打开窗口）</label>
@@ -1983,6 +2144,37 @@ class UiHandler(BaseHTTPRequestHandler):
             return self._reply(200, {"ok": True, "enabled": enabled, "used": used,
                                      "cap": cap, "hours": hours,
                                      "hold": bool(enabled and cap > 0 and used >= cap)})
+        if u.path == "/api/watchdog":
+            cfg = C.load_app_config()
+            with _wd_lock:
+                snap = {"events": list(_wd_state["events"]),
+                        "strikes": _wd_state["strikes"],
+                        "last_check": _wd_state["last_check"],
+                        "last_result": _wd_state["last_result"],
+                        "busy": _wd_state["busy"]}
+            return self._reply(200, {"ok": True,
+                                     "enabled": bool(cfg.get("watchdog_enabled")),
+                                     "mode": str(cfg.get("watchdog_mode") or "auto"),
+                                     "interval": int(cfg.get("watchdog_interval") or 120),
+                                     **snap})
+        if u.path == "/api/backups":
+            cfg = C.load_app_config()
+            root = pathlib.Path(str(cfg.get("backup_dir") or "").strip()
+                                or os.path.join(DATA_DIR, "backups"))
+            items = []
+            try:
+                for sub in sorted(root.iterdir(), reverse=True):
+                    if not sub.is_dir():
+                        continue
+                    n = sum(1 for f in C.BACKUP_FILES
+                            if (sub / os.path.basename(f)).is_file())
+                    if n:
+                        items.append({"name": sub.name, "files": n,
+                                      "mtime": sub.stat().st_mtime})
+            except OSError:
+                pass
+            return self._reply(200, {"ok": True, "backups": items,
+                                     "root": str(root)})
         if u.path == "/api/devctrl-flow":
             import qq_bot_agent as _A
             return self._reply(200, {"ok": True, "flow": _A.devctrl_flow(),
@@ -2029,6 +2221,55 @@ class UiHandler(BaseHTTPRequestHandler):
             import qq_bot_agent as _A
             _A._backup_data()
             return self._reply(200, {"ok": True})
+        if u.path == "/api/backup-restore":
+            name = str(body.get("name") or "").strip()
+            if not name or any(c in name for c in '\\/:*?"<>|') or name in (".", ".."):
+                return self._reply(400, {"ok": False, "error": "备份名非法"})
+            cfg = C.load_app_config()
+            root = pathlib.Path(str(cfg.get("backup_dir") or "").strip()
+                                or os.path.join(DATA_DIR, "backups"))
+            src_dir = root / name
+            if not src_dir.is_dir():
+                return self._reply(400, {"ok": False, "error": "备份不存在: %s" % name})
+            restored, missing = [], []
+            for rel in C.BACKUP_FILES:
+                src = src_dir / os.path.basename(rel)
+                if not src.is_file():
+                    continue
+                dst = pathlib.Path(os.path.join(DATA_DIR, rel))
+                try:
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    text = src.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    # 二进制/编码异常文件直接字节复制
+                    try:
+                        shutil.copyfile(str(src), str(dst))
+                        restored.append(rel)
+                    except OSError:
+                        missing.append(rel)
+                    continue
+                tmp = dst.with_suffix(dst.suffix + ".restore.tmp")
+                last = None
+                for attempt in range(6):
+                    try:
+                        tmp.write_text(text, encoding="utf-8")
+                        os.replace(str(tmp), str(dst))
+                        last = None
+                        break
+                    except PermissionError as e:
+                        last = e
+                        time.sleep(0.08 * (attempt + 1))
+                if last is not None:
+                    try:
+                        dst.write_text(text, encoding="utf-8")
+                        tmp.unlink(missing_ok=True)
+                    except OSError:
+                        missing.append(rel)
+                        continue
+                restored.append(rel)
+            return self._reply(200, {"ok": True, "restored": restored,
+                                     "failed": missing,
+                                     "count": len(restored)})
         if u.path == "/api/config":
             cfg = load_json_const(MODEL_CHAIN_PATH, {})
             if "models" in body:
@@ -2394,6 +2635,32 @@ class UiHandler(BaseHTTPRequestHandler):
                     str(x).strip()[:260] for x in dirs if str(x).strip()]
             if "timezone" in cfg_in:
                 cleaned["timezone"] = str(cfg_in["timezone"]).strip()[:50]
+            for k in ("review_time", "backup_time"):
+                if k in cfg_in:
+                    v = str(cfg_in[k]).strip()
+                    cleaned[k] = v if len(v) == 5 and v[2] == ":" and v[:2].isdigit() and v[3:].isdigit() else ""
+            for k in ("backup_enabled", "sched_pause_enabled", "watchdog_enabled"):
+                if k in cfg_in:
+                    cleaned[k] = bool(cfg_in[k])
+            if "backup_dir" in cfg_in:
+                cleaned["backup_dir"] = str(cfg_in["backup_dir"]).strip()[:260]
+            for k in ("backup_keep_days", "backup_keep_copies"):
+                if k in cfg_in:
+                    try:
+                        cleaned[k] = max(1, min(365, int(cfg_in[k])))
+                    except (TypeError, ValueError):
+                        pass
+            for k in ("sched_pause_start", "sched_pause_end"):
+                if k in cfg_in:
+                    v = str(cfg_in[k]).strip()
+                    cleaned[k] = v if len(v) == 5 and v[2] == ":" and v[:2].isdigit() and v[3:].isdigit() else ""
+            if "watchdog_mode" in cfg_in:
+                cleaned["watchdog_mode"] = "alert" if str(cfg_in["watchdog_mode"]) == "alert" else "auto"
+            if "watchdog_interval" in cfg_in:
+                try:
+                    cleaned["watchdog_interval"] = max(60, min(600, int(cfg_in["watchdog_interval"])))
+                except (TypeError, ValueError):
+                    pass
             if "auto_power_on" in cfg_in:
                 cleaned["auto_power_on"] = bool(cfg_in["auto_power_on"])
             if "close_action" in cfg_in:
@@ -2767,8 +3034,9 @@ def main():
     PORTS["agent"] = args.agent_port
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), UiHandler)
     srv.daemon_threads = True
-    print(json.dumps({"admin_ui_ready": True, "url": "http://127.0.0.1:%d" % args.port},
-                     ensure_ascii=False), flush=True)
+    threading.Thread(target=_watchdog_loop, daemon=True).start()
+    print(json.dumps({"admin_ui_ready": True, "url": "http://127.0.0.1:%d" % args.port,
+                      "watchdog": True}, ensure_ascii=False), flush=True)
     srv.serve_forever()
 
 

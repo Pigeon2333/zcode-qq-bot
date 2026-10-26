@@ -2020,8 +2020,10 @@ _DEFAULT_FLOW = {
     "ask_text": ("协议一：连线主人\n神经连线中…请输入授权码\n\n"
                  "（在电脑控制台「设备操控」页查看 6 位授权码，直接发送数字即可）"),
     "ok_text": ("连线成功。{owner}，你现在确认为「{bot}」的主人\n\n"
-                "协议二：执行任务\n{mins} 分钟内直接发命令：\n"
-                "找文件 <名称> / 读文件 <路径> / 发文件 <路径>"),
+                "协议二：执行任务\n{mins} 分钟内直接用自然语言指挥我操作电脑，"
+                "比如「帮我找一下那份报告」「把配置文件发我」「看看桌面有什么」\n"
+                "（也支持指令：找文件 <名称> / 读文件 <路径> / 发文件 <路径> / 列目录 <路径>；"
+                "结果只发私聊）"),
     "fail_text": "{owner}，授权码有误，请重新尝试",
     "expired_text": ("协议一：连线主人\n授权码已过期。"
                      "请在电脑控制台「设备操控」页查看当前码"),
@@ -2038,6 +2040,12 @@ def devctrl_flow():
         for k in _DEFAULT_FLOW:
             if k in data:
                 flow[k] = data[k]
+    # 迁移：仍是旧默认文案（用户没改过）→ 换成自然语言版新默认
+    _old_ok = ("连线成功。{owner}，你现在确认为「{bot}」的主人\n\n"
+               "协议二：执行任务\n{mins} 分钟内直接发命令：\n"
+               "找文件 <名称> / 读文件 <路径> / 发文件 <路径>")
+    if flow.get("ok_text") == _old_ok:
+        flow["ok_text"] = _DEFAULT_FLOW["ok_text"]
     if not isinstance(flow.get("keywords"), list):
         flow["keywords"] = list(_DEFAULT_FLOW["keywords"])
     try:
@@ -2153,9 +2161,19 @@ def _handle_devctrl(daemon, msg):
         return True
     # 已授权窗口内：只拦截真正的设备命令，其余消息照常走聊天（也不再重复索码）
     if _DEVCTRL_AUTH["ok_until"] > time.time():
-        if _re.match(r"^(找文件|读文件|发文件)\s+", text):
+        m_cmd = _re.match(r"^(找文件|读文件|发文件|列目录)\s+(.+)$", text, _re.S)
+        if m_cmd:
             reply_to = ("private", str(msg.get("sender_id") or owner_qq()))
-            _devctrl_exec(daemon, msg, text, reply_to)
+            _devctrl_run(daemon, msg, reply_to, flow,
+                         m_cmd.group(1), m_cmd.group(2).strip())
+            return True
+        # 自然语言：小模型解析成动作；解析为 chat 则放行普通聊天
+        act = _devctrl_parse(text)
+        out("AGENT_DEVCTRL_PARSE action=%s arg=%.40s" % (act.get("action"), act.get("arg", "")))
+        if act.get("action") in ("search", "read", "send", "list"):
+            reply_to = ("private", str(msg.get("sender_id") or owner_qq()))
+            _devctrl_run(daemon, msg, reply_to, flow,
+                         act.get("action"), str(act.get("arg") or ""))
             return True
         return False
     m = _re.match(r"^设备\s+(\d{6})\s*[|｜]\s*(.+)$", text, _re.S)
@@ -2178,55 +2196,60 @@ def _handle_devctrl(daemon, msg):
     # 强制私聊返回结果（隐私不出群）
     reply_to = ("private", str(msg.get("sender_id") or owner_qq()))
     import re as _re2
-    if cmd.startswith("找文件 "):
-        pattern = cmd[4:].strip()[:100]
-        results = _devctrl_search(pattern)
-        daemon.send(reply_to[0], reply_to[1], [
-            ("搜索「%s」结果（%d 条）：" % (pattern, len(results))) + chr(10) +
-            (chr(10).join(results[:10]) if results else "（无匹配）")])
-    elif cmd.startswith("读文件 "):
-        fp = cmd[4:].strip()[:260]
-        if _is_protected(fp):
-            daemon.send(reply_to[0], reply_to[1], ["该路径在保护目录内，拒绝读取"])
-        else:
-            try:
-                content = open(fp, "r", encoding="utf-8", errors="replace").read(2000)
-                daemon.send(reply_to[0], reply_to[1],
-                            ["文件内容（前2000字）：" + chr(10) + content])
-            except OSError as e:
-                daemon.send(reply_to[0], reply_to[1], ["读取失败：%r" % e])
-    elif cmd.startswith("发文件 "):
-        fp = cmd[4:].strip()[:260]
-        if _is_protected(fp):
-            daemon.send(reply_to[0], reply_to[1], ["该路径在保护目录内，拒绝发送"])
-        elif not os.path.isfile(fp):
-            daemon.send(reply_to[0], reply_to[1], ["文件不存在"])
-        else:
-            daemon.send_image(reply_to[0], reply_to[1], fp)
-            daemon.send(reply_to[0], reply_to[1], ["已发送：%s" % os.path.basename(fp)])
+    m2 = _re2.match(r"^(找文件|读文件|发文件|列目录)\s+(.+)$", cmd, _re2.S)
+    _ACT_CN = {"找文件": "search", "读文件": "read", "发文件": "send", "列目录": "list"}
+    if m2:
+        act, arg = _ACT_CN[m2.group(1)], m2.group(2).strip()
     else:
-        daemon.send(reply_to[0], reply_to[1],
-                    ["不支持的命令。可用：找文件 <名称> / 读文件 <路径> / 发文件 <路径>"])
-    out("AGENT_DEVCTRL cmd=%.30s" % cmd)
-    left = int(_DEVCTRL_AUTH["ok_until"] - time.time())
-    flow = devctrl_flow()
-    daemon.send(reply_to[0], reply_to[1],
-                [_render_flow(flow["done_text"], owner=owner_qq(), left=left)])
+        p = _devctrl_parse(cmd)
+        act, arg = p.get("action"), str(p.get("arg") or "")
+    _devctrl_run(daemon, msg, reply_to, flow, act, arg)
     return True
 
 
 
-def _devctrl_exec(daemon, msg, cmd, reply_to):
-    """执行单条设备操控命令（已在授权窗口内）。"""
+def _devctrl_parse(text):
+    """自然语言 → 设备动作。小模型输出 JSON；任何失败都回落 chat（放行普通聊天）。
+    只做意图归类，不产生副作用；保护目录校验仍在执行层。"""
     import re as _re
-    if cmd.startswith("找文件 "):
-        pattern = cmd[4:].strip()[:100]
+    try:
+        prompt = (
+            "你是设备指令解析器。主人正在授权窗口内指挥机器人操作他的电脑。"
+            "把主人的话解析成一个动作，只输出一行 JSON，不要输出其他内容：" + chr(10) +
+            '{"action":"search|read|send|list|chat","arg":"..."}' + chr(10) +
+            "search=按文件名关键词找文件（arg=名称关键词）；"
+            "read=读取文件内容（arg=文件路径）；"
+            "send=把文件发给主人（arg=文件路径）；"
+            "list=列出目录内容（arg=目录路径，主人没说就填 ~ ）；"
+            "chat=与设备操作无关的普通聊天（arg 留空）。"
+            "主人说：「%s」" % str(text)[:200])
+        status, data = call_glm_with_fallback(
+            [{"role": "user", "content": prompt}])
+        raw = str(data or "")
+        m = _re.search(r"\{[^{}]*\}", raw, _re.S)
+        if not m:
+            return {"action": "chat", "arg": ""}
+        obj = json.loads(m.group(0))
+        act = str(obj.get("action") or "chat").lower()
+        if act not in ("search", "read", "send", "list"):
+            return {"action": "chat", "arg": ""}
+        return {"action": act, "arg": str(obj.get("arg") or "")[:260]}
+    except Exception as e:
+        out("AGENT_DEVCTRL_PARSE_ERR %r" % e)
+        return {"action": "chat", "arg": ""}
+
+
+def _devctrl_run(daemon, msg, reply_to, flow, action, arg):
+    """执行单个设备动作（search/read/send/list），完成后回 done_text。"""
+    arg = str(arg or "").strip()
+    if action == "search":
+        pattern = arg[:100]
         results = _devctrl_search(pattern)
         daemon.send(reply_to[0], reply_to[1], [
             ("搜索「%s」结果（%d 条）：" % (pattern, len(results))) + chr(10) +
             (chr(10).join(results[:10]) if results else "（无匹配）")])
-    elif cmd.startswith("读文件 "):
-        fp = cmd[4:].strip()[:260]
+    elif action == "read":
+        fp = arg[:260]
         if _is_protected(fp):
             daemon.send(reply_to[0], reply_to[1], ["该路径在保护目录内，拒绝读取"])
         else:
@@ -2236,19 +2259,38 @@ def _devctrl_exec(daemon, msg, cmd, reply_to):
                             ["文件内容（前2000字）：" + chr(10) + content])
             except OSError as e:
                 daemon.send(reply_to[0], reply_to[1], ["读取失败：%r" % e])
-    elif cmd.startswith("发文件 "):
-        fp = cmd[4:].strip()[:260]
+    elif action == "send":
+        fp = arg[:260]
         if _is_protected(fp):
             daemon.send(reply_to[0], reply_to[1], ["该路径在保护目录内，拒绝发送"])
         elif not os.path.isfile(fp):
-            daemon.send(reply_to[0], reply_to[1], ["文件不存在"])
+            daemon.send(reply_to[0], reply_to[1], ["文件不存在：%s" % fp])
         else:
             daemon.send_image(reply_to[0], reply_to[1], fp)
             daemon.send(reply_to[0], reply_to[1], ["已发送：%s" % os.path.basename(fp)])
+    elif action == "list":
+        d = arg[:260] or os.path.expanduser("~")
+        if _is_protected(d):
+            daemon.send(reply_to[0], reply_to[1], ["该目录在保护目录内，拒绝列出"])
+        elif not os.path.isdir(d):
+            daemon.send(reply_to[0], reply_to[1], ["目录不存在：%s" % d])
+        else:
+            try:
+                entries = sorted(os.listdir(d))[:40]
+                daemon.send(reply_to[0], reply_to[1],
+                            [("目录 %s 内容（前40项）：" % d) + chr(10) +
+                             (chr(10).join(entries) if entries else "（空目录）")])
+            except OSError as e:
+                daemon.send(reply_to[0], reply_to[1], ["列目录失败：%r" % e])
     else:
         daemon.send(reply_to[0], reply_to[1],
-                    ["不支持的命令。可用：找文件 <名称> / 读文件 <路径> / 发文件 <路径>"])
-    out("AGENT_DEVCTRL cmd=%.30s" % cmd)
+                    ["不支持的动作。可用：找文件/读文件/发文件/列目录，或直接用自然语言说"])
+    out("AGENT_DEVCTRL action=%s arg=%.40s" % (action, arg))
+    left = int(_DEVCTRL_AUTH["ok_until"] - time.time())
+    daemon.send(reply_to[0], reply_to[1],
+                [_render_flow(flow["done_text"],
+                              owner=str(msg.get("sender_name") or owner_qq()),
+                              left=left)])
 
 
 def _devctrl_search(pattern):
@@ -2698,34 +2740,6 @@ def start_admin_server(port):
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
 
-def _backup_data():
-    """每日数据快照：关键数据文件复制到 backups/<日期>/，保留最近 30 份。
-    人设/风格/自进化/记忆/分群与回复配置都可从此恢复（密钥类文件不备份）。"""
-    import shutil
-    names = ["style.md", "evolved.json", "memory_stream.jsonl",
-             "group_reply_modes.json", "reply_config.json",
-             "private_config.json", "group_whitelist.json",
-             "model_chain.json", "app_config.json"]
-    # 人设合集真实路径在 personas/ 子目录
-    subdirs = {"personas/collection.json"}
-    bdir = os.path.join(DATA_DIR, "backups", time.strftime("%Y%m%d"))
-    try:
-        os.makedirs(bdir, exist_ok=True)
-        for n in names + list(subdirs):
-            src = os.path.join(DATA_DIR, n)
-            if os.path.isfile(src):
-                dstf = os.path.join(bdir, os.path.basename(n))
-                os.makedirs(os.path.dirname(dstf), exist_ok=True)
-                shutil.copy2(src, dstf)
-        root = os.path.join(DATA_DIR, "backups")
-        days = sorted(x for x in os.listdir(root) if x.isdigit())
-        for old in days[:-30]:
-            shutil.rmtree(os.path.join(root, old), ignore_errors=True)
-        out("AGENT_BACKUP_OK %s (%d files)" % (bdir, len(names)))
-    except OSError as e:
-        out("AGENT_BACKUP_FAIL %r" % e)
-
-
 def _review_window_lines():
     """上次复盘以来的 agent.log 增量行（字节偏移法；日志重启清空则全量）。
     修复：此前固定取尾部 800 行且文案称「今天」，凌晨触发时口径混乱。"""
@@ -2811,20 +2825,17 @@ def _daily_review_once(daemon):
 
 
 def _backup_data():
-    """每日数据快照：关键数据文件复制到配置目录（空=默认 backups/），保留最近 30 份。
-    人设/风格/自进化/记忆/分群与回复配置都可从此恢复（密钥类文件不备份）。"""
+    """每日数据快照：按 qq_common.BACKUP_FILES 统一清单复制到配置目录
+    （空=默认 backups/），保留天数与份数双条件清理。密钥类文件不备份。"""
     import shutil
     cfg = C.load_app_config()
-    names = ["style.md", "evolved.json", "memory_stream.jsonl",
-             "group_reply_modes.json", "reply_config.json",
-             "private_config.json", "group_whitelist.json",
-             "model_chain.json", "app_config.json"]
+    names = list(C.BACKUP_FILES)
     dest_root = str(cfg.get("backup_dir") or "").strip() or os.path.join(DATA_DIR, "backups")
     bdir = os.path.join(dest_root, time.strftime("%Y%m%d"))
     try:
         os.makedirs(bdir, exist_ok=True)
         n = 0
-        for name in names + ["personas/collection.json"]:
+        for name in names:
             src = os.path.join(DATA_DIR, name)
             if os.path.isfile(src):
                 dstf = os.path.join(bdir, os.path.basename(name))
