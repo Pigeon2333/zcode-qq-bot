@@ -45,6 +45,23 @@ STICKERS_PATH = os.path.join(DATA_DIR, "stickers.json")
 EVOLVED_PATH = os.path.join(DATA_DIR, "styles", "evolved.json")
 STICKERS_ROOT = pathlib.Path(os.path.join(DATA_DIR, "stickers"))
 WS_TOKEN_PATH = os.path.join(DATA_DIR, "ws_token")
+UI_TOKEN_PATH = os.path.join(DATA_DIR, "ui_token")
+
+
+def ui_token():
+    """管理台访问令牌：首次读取时生成（32 位十六进制）。
+    窗口由 qq_app 携带 ?tk= 打开；浏览器直开需手动解锁（防本机网页 CSRF 打本地接口）。"""
+    import secrets as _secrets
+    try:
+        t = pathlib.Path(UI_TOKEN_PATH).read_text(encoding="utf-8").strip()
+        if len(t) >= 24:
+            return t
+    except OSError:
+        pass
+    t = _secrets.token_hex(16)
+    pathlib.Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
+    pathlib.Path(UI_TOKEN_PATH).write_text(t, encoding="utf-8")
+    return t
 
 DEFAULT_UI_PORT = 39765
 DEFAULT_DAEMON_PORT = 39763
@@ -374,7 +391,15 @@ function dlgText(o){return new Promise(res=>{
  document.body.appendChild(m);
  _dlgWire(m,()=>res(ta.value.trim()),()=>res(null));
  setTimeout(()=>{ta.focus()},30)})}
-async function api(p,opts){const r=await fetch(p,opts);return r.json()}
+const UI_TOKEN=(function(){ // 服务端注入（?tk= 有效时）；否则回退 localStorage（手动解锁）
+ try{if('__UITOKEN__'.length>20)return '__UITOKEN__'}catch(e){}
+ return localStorage.getItem('zbtk')||''})();
+function uiShowUnlock(){
+ document.body.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100vh"><div class="card" style="max-width:420px"><h3>控制台已锁定</h3><div class="k" style="margin-top:8px">本页直接从浏览器打开需要访问令牌。<br>令牌文件：<span class="mono">~/.zcode-qq-bot/ui_token</span><br>（用 ZCode QQ机器人 桌面程序打开则无需此步骤）</div><input id="zbunlock" style="width:100%;margin-top:12px" placeholder="粘贴令牌"><div style="margin-top:10px"><button class="act" onclick="localStorage.setItem(\'zbtk\',document.getElementById(\'zbunlock\').value.trim());location.reload()">解锁</button></div></div></div>';}
+async function api(p,opts){
+ if(!UI_TOKEN){uiShowUnlock();throw new Error('locked')}
+ opts=opts||{};opts.headers=Object.assign({},opts.headers||{},{'X-UI-Token':UI_TOKEN});
+ const r=await fetch(p,opts);return r.json()}
 /* ---- 统一保存交互 ----
    规则：开关/选项/模式卡/列表增删 = 点击即保存即生效；
    输入框 = 改完（回车/失焦）自动保存；长文本 = 点所在卡片的「保存」按钮，仅保存该卡片。 */
@@ -537,6 +562,15 @@ async function wizardSave(){
  if(qqnt)body.qqnt_dir=qqnt;
  const r=await saveKV('/api/app-config',body,'初始化完成！去「设置 → API Key」填 Key，然后回这里点「启动机器人」');
  if(r.ok!==false)load()}
+async function napcatInstall(){
+ const p=await api('/api/pick-zip',{method:'POST'}).catch(()=>({file:''}));
+ const f=(p&&p.file)||'';
+ if(!f){toast('未选择文件',false);return}
+ if(!await dlgConfirm({title:'安装 NapCat',body:'将把「'+f.split(/[\\/\\\\]/).pop()+'」释放到 QQNT 目录（现有 NapCat 文件先自动备份）。继续？',okText:'安装',danger:true}))return
+ toast('正在安装…');
+ const r=await api('/api/napcat-install',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({zip:f})});
+ toast(r.ok?'安装成功':'安装失败：'+(r.message||r.error||''),r.ok!==false);
+ if(r.ok)load()}
 async function powerOff(napcatToo){
  if(!await dlgConfirm(napcatToo
   ?{title:'停止 NapCat',body:'确认连 NapCat 一起停止？（下次启动需重新登录）',okText:'全部停止',danger:true}
@@ -1237,7 +1271,10 @@ async function vSettings(){
  <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">② 运行环境</div>
  <div class="card"><div class="k">安装位置与网络（端口一般无需改动，改动重启各组件后生效）</div>
   <div style="margin-top:10px"><div class="k" style="margin-bottom:4px">QQNT 安装目录（留空=自动探测，探测到：${esc(c.detected_qqnt||'未探测到')}）</div>
-  <input id="sqqnt" value="${esc(String(c.qqnt_dir||''))}" style="width:100%" onchange="saveEnv('sqqnt','qqnt_dir',0,'QQNT 目录已保存（下次启动任务时生效）')"></div>
+  <input id="sqqnt" value="${esc(String(c.qqnt_dir||''))}" style="width:100%" onchange="saveEnv('sqqnt','qqnt_dir',0,'QQNT 目录已保存（下次启动任务时生效）')">
+  <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+   <button class="act ghost" style="margin:0" onclick="napcatInstall()">安装 NapCat（本地 zip）…</button>
+   <span class="k">QQNT 目录缺 launcher-user.bat 时用：选 NapCat Shell 的 zip 包，自动备份旧文件并安装（Program Files 需管理员权限运行本程序）</span></div></div>
   <div class="k" style="margin-top:12px">端口（一般无需改动；改动重启各组件后生效）</div>
   <div style="display:flex;gap:10px;margin-top:6px;flex-wrap:wrap;align-items:center">
    <label>NapCat WS <input id="pnap" type="number" value="${c.napcat_ws_port}" style="width:76px" onchange="saveEnv('pnap','napcat_ws_port',1)"></label>
@@ -2022,14 +2059,22 @@ class UiHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
-    def _html(self):
-        body = PAGE.encode("utf-8")
+    def _html(self, tk=""):
+        token = ui_token()
+        page = PAGE.replace("__UITOKEN__", token if tk == token else "")
+        body = page.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _authed(self, u, q):
+        """API 鉴权：X-UI-Token 头或 ?tk= 与令牌一致。页面本身始终可加载（锁定态）。"""
+        want = ui_token()
+        got = self.headers.get("X-UI-Token", "") or str(q.get("tk") or "")
+        return got == want
 
     def _body(self):
         n = int(self.headers.get("Content-Length") or 0)
@@ -2044,7 +2089,9 @@ class UiHandler(BaseHTTPRequestHandler):
         u = urllib.parse.urlsplit(self.path)
         q = {k: v[0] for k, v in urllib.parse.parse_qs(u.query).items()}
         if u.path == "/" or u.path == "/index.html":
-            return self._html()
+            return self._html(str(q.get("tk") or ""))
+        if not self._authed(u, q):
+            return self._reply(401, {"ok": False, "error": "unauthorized"})
         if u.path == "/api/daemon-status":
             return self._reply(200, proxy_get("127.0.0.1", PORTS["daemon"], "/status",
                                               read_const(TOKEN_PATH)))
@@ -2421,6 +2468,9 @@ class UiHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         u = urllib.parse.urlsplit(self.path)
+        q = {k: v[0] for k, v in urllib.parse.parse_qs(u.query).items()}
+        if not self._authed(u, q):
+            return self._reply(401, {"ok": False, "error": "unauthorized"})
         body = self._body()
         if u.path == "/api/pick-dir":
             def _pick():
@@ -2441,6 +2491,33 @@ class UiHandler(BaseHTTPRequestHandler):
             t.start()
             t.join(timeout=120)
             return self._reply(200, {"ok": True, "dir": box.get("d", "")})
+        if u.path == "/api/pick-zip":
+            def _pickz():
+                try:
+                    import tkinter as tk
+                    from tkinter import filedialog
+                    root = tk.Tk()
+                    root.withdraw()
+                    root.attributes("-topmost", True)
+                    f = filedialog.askopenfilename(
+                        title="选择 NapCat Shell 压缩包",
+                        filetypes=[("zip 压缩包", "*.zip")])
+                    root.destroy()
+                    return f or ""
+                except Exception:
+                    return ""
+            import threading as _th
+            boxz = {}
+            tz = _th.Thread(target=lambda: boxz.update(f=_pickz()), daemon=True)
+            tz.start()
+            tz.join(timeout=120)
+            return self._reply(200, {"ok": True, "file": boxz.get("f", "")})
+        if u.path == "/api/napcat-install":
+            zpath = str(body.get("zip") or "").strip()
+            if not zpath or not os.path.isfile(zpath):
+                return self._reply(400, {"ok": False, "error": "先选择 zip 文件"})
+            ok, msg = S.install_napcat_zip(C.load_app_config(), zpath)
+            return self._reply(200, {"ok": ok, "message": msg})
         if u.path == "/api/devctrl-code":
             # 刷新 = 让 agent 立刻作废旧码并换新（代理请求）
             r = proxy_get("127.0.0.1", PORTS["agent"], "/admin/devctrl-code?refresh=1")

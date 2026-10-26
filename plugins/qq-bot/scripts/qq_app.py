@@ -197,7 +197,7 @@ def main():
 
     window = webview.create_window(
         APP_NAME,
-        "http://127.0.0.1:%d/" % cfg["ui_port"],
+        "http://127.0.0.1:%d/?tk=%s" % (cfg["ui_port"], S.read_token_file("ui_token")),
         width=1180, height=820, min_size=(900, 620))
     del window
 

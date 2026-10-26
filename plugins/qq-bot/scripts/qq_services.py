@@ -18,6 +18,7 @@ import http.client
 import json
 import os
 import pathlib
+import re
 import socket
 import subprocess
 import sys
@@ -201,6 +202,85 @@ def napcat_ws_config_path(cfg):
     if not qq or not qqnt:
         return ""
     return os.path.join(qqnt, "config", "onebot11_%s.json" % qq)
+
+
+_NAPCAT_REQUIRED = ("napcat.mjs", "launcher-user.bat")
+_NAPCAT_FILES = ("napcat.mjs", "loadNapCat.js", "NapCatWinBootHook.dll",
+                 "NapCatWinBootMain.exe", "launcher-user.bat", "qqnt.json")
+
+
+def install_napcat_zip(cfg, zip_path):
+    """从本地 NapCat Shell 压缩包安装到 QQNT 目录。
+    流程：zip 结构校验 → 备份现有 NapCat 文件（数据目录 napcat-backups/<ts>/）
+    → 释放 → 返回 (ok, msg)。Program Files 无权限时给出指引而不是崩溃。"""
+    import shutil
+    import zipfile
+    zp = str(zip_path or "").strip()
+    qqnt = C.qqnt_dir_resolved(cfg)
+    if not zp or not os.path.isfile(zp) or not zp.lower().endswith(".zip"):
+        return False, "请选择 NapCat Shell 的 zip 压缩包"
+    if not qqnt or not os.path.isfile(os.path.join(qqnt, "QQ.exe")):
+        return False, "未找到 QQNT 目录（先在设置里填写或确认自动探测）"
+    try:
+        zf = zipfile.ZipFile(zp)
+    except (OSError, zipfile.BadZipFile) as e:
+        return False, "压缩包读取失败：%r" % e
+    names = zf.namelist()
+    # 兼容 zip 内多一层目录的情况
+    base = ""
+    if not any(n == "napcat.mjs" or n.startswith("./napcat.mjs") for n in names):
+        tops = set(n.split("/")[0] for n in names if n.strip() and n != "/")
+        for t in tops:
+            if any(n in (t + "/napcat.mjs", t + "/launcher-user.bat") for n in names):
+                base = t + "/"
+                break
+    for req in _NAPCAT_REQUIRED:
+        if not any(n == base + req for n in names):
+            zf.close()
+            return False, "压缩包缺少 %s（请下载 NapCat Shell 完整包，不是源码包）" % req
+    # 备份现有文件
+    bdir = os.path.join(C.DATA_DIR, "napcat-backups", time.strftime("%Y%m%d-%H%M%S"))
+    backed = []
+    try:
+        os.makedirs(bdir, exist_ok=True)
+        for f in _NAPCAT_FILES:
+            src = os.path.join(qqnt, f)
+            if os.path.isfile(src):
+                shutil.copy2(src, os.path.join(bdir, f))
+                backed.append(f)
+        # 释放（覆盖）
+        installed = []
+        installed = []
+        _safe_name = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\- ]{0,59}$")
+        for n in names:
+            if n.strip() in ("", "/") or n.endswith("/"):
+                continue
+            rel = n[len(base):] if base and n.startswith(base) else n
+            # 严格文件名白名单：无路径分隔/盘符/点开头（防 zip 条目名穿越）
+            if not _safe_name.match(rel) or rel in (".", ".."):
+                continue
+            if not rel.lower().endswith((".js", ".mjs", ".dll", ".exe", ".bat", ".json")):
+                continue  # 只释放根目录的 NapCat 文件（根目录布局）
+            # pathlib 规范化并限制在 QQNT 目录内
+            target = (pathlib.Path(qqnt) / rel).resolve()
+            try:
+                target.relative_to(pathlib.Path(qqnt).resolve())
+            except ValueError:
+                continue
+            with zf.open(n) as srcf:
+                target.write_bytes(srcf.read())
+            installed.append(rel)
+        zf.close()
+        return True, ("安装成功：%d 个文件（备份 %d 个旧文件 → %s）。"
+                      "若 QQ 更新后失效，请到 NapCat 官网下载对应新版本重装。"
+                      % (len(installed), len(backed), bdir))
+    except PermissionError:
+        zf.close()
+        return False, ("目标目录无写权限（Program Files 需要）："
+                       "请右键「以管理员身份运行」本程序后再试；已备份的旧文件在 %s" % bdir)
+    except OSError as e:
+        zf.close()
+        return False, "安装失败：%r（旧文件备份在 %s）" % (e, bdir)
 
 
 def ensure_napcat_config(cfg):

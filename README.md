@@ -2,7 +2,13 @@
 
 一个跑在 Windows 上的 QQ 群聊 AI 机器人**桌面应用**，也是一枚 ZCode 插件：有长期记忆、可切换人设、能模仿群友说话风格、能看图/联网/画画，还带一个本地管理控制台。AI 大脑由智谱 GLM 驱动，消息收发经 NapCat（QQNT 协议实现）完成。
 
-> 界面截图待补（发布前用全新安装环境截取，避免泄露真实群信息）。
+![控制台·首次使用向导](docs/console-status.png)
+
+![控制台·设置（身份与称呼/运行环境/多供应商 API Key）](docs/console-settings.png)
+
+![控制台·模型管理](docs/console-models.png)
+
+![控制台·ZCode 联动](docs/console-zcode.png)
 
 ## 功能亮点
 
