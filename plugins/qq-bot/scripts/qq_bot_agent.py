@@ -2041,7 +2041,7 @@ def devctrl_flow():
     if not isinstance(flow.get("keywords"), list):
         flow["keywords"] = list(_DEFAULT_FLOW["keywords"])
     try:
-        flow["auth_window_sec"] = max(30, min(3600, int(flow.get("auth_window_sec", 120))))
+        flow["auth_window_sec"] = max(60, min(86400, int(flow.get("auth_window_sec", 120))))
     except (TypeError, ValueError):
         flow["auth_window_sec"] = 120
     return flow
@@ -2646,10 +2646,28 @@ class AdminHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if urllib.parse.urlsplit(self.path).path == "/admin/status":
+        u = urllib.parse.urlsplit(self.path)
+        if u.path == "/admin/status":
             snap = RT.snapshot()
             snap["ready"] = bool(glm_key())
             return self._reply(200, {"ok": True, **snap})
+        if u.path == "/admin/devctrl-code":
+            # 授权码唯一来源：只有 agent 进程内存里的码才会被 _handle_devctrl 接受。
+            q = urllib.parse.parse_qs(u.query)
+            force = q.get("refresh", ["0"])[0] in ("1", "true", "yes")
+            twofa = cfg_2fa_on()
+            if not _device_ctrl_enabled():
+                return self._reply(200, {"ok": True, "code": "", "expires_in": 0,
+                                         "enabled": False, "twofa": twofa})
+            if not twofa:
+                return self._reply(200, {"ok": True, "code": "", "expires_in": 0,
+                                         "enabled": True, "twofa": False})
+            if force or not _DEVCTRL_CODE["code"] or time.time() > _DEVCTRL_CODE["expires"]:
+                _DEVCTRL_CODE["code"] = C.gen_auth_code()
+                _DEVCTRL_CODE["expires"] = time.time() + 300
+            return self._reply(200, {"ok": True, "code": _DEVCTRL_CODE["code"],
+                                     "expires_in": max(0, int(_DEVCTRL_CODE["expires"] - time.time())),
+                                     "enabled": True, "twofa": True})
         return self._reply(404, {"ok": False, "error": "not found"})
 
     def do_POST(self):

@@ -845,6 +845,8 @@ async function vDevCtrl(){
  ]);
  window._flow=(fl.flow||{});
  const on=!!c.device_ctrl_enabled;
+ const on2fa=c.device_ctrl_2fa===undefined?true:!!c.device_ctrl_2fa;
+ const winMin=Math.max(1,Math.min(1440,Math.round((window._flow.auth_window_sec||120)/60)));
  window._pdDirs=(c.device_ctrl_protected_dirs||[]).slice();
  $('#view').innerHTML=head('设备操控（高危功能：让机器人搜索/读取/发送你电脑上的文件）')+saveHint('仅限主人 QQ · 结果只发私聊 · 保护目录不可触达 · 授权码一次一换')+
  `<div class="card" style="border:1px solid ${on?'var(--err)':'var(--border)'}">
@@ -853,21 +855,21 @@ async function vDevCtrl(){
 
   <div style="margin-top:14px;padding:14px;border:2px solid ${on?'var(--err)':'var(--line)'};border-radius:10px;text-align:center">
    <div class="k" style="margin-bottom:6px">当前动态授权码（使用后自动换新）</div>
-   <div id="devcode" style="font-size:36px;font-weight:700;letter-spacing:8px;font-family:monospace;color:${on?'var(--err)':'var(--dim)'}">${on?esc(code.code||'------'):'------'}</div>
-   <div class="k" style="margin-top:6px">${on?'有效期剩 '+Math.max(0,code.expires_in||0)+' 秒 · 用完即换新 · 也可手动刷新':'功能未启用'}</div>
-   ${on?'<button class="act ghost" style="margin-top:8px" onclick="refreshDevCode()">刷新授权码</button>':''}
+   <div id="devcode" style="font-size:36px;font-weight:700;letter-spacing:8px;font-family:monospace;color:${on&&on2fa?'var(--err)':'var(--dim)'}">${on&&on2fa?esc(code.code||'------'):(on?'——':'------')}</div>
+   <div class="k" style="margin-top:6px">${!on?'功能未启用':(!on2fa?'动态授权码已关闭：仅主人 QQ 即可操控（极不推荐）':(code.code?'有效期剩 '+Math.max(0,code.expires_in||0)+' 秒 · 用完即换新 · 也可手动刷新':'获取授权码失败'+(code.error?'：'+esc(code.error):'（agent 未运行？）')))}</div>
+   ${on&&on2fa?'<button class="act ghost" style="margin-top:8px" onclick="refreshDevCode()">刷新授权码</button>':''}
   </div>
 
   <div class="k" style="margin-top:14px;margin-bottom:6px">使用流程</div>
   <div class="k" style="line-height:1.8">
    ① 主人在 QQ 里表达要操作电脑的意图（如「去电脑上找个文档」「设备操控」）<br>
-   ② 机器人回复「协议一：连线主人」，等待授权码<br>
+   ② 机器人回应，等待授权码<br>
    ③ 主人把上方显示的 6 位授权码发给机器人<br>
-   ④ 验证通过后 2 分钟内可直接发命令：找文件 / 读文件 / 发文件（结果只发私聊）
+   ④ 验证通过后 ${winMin} 分钟内可直接发命令：找文件 / 读文件 / 发文件（结果只发私聊）
   </div>
 
   <div class="k" style="margin-top:14px;margin-bottom:6px">安全设置</div>
-  <label class="master" style="margin-bottom:8px"><input type="checkbox" ${c.device_ctrl_2fa!==false?'checked':''} onchange="saveKV('/api/app-config',{device_ctrl_2fa:this.checked?1:0},'动态授权码已'+(this.checked?'开启（推荐）':'关闭——极危险'));load()">
+  <label class="master" style="margin-bottom:8px"><input type="checkbox" ${on2fa?'checked':''} onchange="saveKV('/api/app-config',{device_ctrl_2fa:this.checked?1:0},'动态授权码已'+(this.checked?'开启（推荐）':'关闭——极危险'));load()">
    <span><b>动态授权码（2FA）</b><div class="k" style="margin-top:3px">每次操控需授权码验证，一次用完自动换新；关闭后只需主人 QQ 即可操控——极不推荐</div></span></label>
 
   <div class="k" style="margin-top:10px;margin-bottom:6px">额外保护目录（这些目录下的文件永远不会被搜索/读取/发送）</div>
@@ -894,7 +896,7 @@ async function vDevCtrl(){
   <div style="margin-top:10px"><div class="k" style="margin-bottom:4px">授权码过期文本 / 任务完成文本（占位符 {left} 剩余秒数）</div>
   <textarea id="flexp" style="min-height:60px">${esc(window._flow.expired_text||'')}</textarea>
   <input id="fldone" value="${esc(window._flow.done_text||'')}" style="width:100%;margin-top:6px"></div>
-  <div style="margin-top:10px"><label>授权窗口 <input id="flwin" type="number" min="30" max="3600" value="${window._flow.auth_window_sec||120}" style="width:80px"> 秒</label></div>
+  <div style="margin-top:10px"><label>授权窗口 <input id="flwin" type="number" min="1" max="1440" value="${winMin}" style="width:80px"> 分钟（1–1440，最长 24 小时）</label></div>
   <div style="margin-top:12px;display:flex;gap:8px"><button class="act" onclick="saveFlow()">保存流程设置</button>
   <button class="act ghost" onclick="resetFlow()">恢复默认</button></div>
  </div>`;
@@ -909,7 +911,7 @@ async function saveFlow(){
   fail_text:document.getElementById('flfail').value,
   expired_text:document.getElementById('flexp').value,
   done_text:document.getElementById('fldone').value,
-  auth_window_sec:parseInt(document.getElementById('flwin').value)||120};
+  auth_window_sec:Math.max(1,Math.min(1440,parseInt(document.getElementById('flwin').value)||1))*60};
  const r=await saveKV('/api/devctrl-flow',body,'授权流程已保存（即时生效）');
  if(r.ok!==false)load()}
 async function resetFlow(){
@@ -1982,6 +1984,13 @@ class UiHandler(BaseHTTPRequestHandler):
             import qq_bot_agent as _A
             return self._reply(200, {"ok": True, "flow": _A.devctrl_flow(),
                                      "defaults": _A._DEFAULT_FLOW})
+        if u.path == "/api/devctrl-code":
+            # 码的唯一有效来源在 agent 进程：UI 只做代理，绝不本地生成。
+            r = proxy_get("127.0.0.1", PORTS["agent"], "/admin/devctrl-code")
+            if not r.get("ok"):
+                return self._reply(200, {"ok": False, "code": "", "expires_in": 0,
+                                         "error": r.get("error", "agent 未运行")})
+            return self._reply(200, r)
         return self._reply(404, {"ok": False, "error": "not found"})
 
     def do_POST(self):
@@ -2007,15 +2016,12 @@ class UiHandler(BaseHTTPRequestHandler):
             t.join(timeout=120)
             return self._reply(200, {"ok": True, "dir": box.get("d", "")})
         if u.path == "/api/devctrl-code":
-            # 控制台常显授权码：确保当前有一个有效码（无则生成）
-            import qq_bot_agent as _A
-            import time as _t
-            code_obj = _A._DEVCTRL_CODE
-            if not code_obj["code"] or _t.time() > code_obj["expires"]:
-                code_obj["code"] = C.gen_auth_code()
-                code_obj["expires"] = _t.time() + 300
-            return self._reply(200, {"ok": True, "code": code_obj["code"],
-                                     "expires_in": int(code_obj["expires"] - _t.time())})
+            # 刷新 = 让 agent 立刻作废旧码并换新（代理请求）
+            r = proxy_get("127.0.0.1", PORTS["agent"], "/admin/devctrl-code?refresh=1")
+            if not r.get("ok"):
+                return self._reply(200, {"ok": False, "code": "", "expires_in": 0,
+                                         "error": r.get("error", "agent 未运行")})
+            return self._reply(200, r)
         if u.path == "/api/backup-now":
             import qq_bot_agent as _A
             _A._backup_data()
@@ -2665,9 +2671,9 @@ class UiHandler(BaseHTTPRequestHandler):
                         patch[f] = v
                 if "auth_window_sec" in body:
                     try:
-                        patch["auth_window_sec"] = max(30, min(3600, int(body["auth_window_sec"])))
+                        patch["auth_window_sec"] = max(60, min(86400, int(body["auth_window_sec"])))
                     except (TypeError, ValueError):
-                        return self._reply(400, {"ok": False, "error": "授权窗口应为 30-3600 秒"})
+                        return self._reply(400, {"ok": False, "error": "授权窗口应为 1-1440 分钟（60-86400 秒）"})
             saved = _A.save_devctrl_flow(patch)
             return self._reply(200, {"ok": True, "flow": saved})
         if u.path == "/api/memory/clear":
