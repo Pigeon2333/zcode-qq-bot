@@ -119,10 +119,13 @@ button.ghost{background:none;border:1px solid var(--line2);color:var(--fg)}
 button.ghost:hover{background:var(--tint);background-color:var(--tint)}
 button.ghost.danger{color:var(--err)}
 label{color:var(--fg);display:inline-flex;align-items:center;gap:6px}
-.chain{display:flex;flex-direction:column;gap:6px;max-width:560px}
+.chain{display:flex;flex-direction:column;gap:6px;max-width:680px}
 .chain .row{display:flex;gap:8px;align-items:center;background:var(--tint);border:1px solid transparent;padding:7px 12px;border-radius:8px}
 .chain .row .no{color:var(--dim);width:22px;font-size:12.5px}
 .chain .row.cool{opacity:.45}
+/* 行内按钮/状态不被长摘要压缩；摘要超长用省略号，避免「编辑」竖排 */
+.chain .row button.act{flex:0 0 auto;white-space:nowrap;margin-top:0}
+.chain .row .mono{white-space:nowrap}
 table{width:100%;border-collapse:collapse;font-size:13px}
 td,th{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left}
 th{color:var(--dim);font-weight:normal;font-size:12.5px}
@@ -448,9 +451,9 @@ async function vModels(){
  const rows=entries.map((e,i)=>{const v=thKey(e.model);const ck=(e.key||'main')+':'+e.model;
   const cd=a.cooldowns&&a.cooldowns[ck]>0;
   return `<div class="row ${cd?'cool':''}"><span class="no">${i+1}.</span>
-  <b style="flex:1;min-width:120px;font-weight:500">${esc(e.model)}</b>
-  <span class="k mono" style="flex:none">${esc(keyLabel(e))}${e.ctx?' · '+esc(e.ctx)+'k':''}${e.maxout?' · out '+esc(e.maxout):''} · ${thName[v]||'默认'}</span>
-  <span class="mono">${cd?('冷却'+a.cooldowns[ck]+'s'):(a.current_model===e.model?'当前':'')}</span>
+  <b style="flex:0 0 auto;max-width:46%;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.model)}</b>
+  <span class="k mono" style="flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right">${esc(keyLabel(e))}${e.ctx?' · '+esc(e.ctx)+'k':''}${e.maxout?' · out '+esc(e.maxout):''} · ${thName[v]||'默认'}</span>
+  <span class="mono" style="flex:0 0 auto">${cd?('冷却'+a.cooldowns[ck]+'s'):(a.current_model===e.model?'当前':'')}</span>
   <button class="act ghost" onclick="mv(${i},-1)">↑</button><button class="act ghost" onclick="mv(${i},1)">↓</button>
   <button class="act ghost" onclick="editModel(${i})">编辑</button>
   <button class="act ghost" onclick="del(${i})">✕</button></div>`}).join('');
