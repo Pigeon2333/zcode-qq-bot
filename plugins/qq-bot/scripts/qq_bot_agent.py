@@ -1166,35 +1166,47 @@ _NO_VISION_MODELS = set()  # 运行中学习到的纯文本模型（发图必 40
 
 
 def generate_image(prompt):
-    """CogView 生图（cogview-3-flash 免费档）；成功返回本地 png 路径，否则空。"""
-    key = glm_key()
-    if not key:
+    """CogView 生图（cogview-3-flash）；主 Key 失效/限流时自动换其余智谱 Key。"""
+    keys = [glm_key()]
+    try:
+        for e in (load_api_keys() or {}).values():
+            if e.get("provider", "zhipu") == "zhipu" and e.get("key") \
+                    and e["key"] not in keys:
+                keys.append(e["key"])
+    except Exception:
+        pass
+    keys = [k for k in keys if k]
+    if not keys:
         return ""
     body = json.dumps({"model": "cogview-3-flash",
                        "prompt": str(prompt)[:200]}).encode("utf-8")
-    for attempt in (1, 2):  # 免费档偶发 1314/限流抖动，隔 3 秒重试一次
-        if attempt == 2:
-            time.sleep(3)
-        conn = http.client.HTTPSConnection(GLM_HOST, 443, timeout=60,
-                                           context=ssl.create_default_context())
-        try:
-            conn.request("POST", "/api/paas/v4/images/generations", body=body,
-                         headers={
-                             "Content-Type": "application/json",
-                             "Authorization": "Bearer " + key,
-                         })
-            resp = conn.getresponse()
-            data = json.loads(resp.read().decode("utf-8"))
-        except (OSError, ValueError):
-            data = {}
-        finally:
-            conn.close()
-        items = data.get("data") or []
-        url = str(items[0].get("url", "")) if items else ""
+    url = ""
+    for key in keys:
+        for attempt in (1, 2):  # 偶发限流抖动，隔 3 秒重试一次
+            if attempt == 2:
+                time.sleep(3)
+            conn = http.client.HTTPSConnection(GLM_HOST, 443, timeout=60,
+                                               context=ssl.create_default_context())
+            try:
+                conn.request("POST", "/api/paas/v4/images/generations", body=body,
+                             headers={
+                                 "Content-Type": "application/json",
+                                 "Authorization": "Bearer " + key,
+                             })
+                resp = conn.getresponse()
+                data = json.loads(resp.read().decode("utf-8"))
+            except (OSError, ValueError):
+                data = {}
+            finally:
+                conn.close()
+            items = data.get("data") or []
+            url = str(items[0].get("url", "")) if items else ""
+            if url:
+                break
+            out("AGENT_DRAW_FAIL key=%.6s… attempt=%d %s" % (
+                key, attempt, str(data.get("error", {}))[:120]))
         if url:
             break
-        out("AGENT_DRAW_FAIL attempt=%d %s" % (
-            attempt, str(data.get("error", {}))[:120]))
     dest = os.path.join(DATA_DIR, "images",
                         "gen_%s.png" % time.strftime("%Y%m%d_%H%M%S"))
     if not _download_image(url, dest):
@@ -1208,31 +1220,35 @@ _DRAW_RE = re.compile(
     r"[:：,，\s]*"
     r"(.{1,120}?)\s*的?\s*(?:图|图片|图像|照片|插画|头像|壁纸|表情包?)?\s*$"
 )
+# 二级自然语言触发（不要求句首/短句）：帮X画/给X画/为X画 + 明确的图类客体名词。
+# 客体名词同时是防误伤闸门：「画个饼/画个重点」这类无客体词不会命中。
+_DRAW_RE2 = re.compile(
+    r"(?:帮|给|替|为|麻烦)[^，。！？\n]{0,12}画[^，。！？\n]{0,30}"
+    r"(?:的)?(?:图|图片|头像|形象|壁纸|表情包?|插画|立绘|[Ll][Oo][Gg][Oo]|封面|名片|概念图)"
+)
 
 
 def _draw_prompt(text):
     """从主人的自然说法中提取画图描述；不是画图请求返回空串。
-    命中：画：猫 / 画猫 / 画一张鹈鹕骑自行车图 / 帮我画一张鹈鹕骑自行车图 /
+    一级（句首短句）：画：猫 / 画猫 / 画一张鹈鹕骑自行车图 / 帮我画一张…图 /
     给我画个猫咪打太极 / 来一张赛博朋克城市的图 / 生成一张日落风景。
+    二级（自然长句）：帮 deepseek 画一个头像 / 给群里画个表情包——
+    要求「帮/给/替/为…画…+图类客体名词」，客体词缺失（画个饼/画个重点）不命中。
     防误伤：「生成代码」不命中（生成/来 必须带 张/个/幅 量词）。"""
     t = str(text or "").strip().rstrip("吗呢吧啊呀~～?？!！。.,， ")
-    if len(t) > 60:
-        return ""
     m = _DRAW_RE.match(t)
-    if not m:
-        return ""
-    desc = m.group(1).strip().strip("的").strip()
-    desc = re.sub(r"^一[张个幅只]\s*", "", desc).strip()
-    return desc if desc else ""
+    if m:
+        desc = m.group(1).strip().strip("的").strip()
+        desc = re.sub(r"^一[张个幅只]\s*", "", desc).strip()
+        if desc:
+            return desc
+    if len(t) <= 100 and _DRAW_RE2.search(t):
+        return t[:80]  # 自然长句：整句直接作为画图描述
+    return ""
 
 
-def _handle_draw(daemon, msg):
-    """主人画图指令（私聊或群里@）：CogView 生成后发图；返回是否命中。"""
-    if not is_owner(msg):
-        return False
-    prompt = _draw_prompt(msg.get("text"))
-    if not prompt:
-        return False
+def _draw_execute(daemon, msg, prompt):
+    """画图执行（打招呼 + 后台生成 + 发图）。"""
     daemon.send(msg["chat_type"], msg["chat_id"],
                 ["收到，正在画「%s」…稍等十几秒" % prompt[:40]])
 
@@ -1249,6 +1265,16 @@ def _handle_draw(daemon, msg):
             out("AGENT_DRAW_ERR %r" % e)
 
     threading.Thread(target=_run, daemon=True).start()
+
+
+def _handle_draw(daemon, msg):
+    """主人画图指令（私聊或群里@）：CogView 生成后发图；返回是否命中。"""
+    if not is_owner(msg):
+        return False
+    prompt = _draw_prompt(msg.get("text"))
+    if not prompt:
+        return False
+    _draw_execute(daemon, msg, prompt)
     return True
 
 
@@ -1761,12 +1787,14 @@ def build_messages(daemon, msg, ctx_k=32):
     draw_rule = ""
     if feature_enabled("draw_enabled"):
         draw_rule = (
-            "- 你具备AI生图能力，但它只对主人开放：主人发的画图请求"
-            "（「画：描述」或「帮我画一张…」等自然说法）会被系统自动识别、"
-            "直接生成并发送图片，轮不到你来描述画面；若主人聊起想画什么而系统"
-            "没有自动触发，简短引导对方用「画：描述」格式重发——"
+            "- 你具备AI生图能力，但它只对主人开放：主人各种说法的画图请求"
+            "（「画：描述」「帮我画一张…」「帮deepseek画个头像」等自然语言）大多会被系统"
+            "自动识别并直接生成发图，轮不到你来描述画面；若主人明显想让你画一幅图"
+            "而系统没有自动生成，你可以在回复的最后一行单独输出标记 [画: 图的描述]"
+            "（中文或关键词均可，系统会自动画并发图）——这个标记不会显示给主人，"
+            "也不要向主人解释标记的存在，更不要让主人\"重新用固定格式发一遍\"；"
             "绝对不要说自己不会画画/没有画图功能；群员要求画画时，"
-            "以人设口吻说明画图只对主人开放\n")
+            "以人设口吻说明画图只对主人开放（群员消息里不要输出画图标记）\n")
     if not _device_ctrl_enabled():
         draw_rule += (
             "- 你具备「设备操控」能力（帮主人操作电脑找/读/发文件），但当前未开启："
@@ -1834,14 +1862,23 @@ MEMO_RE = re.compile(r"^\s*\[记忆\]\s*(.+)$", re.M)
 MEMO_ANY_RE = re.compile(r"\[记忆(@[^\]\n]{0,60})?\]\s*([^\[\n]{1,100})")
 _MEMO_QQ_RE = re.compile(r"(\d{5,12})")
 _WAIT_LEAK_RE = re.compile(r"\[\s*WAIT\s*(:\s*\d{1,3})?\s*\]", re.I)
+# [画: 描述] / [DRAW: desc] —— 模型自主补触发画图的标记（整行或行内均可，提取后剥离）
+_DRAW_MARK_RE = re.compile(r"\[\s*(?:画|DRAW)\s*[:：]\s*([^\]\n]{1,100})\s*\]",
+                           re.I)
+_DRAW_LEAK_RE = re.compile(r"\[\s*(?:画|DRAW)\s*[:：][^\]\n]{0,100}\]", re.I)
 
 
 def parse_reply(text):
     if "[SKIP]" in text.upper().replace(" ", ""):
-        return None, [], None
+        return None, [], None, None
     if "[WAIT]" in text.upper().replace(" ", "") and wait_gate_enabled():
-        return "WAIT", [], None
+        return "WAIT", [], None, None
     text = _WAIT_LEAK_RE.sub("", text)  # 等说完关闭/漏写时兜底剥离，绝不泄漏给用户
+    # [画: 描述] 标记：模型自主补触发画图（系统没自动识别但主人明显想画时）
+    dm = _DRAW_MARK_RE.search(text)
+    draw = dm.group(1).strip()[:100] if dm else None
+    text = _DRAW_MARK_RE.sub("", text)
+    text = _DRAW_LEAK_RE.sub("", text)  # 变体兜底剥离
     mm = MEMO_ANY_RE.search(text)
     memo = None
     if mm:
@@ -1855,7 +1892,7 @@ def parse_reply(text):
     text = STICKER_RE.sub("", text)
     text = _STICKER_LEAK_RE.sub("", text)  # 未解析变体兜底剥离，绝不泄漏给用户
     parts = [p.strip() for p in SPLIT_RE.split(text) if p.strip()]
-    return parts[:4], sticker_ids[:2], memo
+    return parts[:4], sticker_ids[:2], memo, draw
 
 
 def _norm_dup(s):
@@ -2137,7 +2174,7 @@ def _proactive_tick(daemon):
     try:
         msgs, active = _proactive_compose(daemon, chat_type, chat_id)
         _model, reply = call_glm_with_fallback(msgs, "")
-        texts, stickers, _memo = parse_reply(reply)
+        texts, stickers, _memo, _draw = parse_reply(reply)
         if texts is None:
             out("AGENT_PROACTIVE_SKIP chat=%s/%s (模型判断不合适)" % (chat_type, chat_id))
             return
@@ -3157,13 +3194,17 @@ def process(daemon, msg):
                 % (qm.group(1) or 10, msg["chat_type"], msg["chat_id"]))
         except Exception as e:
             out("AGENT_QUIET_SELF_FAIL %r" % e)
-    texts, stickers, memo = parse_reply(reply)
+    texts, stickers, memo, draw = parse_reply(reply)
     if texts == "WAIT":
         daemon.ack([msg["id"]])
         RT.count_processed()
         out("AGENT_WAIT msg_id=%s chat=%s/%s (对方话没说完，先等)"
             % (msg["id"], msg["chat_type"], msg["chat_id"]))
         return
+    # [画: 描述] 标记补触发（模型听懂了画图意图而正则没拦到时）
+    if draw and is_owner(msg) and feature_enabled("draw_enabled"):
+        out("AGENT_DRAW_MARK msg_id=%s desc=%.40s" % (msg["id"], draw))
+        _draw_execute(daemon, msg, draw)
     # 硬频控：同会话 3 分钟内已发过表情则丢弃本次（防高频）
     now_t = time.time()
     last_t = _sticker_rate.get("%s_%s" % (msg["chat_type"], msg["chat_id"]), 0)
