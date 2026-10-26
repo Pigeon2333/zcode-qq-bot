@@ -1555,29 +1555,6 @@ class UiHandler(BaseHTTPRequestHandler):
             modes = {str(k): v for k, v in data.items() if isinstance(v, dict)} \
                 if isinstance(data, dict) else {}
             return self._reply(200, {"ok": True, "modes": modes})
-        if u.path == "/api/pick-dir":
-            def _pick():
-                try:
-                    import tkinter as tk
-                    from tkinter import filedialog
-                    root = tk.Tk()
-                    root.withdraw()
-                    root.attributes("-topmost", True)
-                    d = filedialog.askdirectory(title="选择备份目录")
-                    root.destroy()
-                    return d or ""
-                except Exception:
-                    return ""
-            import threading as _th
-            box = {}
-            t = _th.Thread(target=lambda: box.update(d=_pick()), daemon=True)
-            t.start()
-            t.join(timeout=120)
-            return self._reply(200, {"ok": True, "dir": box.get("d", "")})
-        if u.path == "/api/backup-now":
-            import qq_bot_agent as _A
-            _A._backup_data()
-            return self._reply(200, {"ok": True})
         if u.path == "/api/keys":
             data = load_json_const(KEYS_PATH, {})
             keys = data.get("keys") if isinstance(data.get("keys"), list) else []
@@ -1866,6 +1843,29 @@ class UiHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         u = urllib.parse.urlsplit(self.path)
         body = self._body()
+        if u.path == "/api/pick-dir":
+            def _pick():
+                try:
+                    import tkinter as tk
+                    from tkinter import filedialog
+                    root = tk.Tk()
+                    root.withdraw()
+                    root.attributes("-topmost", True)
+                    d = filedialog.askdirectory(title="选择备份目录")
+                    root.destroy()
+                    return d or ""
+                except Exception:
+                    return ""
+            import threading as _th
+            box = {}
+            t = _th.Thread(target=lambda: box.update(d=_pick()), daemon=True)
+            t.start()
+            t.join(timeout=120)
+            return self._reply(200, {"ok": True, "dir": box.get("d", "")})
+        if u.path == "/api/backup-now":
+            import qq_bot_agent as _A
+            _A._backup_data()
+            return self._reply(200, {"ok": True})
         if u.path == "/api/config":
             cfg = load_json_const(MODEL_CHAIN_PATH, {})
             if "models" in body:
