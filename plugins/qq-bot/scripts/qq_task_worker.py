@@ -186,6 +186,10 @@ def main():
             print("GLM HTTP %d：%s" % (
                 status, str(data.get("error", {}).get("message", ""))[:120]))
             sys.exit(2)
+        try:
+            A.log_usage(model, data.get("usage") or {}, "task")
+        except Exception:
+            pass  # 统计失败不影响任务
         reply = (data["choices"][0]["message"]["content"] or "").strip()
         messages.append({"role": "assistant", "content": reply})
         first = reply.split("\n", 1)[0].strip()

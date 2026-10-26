@@ -13,7 +13,7 @@
       "description_i18n": {
         "zh-CN": "QQ 群聊 AI 机器人：人设、群友风格模仿、长期记忆、联网、看图、表情包管理"
       },
-      "icon": "icon.png"
+      "icon": "file:///D:/ZCode/workspaces/qq-bot/plugins/qq-bot/icon.png"
     }
   ]
 }
