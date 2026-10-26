@@ -183,12 +183,16 @@ _RE_RESET_AT = re.compile(r"(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2}:\d{2})")
 
 def _cooldown_sec(detail):
     """按平台错误信息分级冷却：套餐失效=30min（短期不会好）；平台过载=45s（稍后即恢复）；
+    活动额度用尽（如 StartPlan 今日余额耗尽/过期）=6h（当日不再空探，次日自愈）；
     限额窗口=冷却到提示的重置时刻（上限6h）；其他=默认5min。"""
     d = detail or ""
     if "套餐" in d and "失效" in d:
         return 1800
     if "访问量过大" in d or "稍后再试" in d:
         return 45
+    if "额度已用完" in d or "余额不足" in d or "已用尽" in d or "今日余额" in d \
+            or ("用完" in d and "额度" in d):
+        return 21600
     m = _RE_RESET_AT.search(d)
     if m and ("上限" in d or "重置" in d or "限额" in d):
         try:
