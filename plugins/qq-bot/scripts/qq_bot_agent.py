@@ -828,6 +828,7 @@ OWNER_HELP = (
     "开启/关闭 看图|联网搜索|防滥用\n"
     "安静 [分钟]（默认10：群里不再主动说话，@和回复我仍会答）| 继续\n"
     "暂停 | 恢复（完全停回复，运维用）| 日志 [条数]\n"
+    "转交ZCode <任务>（把任务投递到电脑上 ZCode 的收件箱，打开 ZCode 即可接手）\n"
     "帮助\n"
     "画图：私聊或群里@我，发「画：描述」或自然说法（帮我画一张/来一张…）即可。\n"
     "另外：私聊或群里 @我 发任务型内容（如\"任务：写个脚本…\"或整段题目），"
@@ -835,6 +836,41 @@ OWNER_HELP = (
 
 
 _QUIET_WORDS_RE = re.compile(r"(安静|歇一会|歇一会儿|歇会儿|闭嘴|别说了|别说话|沉默|少说话)")
+
+
+def _zcode_bridge_dir():
+    """转交 ZCode 任务的收件箱目录：优先 ZCode 工作区（可被发现），回落数据目录。"""
+    cfg = C.load_app_config()
+    tw = str(cfg.get("task_workspace") or "").strip()
+    if tw:
+        return os.path.join(tw, "zcode-tasks")
+    for cand in (r"D:\ZCode\workspaces\qq-bot", r"C:\ZCode\workspaces\qq-bot"):
+        if os.path.isdir(cand):
+            return os.path.join(cand, "zcode-tasks")
+    return os.path.join(DATA_DIR, "tasks", "zcode-tasks")
+
+
+def _zcode_handoff(task_text, msg):
+    """把任务写入 ZCode 收件箱（Markdown），返回给主人的回复文本。"""
+    if not C.zcode_installed():
+        return "这台电脑上没检测到 ZCode，转交不了～先装 ZCode（并在设置里开启「ZCode 联动」）再试试吧"
+    if not C.load_app_config().get("zcode_bridge_enabled"):
+        return "「ZCode 联动」还没开启：到电脑控制台 → 设置 → 主人专属功能里打开它就能用了"
+    d = _zcode_bridge_dir()
+    fp = os.path.join(d, time.strftime("%Y%m%d-%H%M%S") + ".md")
+    try:
+        pathlib.Path(d).mkdir(parents=True, exist_ok=True)
+        body = ("# 转交任务（来自 QQ 主人）\n\n"
+                "- 时间：%s\n- 来源：主人私聊转交\n\n## 任务\n%s\n"
+                % (C.tz_now_info()["iso"], str(task_text).strip()[:2000]))
+        pathlib.Path(fp).write_text(body, encoding="utf-8")
+        out("AGENT_ZCODE_HANDOFF %s" % fp)
+        return ("收到！任务已经放进 ZCode 收件箱（%s）。\n"
+                "下次打开 ZCode 用 /qq-bot 就能看到并接手；做完把结果发我，"
+                "我转告给你～" % os.path.basename(fp))
+    except OSError as e:
+        out("AGENT_ZCODE_HANDOFF_FAIL %r" % e)
+        return "转交时写文件失败了（%r），稍后再试？" % e
 
 
 def owner_command(msg, daemon=None):
@@ -845,6 +881,10 @@ def owner_command(msg, daemon=None):
         return False, ""
     if _re.fullmatch(r"(帮助|指令|help|菜单)", t, _re.I):
         return True, OWNER_HELP
+    # 转交任务到 ZCode 收件箱
+    hz = _re.match(r"^转交\s*[Zz][Cc]ode\s*[:：]?\s*(.{4,2000})$", t, _re.S)
+    if hz:
+        return True, _zcode_handoff(hz.group(1), msg)
     # 定时代码任务管理
     mc = _re.match(r"^定时\s+(\d{1,2}:\d{2})\s+(.{4,300})$", t)
     if mc:

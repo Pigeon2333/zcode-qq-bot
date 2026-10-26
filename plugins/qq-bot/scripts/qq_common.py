@@ -57,6 +57,7 @@ DEFAULT_CONFIG = {
     "owner_name_enabled": False,   # 固定主人称呼（开=覆盖人设里对主人的叫法）
     "owner_name_value": "主人",
     "api_proxy": "",               # API 出站代理（http://host:port；供 OpenAI/Grok/Gemini 等境外供应商用）
+    "zcode_bridge_enabled": False, # ZCode 联动（转交任务到 ZCode 工作区；需本机安装 ZCode）
 }
 
 # 备份/恢复统一文件清单（basename 冲突无；子目录文件扁平存放）
@@ -120,6 +121,19 @@ def provider_endpoint(provider, base_url=""):
     if b:
         return b.rstrip("/"), "/chat/completions"
     return API_PROVIDERS["zhipu"]["base"], API_PROVIDERS["zhipu"]["path"]
+
+
+def zcode_installed():
+    """检测本机是否安装 ZCode（多标记任一命中即认为已安装）。"""
+    try:
+        markers = [
+            os.path.join(os.path.expanduser("~"), ".zcode"),
+            r"D:\Program Files\ZCode\resources",
+            r"C:\Program Files\ZCode\resources",
+        ]
+        return any(os.path.isdir(m) for m in markers)
+    except OSError:
+        return False
 
 
 def detect_qqnt_dir():

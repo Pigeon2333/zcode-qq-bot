@@ -1229,6 +1229,13 @@ async function vSettings(){
    <span><b>AI 生图</b><div class="k" style="margin-top:3px">主人发「画：描述」或自然说法（帮我画一张/给我画个/来一张…，私聊或群里@）→ CogView-3-flash 免费生成并发图</div></span></label>
   <label class="master"><input type="checkbox" ${rv.daily_review_enabled!==false?'checked':''} onchange="saveFeature('daily_review_enabled',this.checked)">
    <span><b>夜间自动复盘</b><div class="k" style="margin-top:3px">每日 03:30 自动统计当日表现、提炼风格观察、日报发主人私聊</div></span></label>
+  <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
+   <div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:6px">ZCode 联动
+    <span class="badge ${c.zcode_installed?'b-ok':''}" style="${c.zcode_installed?'':'background:var(--tint);color:var(--dim)'}">${c.zcode_installed?'已检测到 ZCode':'未检测到 ZCode'}</span></div>
+   <label class="master" style="${c.zcode_installed?'':'opacity:.5'}">
+    <input type="checkbox" ${c.zcode_bridge_enabled&&c.zcode_installed?'checked':''} ${c.zcode_installed?'':'disabled'} onchange="saveKVLoad('/api/app-config',{zcode_bridge_enabled:this.checked?1:0},this.checked?'ZCode 联动已开启':'ZCode 联动已关闭')">
+    <span><b>转交任务到 ZCode</b><div class="k" style="margin-top:3px">开启后，你私聊机器人发「转交ZCode：<任务>」，任务会写进 ZCode 工作区的收件箱（zcode-tasks/），打开 ZCode 用 /qq-bot 技能即可查看并接手，做完把结果带回给机器人转发给你；沙盒执行失败的任务也会进入同一收件箱等 ZCode 接力${c.zcode_installed?'':'。需要先在本机安装 ZCode（检测路径：~/.zcode 或 Program Files\\ZCode），安装后刷新本页即可启用'}</div></span></label>
+  </div>
  </div>
  <div class="card"><div class="k">开机自启（登录 Windows 后自动打开控制台窗口${c.autostart_with_windows?'，已开启':'，未开启'}）</div>
   <div style="margin-top:8px"><label><input type="checkbox" id="sauto" ${c.autostart_with_windows||S_autostartRegistry()?'checked':''} onchange="saveAuto(this.checked)"> 开机自动启动本应用</label></div></div>
@@ -2111,6 +2118,7 @@ class UiHandler(BaseHTTPRequestHandler):
             cfg = C.load_app_config()
             cfg["detected_qqnt"] = C.detect_qqnt_dir()
             cfg["autostart_with_windows"] = S.autostart_enabled()
+            cfg["zcode_installed"] = C.zcode_installed()
             return self._reply(200, {"ok": True, **cfg})
         if u.path == "/api/apikey-status":
             key = read_const(API_KEY_PATH)
@@ -2779,7 +2787,7 @@ class UiHandler(BaseHTTPRequestHandler):
                     v = str(cfg_in[k]).strip()
                     cleaned[k] = v if len(v) == 5 and v[2] == ":" and v[:2].isdigit() and v[3:].isdigit() else ""
             for k in ("backup_enabled", "sched_pause_enabled", "watchdog_enabled",
-                      "qq_status_auto"):
+                      "qq_status_auto", "zcode_bridge_enabled"):
                 if k in cfg_in:
                     cleaned[k] = bool(cfg_in[k])
             if "backup_dir" in cfg_in:

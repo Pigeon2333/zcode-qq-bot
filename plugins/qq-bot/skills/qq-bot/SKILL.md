@@ -103,3 +103,17 @@ NapCat Shell 文件内嵌释放与 QQ 版本校验 + 日志轮转 + UI 鉴权。
 2. POST 到 daemon :39763 `/test/inject`，Header `X-QQBot-Token: <token>`
 3. 等 5s 后查 agent.log 的 AGENT_DONE/AGENT_SKIP/AGENT_GATE_SKIP 看反应
 4. 适合验证：人设修改效果、防插嘴判定、记忆标记格式
+
+## ZCode 任务收件箱（zcode-tasks/）
+
+主人在 QQ 里发「转交ZCode：<任务>」会把任务投递到收件箱（默认
+`D:\ZCode\workspaces\qq-bot\zcode-tasks\`，或 task_workspace/zcode-tasks），
+每个任务一个 `YYYYMMDD-HHMMSS.md` 文件。沙盒失败任务仍走 PENDING.md。
+
+收件箱处理流程：
+1. 列出 zcode-tasks/ 下未处理文件，向用户汇报待办任务清单
+2. 用户选择接手 → 按文件内的任务描述在 ZCode 中完成
+3. 完成后把结果摘要回复用户，并可选：POST daemon :39763 `/send`
+   （body: chat_type=private, chat_id=3349525227, texts=[结果]，
+   Header X-QQBot-Token）把结果转发到主人 QQ
+4. 已处理文件删除或加 `.done` 后缀归档，避免重复处理

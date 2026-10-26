@@ -8,3 +8,6 @@ __pycache__/
 
 # 运行时产物（正常情况下都在 ~/.zcode-qq-bot/，此处兜底）
 *.log
+
+# ZCode 联动任务收件箱（运行时产物）
+zcode-tasks/
