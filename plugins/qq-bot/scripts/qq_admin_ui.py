@@ -537,10 +537,12 @@ async function toggleDevCtrl(on){
  load()}
 
 async function vDevCtrl(){
- const [c,code]=await Promise.all([
+ const [c,code,fl]=await Promise.all([
   api('/api/app-config').catch(()=>({})),
   api('/api/devctrl-code').catch(()=>({code:'',expires_in:0})),
+  api('/api/devctrl-flow').catch(()=>({flow:{}})),
  ]);
+ window._flow=(fl.flow||{});
  const on=!!c.device_ctrl_enabled;
  window._pdDirs=(c.device_ctrl_protected_dirs||[]).slice();
  $('#view').innerHTML=head('设备操控（高危功能：让机器人搜索/读取/发送你电脑上的文件）')+saveHint('仅限主人 QQ · 结果只发私聊 · 保护目录不可触达 · 授权码一次一换')+
@@ -575,9 +577,44 @@ async function vDevCtrl(){
    <button class="act" style="margin:0" onclick="saveDevDirs()">保存保护目录</button>
   </div>
   <div class="k" style="margin-top:6px">系统目录自动保护：Windows / Program Files / ProgramData / AppData（不可移除）</div>
+ </div>
+ <div class="card"><div class="k" style="margin-bottom:8px">授权流程自定义</div>
+  <div class="k" style="margin-bottom:6px">触发方式</div>
+  <label style="display:block;margin:4px 0"><input type="radio" name="fltmode" value="auto" ${(window._flow.trigger_mode||'auto')==='auto'?'checked':''}> 自主判断（默认）<span class="k">：机器人自己判断当前对话是否在要求操作本机文件（关键词+意图规则，拿不准时用一次极小模型判定）</span></label>
+  <label style="display:block;margin:4px 0"><input type="radio" name="fltmode" value="keyword" ${window._flow.trigger_mode==='keyword'?'checked':''}> 仅关键词触发<span class="k">：只有消息包含下列关键词才发起授权</span></label>
+  <div style="margin-top:8px"><div class="k" style="margin-bottom:4px">触发关键词（逗号分隔；两种模式下都会先匹配）</div>
+  <input id="flkw" value="${esc((window._flow.keywords||[]).join(', '))}" style="width:100%"></div>
+  <div style="margin-top:10px"><div class="k" style="margin-bottom:4px">申请授权码文本（可用占位符 {owner} 主人昵称 / {bot} 机器人自称）</div>
+  <textarea id="flask" style="min-height:80px">${esc(window._flow.ask_text||'')}</textarea></div>
+  <div style="margin-top:10px"><div class="k" style="margin-bottom:4px">验证成功文本（占位符 {owner} {bot} {mins} 授权分钟数）</div>
+  <textarea id="flok" style="min-height:80px">${esc(window._flow.ok_text||'')}</textarea></div>
+  <div style="margin-top:10px"><div class="k" style="margin-bottom:4px">验证失败文本（占位符 {owner}）</div>
+  <input id="flfail" value="${esc(window._flow.fail_text||'')}" style="width:100%"></div>
+  <div style="margin-top:10px"><div class="k" style="margin-bottom:4px">授权码过期文本 / 任务完成文本（占位符 {left} 剩余秒数）</div>
+  <textarea id="flexp" style="min-height:60px">${esc(window._flow.expired_text||'')}</textarea>
+  <input id="fldone" value="${esc(window._flow.done_text||'')}" style="width:100%;margin-top:6px"></div>
+  <div style="margin-top:10px"><label>授权窗口 <input id="flwin" type="number" min="30" max="3600" value="${window._flow.auth_window_sec||120}" style="width:80px"> 秒</label></div>
+  <div style="margin-top:12px;display:flex;gap:8px"><button class="act" onclick="saveFlow()">保存流程设置</button>
+  <button class="act ghost" onclick="resetFlow()">恢复默认</button></div>
  </div>`;
  renderPdList();
 }
+async function saveFlow(){
+ const mode=(document.querySelector('input[name=fltmode]:checked')||{}).value||'auto';
+ const body={trigger_mode:mode,
+  keywords:document.getElementById('flkw').value,
+  ask_text:document.getElementById('flask').value,
+  ok_text:document.getElementById('flok').value,
+  fail_text:document.getElementById('flfail').value,
+  expired_text:document.getElementById('flexp').value,
+  done_text:document.getElementById('fldone').value,
+  auth_window_sec:parseInt(document.getElementById('flwin').value)||120};
+ const r=await saveKV('/api/devctrl-flow',body,'授权流程已保存（即时生效）');
+ if(r.ok!==false)load()}
+async function resetFlow(){
+ if(!await dlgConfirm({title:'恢复默认流程',body:'把所有触发方式与文案恢复为默认值？',okText:'恢复默认',danger:true}))return;
+ const r=await saveKV('/api/devctrl-flow',{reset:true},'已恢复默认流程');
+ if(r.ok!==false)load()}
 function renderPdList(){
  const box=document.getElementById('pdlist');if(!box)return;
  const dirs=window._pdDirs||[];
@@ -1664,6 +1701,10 @@ class UiHandler(BaseHTTPRequestHandler):
             t.start()
             t.join(timeout=120)
             return self._reply(200, {"ok": True, "dir": box.get("d", "")})
+        if u.path == "/api/devctrl-flow":
+            import qq_bot_agent as _A
+            return self._reply(200, {"ok": True, "flow": _A.devctrl_flow(),
+                                     "defaults": _A._DEFAULT_FLOW})
         if u.path == "/api/devctrl-code":
             # 控制台常显授权码：确保当前有一个有效码（无则生成）
             import qq_bot_agent as _A
@@ -2298,6 +2339,36 @@ class UiHandler(BaseHTTPRequestHandler):
             write_const(KEYS_PATH, json.dumps(
                 {"keys": keys, "primary": primary}, ensure_ascii=False, indent=2))
             return self._reply(200, {"ok": True})
+        if u.path == "/api/devctrl-flow":
+            import qq_bot_agent as _A
+            patch = {}
+            if body.get("reset"):
+                patch = dict(_A._DEFAULT_FLOW)
+            else:
+                if "trigger_mode" in body:
+                    if body["trigger_mode"] not in ("auto", "keyword"):
+                        return self._reply(400, {"ok": False, "error": "触发方式非法"})
+                    patch["trigger_mode"] = body["trigger_mode"]
+                if "keywords" in body:
+                    kw = body["keywords"]
+                    if isinstance(kw, str):
+                        kw = [x.strip() for x in kw.replace("，", ",").split(",") if x.strip()]
+                    if not isinstance(kw, list) or len(kw) > 20:
+                        return self._reply(400, {"ok": False, "error": "关键词列表非法"})
+                    patch["keywords"] = [str(x).strip()[:20] for x in kw if str(x).strip()]
+                for f in ("ask_text", "ok_text", "fail_text", "expired_text", "done_text"):
+                    if f in body:
+                        v = str(body[f])
+                        if len(v) > 1000:
+                            return self._reply(400, {"ok": False, "error": "%s 过长（<=1000字）" % f})
+                        patch[f] = v
+                if "auth_window_sec" in body:
+                    try:
+                        patch["auth_window_sec"] = max(30, min(3600, int(body["auth_window_sec"])))
+                    except (TypeError, ValueError):
+                        return self._reply(400, {"ok": False, "error": "授权窗口应为 30-3600 秒"})
+            saved = _A.save_devctrl_flow(patch)
+            return self._reply(200, {"ok": True, "flow": saved})
         if u.path == "/api/memory/clear":
             write_const(MEMORY_STREAM_PATH, "")
             return self._reply(200, {"ok": True})

@@ -2010,6 +2010,101 @@ def _devctrl_intent(text):
     return has_dev and has_act
 
 
+# ---------------- 设备操控：可编辑的授权流程（触发方式 + 文案） ----------------
+
+DEVCTRL_FLOW_PATH = os.path.join(DATA_DIR, "device_ctrl_flow.json")
+
+_DEFAULT_FLOW = {
+    "trigger_mode": "auto",   # auto=自主判断 | keyword=仅关键词
+    "keywords": ["设备操控", "设备", "连线"],
+    "ask_text": ("协议一：连线主人\n神经连线中…请输入授权码\n\n"
+                 "（在电脑控制台「设备操控」页查看 6 位授权码，直接发送数字即可）"),
+    "ok_text": ("连线成功。{owner}，你现在确认为「{bot}」的主人\n\n"
+                "协议二：执行任务\n{mins} 分钟内直接发命令：\n"
+                "找文件 <名称> / 读文件 <路径> / 发文件 <路径>"),
+    "fail_text": "{owner}，授权码有误，请重新尝试",
+    "expired_text": ("协议一：连线主人\n授权码已过期。"
+                     "请在电脑控制台「设备操控」页查看当前码"),
+    "done_text": "协议二：任务完成\n（授权窗口剩余 {left} 秒）",
+    "auth_window_sec": 120,
+}
+
+
+def devctrl_flow():
+    """读设备操控流程配置（缺字段回落默认）。"""
+    data = load_json_const(DEVCTRL_FLOW_PATH, {})
+    flow = dict(_DEFAULT_FLOW)
+    if isinstance(data, dict):
+        for k in _DEFAULT_FLOW:
+            if k in data:
+                flow[k] = data[k]
+    if not isinstance(flow.get("keywords"), list):
+        flow["keywords"] = list(_DEFAULT_FLOW["keywords"])
+    try:
+        flow["auth_window_sec"] = max(30, min(3600, int(flow.get("auth_window_sec", 120))))
+    except (TypeError, ValueError):
+        flow["auth_window_sec"] = 120
+    return flow
+
+
+def save_devctrl_flow(patch):
+    """合并保存流程配置（仅接受已知字段）。"""
+    cur = devctrl_flow()
+    for k in _DEFAULT_FLOW:
+        if k in patch:
+            cur[k] = patch[k]
+    write_const(DEVCTRL_FLOW_PATH,
+                json.dumps(cur, ensure_ascii=False, indent=2))
+    return cur
+
+
+def _render_flow(tmpl, owner="", bot="", code="", mins=0, left=0):
+    """填充流程文案占位符（用 replace 而非 format，容忍用户文本里的花括号）。"""
+    t = str(tmpl or "")
+    for k, v in (("{owner}", owner), ("{bot}", bot), ("{code}", code),
+                 ("{mins}", str(mins)), ("{left}", str(left))):
+        t = t.replace(k, v)
+    return t
+
+
+def _devctrl_keyword_hit(text, flow):
+    t = str(text or "")
+    return any(str(k).strip() and str(k).strip() in t
+               for k in flow.get("keywords") or [])
+
+
+def _devctrl_llm_judge(text):
+    """自主判断补强：本地规则没命中时，用小模型判断是否在要求操作本机文件。
+    仅在主人私聊消息里出现文件类字眼时才会走到这里，调用成本极低。"""
+    try:
+        reply = call_glm_with_fallback(
+            [{"role": "system",
+              "content": "判断用户这句话是否在要求「操作本机电脑上的文件/文档」"
+                         "（找文件、读文件、发送电脑上的文件等）。"
+                         "只是聊天提到文件、问格式、讨论概念都不算。只回 Y 或 N。"},
+             {"role": "user", "content": str(text)[:200]}], "")
+        ans = str(reply[1] if isinstance(reply, tuple) else reply).strip().upper()[:3]
+        out("AGENT_DEVCTRL_JUDGE ans=%s text=%.30s" % (ans, str(text)[:30]))
+        return "Y" in ans
+    except Exception as e:
+        out("AGENT_DEVCTRL_JUDGE_FAIL %r" % e)
+        return False
+
+
+def _devctrl_should_ask(text, mode, flow):
+    """是否需要发起授权（协议一）。mode: auto | keyword。"""
+    if mode == "keyword":
+        return _devctrl_keyword_hit(text, flow)
+    # auto：关键词或本地意图规则命中即触发；否则若疑似文件诉求再让模型判定
+    if _devctrl_keyword_hit(text, flow) or _devctrl_intent(text):
+        return True
+    t = str(text or "")
+    if len(t) <= 60 and any(w in t for w in
+                            ("文件", "文档", "资料", "图片", "照片", "电脑", "本机", "硬盘")):
+        return _devctrl_llm_judge(t)
+    return False
+
+
 def _bot_self_name():
     """机器人自称：当前激活人设名（跟随人设切换）；无人设时回退 智谱娘。"""
     try:
@@ -2028,64 +2123,54 @@ def _device_ctrl_enabled():
 
 
 def _handle_devctrl(daemon, msg):
-    """设备操控入口：主人发「设备 授权码|命令」执行本机文件搜索/读取。
-    开关关闭→不响应；2FA 开启时必须携带当次有效授权码。"""
+    """设备操控入口：授权码验证 + 命令执行（文案与触发方式可配置）。"""
     if not _device_ctrl_enabled() or not is_owner(msg):
         return False
     text = str(msg.get("text") or "").strip()
     import re as _re
-    # 主人直接发 6 位数字 → 也可能是授权码（上一步机器人要了码）
-    m_code = _re.fullmatch(r"\d{6}", text)
-    if m_code and cfg_2fa_on():
-        # 校验码
+    flow = devctrl_flow()
+    owner_nick = str(msg.get("sender_name") or owner_qq() or "主人")
+    bot_name = _bot_self_name()
+    win = int(flow.get("auth_window_sec", 120))
+
+    def _send(tmpl, **kw):
+        daemon.send(msg["chat_type"], msg["chat_id"],
+                    [_render_flow(tmpl, owner=owner_nick, bot=bot_name, **kw)])
+
+    # 主人直接发 6 位数字 → 授权码验证
+    if _re.fullmatch(r"\d{6}", text) and cfg_2fa_on():
         if not _DEVCTRL_CODE["code"] or time.time() > _DEVCTRL_CODE["expires"]:
-            daemon.send(msg["chat_type"], msg["chat_id"],
-                        ["协议一：连线主人" + chr(10) + "授权码已过期。请在电脑控制台「设备操控」页查看当前码"])
+            _send(flow["expired_text"])
             return True
         if text != _DEVCTRL_CODE["code"]:
-            daemon.send(msg["chat_type"], msg["chat_id"],
-                        [str(msg.get("sender_name") or "主人") + "，授权码有误，请重新尝试"])
+            _send(flow["fail_text"])
             return True
         _DEVCTRL_CODE["code"] = C.gen_auth_code()
         _DEVCTRL_CODE["expires"] = time.time() + 300
-        _DEVCTRL_AUTH["ok_until"] = time.time() + 120  # 2 分钟内可执行命令
-        owner_nick = str(msg.get("sender_name") or owner_qq() or "主人")
-        daemon.send(msg["chat_type"], msg["chat_id"],
-                    ["连线成功。" + owner_nick + "，你现在确认为「" + _bot_self_name() + "」的主人"
-                     + chr(10) + chr(10) +
-                     "协议二：执行任务" + chr(10) +
-                     "2 分钟内直接发命令：" + chr(10) +
-                     "找文件 <名称> / 读文件 <路径> / 发文件 <路径>"])
+        _DEVCTRL_AUTH["ok_until"] = time.time() + win
+        _send(flow["ok_text"], mins=win // 60 or 1)
+        out("AGENT_DEVCTRL_LINKED window=%ds" % win)
         return True
-    # 已授权窗口内：直接执行命令（不带码）
+    # 已授权窗口内：直接执行命令
     if _DEVCTRL_AUTH["ok_until"] > time.time():
-        cmd = text
-        # 构造 reply_to
         reply_to = ("private", str(msg.get("sender_id") or owner_qq()))
-        _devctrl_exec(daemon, msg, cmd, reply_to)
+        _devctrl_exec(daemon, msg, text, reply_to)
         return True
     m = _re.match(r"^设备\s+(\d{6})\s*[|｜]\s*(.+)$", text, _re.S)
     if not m:
-        # 请求授权码（意图触发：设备操控关键词，或 设备词+动作词）
-        if _devctrl_intent(text):
-            nl2 = chr(10)
-            daemon.send(msg["chat_type"], msg["chat_id"],
-                        ["协议一：连线主人" + nl2 +
-                         "神经连线中…请输入授权码" + nl2 + nl2 +
-                         "（在电脑控制台「设备操控」页查看 6 位授权码，直接发送数字即可）"])
+        # 触发判定（关键词 / 自主判断）→ 发协议一索码
+        if _devctrl_should_ask(text, str(flow.get("trigger_mode") or "auto"), flow):
+            _send(flow["ask_text"])
             return True
+        return False
     code, cmd = m.group(1), m.group(2).strip()
-    cfg = C.load_app_config()
-    if cfg.get("device_ctrl_2fa", True):
+    if cfg_2fa_on():
         if not _DEVCTRL_CODE["code"] or time.time() > _DEVCTRL_CODE["expires"]:
-            daemon.send(msg["chat_type"], msg["chat_id"],
-                        ["协议一：连线主人" + chr(10) + "授权码已过期。请在电脑控制台「设备操控」页查看当前码"])
+            _send(flow["expired_text"])
             return True
         if code != _DEVCTRL_CODE["code"]:
-            daemon.send(msg["chat_type"], msg["chat_id"],
-                        [str(msg.get("sender_name") or "主人") + "，授权码有误，请重新尝试"])
+            _send(flow["fail_text"])
             return True
-        # 一次性作废 + 立即换新码（防二次利用）
         _DEVCTRL_CODE["code"] = C.gen_auth_code()
         _DEVCTRL_CODE["expires"] = time.time() + 300
     # 强制私聊返回结果（隐私不出群）
@@ -2122,8 +2207,9 @@ def _handle_devctrl(daemon, msg):
                     ["不支持的命令。可用：找文件 <名称> / 读文件 <路径> / 发文件 <路径>"])
     out("AGENT_DEVCTRL cmd=%.30s" % cmd)
     left = int(_DEVCTRL_AUTH["ok_until"] - time.time())
+    flow = devctrl_flow()
     daemon.send(reply_to[0], reply_to[1],
-                ["协议二：任务完成" + chr(10) + "（授权窗口剩余 " + str(left) + " 秒）"])
+                [_render_flow(flow["done_text"], owner=owner_qq(), left=left)])
     return True
 
 
