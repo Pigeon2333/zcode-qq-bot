@@ -2151,11 +2151,13 @@ def _handle_devctrl(daemon, msg):
         _send(flow["ok_text"], mins=win // 60 or 1)
         out("AGENT_DEVCTRL_LINKED window=%ds" % win)
         return True
-    # 已授权窗口内：直接执行命令
+    # 已授权窗口内：只拦截真正的设备命令，其余消息照常走聊天（也不再重复索码）
     if _DEVCTRL_AUTH["ok_until"] > time.time():
-        reply_to = ("private", str(msg.get("sender_id") or owner_qq()))
-        _devctrl_exec(daemon, msg, text, reply_to)
-        return True
+        if _re.match(r"^(找文件|读文件|发文件)\s+", text):
+            reply_to = ("private", str(msg.get("sender_id") or owner_qq()))
+            _devctrl_exec(daemon, msg, text, reply_to)
+            return True
+        return False
     m = _re.match(r"^设备\s+(\d{6})\s*[|｜]\s*(.+)$", text, _re.S)
     if not m:
         # 触发判定（关键词 / 自主判断）→ 发协议一索码
