@@ -1417,6 +1417,7 @@ def build_messages(daemon, msg, ctx_k=32):
     hist_block = "\n".join(hist_lines[-n_hist:]) if hist_lines else "（暂无）"
 
     rt = msg.get("reply_to") or None
+    rt_text = str(msg.get("reply_text") or "").strip()
     if msg["chat_type"] == "group":
         speaker = "%s(QQ:%s)" % (msg["sender_name"], msg["sender_id"])
         if msg.get("at_me"):
@@ -1428,11 +1429,14 @@ def build_messages(daemon, msg, ctx_k=32):
             lead = "%s（@的是QQ:%s，不是你）说：" % (speaker, msg["at_users"][0])
         else:
             lead = "%s 说：" % speaker
-        content = "【群 %s | 最近对话】\n%s\n\n【现在】%s%s" % (
-            msg["chat_name"], hist_block, lead, msg["text"] or "（发了一张图/表情）")
+        content = "【群 %s | 最近对话】\n%s\n\n【现在】%s%s%s" % (
+            msg["chat_name"], hist_block, lead,
+            msg["text"] or "（发了一张图/表情）",
+            ("\n【被引用的原文】" + rt_text) if rt_text else "")
     else:
-        content = "【私聊 | 最近对话】\n%s\n\n【现在】对方(QQ:%s)对你说：%s" % (
-            hist_block, msg["sender_id"], msg["text"] or "（发了一张图/表情）")
+        content = "【私聊 | 最近对话】\n%s\n\n【现在】对方(QQ:%s)对你说：%s%s" % (
+            hist_block, msg["sender_id"], msg["text"] or "（发了一张图/表情）",
+            ("\n【被引用的原文】" + rt_text) if rt_text else "")
 
     guard_on = abuse_guard_enabled()
     head_line = "你是QQ群里的AI机器人。"
@@ -1467,8 +1471,13 @@ def build_messages(daemon, msg, ctx_k=32):
             "没有自动触发，简短引导对方用「画：描述」格式重发——"
             "绝对不要说自己不会画画/没有画图功能；群员要求画画时，"
             "以人设口吻说明画图只对主人开放\n")
+    _tinfo = C.tz_now_info()
+    _time_line = ("【当前真实时间：%s %s %s（24小时制 %s，时区 %s）】"
+                  "请注意区分上午/下午/凌晨，不要搞错时间。"
+                  % (_tinfo["iso"], _tinfo["weekday"], _tinfo["clock12"],
+                     _tinfo["clock24"], _tinfo["tz"]))
     system = (
-        head_line + "\n\n%s%s%s%s%s%s%s\n\n"
+        head_line + "\n" + _time_line + "\n\n%s%s%s%s%s%s%s\n\n"
         "## 硬性规则\n"
         "- 输出是QQ聊天文本：禁止Markdown（# * ` [链接]()），口语化\n"
         "- 绝对禁止任何脏话、粗口、侮辱性词汇（\"我操/卧槽/他妈的\"等，任何语境、"
@@ -1686,9 +1695,8 @@ def _proactive_compose(daemon, chat_type, chat_id):
                          else ("contact", chat_id))
     mems = memory_snippets(mem_scope, mem_id)
     mem_block = ("\n\n## 长期记忆\n" + "\n".join(mems[-8:])) if mems else ""
-    lt = time.localtime()
-    tstr = "%d-%02d-%02d 周%d %02d:%02d" % (lt.tm_year, lt.tm_mon, lt.tm_mday,
-                                            lt.tm_wday + 1, lt.tm_hour, lt.tm_min)
+    _ti = C.tz_now_info()
+    tstr = "%s %s %s（%s）" % (_ti["iso"], _ti["weekday"], _ti["clock12"], _ti["clock24"])
     hist = daemon.history(chat_type, chat_id, limit=14)
     lines = ["%s(QQ:%s): %s" % ("你" if h.get("is_bot") else str(h.get("sender_name", "?")),
                                 h.get("sender_id", "?"), str(h.get("text", ""))[:100])

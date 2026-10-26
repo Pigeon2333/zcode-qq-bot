@@ -831,6 +831,9 @@ async function vSettings(){
    <label>daemon <input id="pdae" type="number" value="${c.daemon_port}" style="width:76px" onchange="saveEnv('pdae','daemon_port',1)"></label>
    <label>agent <input id="pagn" type="number" value="${c.agent_admin_port}" style="width:76px" onchange="saveEnv('pagn','agent_admin_port',1)"></label>
    <label>管理台 <input id="pui" type="number" value="${c.ui_port}" style="width:76px" onchange="saveEnv('pui','ui_port',1)"></label>
+  </div>
+  <div style="display:flex;gap:10px;margin-top:8px;flex-wrap:wrap;align-items:center">
+   <label>时区 <input id="ptz" value="${esc(c.timezone||'Asia/Shanghai')}" style="width:180px" placeholder="如 Asia/Shanghai" onchange="saveEnv('ptz','timezone',0,'时区已保存（机器人感知的当前时间随此变化）')">（IANA 时区名，影响 AI 对时间的感知）</label>
   </div></div>
  <div class="card"><div class="k">API Key（智谱开放平台获取；多个 Key 时选一个「主」——生图/联网搜索/模型链未指定 Key 的条目都用主 Key；模型链每行可在「模型管理」单独指定 Key）</div>
   <div style="margin-top:10px">${keysL.map(k=>`<div class="row">
@@ -2225,6 +2228,8 @@ class UiHandler(BaseHTTPRequestHandler):
                         cleaned[k] = port
                     except (TypeError, ValueError):
                         return self._reply(400, {"ok": False, "error": "%s 必须是 1024-65535" % k})
+            if "timezone" in cfg_in:
+                cleaned["timezone"] = str(cfg_in["timezone"]).strip()[:50]
             if "auto_power_on" in cfg_in:
                 cleaned["auto_power_on"] = bool(cfg_in["auto_power_on"])
             if "close_action" in cfg_in:

@@ -41,6 +41,7 @@ DEFAULT_CONFIG = {
     "backup_dir": "",          # 备份目录（空=~/.zcode-qq-bot/backups）
     "backup_keep_days": 30,    # 备份保留天数（超过自动清理）
     "backup_keep_copies": 30,  # 每个备份保留份数（超过自动清理最旧的）
+    "timezone": "Asia/Shanghai",  # 机器人时区（IANA 名，影响 AI 感知的时间）
 }
 
 
@@ -139,3 +140,27 @@ def econ_active(cfg):
         return cur >= s or cur < e  # 跨午夜时段（如 22:00-06:00）
     except Exception:
         return False
+
+
+def tz_now_info():
+    """按配置时区返回结构化当前时间（agent 注入 system prompt 用）。
+    时区名无效时回退系统本地时间。"""
+    import zoneinfo
+    tz_name = str(load_app_config().get("timezone") or "Asia/Shanghai").strip()
+    try:
+        tz = zoneinfo.ZoneInfo(tz_name)
+    except (ValueError, KeyError, OSError):
+        tz = None
+    import datetime
+    now = datetime.datetime.now(tz) if tz else datetime.datetime.now()
+    wd = ["一", "二", "三", "四", "五", "六", "日"][now.weekday()]
+    ampm = "上午" if now.hour < 12 else ("下午" if now.hour < 18 else "晚上")
+    h12 = now.hour if 0 < now.hour < 13 else (now.hour - 12 if now.hour >= 13 else 12)
+    return {
+        "iso": now.strftime("%Y-%m-%d"),
+        "weekday": "周%s" % wd,
+        "clock24": now.strftime("%H:%M"),
+        "clock12": "%s%d:%02d" % (ampm, h12, now.minute),
+        "hour": now.hour,
+        "tz": tz_name,
+    }

@@ -438,8 +438,28 @@ def extract_message_info(segments, self_id):
                 info["at_me"] = True
         elif t == "image":
             info["image_urls"].append(str(d.get("url") or ""))
+        elif t == "forward":
+            # 合并转发：NapCat 提供 content 列表或 id；提取每条文本
+            fc = d.get("content")
+            if isinstance(fc, list):
+                for fs in fc:
+                    if isinstance(fs, dict):
+                        ft = str(fs.get("text") or "").strip()
+                        if ft:
+                            texts.append("[转发] " + ft[:60])
+            fid = str(d.get("id") or "")
+            if fid:
+                info.setdefault("forward_ids", []).append(fid)
         elif t == "reply":
             info["has_reply"] = True
+            # 被引用消息可能带图片（NapCat 的 reply 段 content 里含 CQ 码）
+            rc = str(d.get("content") or "")
+            import re as _re_img
+            _img_re = _re_img.compile(r"url=([^,\]]+)")
+            _cq_re = _re_img.compile(r"CQ:[a-zA-Z_]+\[[^\]]*\]")
+            for mu in _img_re.findall(rc):
+                info["image_urls"].append(mu.strip())
+            info["reply_text"] = _cq_re.sub("", rc).strip()[:80]
             info["reply_id"] = str(d.get("id", ""))
         elif t == "face":
             info["face_count"] += 1
@@ -501,7 +521,10 @@ class Daemon:
         if not isinstance(ev, dict):
             return
         post_type = ev.get("post_type")
-        if post_type in ("meta_event", "notice", "request"):
+        if post_type == "notice":
+            self._handle_notice_event(ev)
+            return
+        if post_type in ("meta_event", "request"):
             return
         try:
             if post_type == "message_sent":
@@ -531,6 +554,40 @@ class Daemon:
                 time.sleep(2)
 
     # ---------- 收消息 ----------
+
+    def _handle_notice_event(self, ev):
+        """notice 事件：戳一戳（poke）→ 入 inbox 触发 agent 回应。"""
+        if ev.get("notice_type") != "notify" or ev.get("sub_type") != "poke":
+            return
+        target_id = str(ev.get("target_id") or "")
+        self_id = str(ev.get("self_id") or "")
+        if target_id != self_id:
+            return  # 只响应戳自己的
+        user_id = ev.get("user_id") or ev.get("user_id")
+        if user_id is None:
+            return
+        chat_type = "group" if ev.get("group_id") else "private"
+        chat_id = ev.get("group_id") or user_id
+        chat_name = str(ev.get("group_name") or chat_id)
+        sender_name = str((ev.get("sender") or {}).get("nickname") or user_id)
+        triggered, reason = True, "poke"
+        with self.lock:
+            self.seq += 1
+            item = {
+                "id": self.seq, "ts": ev.get("time") or now_ts(),
+                "chat_type": chat_type, "chat_id": chat_id, "chat_name": chat_name,
+                "message_id": "poke_%d" % self.seq,
+                "sender_id": user_id, "sender_name": sender_name,
+                "triggered": triggered, "trigger_reason": reason,
+                "text": "[戳了一戳]", "at_me": True, "at_users": [],
+                "image_urls": [], "has_reply": False, "reply_to": None,
+                "reply_text": "", "face_count": 0, "has_record": False,
+            }
+            self.inbox.append(item)
+            self.stats["received"] += 1
+            if triggered:
+                self.stats["triggered"] += 1
+        out("AGENT_EVENT " + json.dumps(item, ensure_ascii=False))
 
     def _handle_message_event(self, ev):
         chat_type = "group" if ev.get("message_type") == "group" else "private"
@@ -590,6 +647,7 @@ class Daemon:
                 "image_urls": info["image_urls"][:6],
                 "has_reply": info["has_reply"],
                 "reply_to": reply_to,
+                "reply_text": info.get("reply_text", ""),
                 "face_count": info["face_count"],
                 "has_record": info["record"],
             }
