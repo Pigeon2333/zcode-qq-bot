@@ -388,7 +388,7 @@ function dirtyOff(btnId){const b=document.getElementById(btnId);if(b)b.disabled=
 async function dirtyGuard(){const d=document.querySelector('textarea.dirty,input.dirty');if(!d)return true;
  return await dlgConfirm({title:'有未保存的修改',body:'当前有未保存的修改（蓝色边框标记），离开将丢失。确定离开？',okText:'放弃修改',danger:true})}
 async function load(){try{if(TAB==='status')await vStatus();else if(TAB==='runlog')await vRunlog();else if(TAB==='models')await vModels();else if(TAB==='groups')await vGroups();else if(TAB==='private')await vPrivate();else if(TAB==='persona')await vPersonas();else if(TAB==='style')await vFile('style');else if(TAB==='memory')await vMemory();else if(TAB==='stickers')await vStickers();else if(TAB==='devctrl')await vDevCtrl();else if(TAB==='settings')await vSettings();else if(TAB==='about')await vAbout();}catch(e){$('#view').innerHTML='<div class="card">加载失败: '+esc(e)+'</div>'}}
-document.querySelectorAll('#nav button').forEach(b=>b.onclick=async()=>{if(!await dirtyGuard())return;document.querySelectorAll('#nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');TAB=b.dataset.t;if(TAB!=='runlog'&&_runlogTimer){clearInterval(_runlogTimer);_runlogTimer=null}skeleton();load()});
+document.querySelectorAll('#nav button').forEach(b=>b.onclick=async()=>{if(!await dirtyGuard())return;document.querySelectorAll('#nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');TAB=b.dataset.t;if(TAB!=='runlog'&&_runlogTimer){clearInterval(_runlogTimer);_runlogTimer=null}if(TAB!=='devctrl'&&_devCodeTimer){clearInterval(_devCodeTimer);_devCodeTimer=null}skeleton();load()});
 const _urlTab=new URLSearchParams(location.search).get('tab');
 if(_urlTab&&TITLES[_urlTab]){TAB=_urlTab;document.querySelectorAll('#nav button').forEach(x=>x.classList.toggle('on',x.dataset.t===_urlTab));}
 /* 启动闪屏：每次新窗口首播，UI 自愈刷新（reload）不重播 */
@@ -1017,7 +1017,7 @@ async function vDevCtrl(){
   <div style="margin-top:14px;padding:14px;border:2px solid ${on?'var(--err)':'var(--line)'};border-radius:10px;text-align:center">
    <div class="k" style="margin-bottom:6px">当前动态授权码（使用后自动换新）</div>
    <div id="devcode" style="font-size:36px;font-weight:700;letter-spacing:8px;font-family:monospace;color:${on&&on2fa?'var(--err)':'var(--dim)'}">${on&&on2fa?esc(code.code||'------'):(on?'——':'------')}</div>
-   <div class="k" style="margin-top:6px">${!on?'功能未启用':(!on2fa?'动态授权码已关闭：仅主人 QQ 即可操控（极不推荐）':(code.code?'有效期剩 '+Math.max(0,code.expires_in||0)+' 秒 · 用完即换新 · 也可手动刷新':'获取授权码失败'+(code.error?'：'+esc(code.error):'（agent 未运行？）')))}</div>
+   <div class="k" style="margin-top:6px">${!on?'功能未启用':(!on2fa?'动态授权码已关闭：仅主人 QQ 即可操控（极不推荐）':(code.code?'有效期剩 <span id="devleft">'+Math.max(0,code.expires_in||0)+'</span> 秒 · 用完即换新（本页自动同步） · 也可手动刷新':'获取授权码失败'+(code.error?'：'+esc(code.error):'（agent 未运行？）')))}</div>
    ${on&&on2fa?'<button class="act ghost" style="margin-top:8px" onclick="refreshDevCode()">刷新授权码</button>':''}
   </div>
 
@@ -1068,6 +1068,7 @@ async function vDevCtrl(){
   <button class="act ghost" onclick="resetFlow()">恢复默认</button></div>
  </div>`;
  renderPdList();
+ if(on&&on2fa&&code.code)devCodeStart(code.expires_in);
 }
 function flTextToggle(on){const el=document.getElementById('fltexts');if(el){el.style.opacity=on?'':'0.45';el.style.pointerEvents=on?'':'none'}}
 async function saveFlow(){
@@ -1112,6 +1113,27 @@ async function saveDevDirs(){
 async function refreshDevCode(){
  const r=await api('/api/devctrl-code',{method:'POST'});
  toast(r.ok?'授权码已刷新':'刷新失败',r.ok!==false);load()}
+
+let _devCodeTimer=null;
+function devCodeSync(){ // 静默拉码：更新 DOM 不整页重渲染（不丢流程编辑状态）
+ return api('/api/devctrl-code').then(r=>{
+  if(TAB!=='devctrl')return;
+  const cc=document.getElementById('devcode');
+  if(r&&r.code&&cc){cc.textContent=r.code;window._devExp=Date.now()/1000+(r.expires_in||0)}
+ }).catch(()=>{})}
+function devCodeStart(expIn){
+ window._devExp=Date.now()/1000+(expIn||0);
+ if(_devCodeTimer)clearInterval(_devCodeTimer);
+ let tick=0;
+ _devCodeTimer=setInterval(()=>{
+  if(TAB!=='devctrl'){clearInterval(_devCodeTimer);_devCodeTimer=null;return}
+  const el=document.getElementById('devleft');
+  if(!el)return;
+  let left=Math.max(0,Math.round((window._devExp||0)-Date.now()/1000));
+  el.textContent=left;
+  tick++;
+  if(left<=0||tick%30===0){tick=0;devCodeSync()} // 过期拉新 / 30s 同步（码被使用会换新）
+ },1000)}
 
 async function vSettings(){
  const [c,rv,kl]=await Promise.all([
