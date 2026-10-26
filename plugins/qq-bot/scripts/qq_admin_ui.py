@@ -380,6 +380,7 @@ async function api(p,opts){const r=await fetch(p,opts);return r.json()}
 async function saveKV(p,body,okMsg){try{const r=await api(p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
  if(r.ok===false){toast('保存失败: '+(r.error||''),false);return r}
  toast(okMsg||'已保存（已生效）');return r}catch(e){toast('保存失败：网络错误',false);return{ok:false}}}
+function saveKVLoad(p,body,okMsg){saveKV(p,body,okMsg).then(r=>{if(r.ok!==false)load()})}
 function saveHint(text){return '<div class="hint-save">'+esc(text)+'</div>'}
 const _SAVE_HINT='本页设置均为即时生效：开关/选项点击即保存；输入框改完按回车或点别处自动保存；带「保存」按钮的卡片只保存该卡片内容。';
 function dirtyOn(el,btnId){el.classList.add('dirty');const b=document.getElementById(btnId);if(b)b.disabled=false}
@@ -516,10 +517,10 @@ async function powerOff(napcatToo){
   :{title:'停止机器人',body:'大脑与消息管道将停止，机器人不再响应任何消息（QQ 登录保留，可随时重新启动）。',okText:'停止',danger:true}))return;
  const r=await api('/api/power/off',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({include_napcat:!!napcatToo})});toast('已停止');load()}
 async function toggleSchedPause(on){
- await saveKV('/api/app-config',{sched_pause_enabled:on},on?'定时暂停已开启（时段内机器人完全停止）':'定时暂停已关闭');load()}
+ await saveKVLoad('/api/app-config',{sched_pause_enabled:on},on?'定时暂停已开启（时段内机器人完全停止）':'定时暂停已关闭')}
 async function saveSchedPause(key,val){
  if(!val)return;
- await saveKV('/api/app-config',{[key]:val},'定时暂停时间已更新（即时生效）');load()}
+ await saveKVLoad('/api/app-config',{[key]:val},'定时暂停时间已更新（即时生效）')}
 async function togglePause(){const a=await api('/api/agent-status');await api('/api/pause',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paused:!a.paused})});toast('已'+(!a.paused?'暂停':'恢复'));load()}
 let _runlogTimer=null,_runlogSrc='all';
 const _lvlColor={ok:'var(--ok)',err:'var(--err)',warn:'var(--warn)',info:'var(--fg)',dim:'var(--dim)'};
@@ -723,7 +724,7 @@ function drawTrend(series){
   '<path d="'+area+'" fill="var(--acc)" opacity="0.12"/><path d="'+path+'" fill="none" stroke="var(--acc)" stroke-width="2"/>'+dots+'</svg>';
 }
 function mv(i,d){const e=window._mEntries||[];const j=i+d;if(j<0||j>=e.length)return;[e[i],e[j]]=[e[j],e[i]];postChainReorder()}
-async function postChainReorder(){await saveKV('/api/config',{models:chainOf(window._mEntries||[])},'模型链已更新（agent 已热加载）');load()}
+async function postChainReorder(){await saveKVLoad('/api/config',{models:chainOf(window._mEntries||[])},'模型链已更新（agent 已热加载）')}
 async function del(i){const e=window._mEntries||[];const m=e[i]&&e[i].model;
  if(!await dlgConfirm({title:'移除模型',body:'从降级链移除「'+(m||'')+'」？（链中剩余模型仍正常工作，可随时重新添加）',okText:'移除',danger:true}))return;
  e.splice(i,1);postChainReorder()}
@@ -1029,7 +1030,7 @@ async function vDevCtrl(){
   </div>
 
   <div class="k" style="margin-top:14px;margin-bottom:6px">安全设置</div>
-  <label class="master" style="margin-bottom:8px"><input type="checkbox" ${on2fa?'checked':''} onchange="saveKV('/api/app-config',{device_ctrl_2fa:this.checked?1:0},'动态授权码已'+(this.checked?'开启（推荐）':'关闭——极危险'));load()">
+  <label class="master" style="margin-bottom:8px"><input type="checkbox" ${on2fa?'checked':''} onchange="saveKVLoad('/api/app-config',{device_ctrl_2fa:this.checked?1:0},'动态授权码已'+(this.checked?'开启（推荐）':'关闭——极危险'))">
    <span><b>动态授权码（2FA）</b><div class="k" style="margin-top:3px">每次操控需授权码验证，一次用完自动换新；关闭后只需主人 QQ 即可操控——极不推荐</div></span></label>
 
   <div class="k" style="margin-top:10px;margin-bottom:6px">额外保护目录（这些目录下的文件永远不会被搜索/读取/发送）</div>
@@ -1127,13 +1128,13 @@ async function vSettings(){
    <div><div class="k" style="margin-bottom:4px">主人 QQ 号（任务/遥控白名单）</div><input id="sownerqq" value="${esc(String(c.owner_qq||''))}" style="width:100%" placeholder="如 3349525227" onchange="saveEnv('sownerqq','owner_qq',0,'主人 QQ 已保存（已生效）')"></div>
   </div>
   <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">
-   <label class="master" style="margin-bottom:8px"><input type="checkbox" ${c.bot_name_enabled?'checked':''} onchange="saveKV('/api/app-config',{bot_name_enabled:this.checked?1:0},this.checked?'已开启固定自称':'已关闭：跟随人设卡名字');load()">
+   <label class="master" style="margin-bottom:8px"><input type="checkbox" ${c.bot_name_enabled?'checked':''} onchange="saveKVLoad('/api/app-config',{bot_name_enabled:this.checked?1:0},this.checked?'已开启固定自称':'已关闭：跟随人设卡名字')">
     <span><b>固定自称</b><div class="k" style="margin-top:3px">开启后机器人一律用下面的名字自称，优先级最高（人设卡的名字仅作管理备注）；关闭则跟随当前人设卡</div></span></label>
    <div style="display:flex;gap:8px;align-items:center"><span class="k" style="flex:none">如何称呼自己</span>
     <input id="sbotname" value="${esc(String(c.bot_name_value||'智谱娘'))}" style="width:160px" onchange="saveKV('/api/app-config',{bot_name_value:this.value.trim()||'智谱娘'},'自称已保存（即时生效）')"></div>
   </div>
   <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
-   <label class="master" style="margin-bottom:8px"><input type="checkbox" ${c.owner_name_enabled?'checked':''} onchange="saveKV('/api/app-config',{owner_name_enabled:this.checked?1:0},this.checked?'已开启固定称呼':'已关闭：按人设/默认叫法');load()">
+   <label class="master" style="margin-bottom:8px"><input type="checkbox" ${c.owner_name_enabled?'checked':''} onchange="saveKVLoad('/api/app-config',{owner_name_enabled:this.checked?1:0},this.checked?'已开启固定称呼':'已关闭：按人设/默认叫法')">
     <span><b>固定对你的称呼</b><div class="k" style="margin-top:3px">开启后机器人一律用下面的称呼叫你（所有场景，含设备操控话术）；关闭则按当前人设的叫法/消息昵称</div></span></label>
    <div style="display:flex;gap:8px;align-items:center"><span class="k" style="flex:none">如何称呼你</span>
     <input id="sownername" value="${esc(String(c.owner_name_value||'主人'))}" style="width:160px" onchange="saveKV('/api/app-config',{owner_name_value:this.value.trim()||'主人'},'称呼已保存（即时生效）')"></div>
@@ -1207,9 +1208,9 @@ async function vSettings(){
   </div></div>
 
  <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">④ 对话行为</div>
- <div class="card"><label class="master"><input type="checkbox" ${rv.wait_gate_enabled!==false?'checked':''} onchange="saveKV('/api/reply-config',{wait_gate_enabled:this.checked?1:0},'等说完协议已'+(this.checked?'开启':'关闭'));load()">
+ <div class="card"><label class="master"><input type="checkbox" ${rv.wait_gate_enabled!==false?'checked':''} onchange="saveKVLoad('/api/reply-config',{wait_gate_enabled:this.checked?1:0},'等说完协议已'+(this.checked?'开启':'关闭'))">
   <span><b>等说完协议（推荐开启）</b><div class="k" style="margin-top:3px">AI 回复前会判断对方这条消息是否是叙述的中间部分（语义没说完、刚开头就断、明显还有下文）。如果判断对方还在说，AI 会先安静等对方说完再回复——避免在别人一句话还没打完时就急着插嘴打断。对完整的问题和闲聊不影响（立刻回复），零额外消耗，仅增加一条判断规则</div></span></label></div>
- <div class="card"><label class="master"><input type="checkbox" ${rv.burst_merge_enabled!==false?'checked':''} onchange="saveKV('/api/reply-config',{burst_merge_enabled:this.checked?1:0},'碎片合并已'+(this.checked?'开启':'关闭'));load()">
+ <div class="card"><label class="master"><input type="checkbox" ${rv.burst_merge_enabled!==false?'checked':''} onchange="saveKVLoad('/api/reply-config',{burst_merge_enabled:this.checked?1:0},'碎片合并已'+(this.checked?'开启':'关闭'))">
   <span><b>碎片合并（推荐开启）</b><div class="k" style="margin-top:3px">QQ 聊天习惯一句话一句话地发。开启后，如果有人在 3 秒内连发了 2 条以上消息（正在打字中），机器人的主动插话会暂缓，等此人停下来后再处理——多条碎片合并成一次回复，上下文更完整。被 @ 和被回复的消息不受影响（始终立刻回应），仅影响关键词/闲聊的主动插话时机，零额外消耗</div></span></label></div>
  <div class="card"><label class="master"><input type="checkbox" ${rv.vision_enabled?'checked':''} onchange="saveVision(this.checked)">
   <span><b>看图模式</b><div class="k" style="margin-top:3px">开启后，消息里的图片会交给视觉模型识别并回应（群聊与私聊均生效）；视觉模型在「模型管理」页配置，识别失败自动降级纯文本</div></span></label></div>
@@ -1237,7 +1238,7 @@ async function vSettings(){
 
  <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">⑥ 自动化与维护</div>
  <div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">自动复盘<span class="badge" style="background:var(--tint);color:var(--dim)">夜间自动执行</span></div>
-  <label class="master"><input type="checkbox" ${rv.daily_review_enabled!==false?'checked':''} onchange="saveKV('/api/reply-config',{daily_review_enabled:this.checked?1:0},'自动复盘已'+(this.checked?'开启':'关闭'));load()">
+  <label class="master"><input type="checkbox" ${rv.daily_review_enabled!==false?'checked':''} onchange="saveKVLoad('/api/reply-config',{daily_review_enabled:this.checked?1:0},'自动复盘已'+(this.checked?'开启':'关闭'))">
    <span><b>启用自动复盘</b><div class="k" style="margin-top:3px">每天在设定时间自动汇总自上次复盘以来的机器人表现（回复/沉默/错误次数），由 AI 提炼 1-2 条说话风格观察写入自进化，并向主人私聊发送一份简短日报。覆盖范围：全部群聊与私聊的回复质量数据（不记录聊天内容本身）</div></span></label>
   <div style="margin-top:8px"><label>触发时间 <input type="time" value="${esc(c.review_time||'03:30')}" onchange="saveNight('review_time',this.value)"></label>
   <span class="k" style="margin-left:8px">错过当天会在 2 小时窗口内补跑</span></div></div>
@@ -1256,7 +1257,7 @@ async function vSettings(){
   <button class="act" style="margin:0" onclick="restorePicker()">从备份恢复…</button></div>
   <div class="k" style="margin-top:4px">备份范围：人设合集、风格卡、自进化观察、长期记忆、回复/分群/私聊/白名单配置、模型链、表情包索引（含视觉描述缓存）、设备操控流程、定时任务、主动消息状态、用量流水、本页应用设置。密钥类文件（API Key/token）出于安全不备份，恢复后如缺失需重新填写。超过保留天数或保留份数的旧备份自动清理（最旧的先清）</div></div></div>
  <div class="card"><div class="k" style="margin-bottom:8px">QQ 在线状态</div>
-  <label class="master"><input type="checkbox" ${c.qq_status_auto?'checked':''} onchange="saveKV('/api/app-config',{qq_status_auto:this.checked?1:0},'QQ 在线状态自动设置已'+(this.checked?'开启':'关闭'));load()">
+  <label class="master"><input type="checkbox" ${c.qq_status_auto?'checked':''} onchange="saveKVLoad('/api/app-config',{qq_status_auto:this.checked?1:0},'QQ 在线状态自动设置已'+(this.checked?'开启':'关闭'))">
    <span><b>自动设置在线状态</b><div class="k" style="margin-top:3px">机器人上线登录成功后自动把 QQ 状态设为「在线」；手动停止机器人（状态页停止/全部停止）前自动设为「离开」，让群里的人一眼看出机器人是否在岗。依赖 NapCat 扩展能力，若你的 NapCat 版本不支持会记录失败到运行日志、不影响其他功能</div></span></label>
   <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
    <span class="k">手动测试：</span>
@@ -1264,12 +1265,12 @@ async function vSettings(){
    <button class="act ghost" style="margin:0" onclick="setQQStatus('away')">设为离开</button>
    <span class="k">（不管开关是否开启都可手动设置；QQ 客户端上即时可见）</span></div></div>
  <div class="card"><div class="k" style="margin-bottom:8px">NapCat 活性看门狗<span class="badge" style="background:var(--tint);color:var(--dim)">防消息推送静默失联</span></div>
-  <label class="master"><input type="checkbox" ${c.watchdog_enabled!==false?'checked':''} onchange="saveKV('/api/app-config',{watchdog_enabled:this.checked?1:0},'看门狗已'+(this.checked?'开启':'关闭'));load()">
+  <label class="master"><input type="checkbox" ${c.watchdog_enabled!==false?'checked':''} onchange="saveKVLoad('/api/app-config',{watchdog_enabled:this.checked?1:0},'看门狗已'+(this.checked?'开启':'关闭'))">
    <span><b>启用看门狗</b><div class="k" style="margin-top:3px">定期探测 NapCat 消息通道是否真的活着（TCP 连着但对端不响应/不推事件的「半死」状态，控制台显示在线但机器人实际收不到消息）；探测到失联会在「状态」页告警并私聊通知主人</div></span></label>
   <div class="k" style="margin-top:10px">探测到失联后：</div>
-  <label style="display:block;margin:4px 0"><input type="radio" name="wdmode" value="auto" ${(c.watchdog_mode||'auto')==='auto'?'checked':''} onchange="saveKV('/api/app-config',{watchdog_mode:'auto'},'看门狗模式：自动恢复');load()"> 自动恢复<span class="k">：先由 daemon 自动重连；重连无效则自动重启 NapCat 与组件（需要重新登录时会打开扫码页）</span></label>
-  <label style="display:block;margin:4px 0"><input type="radio" name="wdmode" value="alert" ${c.watchdog_mode==='alert'?'checked':''} onchange="saveKV('/api/app-config',{watchdog_mode:'alert'},'看门狗模式：仅告警');load()"> 仅告警<span class="k">：只通知，不做任何重启，等主人到控制台手动处理</span></label>
-  <div style="margin-top:8px"><label>探测间隔 <input type="number" min="60" max="600" step="30" value="${c.watchdog_interval||120}" style="width:70px" onchange="saveKV('/api/app-config',{watchdog_interval:Math.max(60,Math.min(600,parseInt(this.value)||120))},'探测间隔已保存');load()"> 秒（连续 2 次异常才触发动作）</label></div>
+  <label style="display:block;margin:4px 0"><input type="radio" name="wdmode" value="auto" ${(c.watchdog_mode||'auto')==='auto'?'checked':''} onchange="saveKVLoad('/api/app-config',{watchdog_mode:'auto'},'看门狗模式：自动恢复')"> 自动恢复<span class="k">：先由 daemon 自动重连；重连无效则自动重启 NapCat 与组件（需要重新登录时会打开扫码页）</span></label>
+  <label style="display:block;margin:4px 0"><input type="radio" name="wdmode" value="alert" ${c.watchdog_mode==='alert'?'checked':''} onchange="saveKVLoad('/api/app-config',{watchdog_mode:'alert'},'看门狗模式：仅告警')"> 仅告警<span class="k">：只通知，不做任何重启，等主人到控制台手动处理</span></label>
+  <div style="margin-top:8px"><label>探测间隔 <input type="number" min="60" max="600" step="30" value="${c.watchdog_interval||120}" style="width:70px" onchange="saveKVLoad('/api/app-config',{watchdog_interval:Math.max(60,Math.min(600,parseInt(this.value)||120))},'探测间隔已保存')"> 秒（连续 2 次异常才触发动作）</label></div>
   <div class="k" style="margin-top:6px">当前状态可在「状态」页查看（含最近事件）</div></div>
 
  <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">⑦ 应用行为</div>
@@ -1321,8 +1322,8 @@ async function saveVision(on){await saveKV('/api/reply-config',{vision_enabled:o
 async function saveWebSearch(on){await saveKV('/api/reply-config',{web_search_enabled:on},on?'联网搜索已开启（下一轮回复起生效）':'联网搜索已关闭（已生效）')}
 async function saveAbuseGuard(on){await saveKV('/api/reply-config',{abuse_guard_enabled:on},on?'防滥用防护已开启（已生效）':'防滥用防护已关闭（已生效，仅建议调试时关闭）')}
 const _FEAT_NAME={task_bridge_enabled:'任务沙箱',remote_control_enabled:'私聊遥控',draw_enabled:'AI 生图',daily_review_enabled:'夜间自动复盘'};
-async function saveFeature(key,on){await saveKV('/api/reply-config',{[key]:on},(_FEAT_NAME[key]||key)+(on?'已开启':'已关闭')+'（已生效）')}
-async function saveEcon(key,val){await saveKV('/api/reply-config',{[key]:val},{econ_enabled:'高峰降耗总开关',econ_manual:'开启方式',econ_days:'生效日'}[key]+'已更新（已生效）');load()}
+async function saveFeature(key,on){await saveKVLoad('/api/reply-config',{[key]:on},(_FEAT_NAME[key]||key)+(on?'已开启':'已关闭')+'（已生效）')}
+async function saveEcon(key,val){await saveKV('/api/reply-config',{[key]:val},{econ_enabled:'高峰降耗总开关',econ_manual:'开启方式',econ_days:'生效日'}[key]+'已更新（已生效）')}
 async function saveEconDays(){const days=[...document.querySelectorAll('.ecday')].filter(x=>x.checked).map(x=>+x.dataset.d);await saveEcon('econ_days',days)}
 async function saveEconTime(key,val){if(!val)return;const r=await saveKV('/api/reply-config',{[key]:val},'时段已更新（已生效）');if(r.ok!==false)load()}
 async function savePro(key,val){await saveKV('/api/reply-config',{[key]:val},{proactive_groups_enabled:'群主动发消息',proactive_private_enabled:'私聊主动发消息'}[key]+'已更新（已生效）')}
@@ -1337,7 +1338,7 @@ function proCard(kind){
   ${sOn?`<label><input type="time" value="${esc(rvState['proactive_'+kind+'_silent_start']||'22:00')}" onchange="saveProTime('${kind}_silent_start',this.value)"> – <input type="time" value="${esc(rvState['proactive_'+kind+'_silent_end']||'08:00')}" onchange="saveProTime('${kind}_silent_end',this.value)">（此段内不主动发消息，支持跨午夜）</label>`:''}
  </div>`}
 let rvState={}
-async function saveProNum(field,val,what){await saveKV('/api/reply-config',{['proactive_'+field]:val},'主动'+what+'已更新（已生效）');load()}
+async function saveProNum(field,val,what){await saveKVLoad('/api/reply-config',{['proactive_'+field]:val},'主动'+what+'已更新（已生效）')}
 async function saveProTime(field,val){if(!val)return;const r=await saveKV('/api/reply-config',{['proactive_'+field]:val},'禁用时段已更新（已生效）');if(r.ok!==false)load()}
 async function toggleProSilent(kind,on){
  if(on){await saveKV('/api/reply-config',{['proactive_'+kind+'_silent_start']:'22:00',['proactive_'+kind+'_silent_end']:'08:00'},'禁用时段已开启（默认 22:00–08:00，可修改）')}
@@ -1357,9 +1358,9 @@ async function saveGmProNum(gid,f,val){
  const r=await saveKV('/api/group-modes',{chat_id:gid,override:{[f]:val}},'该群主动设置已生效');
  if(r.ok!==false)_gmModes[gid]=Object.assign({},_gmModes[gid],{[f]:val});
 }
-async function saveLimit(key,val){await saveKV('/api/reply-config',{[key]:val},{token_limit_enabled:'token 限额'}[key]+'已更新（已生效）');load()}
-async function saveLimitHours(){const v=parseInt($('#tlhours').value)||1;await saveKV('/api/reply-config',{token_limit_hours:Math.max(1,Math.min(24,v))},'限额窗口已更新（已生效）');load()}
-async function saveLimitMax(){const v=parseInt($('#tlmax').value)||0;await saveKV('/api/reply-config',{token_limit_max:Math.max(1000,v)},'限额上限已更新（已生效）');load()}
+async function saveLimit(key,val){await saveKVLoad('/api/reply-config',{[key]:val},{token_limit_enabled:'token 限额'}[key]+'已更新（已生效）')}
+async function saveLimitHours(){const v=parseInt($('#tlhours').value)||1;await saveKVLoad('/api/reply-config',{token_limit_hours:Math.max(1,Math.min(24,v))},'限额窗口已更新（已生效）')}
+async function saveLimitMax(){const v=parseInt($('#tlmax').value)||0;await saveKVLoad('/api/reply-config',{token_limit_max:Math.max(1000,v)},'限额上限已更新（已生效）')}
 function renderLimitUsage(u){
  const b=document.getElementById('tlimit-badge'),el=document.getElementById('tlimit-usage');if(!el)return;
  el.textContent=u.enabled?('本窗口已用 '+u.used.toLocaleString()+' / '+u.cap.toLocaleString()+' tokens（'+(u.cap?Math.min(100,Math.round(u.used/u.cap*100)):0)+'%）'):'';
