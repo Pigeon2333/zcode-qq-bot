@@ -194,6 +194,7 @@ select.mini,input.mini{padding:4px 8px;font-size:12.5px}
   <button data-t="style">风格卡</button>
   <button data-t="memory">记忆</button>
   <button data-t="stickers">表情包</button>
+ <button data-t="devctrl">设备操控</button>
   <button data-t="settings">设置</button>
  </nav>
  <div class="side-foot">
@@ -209,7 +210,7 @@ select.mini,input.mini{padding:4px 8px;font-size:12.5px}
 <script>
 const $=s=>document.querySelector(s);
 let TAB='status';
-const TITLES={status:'状态',runlog:'运行日志',models:'模型管理',groups:'群消息',private:'私聊消息',persona:'人设',style:'风格卡',memory:'记忆',stickers:'表情包',settings:'设置'};
+const TITLES={status:'状态',runlog:'运行日志',models:'模型管理',groups:'群消息',private:'私聊消息',persona:'人设',style:'风格卡',memory:'记忆',stickers:'表情包',devctrl:'设备操控',settings:'设置'};
 function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 function head(sub){return '<h2>'+TITLES[TAB]+'</h2>'+(sub?'<div class="sub">'+sub+'</div>':'')}
 function skeleton(){$('#view').innerHTML='<h2>'+TITLES[TAB]+'</h2><div class="card" style="color:var(--dim);padding:26px 20px">加载中…</div>'}
@@ -265,7 +266,7 @@ function dirtyOn(el,btnId){el.classList.add('dirty');const b=document.getElement
 function dirtyOff(btnId){const b=document.getElementById(btnId);if(b)b.disabled=true;document.querySelectorAll('textarea.dirty,input.dirty').forEach(x=>x.classList.remove('dirty'))}
 async function dirtyGuard(){const d=document.querySelector('textarea.dirty,input.dirty');if(!d)return true;
  return await dlgConfirm({title:'有未保存的修改',body:'当前有未保存的修改（蓝色边框标记），离开将丢失。确定离开？',okText:'放弃修改',danger:true})}
-async function load(){try{if(TAB==='status')await vStatus();else if(TAB==='runlog')await vRunlog();else if(TAB==='models')await vModels();else if(TAB==='groups')await vGroups();else if(TAB==='private')await vPrivate();else if(TAB==='persona')await vPersonas();else if(TAB==='style')await vFile('style');else if(TAB==='memory')await vMemory();else if(TAB==='stickers')await vStickers();else if(TAB==='settings')await vSettings();}catch(e){$('#view').innerHTML='<div class="card">加载失败: '+esc(e)+'</div>'}}
+async function load(){try{if(TAB==='status')await vStatus();else if(TAB==='runlog')await vRunlog();else if(TAB==='models')await vModels();else if(TAB==='groups')await vGroups();else if(TAB==='private')await vPrivate();else if(TAB==='persona')await vPersonas();else if(TAB==='style')await vFile('style');else if(TAB==='memory')await vMemory();else if(TAB==='stickers')await vStickers();else if(TAB==='devctrl')await vDevCtrl();else if(TAB==='settings')await vSettings();}catch(e){$('#view').innerHTML='<div class="card">加载失败: '+esc(e)+'</div>'}}
 document.querySelectorAll('#nav button').forEach(b=>b.onclick=async()=>{if(!await dirtyGuard())return;document.querySelectorAll('#nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');TAB=b.dataset.t;if(TAB!=='runlog'&&_runlogTimer){clearInterval(_runlogTimer);_runlogTimer=null}skeleton();load()});
 const _urlTab=new URLSearchParams(location.search).get('tab');
 if(_urlTab&&TITLES[_urlTab]){TAB=_urlTab;document.querySelectorAll('#nav button').forEach(x=>x.classList.toggle('on',x.dataset.t===_urlTab));}
@@ -835,6 +836,47 @@ async function vFile(kind){
 async function toggleEvolved(name,on){await api('/api/evolved/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,enabled:on})});toast('「'+name+'」自进化已'+(on?'启用':'停用')+'（已生效）');load()}
 async function clearEvolved(name){if(!await dlgConfirm({title:'清空风格观察',body:'清空「'+name+'」的全部风格观察？',okText:'清空',danger:true}))return;await api('/api/evolved/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});toast('已清空');load()}
 async function saveFile(kind){const t=$('#fedit').value;const r=await saveKV('/api/file?kind='+kind,{text:t},'已保存（agent 下一轮生效）');if(r.ok!==false)dirtyOff('bsavef')}
+async function vDevCtrl(){
+ const [c,code]=await Promise.all([
+  api('/api/app-config').catch(()=>({})),
+  api('/api/devctrl-code').catch(()=>({code:'',expires_in:0})),
+ ]);
+ const on=!!c.device_ctrl_enabled;
+ $('#view').innerHTML=head('设备操控（高危功能：让机器人搜索/读取/发送你电脑上的文件')+saveHint('仅限主人 QQ · 结果只发私聊 · 保护目录不可触达 · 授权码一次一换')+
+ `<div class="card" style="border:1px solid ${on?'var(--err)':'var(--border)'}">
+  <label class="master" style="margin-bottom:10px"><input type="checkbox" ${on?'checked':''} onchange="toggleDevCtrl(this.checked)">
+   <span><b>启用设备操控</b><div class="k" style="margin-top:3px">⚠ 开启后主人可从 QQ 远程搜索/读取/发送电脑文件。默认关闭，开启需二次确认。</div></span></label>
+
+  <div style="margin-top:14px;padding:14px;border:2px solid ${on?'var(--err)':'var(--line)'};border-radius:10px;text-align:center">
+   <div class="k" style="margin-bottom:6px">当前动态授权码（机器人使用后自动换新）</div>
+   <div id="devcode" style="font-size:36px;font-weight:700;letter-spacing:8px;font-family:monospace;color:${on?'var(--err)':'var(--dim)'}">${on?esc(code.code||'------'):'------'}</div>
+   <div class="k" style="margin-top:6px">${on?'有效期剩 '+Math.max(0,code.expires_in||0)+' 秒 · 用完即换新 · 也可手动刷新':'功能未启用'}</div>
+   ${on?'<button class="act ghost" style="margin-top:8px" onclick="refreshDevCode()">刷新授权码</button>':''}
+  </div>
+
+  <div class="k" style="margin-top:14px;margin-bottom:6px">使用流程（仪式感版）</div>
+  <div class="k" style="line-height:1.8">
+   ① 主人在 QQ 里对机器人说「设备」<br>
+   ② 机器人中二地索要控制台上闪烁的六位真言<br>
+   ③ 主人把上方显示的 6 位数字直接发给机器人<br>
+   ④ 验证通过 → 机器人说"门开了"，2 分钟内直接发命令即可<br>
+   ⑤ 命令：找文件 &lt;名称&gt; / 读文件 &lt;路径&gt; / 发文件 &lt;路径&gt; · 结果只发私聊
+  </div>
+
+  <div class="k" style="margin-top:14px;margin-bottom:6px">安全设置</div>
+  <label class="master" style="margin-bottom:8px"><input type="checkbox" ${c.device_ctrl_2fa!==false?'checked':''} onchange="saveKV('/api/app-config',{device_ctrl_2fa:this.checked?1:0},'动态授权码已'+(this.checked?'开启（推荐）':'关闭——极危险'));load()">
+   <span><b>动态授权码（2FA）</b><div class="k" style="margin-top:3px">每次操控需授权码验证，一次用完自动换新；关闭后只需主人 QQ 即可操控——极不推荐</div></span></label>
+
+  <div class="k" style="margin-top:10px;margin-bottom:4px">额外保护目录（每行一个路径；这些目录下的文件永远不会被搜索/读取/发送）</div>
+  <textarea id="pdevdirs" style="min-height:70px" placeholder="D:\私密文档\${nl}E:\备份">${esc((c.device_ctrl_protected_dirs||[]).join(nl))}</textarea>
+  <button class="act" onclick="saveDevDirs()">保存保护目录</button>
+  <div class="k" style="margin-top:6px">系统目录自动保护：Windows / Program Files / ProgramData / AppData（不可移除）</div>
+ </div>`;
+}
+async function refreshDevCode(){
+ const r=await api('/api/devctrl-code',{method:'POST'});
+ toast(r.ok?'授权码已刷新':'刷新失败',r.ok!==false);load()}
+
 async function vSettings(){
  const [c,rv,kl]=await Promise.all([
   api('/api/app-config').catch(()=>({})),
@@ -929,15 +971,6 @@ async function vSettings(){
   <button class="act ghost" style="margin:0" onclick="pickBackupDir()">浏览…</button>
   <button class="act ghost" style="margin:0" onclick="backupNow()">立即备份</button></div>
   <div class="k" style="margin-top:4px">超过保留天数或保留份数的旧备份自动清理（最旧的先清）</div></div></div>
- <div class="card" style="border:1px solid var(--err)"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px;color:var(--err)">⚠ 设备操控（高危功能）</div>
-  <div class="k" style="margin-bottom:10px">允许机器人搜索/读取/发送你电脑上的文件。仅限主人 QQ 使用，且结果只发私聊（绝不在群里发送文件）。系统目录（Windows/Program Files/AppData 等）自动列入保护清单，不可读取/发送；你可以在下方额外添加保护目录。默认关闭。</div>
-  <label class="master" style="margin-bottom:8px"><input type="checkbox" ${c.device_ctrl_enabled?'checked':''} onchange="toggleDevCtrl(this.checked)">
-   <span><b>启用设备操控</b><div class="k" style="margin-top:3px">开启后主人私聊发「设备」获取授权码，然后「设备 授权码|命令」执行</div></span></label>
-  <label class="master" style="margin-bottom:8px"><input type="checkbox" ${c.device_ctrl_2fa!==false?'checked':''} onchange="saveKV('/api/app-config',{device_ctrl_2fa:this.checked?1:0},'动态授权码已'+(this.checked?'开启（推荐）':'关闭——危险！任何人拿到主人QQ都能操控'));load()">
-   <span><b>动态授权码（2FA，强烈推荐保持开启）</b><div class="k" style="margin-top:3px">每次使用设备操控都需先获取 6 位动态码（发「设备」即可获取，5 分钟有效、一次作废）；关闭后只需主人 QQ 即可操控——极不推荐</div></span></label>
-  <div class="k" style="margin-bottom:4px">额外保护目录（每行一个路径；这些目录下的文件永远不会被搜索/读取/发送）</div>
-  <textarea id="pdevdirs" style="min-height:70px" placeholder="D:\私密文档\${chr(10)}E:\备份">${esc((c.device_ctrl_protected_dirs||[]).join(String.fromCharCode(10)))}</textarea>
-  <button class="act" onclick="saveDevDirs()">保存保护目录</button></div>
  <div class="card"><div class="k">关闭本应用时</div>
   <div style="margin-top:8px">
    <label style="display:block;margin:6px 0"><input type="radio" name="cact" value="tray" ${(!c.close_action||c.close_action==='tray')?'checked':''} onchange="saveCloseAction(this.value)"> 最小化到系统托盘，机器人继续在后台（推荐；托盘图标可重新打开窗口）</label>
@@ -1904,6 +1937,16 @@ class UiHandler(BaseHTTPRequestHandler):
             t.start()
             t.join(timeout=120)
             return self._reply(200, {"ok": True, "dir": box.get("d", "")})
+        if u.path == "/api/devctrl-code":
+            # 控制台常显授权码：确保当前有一个有效码（无则生成）
+            import qq_bot_agent as _A
+            import time as _t
+            code_obj = _A._DEVCTRL_CODE
+            if not code_obj["code"] or _t.time() > code_obj["expires"]:
+                code_obj["code"] = C.gen_auth_code()
+                code_obj["expires"] = _t.time() + 300
+            return self._reply(200, {"ok": True, "code": code_obj["code"],
+                                     "expires_in": int(code_obj["expires"] - _t.time())})
         if u.path == "/api/backup-now":
             import qq_bot_agent as _A
             _A._backup_data()

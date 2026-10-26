@@ -1964,6 +1964,7 @@ def _cron_run_task(daemon, fake_msg):
 # ---------------- 设备操控（D：高危，仅主人+可选动态码） ----------------
 
 _DEVCTRL_CODE = {"code": "", "expires": 0.0}
+_DEVCTRL_AUTH = {"ok_until": 0.0}
 
 # 系统目录自动识别（Windows 常见）+ 用户额外保护
 _PROTECTED_SYSTEM = [
@@ -1992,6 +1993,10 @@ def _is_protected(path):
     return False
 
 
+def cfg_2fa_on():
+    return bool(C.load_app_config().get("device_ctrl_2fa", True))
+
+
 def _device_ctrl_enabled():
     return bool(C.load_app_config().get("device_ctrl_enabled"))
 
@@ -2003,28 +2008,59 @@ def _handle_devctrl(daemon, msg):
         return False
     text = str(msg.get("text") or "").strip()
     import re as _re
+    # 主人直接发 6 位数字 → 也可能是授权码（上一步机器人要了码）
+    m_code = _re.fullmatch(r"\d{6}", text)
+    if m_code and cfg_2fa_on():
+        # 校验码
+        if not _DEVCTRL_CODE["code"] or time.time() > _DEVCTRL_CODE["expires"]:
+            daemon.send(msg["chat_type"], msg["chat_id"],
+                        ["门还没有钥匙。请打开控制台「设备操控」页获取当前授权码"])
+            return True
+        if text != _DEVCTRL_CODE["code"]:
+            daemon.send(msg["chat_type"], msg["chat_id"],
+                        ["❌ 真言不对……再看看控制台上闪烁的数字吧"])
+            return True
+        _DEVCTRL_CODE["code"] = C.gen_auth_code()
+        _DEVCTRL_CODE["expires"] = time.time() + 300
+        _DEVCTRL_AUTH["ok_until"] = time.time() + 120  # 2 分钟内可执行命令
+        daemon.send(msg["chat_type"], msg["chat_id"],
+                    ["✅ 真言确认——门开了！" + chr(10) +
+                     "接下来 2 分钟内直接发命令即可（不用再加码）：" + chr(10) +
+                     "找文件 <名称> / 读文件 <路径> / 发文件 <路径>"])
+        return True
+    # 已授权窗口内：直接执行命令（不带码）
+    if _DEVCTRL_AUTH["ok_until"] > time.time():
+        cmd = text
+        # 构造 reply_to
+        reply_to = ("private", str(msg.get("sender_id") or owner_qq()))
+        _devctrl_exec(daemon, msg, cmd, reply_to)
+        return True
     m = _re.match(r"^设备\s+(\d{6})\s*[|｜]\s*(.+)$", text, _re.S)
     if not m:
         # 请求授权码
-        if text in ("设备", "设备 授权"):
-            code = C.gen_auth_code()
-            _DEVCTRL_CODE.update(code=code, expires=time.time() + 300)
-            nl = chr(10)
+        if text in ("设备", "设备 授权", "设备 授权码"):
+            nl2 = chr(10)
             daemon.send(msg["chat_type"], msg["chat_id"],
-                        ["设备操控授权码：%s（5 分钟内有效）。" % code + nl +
-                         "用法：设备 %s|命令" % code + nl +
-                         "可执行：找文件 <名称> / 读文件 <路径> / 发文件 <路径>" + nl +
-                         "注意：文件只会发到你的私聊，不会发到群里"])
+                        ["⚡ 检测到设备操控请求——权限等级：MAX" + nl2 +
+                         "⚠ 停下吧，凡人。这片领域的钥匙不掌握在你手中。" + nl2 + nl2 +
+                         "给妈妈看控制台上闪烁的六位「真言」，念出来，妈妈就帮你打开这扇门。" + nl2 +
+                         "（打开机器人控制台 → 设备操控 页，把当前的 6 位授权码直接发给妈妈即可）" + nl2 + nl2 +
+                         "格式：直接发 6 位数字，不用加别的"])
             return True
-        return False
     code, cmd = m.group(1), m.group(2).strip()
     cfg = C.load_app_config()
     if cfg.get("device_ctrl_2fa", True):
-        if code != _DEVCTRL_CODE["code"] or time.time() > _DEVCTRL_CODE["expires"]:
+        if not _DEVCTRL_CODE["code"] or time.time() > _DEVCTRL_CODE["expires"]:
             daemon.send(msg["chat_type"], msg["chat_id"],
-                        ["授权码无效或已过期。发「设备」获取新授权码"])
+                        ["门还没有钥匙。请打开控制台「设备操控」页获取当前授权码"])
             return True
-        _DEVCTRL_CODE["expires"] = 0  # 一次性作废
+        if code != _DEVCTRL_CODE["code"]:
+            daemon.send(msg["chat_type"], msg["chat_id"],
+                        ["❌ 真言不对……再看看控制台上闪烁的数字吧"])
+            return True
+        # 一次性作废 + 立即换新码（防二次利用）
+        _DEVCTRL_CODE["code"] = C.gen_auth_code()
+        _DEVCTRL_CODE["expires"] = time.time() + 300
     # 强制私聊返回结果（隐私不出群）
     reply_to = ("private", str(msg.get("sender_id") or owner_qq()))
     import re as _re2
@@ -2059,6 +2095,42 @@ def _handle_devctrl(daemon, msg):
                     ["不支持的命令。可用：找文件 <名称> / 读文件 <路径> / 发文件 <路径>"])
     out("AGENT_DEVCTRL cmd=%.30s" % cmd)
     return True
+
+
+
+def _devctrl_exec(daemon, msg, cmd, reply_to):
+    """执行单条设备操控命令（已在授权窗口内）。"""
+    import re as _re
+    if cmd.startswith("找文件 "):
+        pattern = cmd[4:].strip()[:100]
+        results = _devctrl_search(pattern)
+        daemon.send(reply_to[0], reply_to[1], [
+            ("搜索「%s」结果（%d 条）：" % (pattern, len(results))) + chr(10) +
+            (chr(10).join(results[:10]) if results else "（无匹配）")])
+    elif cmd.startswith("读文件 "):
+        fp = cmd[4:].strip()[:260]
+        if _is_protected(fp):
+            daemon.send(reply_to[0], reply_to[1], ["该路径在保护目录内，拒绝读取"])
+        else:
+            try:
+                content = open(fp, "r", encoding="utf-8", errors="replace").read(2000)
+                daemon.send(reply_to[0], reply_to[1],
+                            ["文件内容（前2000字）：" + chr(10) + content])
+            except OSError as e:
+                daemon.send(reply_to[0], reply_to[1], ["读取失败：%r" % e])
+    elif cmd.startswith("发文件 "):
+        fp = cmd[4:].strip()[:260]
+        if _is_protected(fp):
+            daemon.send(reply_to[0], reply_to[1], ["该路径在保护目录内，拒绝发送"])
+        elif not os.path.isfile(fp):
+            daemon.send(reply_to[0], reply_to[1], ["文件不存在"])
+        else:
+            daemon.send_image(reply_to[0], reply_to[1], fp)
+            daemon.send(reply_to[0], reply_to[1], ["已发送：%s" % os.path.basename(fp)])
+    else:
+        daemon.send(reply_to[0], reply_to[1],
+                    ["不支持的命令。可用：找文件 <名称> / 读文件 <路径> / 发文件 <路径>"])
+    out("AGENT_DEVCTRL cmd=%.30s" % cmd)
 
 
 def _devctrl_search(pattern):
