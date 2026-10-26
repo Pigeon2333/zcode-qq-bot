@@ -424,7 +424,7 @@ async function vModels(){
  const thKey=(m)=>{const e=th[m];if(!e)return '';return e.enabled?e.level:'off'};
  const thOpt=(v)=>{const map={'':'跟随默认','off':'关闭思考','high':'思考·高','low':'思考·低'};
   return Object.keys(map).map(k=>'<option value="'+k+'"'+(v===k?' selected':'')+'>'+map[k]+'</option>').join('')};
- const entries=(c.models||[]).map(x=>{const base=typeof x==='string'?{model:x,key:'',ctx:''}:{model:String(x.model||''),key:String(x.key||''),ctx:x.ctx||''};
+ const entries=(c.models||[]).map(x=>{const base=typeof x==='string'?{model:x,key:'',ctx:'',maxout:''}:{model:String(x.model||''),key:String(x.key||''),ctx:x.ctx||'',maxout:x.max_out||''};
   base.think=thKey(base.model);return base});
  window._mEntries=entries;window._mKeys=keysL;window._mThink=th;
  const keyLabel=e=>{if(!e.key)return '主Key';const k=keysL.find(x=>x.id===e.key);return k?(k.primary?'★':'')+esc(k.label||k.id):'（Key已删）'};
@@ -433,7 +433,7 @@ async function vModels(){
   const cd=a.cooldowns&&a.cooldowns[ck]>0;
   return `<div class="row ${cd?'cool':''}"><span class="no">${i+1}.</span>
   <b style="flex:1;min-width:120px;font-weight:500">${esc(e.model)}</b>
-  <span class="k mono" style="flex:none">${esc(keyLabel(e))}${e.ctx?' · '+esc(e.ctx)+'k':''} · ${thName[v]||'默认'}</span>
+  <span class="k mono" style="flex:none">${esc(keyLabel(e))}${e.ctx?' · '+esc(e.ctx)+'k':''}${e.maxout?' · out '+esc(e.maxout):''} · ${thName[v]||'默认'}</span>
   <span class="mono">${cd?('冷却'+a.cooldowns[ck]+'s'):(a.current_model===e.model?'当前':'')}</span>
   <button class="act ghost" onclick="mv(${i},-1)">↑</button><button class="act ghost" onclick="mv(${i},1)">↓</button>
   <button class="act ghost" onclick="editModel(${i})">编辑</button>
@@ -503,6 +503,10 @@ async function saveThinking(){
  await saveKV('/api/config',{thinking:th},'思考设置已保存（已生效）')}
 async function saveVisionModel(){await saveKV('/api/config',{vision_model:$('#vmodel').value.trim()},'视觉模型已保存（即时生效）')}
 async function saveLeanCtx(on){await saveKV('/api/reply-config',{lean_ctx_enabled:on},on?'精简上下文已开启（平均省 30%~45% 消耗）':'已切换全量上下文（消耗约 +50%~80%，表现最佳）')}
+async function saveNight(key,val){
+ const msg={review_time:'复盘时间',backup_enabled:'自动备份',backup_time:'备份时间',backup_dir:'备份目录'}[key]+'已更新（次日生效）';
+ const r=await saveKV('/api/app-config',{[key]:key==='backup_dir'?String(val).trim():val},msg);
+ if(r.ok!==false)load()}
 let _trendRange='d30',_usageCache=null;
 function setTrendRange(r){_trendRange=r;if(_usageCache){renderTrend()}}
 function renderTrend(){
@@ -534,23 +538,22 @@ async function postChainReorder(){await saveKV('/api/config',{models:chainOf(win
 async function del(i){const e=window._mEntries||[];const m=e[i]&&e[i].model;
  if(!await dlgConfirm({title:'移除模型',body:'从降级链移除「'+(m||'')+'」？（链中剩余模型仍正常工作，可随时重新添加）',okText:'移除',danger:true}))return;
  e.splice(i,1);postChainReorder()}
-function chainOf(entries){return entries.map(e=>(e.key||e.ctx)?{model:e.model,...(e.key?{key:e.key}:{}),...(e.ctx?{ctx:e.ctx}:{})}:e.model)}
+function chainOf(entries){return entries.map(e=>(e.key||e.ctx||e.maxout)?{model:e.model,...(e.key?{key:e.key}:{}),...(e.ctx?{ctx:e.ctx}:{}),...(e.maxout?{max_out:e.maxout}:{})}:e.model)}
 async function editModel(i){
- const creating=i<0;const e=creating?{model:'',key:'',ctx:'',think:''}:Object.assign({},window._mEntries[i]);
+ const creating=i<0;const e=creating?{model:'',key:'',ctx:'',think:'',maxout:''}:Object.assign({},window._mEntries[i]);
  const keysL=window._mKeys||[];
  const keyOpts='<option value=""'+(!e.key?' selected':'')+'>主 Key</option>'
   +keysL.map(k=>`<option value="${esc(k.id)}"${e.key===k.id?' selected':''}>${k.primary?'★ ':''}${esc(k.label||k.id)}</option>`).join('');
  const thOpts=['','off','high','low'].map(v=>'<option value="'+v+'"'+((e.think||'')===v?' selected':'')+'>'+({'' :'跟随默认','off':'关闭思考','high':'思考·高','low':'思考·低'})[v]+'</option>').join('');
+ const row=(label,inner,hint)=>'<div style="margin-top:10px"><div class="k" style="margin-bottom:4px">'+label+'</div>'+inner+(hint?'<div class="k" style="margin-top:3px">'+hint+'</div>':'')+'</div>';
  const m=document.createElement('div');m.className='dlg-mask';
- m.innerHTML='<div class="dlg" role="dialog" style="max-width:430px"><h3>'+(creating?'添加模型':'编辑模型')+'</h3>'
-  +'<div class="dlg-body">模型降级链条目的全部设置；上下文档位控制注入的历史与记忆规模（人设/风格永不裁剪）。</div>'
-  +'<div style="margin-top:12px"><div class="k" style="margin-bottom:4px">模型名</div>'
-  +'<input id="em_model" value="'+esc(e.model)+'" placeholder="如 glm-5.3-flash" style="width:100%"></div>'
-  +'<div style="display:flex;gap:10px;margin-top:10px">'
-  +'<div style="flex:1"><div class="k" style="margin-bottom:4px">API Key</div><select id="em_key" class="mini" style="width:100%">'+keyOpts+'</select></div>'
-  +'<div style="width:110px"><div class="k" style="margin-bottom:4px">上下文 (k)</div><input id="em_ctx" type="number" min="4" max="128" value="'+(e.ctx||'')+'" placeholder="默认" style="width:100%"></div>'
-  +'<div style="width:120px"><div class="k" style="margin-bottom:4px">思考模式</div><select id="em_th" class="mini" style="width:100%">'+thOpts+'</select></div>'
-  +'</div><div class="dlg-btns"><button class="act ghost">取消</button><button class="act">'+(creating?'添加':'保存')+'</button></div></div>';
+ m.innerHTML='<div class="dlg" role="dialog" style="max-width:440px;max-height:86vh;overflow-y:auto"><h3>'+(creating?'添加模型':'编辑模型')+'</h3>'
+  +row('模型名','<input id="em_model" value="'+esc(e.model)+'" placeholder="如 glm-5.3-flash" style="width:100%">')
+  +row('API Key','<select id="em_key" class="mini" style="width:100%">'+keyOpts+'</select>','该条目调用时使用的智谱账号')
+  +row('上下文档位（千 token）','<input id="em_ctx" type="number" min="4" max="128" value="'+(e.ctx||'')+'" placeholder="按模型默认（flash 系 128）" style="width:100%">','控制注入的对话历史与记忆规模；人设/风格/安全规则永不裁剪')
+  +row('思考模式','<select id="em_th" class="mini" style="width:100%">'+thOpts+'</select>')
+  +row('最大输出（tokens）','<input id="em_maxout" type="number" min="256" max="32768" step="256" value="'+(e.maxout||'')+'" placeholder="默认（按思考档 600–4096）" style="width:100%">','单次回复的输出上限；开思考时会自动放大以留出思考空间')
+  +'<div class="dlg-btns"><button class="act ghost">取消</button><button class="act">'+(creating?'添加':'保存')+'</button></div></div>';
  document.body.appendChild(m);
  const close=()=>m.remove();
  m.querySelector('.dlg-btns .ghost').onclick=close;
@@ -561,12 +564,12 @@ async function editModel(i){
   const key=document.getElementById('em_key').value;
   const ctx=parseInt(document.getElementById('em_ctx').value)||0;
   const th=document.getElementById('em_th').value;
+  const mo=parseInt(document.getElementById('em_maxout').value)||0;
   if(!model){toast('模型名不能为空',false);return}
   close();
-  const ent={model,key,ctx:ctx?Math.max(4,Math.min(128,ctx)):'',think:th};
+  const ent={model,key,ctx:ctx?Math.max(4,Math.min(128,ctx)):'',think:th,maxout:mo?Math.max(256,Math.min(32768,mo)):''};
   if(creating){(window._mEntries=window._mEntries||[]).push(ent)}
   else{window._mEntries[i]=ent}
-  // models + 该模型思考覆盖 一并保存
   const think=Object.assign({},window._mThink||{});
   if(th)think[model]=th==='off'?{enabled:false,level:'high'}:{enabled:true,level:th};
   else delete think[model];
@@ -870,6 +873,14 @@ async function vSettings(){
  <div class="card"><div class="k">启动行为</div>
   <div style="margin-top:8px"><label class="master"><input type="checkbox" id="spoweron" ${c.auto_power_on?'checked':''} onchange="savePowerOn(this.checked)">
    <span>打开本应用时自动启动机器人<div class="k" style="margin-top:2px">与上一项同时勾选时，开机会先启动应用、紧接着自动启动机器人</div></span></label></div></div>
+ <div class="card"><div class="k" style="margin-bottom:8px">夜间任务（复盘与备份各自按设定时间触发；错过当天会在 2 小时窗口内补跑）</div>
+  <div style="display:flex;gap:14px;margin-top:6px;flex-wrap:wrap;align-items:center">
+   <label>复盘时间 <input type="time" value="${esc(c.review_time||'03:30')}" onchange="saveNight('review_time',this.value)"></label>
+   <label>自动备份 <input type="checkbox" ${c.backup_enabled!==false?'checked':''} onchange="saveNight('backup_enabled',this.checked?1:0)"></label>
+   <label>备份时间 <input type="time" value="${esc(c.backup_time||'04:00')}" onchange="saveNight('backup_time',this.value)"></label>
+  </div>
+  <div style="margin-top:8px"><div class="k" style="margin-bottom:4px">备份目录（留空 = 默认 ~/.zcode-qq-bot/backups；自定义目录不存在会自动创建，保留最近 30 天）</div>
+  <input value="${esc(String(c.backup_dir||''))}" placeholder="如 D:\ZCode\qq-bot-backups" style="width:100%" onchange="saveNight('backup_dir',this.value)"></div></div>
  <div class="card"><div class="k">关闭本应用时</div>
   <div style="margin-top:8px">
    <label style="display:block;margin:6px 0"><input type="radio" name="cact" value="tray" ${(!c.close_action||c.close_action==='tray')?'checked':''} onchange="saveCloseAction(this.value)"> 最小化到系统托盘，机器人继续在后台（推荐；托盘图标可重新打开窗口）</label>
@@ -1835,9 +1846,14 @@ class UiHandler(BaseHTTPRequestHandler):
                             ctx = max(4, min(128, int(m.get("ctx", 0))))
                         except (TypeError, ValueError):
                             ctx = 0
+                        try:
+                            mo = max(256, min(32768, int(m.get("max_out", 0))))
+                        except (TypeError, ValueError):
+                            mo = 0
                         norm.append({"model": str(m["model"]).strip().lower(),
                                      **({"key": kid} if kid else {}),
-                                     **({"ctx": ctx} if ctx else {})})
+                                     **({"ctx": ctx} if ctx else {}),
+                                     **({"max_out": mo} if mo else {})})
                     else:
                         norm.append(str(m).strip().lower())
                 cfg["models"] = norm

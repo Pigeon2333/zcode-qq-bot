@@ -345,7 +345,12 @@ def _chain_candidates():
             ctx = max(4, min(128, int(ctx))) if ctx else _model_default_ctx(model)
         except (TypeError, ValueError):
             ctx = _model_default_ctx(model)
-        cands.append((kid, kv, model, ctx))
+        mo = e.get("max_out") if isinstance(e, dict) else None
+        try:
+            mo = max(256, min(32768, int(mo))) if mo else 0
+        except (TypeError, ValueError):
+            mo = 0
+        cands.append((kid, kv, model, ctx, mo))
     return cands
 
 
@@ -386,13 +391,15 @@ def call_glm_with_fallback(messages, text_ctx=""):
     if econ_on() and len(cands) > 1:
         cands = cands[1:]
     now = time.time()
-    for kid, kv, model, _ctx in cands:
+    for kid, kv, model, _ctx, _mo in cands:
         ck = "%s:%s" % (kid, model)
         if RT.cooldowns.get(ck, 0) > now:
             tried.append("%s@%s(冷却)" % (model, kid))
             continue
         try:
             th, mt = resolve_thinking(model, text_ctx)
+            if _mo:
+                mt = min(_mo, mt) if mt > 600 else _mo
             status, data = glm_chat(model, messages, key=kv,
                                     extra_body={**th, "max_tokens": mt})
             if status == 400 and "不支持关闭思考" in str(
@@ -1755,7 +1762,7 @@ def call_vision(messages_text, image_urls):
     cands = _chain_candidates()
     if econ_on() and len(cands) > 1:
         cands = cands[1:]
-    for kid, kv, m, _ctx in cands:
+    for kid, kv, m, _ctx, _mo in cands:
         ck = "%s:%s" % (kid, m)
         if m in _NO_VISION_MODELS:
             tried.append(m + "(纯文本)")
@@ -2094,99 +2101,150 @@ def _backup_data():
         out("AGENT_BACKUP_FAIL %r" % e)
 
 
-def _daily_review_once(daemon):
-    """夜间复盘一次：统计当日表现 → GLM 提炼风格观察 → 写入自进化 → 日报发主人。"""
+def _review_window_lines():
+    """上次复盘以来的 agent.log 增量行（字节偏移法；日志重启清空则全量）。
+    修复：此前固定取尾部 800 行且文案称「今天」，凌晨触发时口径混乱。"""
     import io
-    day = time.strftime("%Y-%m-%d")
-    done = skip = err = 0
+    mark = os.path.join(DATA_DIR, ".last_review_pos")
     log_path = os.path.join(DATA_DIR, "logs", "agent.log")
     try:
+        pos = int(read_const(mark).strip() or 0)
+    except (OSError, ValueError):
+        pos = 0
+    try:
+        size = os.path.getsize(log_path)
+    except OSError:
+        return [], 0
+    lines = []
+    try:
         with io.open(log_path, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()[-800:]
-        for ln in lines:
-            if ln.startswith("AGENT_DONE"):
-                done += 1
-            elif ln.startswith("AGENT_SKIP"):
-                skip += 1
-            elif ln.startswith("AGENT_ERROR"):
-                err += 1
+            if 0 < pos <= size:
+                f.seek(pos)
+            lines = f.readlines()
     except OSError:
         pass
+    return lines, size
+
+
+def _daily_review_once(daemon):
+    """复盘上次以来的运行表现 → GLM 提炼风格观察 → 写入自进化 → 日报发主人。"""
+    import io
+    lines, end_pos = _review_window_lines()
+    if end_pos:
+        write_const(os.path.join(DATA_DIR, ".last_review_pos"), str(end_pos))
+    done = skip = err = 0
+    for ln in lines:
+        body = ln.split("] ", 1)[-1]
+        if body.startswith("AGENT_DONE"):
+            done += 1
+        elif body.startswith("AGENT_SKIP") or body.startswith("AGENT_GATE_SKIP"):
+            skip += 1
+        elif body.startswith("AGENT_ERROR"):
+            err += 1
     pc, active = load_persona_collection()
     if not active:
         return
     ev = evolved_notes(active)
     recent = "\n".join("- %s" % n for n in ev["notes"][-8:]) or "（暂无）"
     prompt = (
-        "你是机器人运营复盘助手。今天的运行数据：回复 %d 次、主动沉默 %d 次、错误 %d 次。"
-        "当前人设「%s」已有的风格观察：\n%s\n\n"
-        "请输出两部分：\n"
-        "1) 日报：两三句话总结今天状态（给主人看的私聊消息，口吻平实）\n"
-        "2) 风格观察：最多 2 条、每条不超过 40 字、格式为 [风格] xxx 的新观察"
-        "（只在与已有观察不重复且确有价值时给；没有就写 [风格] 无）"
-        % (done, skip, err, active, recent))
+        "你是机器人运营复盘助手。自上次复盘以来的运行数据：回复 %d 次、主动沉默 %d 次、错误 %d 次。"
+        % (done, skip, err))
+    prompt += "\n当前人设名：%s。已有风格观察：\n%s\n" % (active, recent)
+    prompt += ("请基于以上数据写一段给主人的简短日报（不超过150字，口语化），"
+               "并单独提炼 1-2 条新的风格观察（每条不超过40字，格式纯 JSON 数组）。"
+               "输出格式：第一行日报文字，然后一行 [观察1,观察2]（没有就 []）。")
     try:
-        _, reply = call_glm_with_fallback(
-            [{"role": "user", "content": prompt}], text_ctx=prompt)
+        _model, text = call_glm_with_fallback(
+            [{"role": "system", "content": "你是运营复盘助手，只输出要求的内容。"},
+             {"role": "user", "content": prompt}])
     except Exception as e:
-        out("AGENT_REVIEW_FAIL %r" % e)
+        out("AGENT_REVIEW_LLM_FAIL %r" % e)
         return
-    report, notes = [], []
-    for ln in str(reply).splitlines():
-        ln = ln.strip()
-        if not ln:
-            continue
-        if ln.startswith("[风格]"):
-            note = ln[len("[风格]"):].strip()[:60]
-            if note and note != "无" and len(note) >= 6:
-                notes.append(note)
-        elif len(ln) <= 120:
-            report.append(ln)
-    if notes:
-        path = os.path.join(DATA_DIR, "styles", "evolved.json")
-        data = load_json_const(path, {})
-        entry = data.get(active)
-        if not isinstance(entry, dict):
-            entry = {"enabled": True, "notes": []}
-            data[active] = entry
-        for n in notes:
-            entry["notes"].append({"note": n, "ts": time.time()})
-        entry["notes"] = entry["notes"][-30:]
-        pathlib.Path(path).parent.mkdir(parents=True, exist_ok=True)
-        pathlib.Path(path).write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    oq = owner_qq()
-    if oq:
-        text = "%s 复盘日报：\n%s" % (day, "\n".join(report[:5]))
-        if notes:
-            text += "\n新增风格观察 %d 条" % len(notes)
+    parts = text.strip().split("\n")
+    report = parts[0].strip() if parts else ""
+    notes = []
+    import re as _re
+    mm = _re.search(r"\[[^\]]*\]", text)
+    if mm:
         try:
-            daemon.send("private", oq, [text[:600]])
-        except Exception:
+            got = json.loads(mm.group(0).replace("'", '"'))
+            notes = [str(x)[:40] for x in got if str(x).strip()][:2]
+        except ValueError:
             pass
+    if notes:
+        evolved_append(active, notes)
+        out("AGENT_EVOLVE persona=%s +%d" % (active, len(notes)))
+    if is_owner_qq_set():
+        try:
+            daemon.send("private", owner_qq(), [
+                "📋 运行日报（%s）：\n%s\n回复 %d · 沉默 %d · 错误 %d"
+                % (time.strftime("%m-%d %H:%M"), report, done, skip, err)])
+        except Exception as e:
+            out("AGENT_REVIEW_SEND_FAIL %r" % e)
     out("AGENT_REVIEW_DONE done=%d skip=%d err=%d notes=%d"
         % (done, skip, err, len(notes)))
 
 
+def _backup_data():
+    """每日数据快照：关键数据文件复制到配置目录（空=默认 backups/），保留最近 30 份。
+    人设/风格/自进化/记忆/分群与回复配置都可从此恢复（密钥类文件不备份）。"""
+    import shutil
+    cfg = C.load_app_config()
+    names = ["style.md", "evolved.json", "memory_stream.jsonl",
+             "group_reply_modes.json", "reply_config.json",
+             "private_config.json", "group_whitelist.json",
+             "model_chain.json", "app_config.json"]
+    dest_root = str(cfg.get("backup_dir") or "").strip() or os.path.join(DATA_DIR, "backups")
+    bdir = os.path.join(dest_root, time.strftime("%Y%m%d"))
+    try:
+        os.makedirs(bdir, exist_ok=True)
+        n = 0
+        for name in names + ["personas/collection.json"]:
+            src = os.path.join(DATA_DIR, name)
+            if os.path.isfile(src):
+                dstf = os.path.join(bdir, os.path.basename(name))
+                shutil.copy2(src, dstf)
+                n += 1
+        days = sorted(x for x in os.listdir(dest_root) if x.isdigit())
+        for old in days[:-30]:
+            shutil.rmtree(os.path.join(dest_root, old), ignore_errors=True)
+        out("AGENT_BACKUP_OK %s (%d files)" % (bdir, n))
+    except OSError as e:
+        out("AGENT_BACKUP_FAIL %r" % e)
+
+
 def _daily_review_loop(daemon):
-    """每日 03:30 自动复盘（幂等：错过窗口当天补跑一次）。"""
-    last_run = {"day": ""}
+    """定时循环：复盘与备份各自按配置时间触发（错过当天在窗口内补跑一次）。"""
+    state = {"review": "", "backup": ""}
+    import datetime as _dt
+    def _due(kind):
+        cfg = C.load_app_config()
+        tstr = str(cfg.get("%s_time" % ("review" if kind == "review" else "backup"),
+                           "03:30" if kind == "review" else "04:00")).strip()
+        try:
+            hh, mi = tstr.split(":")
+            tgt = _dt.time(int(hh), int(mi))
+        except ValueError:
+            tgt = _dt.time(3, 30) if kind == "review" else _dt.time(4, 0)
+        now = _dt.datetime.now()
+        key = now.strftime("%Y-%m-%d") + "|" + tstr
+        if state[kind] == key:
+            return False
+        due_at = _dt.datetime.combine(now.date(), tgt)
+        window = due_at + _dt.timedelta(hours=2)
+        if due_at <= now <= window:
+            state[kind] = key
+            return True
+        return False
     while True:
         try:
-            now = time.localtime()
-            key = time.strftime("%Y-%m-%d", now)
-            if (now.tm_hour == 3 and now.tm_min >= 30 and last_run["day"] != key) \
-                    or (now.tm_hour >= 4 and last_run["day"] != key
-                        and time.strftime("%H:%M") < "05:30"):
-                last_run["day"] = key
-                _backup_data()  # 数据快照（人设/记忆/配置），与复盘开关无关
-                if feature_enabled("daily_review_enabled"):
-                    _daily_review_once(daemon)
-                else:
-                    out("AGENT_REVIEW_SKIPPED disabled")
+            cfg = C.load_app_config()
+            if _due("review") and feature_enabled("daily_review_enabled"):
+                _daily_review_once(daemon)
+            if _due("backup") and cfg.get("backup_enabled", True):
+                _backup_data()
         except Exception as e:
             out("AGENT_REVIEW_LOOP_ERR %r" % e)
-        time.sleep(600)
 
 
 def main():

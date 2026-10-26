@@ -35,6 +35,10 @@ DEFAULT_CONFIG = {
     "autostart_with_windows": False,
     "auto_power_on": False,    # 打开应用窗口后自动启动机器人组件
     "close_action": "tray",    # tray=最小化到托盘 | exit_app=退出应用(机器人保持) | exit_all=退出并停止机器人
+    "review_time": "03:30",    # 夜间复盘触发时间（HH:MM）
+    "backup_enabled": True,    # 每日数据快照开关
+    "backup_time": "04:00",    # 备份触发时间（HH:MM）
+    "backup_dir": "",          # 备份目录（空=~/.zcode-qq-bot/backups）
 }
 
 
