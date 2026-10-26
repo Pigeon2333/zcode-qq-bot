@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "qq-bot": {
+      "type": "stdio",
+      "command": "python",
+      "args": [
+        "${ZCODE_PLUGIN_ROOT}/scripts/qq_mcp_server.py"
+      ],
+      "timeoutMs": 120000
+    }
+  }
+}

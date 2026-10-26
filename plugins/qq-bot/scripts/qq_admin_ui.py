@@ -314,6 +314,7 @@ select.mini,input.mini{padding:4px 8px;font-size:12.5px}
   <button data-t="memory">记忆</button>
   <button data-t="stickers">表情包</button>
  <button data-t="devctrl">设备操控</button>
+  <button data-t="zcode">ZCode 联动</button>
   <button data-t="settings">设置</button>
   <button data-t="about">关于</button>
  </nav>
@@ -330,7 +331,7 @@ select.mini,input.mini{padding:4px 8px;font-size:12.5px}
 <script>
 const $=s=>document.querySelector(s);
 let TAB='status';
-const TITLES={status:'状态',runlog:'运行日志',models:'模型管理',groups:'群消息',private:'私聊消息',persona:'人设',style:'风格卡',memory:'记忆',stickers:'表情包',devctrl:'设备操控',settings:'设置',about:'关于'};
+const TITLES={status:'状态',runlog:'运行日志',models:'模型管理',groups:'群消息',private:'私聊消息',persona:'人设',style:'风格卡',memory:'记忆',stickers:'表情包',devctrl:'设备操控',zcode:'ZCode 联动',settings:'设置',about:'关于'};
 function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 function head(sub){return '<h2>'+TITLES[TAB]+'</h2>'+(sub?'<div class="sub">'+sub+'</div>':'')}
 function skeleton(){$('#view').innerHTML='<h2>'+TITLES[TAB]+'</h2><div class="card" style="color:var(--dim);padding:26px 20px">加载中…</div>'}
@@ -387,7 +388,7 @@ function dirtyOn(el,btnId){el.classList.add('dirty');const b=document.getElement
 function dirtyOff(btnId){const b=document.getElementById(btnId);if(b)b.disabled=true;document.querySelectorAll('textarea.dirty,input.dirty').forEach(x=>x.classList.remove('dirty'))}
 async function dirtyGuard(){const d=document.querySelector('textarea.dirty,input.dirty');if(!d)return true;
  return await dlgConfirm({title:'有未保存的修改',body:'当前有未保存的修改（蓝色边框标记），离开将丢失。确定离开？',okText:'放弃修改',danger:true})}
-async function load(){try{if(TAB==='status')await vStatus();else if(TAB==='runlog')await vRunlog();else if(TAB==='models')await vModels();else if(TAB==='groups')await vGroups();else if(TAB==='private')await vPrivate();else if(TAB==='persona')await vPersonas();else if(TAB==='style')await vFile('style');else if(TAB==='memory')await vMemory();else if(TAB==='stickers')await vStickers();else if(TAB==='devctrl')await vDevCtrl();else if(TAB==='settings')await vSettings();else if(TAB==='about')await vAbout();}catch(e){$('#view').innerHTML='<div class="card">加载失败: '+esc(e)+'</div>'}}
+async function load(){try{if(TAB==='status')await vStatus();else if(TAB==='runlog')await vRunlog();else if(TAB==='models')await vModels();else if(TAB==='groups')await vGroups();else if(TAB==='private')await vPrivate();else if(TAB==='persona')await vPersonas();else if(TAB==='style')await vFile('style');else if(TAB==='memory')await vMemory();else if(TAB==='stickers')await vStickers();else if(TAB==='devctrl')await vDevCtrl();else if(TAB==='zcode')await vZcode();else if(TAB==='settings')await vSettings();else if(TAB==='about')await vAbout();}catch(e){$('#view').innerHTML='<div class="card">加载失败: '+esc(e)+'</div>'}}
 document.querySelectorAll('#nav button').forEach(b=>b.onclick=async()=>{if(!await dirtyGuard())return;document.querySelectorAll('#nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');TAB=b.dataset.t;if(TAB!=='runlog'&&_runlogTimer){clearInterval(_runlogTimer);_runlogTimer=null}if(TAB!=='devctrl'&&_devCodeTimer){clearInterval(_devCodeTimer);_devCodeTimer=null}skeleton();load()});
 const _urlTab=new URLSearchParams(location.search).get('tab');
 if(_urlTab&&TITLES[_urlTab]){TAB=_urlTab;document.querySelectorAll('#nav button').forEach(x=>x.classList.toggle('on',x.dataset.t===_urlTab));}
@@ -1032,6 +1033,8 @@ async function vDevCtrl(){
   <div class="k" style="margin-top:14px;margin-bottom:6px">安全设置</div>
   <label class="master" style="margin-bottom:8px"><input type="checkbox" ${on2fa?'checked':''} onchange="saveKVLoad('/api/app-config',{device_ctrl_2fa:this.checked?1:0},'动态授权码已'+(this.checked?'开启（推荐）':'关闭——极危险'))">
    <span><b>动态授权码（2FA）</b><div class="k" style="margin-top:3px">每次操控需授权码验证，一次用完自动换新；关闭后只需主人 QQ 即可操控——极不推荐</div></span></label>
+  <label class="master"><input type="checkbox" id="devact" ${c.device_ctrl_actions?'checked':''} onchange="toggleDevActions(this.checked)">
+   <span><b style="color:var(--err)">动作执行（打开/关闭程序）</b><div class="k" style="margin-top:3px">开启后机器人在授权窗口内可以真的操作电脑：打开程序/文件/网址（如「打开QQ」「打开B站」）、列出已装应用、按名关闭程序（系统关键进程除外）。不开启则只能浏览文件（找/读/发/列目录/联网查）。开启需二次确认</div></span></label>
 
   <div class="k" style="margin-top:10px;margin-bottom:6px">额外保护目录（这些目录下的文件永远不会被搜索/读取/发送）</div>
   <div id="pdlist"></div>
@@ -1114,6 +1117,14 @@ async function refreshDevCode(){
  const r=await api('/api/devctrl-code',{method:'POST'});
  toast(r.ok?'授权码已刷新':'刷新失败',r.ok!==false);load()}
 
+async function toggleDevActions(on){
+ const box=document.getElementById('devact');
+ if(on&&!await dlgConfirm({title:'开启动作执行',body:'⚠ 开启后机器人在授权窗口内可以直接打开/关闭你电脑上的程序、打开任意网址。已有保护：仅主人 QQ + 动态授权码 + 授权窗口限时 + 系统关键进程不可关闭 + 全程留日志。确定开启？',okText:'确认开启（我已了解风险）',danger:true})){
+  if(box)box.checked=false;return}
+ const r=await saveKV('/api/app-config',{device_ctrl_actions:on?1:0},on?'动作执行已开启（打开/关闭程序可用）':'动作执行已关闭（仅浏览文件）');
+ if(r.ok===false){if(box)box.checked=!on;return}
+ load()}
+
 let _devCodeTimer=null;
 function devCodeSync(){ // 静默拉码：更新 DOM 不整页重渲染（不丢流程编辑状态）
  return api('/api/devctrl-code').then(r=>{
@@ -1134,6 +1145,43 @@ function devCodeStart(expIn){
   tick++;
   if(left<=0||tick%30===0){tick=0;devCodeSync()} // 过期拉新 / 30s 同步（码被使用会换新）
  },1000)}
+
+async function vZcode(){
+ const [c,zs]=await Promise.all([
+  api('/api/app-config').catch(()=>({})),
+  api('/api/zcode-status').catch(()=>({installed:false,running:false})),
+ ]);
+ const ok=!!(c.zcode_installed&&c.zcode_bridge_enabled);
+ const dim=ok?'':'opacity:.5;pointer-events:none;';
+ const sw=(key,on,label,desc,danger)=>`<label class="master" style="margin:6px 0">
+  <input type="checkbox" ${on?'checked':''} onchange="saveKVLoad('/api/app-config',{${key}:this.checked?1:0},'已${on?'关闭':'开启'}：${label}')">
+  <span><b${danger?' style="color:var(--err)"':''}>${label}</b><div class="k" style="margin-top:3px">${desc}</div></span></label>`;
+ $('#view').innerHTML=head('ZCode 联动：装了 ZCode 的电脑，机器人会更强')+saveHint(_SAVE_HINT)+
+ `<div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
+   ZCode 状态
+   <span class="badge ${zs.installed?'b-ok':''}" style="${zs.installed?'':'background:var(--tint);color:var(--dim)'}">${zs.installed?'已安装':'未检测到 ZCode'}</span>
+   <span class="badge ${zs.running?'b-ok':''}" style="${zs.running?'':'background:var(--tint);color:var(--dim)'}">${zs.running?'运行中':'未运行'}</span>
+  </div>
+  <label class="master"><input type="checkbox" ${c.zcode_bridge_enabled&&c.zcode_installed?'checked':''} ${c.zcode_installed?'':'disabled'} onchange="saveKVLoad('/api/app-config',{zcode_bridge_enabled:this.checked?1:0},this.checked?'ZCode 联动已开启':'ZCode 联动已关闭')">
+   <span><b>启用 ZCode 联动（总开关）</b><div class="k" style="margin-top:3px">机器人独立运行完全不受影响；开启后下面的联动能力可用。未安装 ZCode 时无法开启${c.zcode_installed?'':'（检测路径：~/.zcode 或 Program Files\\\\ZCode，安装后刷新本页）'}</div></span></label>
+  <div class="k" style="margin-top:6px">在 ZCode 里通过 /qq-bot 技能 + qq-bot MCP 工具（qq_send / qq_notify / qq_task_done / qq_sticker_add 等）与本页联动。</div></div>
+ <div class="card" style="${dim}"><div class="k" style="margin-bottom:4px">① 任务转交（收件箱）</div>
+  ${sw('zcode_handoff_enabled',c.zcode_handoff_enabled,'允许「转交ZCode」指令','你私聊机器人发「转交ZCode：<任务>」，任务写进 ZCode 工作区收件箱（zcode-tasks/），打开 ZCode 用 /qq-bot 接手')}
+  ${sw('zcode_return_enabled',c.zcode_return_enabled,'完成后自动回传 QQ','ZCode 侧完成回执（qq_task_done 或手动标记 .done）后，机器人一分钟内把结果转发到你 QQ，任务归档')}
+  <div class="k" style="margin-top:4px">收件箱：D:\\ZCode\\workspaces\\qq-bot\\zcode-tasks\\（或 task_workspace 下）</div></div>
+ <div class="card" style="${dim}"><div class="k" style="margin-bottom:4px">② ZCode → QQ 通知</div>
+  ${sw('zcode_notify_enabled',c.zcode_notify_enabled,'允许 ZCode 发通知','ZCode 会话里的 AI 可用 qq_notify 把长任务进度/完成提醒发到你 QQ（前缀 [ZCode]）')}</div>
+ <div class="card" style="${dim}"><div class="k" style="margin-bottom:4px">③ 每日复盘报告进 ZCode</div>
+  ${sw('zcode_reports_enabled',c.zcode_reports_enabled,'复盘报告写入工作区','机器人每日复盘日报同步写到 BOT_REPORTS/ 目录；在 ZCode 里说「审阅机器人表现」，AI 读报告+日志产出人设微调/记忆清理建议，你确认后应用')}</div>
+ <div class="card" style="${dim}"><div class="k" style="margin-bottom:4px">④ 表情包生产线</div>
+  ${sw('zcode_sticker_enabled',c.zcode_sticker_enabled,'一键入库表情包','ZCode 里生成的图片可用 qq_sticker_add 直接入库机器人 _zcode 表情池，视觉描述由机器人自动补全后即可在聊天中使用')}</div>
+ <div class="card" style="${dim}"><div class="k" style="margin-bottom:4px">⑤ ZCode 进程监控</div>
+  ${sw('zcode_watch_enabled',c.zcode_watch_enabled,'退出/启动提醒','机器人盯 ZCode 进程：检测到 ZCode 退出（且之前运行超过 5 分钟）时 QQ 提醒你，防止长任务中断没人知道（每 60 秒检测）')}</div>
+ <div class="card" style="${dim}"><div class="k" style="margin-bottom:4px">⑥ 定时 ZCode 任务</div>
+  ${sw('zcode_cron_enabled',c.zcode_cron_enabled,'定时投递收件箱','私聊发「定时 HH:MM zcode <任务>」：到点自动把任务放进收件箱并 QQ 提醒你开 ZCode 接手（配合系统的定时任务体系）')}</div>
+ <div class="card" style="${dim}"><div class="k" style="margin-bottom:4px">⑦ 主人上下文感知（隐私）</div>
+  ${sw('zcode_context_enabled',c.zcode_context_enabled,'主动消息感知你在忙什么','开启后机器人主动发消息前会参考你最近在 ZCode 工作区活跃的项目目录（只读目录名和修改时间，不读文件内容、不读会话记录），关心更贴题。数据不出本机；介意请保持关闭',true)}</div>`;
+}
 
 async function vSettings(){
  const [c,rv,kl]=await Promise.all([
@@ -1251,13 +1299,6 @@ async function vSettings(){
    <span><b>AI 生图</b><div class="k" style="margin-top:3px">主人发「画：描述」或自然说法（帮我画一张/给我画个/来一张…，私聊或群里@）→ CogView-3-flash 免费生成并发图</div></span></label>
   <label class="master"><input type="checkbox" ${rv.daily_review_enabled!==false?'checked':''} onchange="saveFeature('daily_review_enabled',this.checked)">
    <span><b>夜间自动复盘</b><div class="k" style="margin-top:3px">每日 03:30 自动统计当日表现、提炼风格观察、日报发主人私聊</div></span></label>
-  <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
-   <div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:6px">ZCode 联动
-    <span class="badge ${c.zcode_installed?'b-ok':''}" style="${c.zcode_installed?'':'background:var(--tint);color:var(--dim)'}">${c.zcode_installed?'已检测到 ZCode':'未检测到 ZCode'}</span></div>
-   <label class="master" style="${c.zcode_installed?'':'opacity:.5'}">
-    <input type="checkbox" ${c.zcode_bridge_enabled&&c.zcode_installed?'checked':''} ${c.zcode_installed?'':'disabled'} onchange="saveKVLoad('/api/app-config',{zcode_bridge_enabled:this.checked?1:0},this.checked?'ZCode 联动已开启':'ZCode 联动已关闭')">
-    <span><b>转交任务到 ZCode</b><div class="k" style="margin-top:3px">开启后，你私聊机器人发「转交ZCode：<任务>」，任务会写进 ZCode 工作区的收件箱（zcode-tasks/），打开 ZCode 用 /qq-bot 技能即可查看并接手，做完把结果带回给机器人转发给你；沙盒执行失败的任务也会进入同一收件箱等 ZCode 接力${c.zcode_installed?'':'。需要先在本机安装 ZCode（检测路径：~/.zcode 或 Program Files\\ZCode），安装后刷新本页即可启用'}</div></span></label>
-  </div>
  </div>
  <div class="card"><div class="k">开机自启（登录 Windows 后自动打开控制台窗口${c.autostart_with_windows?'，已开启':'，未开启'}）</div>
   <div style="margin-top:8px"><label><input type="checkbox" id="sauto" ${c.autostart_with_windows||S_autostartRegistry()?'checked':''} onchange="saveAuto(this.checked)"> 开机自动启动本应用</label></div></div>
@@ -2294,6 +2335,21 @@ class UiHandler(BaseHTTPRequestHandler):
                           "/group-list" + ("?refresh=1" if q.get("refresh") else ""),
                           read_const(TOKEN_PATH), timeout=15)
             return self._reply(200, r if isinstance(r, dict) else {"ok": False})
+        if u.path == "/api/zcode-status":
+            import subprocess as _sp
+            running = False
+            try:
+                chk = _sp.run(["tasklist", "/FI", "IMAGENAME eq ZCode.exe", "/NH"],
+                              capture_output=True, text=True, timeout=8,
+                              creationflags=0x08000000)
+                running = "zcode.exe" in (chk.stdout or "").lower()
+            except (OSError, _sp.SubprocessError):
+                pass
+            cfg = C.load_app_config()
+            return self._reply(200, {"ok": True,
+                                     "installed": C.zcode_installed(),
+                                     "running": running,
+                                     "bridge": bool(cfg.get("zcode_bridge_enabled"))})
         if u.path == "/api/watchdog":
             cfg = C.load_app_config()
             with _wd_lock:
@@ -2809,7 +2865,12 @@ class UiHandler(BaseHTTPRequestHandler):
                     v = str(cfg_in[k]).strip()
                     cleaned[k] = v if len(v) == 5 and v[2] == ":" and v[:2].isdigit() and v[3:].isdigit() else ""
             for k in ("backup_enabled", "sched_pause_enabled", "watchdog_enabled",
-                      "qq_status_auto", "zcode_bridge_enabled"):
+                      "qq_status_auto", "zcode_bridge_enabled",
+                      "zcode_handoff_enabled", "zcode_return_enabled",
+                      "zcode_notify_enabled", "zcode_reports_enabled",
+                      "zcode_sticker_enabled", "zcode_watch_enabled",
+                      "zcode_cron_enabled", "zcode_context_enabled",
+                      "device_ctrl_actions"):
                 if k in cfg_in:
                     cleaned[k] = bool(cfg_in[k])
             if "backup_dir" in cfg_in:

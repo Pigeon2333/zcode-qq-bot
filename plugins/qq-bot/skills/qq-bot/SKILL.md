@@ -117,3 +117,35 @@ NapCat Shell 文件内嵌释放与 QQ 版本校验 + 日志轮转 + UI 鉴权。
    （body: chat_type=private, chat_id=3349525227, texts=[结果]，
    Header X-QQBot-Token）把结果转发到主人 QQ
 4. 已处理文件删除或加 `.done` 后缀归档，避免重复处理
+
+## MCP 工具（qq-bot MCP 服务器）
+
+本插件自带 MCP 服务器（.mcp.json → scripts/qq_mcp_server.py），ZCode 会话中可直接调用
+（前提：机器人「ZCode 联动」总开关开启）：
+
+- qq_status / qq_logs —— 机器人状态与日志
+- qq_send(chat_type, chat_id, text) —— 以机器人身份发消息
+- qq_notify(text) —— 给主人 QQ 发 [ZCode] 前缀通知（长任务完成提醒首选；受「通知」开关门控）
+- qq_inject(...) —— 注入测试消息（调试人设/触发，不经过真实 QQ）
+- qq_config_get / qq_config_set —— 读改回复配置
+- qq_memory_add(scope, id, text) —— 写入长期记忆
+- qq_persona_list / qq_persona_switch —— 人设管理
+- qq_task_done(task_file?, result) —— 收件箱任务完成回执（机器人会自动把结果转发主人 QQ）
+- qq_sticker_add(path, desc?) —— 本地图片一键入库表情包 _zcode 池（受「表情包入库」开关门控）
+
+## 审阅机器人表现（配合 复盘报告）
+
+机器人每日复盘会写 `BOT_REPORTS/YYYYMMDD.md`（需在「ZCode 联动」页开启）。
+用户说"审阅一下机器人最近表现"时：
+1. 读最近几份 BOT_REPORTS + qq_logs 抽查
+2. 产出具体建议：人设微调（给出改前/改后文案）、记忆清理清单（哪些该删）、
+   风控/频率建议
+3. 用户确认后通过 MCP（qq_config_set / qq_memory_add / qq_persona_ 相关 UI API）应用
+4. 用 qq_notify 告知主人已应用
+
+## GUI 任务的 computer-use 接力
+
+机器人设备操控可原生打开/关闭程序，但**精细 GUI 操作**（点按钮、填表单）交给
+ZCode 的电脑控制插件（computer-use）：主人在 QQ 转交任务时写明 GUI 步骤 →
+ZCode 会话接手后用 computer-use 执行 → qq_task_done 回传结果。
+机器人自身不做截屏点击（保持零 GUI 依赖）。

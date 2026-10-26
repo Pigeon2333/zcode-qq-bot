@@ -38,6 +38,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import qq_common as C
 
+CREATE_NO_WINDOW = 0x08000000  # Windows 子进程不弹黑窗
+
 DATA_DIR = C.DATA_DIR
 TOKEN_PATH = os.path.join(DATA_DIR, "token")
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
@@ -841,6 +843,16 @@ OWNER_HELP = (
 _QUIET_WORDS_RE = re.compile(r"(安静|歇一会|歇一会儿|歇会儿|闭嘴|别说了|别说话|沉默|少说话)")
 
 
+def _zcode_on(key):
+    """ZCode 联动子项开关：总开关 + 已安装 + 子项全真才生效。"""
+    try:
+        cfg = C.load_app_config()
+        return bool(cfg.get("zcode_bridge_enabled")) and C.zcode_installed() \
+            and bool(cfg.get(key))
+    except Exception:
+        return False
+
+
 def _zcode_bridge_dir():
     """转交 ZCode 任务的收件箱目录：优先 ZCode 工作区（可被发现），回落数据目录。"""
     cfg = C.load_app_config()
@@ -853,12 +865,88 @@ def _zcode_bridge_dir():
     return os.path.join(DATA_DIR, "tasks", "zcode-tasks")
 
 
+def _zcode_return_tick(daemon):
+    """收件箱自动回传：*.done.md + 同名 .result.md → 结果发主人 QQ → 归档。"""
+    if not _zcode_on("zcode_return_enabled"):
+        return
+    d = _zcode_bridge_dir()
+    try:
+        files = os.listdir(d)
+    except OSError:
+        return
+    done = [f for f in files if f.endswith(".done.md")]
+    for f in done[:5]:
+        stem = f[:-8]  # 去掉 .done.md
+        resf = os.path.join(d, stem + ".result.md")
+        try:
+            text = pathlib.Path(resf).read_text(encoding="utf-8")[:1200] \
+                if os.path.isfile(resf) else "（ZCode 已完成该任务，未附结果说明）"
+            owner = owner_qq()
+            if owner:
+                daemon.send("private", owner,
+                            ["ZCode 任务完成：%s%s%s" % (
+                                stem,
+                                chr(10) + chr(10) + text if os.path.isfile(resf) else "",
+                                chr(10) + chr(10) + "（任务来自你之前的转交）")])
+            arch = os.path.join(d, "archive")
+            pathlib.Path(arch).mkdir(parents=True, exist_ok=True)
+            for src in (f, stem + ".result.md"):
+                sp = os.path.join(d, src)
+                if os.path.isfile(sp):
+                    os.replace(sp, os.path.join(arch, src))
+            out("AGENT_ZCODE_RETURN %s" % stem)
+        except OSError as e:
+            out("AGENT_ZCODE_RETURN_FAIL %s %r" % (f, e))
+
+
+def _zcode_workspace_root():
+    for cand in (r"D:\ZCode\workspaces", r"C:\ZCode\workspaces"):
+        if os.path.isdir(cand):
+            return cand
+    return ""
+
+
+def _zcode_recent_projects(n=3):
+    """主人近期项目感知（只读目录名+近期修改时间，不读文件内容）。"""
+    root = _zcode_workspace_root()
+    if not root:
+        return []
+    import time as _t
+    items = []
+    try:
+        for name in os.listdir(root):
+            p = os.path.join(root, name)
+            if os.path.isdir(p) and not name.startswith((".", "_")):
+                try:
+                    mt = os.path.getmtime(p)
+                except OSError:
+                    continue
+                items.append((mt, name))
+    except OSError:
+        return []
+    items.sort(reverse=True)
+    return [(name, _t.strftime("%m-%d %H:%M", _t.localtime(mt)))
+            for mt, name in items[:n]]
+
+
+def _zcode_context_line():
+    """主动消息注入：主人在 ZCode 的近期项目（zcode_context_enabled 时）。"""
+    if not _zcode_on("zcode_context_enabled"):
+        return ""
+    projs = _zcode_recent_projects()
+    if not projs:
+        return ""
+    return ("（参考：主人最近在 ZCode 里活跃的项目/目录：%s——关心工作进展时可以自然提及，"
+            "但不要每条都提。）"
+            % "、".join("%s（%s 有改动）" % (n, t) for n, t in projs))
+
+
 def _zcode_handoff(task_text, msg):
     """把任务写入 ZCode 收件箱（Markdown），返回给主人的回复文本。"""
     if not C.zcode_installed():
-        return "这台电脑上没检测到 ZCode，转交不了～先装 ZCode（并在设置里开启「ZCode 联动」）再试试吧"
-    if not C.load_app_config().get("zcode_bridge_enabled"):
-        return "「ZCode 联动」还没开启：到电脑控制台 → 设置 → 主人专属功能里打开它就能用了"
+        return "这台电脑上没检测到 ZCode，转交不了～先装 ZCode（并到控制台「ZCode 联动」页开启）再试试吧"
+    if not _zcode_on("zcode_handoff_enabled"):
+        return "「ZCode 联动 → 任务转交」还没开启：到电脑控制台的「ZCode 联动」页打开它就能用了"
     d = _zcode_bridge_dir()
     fp = os.path.join(d, time.strftime("%Y%m%d-%H%M%S") + ".md")
     try:
@@ -1969,7 +2057,7 @@ def _proactive_compose(daemon, chat_type, chat_id):
            evolved_block, mem_block,
            ((naming_lines() + "\n\n") if naming_lines() else ""),
            tstr, label))
-    content = "【%s | 最近对话】\n%s\n\n【现在】请你主动发一条消息。" % (label, hist_block)
+    content = "【%s | 最近对话】\n%s\n%s\n\n【现在】请你主动发一条消息。" % (label, hist_block, _zcode_context_line())
     return [{"role": "system", "content": system},
             {"role": "user", "content": content}], active
 
@@ -2127,6 +2215,16 @@ def _cron_tick(daemon):
 
 def _cron_run_task(daemon, fake_msg):
     """定时任务执行（不走 bridge_task 的限频/忙锁，因为定时到达不受人为频率影响）。"""
+    raw = str(fake_msg.get("text") or "")
+    # 定时 ZCode 任务：到点投递收件箱 + QQ 提醒，不在沙盒执行
+    mz = re.match(r"^(?:zcode|ZCode)\s*[:：]?\s*(.{4,2000})$", raw, re.S)
+    if mz:
+        owner = owner_qq()
+        reply = _zcode_handoff(mz.group(1), fake_msg) if _zcode_on("zcode_cron_enabled") \
+            else "定时 ZCode 任务到达，但「ZCode 联动 → 定时任务」未开启，本次跳过"
+        if owner:
+            daemon.send("private", owner, [chr(0x23F0) + " " + reply])
+        return
     _task_busy["flag"] = True
     workdir = os.path.join(_task_root(), "cron_" + time.strftime("%Y%m%d_%H%M%S"))
     os.makedirs(workdir, exist_ok=True)
@@ -2411,6 +2509,8 @@ def _persona_say(instruction, fallback):
 
 _DEVCTRL_SESSION = {"msgs": [], "noticed": False}
 
+_last_zcode_return = 0.0
+
 _DEVCTRL_TOOLS_DOC = """## 设备操控模式（协议二已连线，主人已授权）
 主人现在可以直接指挥你操作他的电脑。保持上面的人设与语气和主人互动，同时用动作完成要求。
 每轮回复格式（严格遵守）：
@@ -2420,6 +2520,10 @@ _DEVCTRL_TOOLS_DOC = """## 设备操控模式（协议二已连线，主人已�
   [CMD] send <路径>              把文件发给主人（会立即送达）
   [CMD] list <目录>              列出目录内容（主人没指定就看桌面/主目录）
   [CMD] searchweb <搜索词>       联网搜索实时信息
+  [CMD] apps [关键词]            列出电脑上安装的应用（开始菜单）
+  [CMD] open <程序名/路径/网址>  打开程序、文件、文件夹或网页（如「打开QQ」）
+  [CMD] close <程序名>           关闭正在运行的程序（系统关键进程除外）
+  （open/close/apps 需主人在控制台开启「动作执行」，未开启时结果会说明）
   动作结果会在下一轮给你，看到结果后再决定下一步。
 - 不需要动作（任务完成/纯聊天/汇报结果）时：直接输出给主人看的话——保持人设、
   口语自然，把刚拿到的结果讲清楚；此时禁止出现 [CMD]。
@@ -2442,6 +2546,72 @@ def _devctrl_history_block(daemon, msg, n=10, w=80):
         return "\n".join(lines)
     except Exception:
         return ""
+
+
+def _actions_enabled():
+    return bool(C.load_app_config().get("device_ctrl_actions"))
+
+
+def _list_start_apps(filter_word=""):
+    """扫描开始菜单快捷方式（两个 Program 目录递归 .lnk），按名过滤。"""
+    import fnmatch
+    roots = [os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"),
+                          r"Microsoft\Windows\Start Menu\Programs"),
+             os.path.join(os.environ.get("AppData", ""),
+                          r"Microsoft\Windows\Start Menu\Programs")]
+    fw = str(filter_word or "").strip().lower()
+    out_list = []
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        for dirpath, _dirnames, filenames in os.walk(root):
+            for fn in filenames:
+                if not fn.lower().endswith(".lnk"):
+                    continue
+                name = fn[:-4]
+                if fw and fw not in name.lower():
+                    continue
+                out_list.append((name, os.path.join(dirpath, fn)))
+    out_list.sort()
+    return out_list[:40]
+
+
+def _resolve_open_target(target):
+    """打开目标解析：URL / 已存在路径 / 开始菜单快捷方式 / 注册表 App Paths。
+    返回 (kind, payload) 或 (None, 建议提示)。"""
+    import winreg
+    t = str(target or "").strip().strip('"')
+    if not t:
+        return None, "目标为空"
+    low = t.lower()
+    if low.startswith(("http://", "https://")):
+        return "url", t
+    if os.path.isfile(t) or os.path.isdir(t):
+        return "path", t
+    # 开始菜单精确/包含匹配
+    hits = _list_start_apps(os.path.splitext(os.path.basename(t))[0] if "\\" in t else t)
+    if hits:
+        return "lnk", hits[0][1]
+    # App Paths 注册表（如 qq.exe）
+    exe = t if low.endswith(".exe") else t + ".exe"
+    for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        try:
+            key = winreg.OpenKey(
+                hive, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\\" + exe)
+            v = winreg.QueryValueEx(key, None)[0]
+            winreg.CloseKey(key)
+            if v and os.path.isfile(v):
+                return "path", v
+        except OSError:
+            continue
+    apps = [n for n, _p in _list_start_apps("")]
+    return None, ("未找到「%s」。可用 apps 动作列出已装应用，或给完整路径/网址。"
+                  "附近的应用：%s" % (t, "、".join(apps[:12])))
+
+
+_SYS_PROC_BLOCK = {"csrss.exe", "wininit.exe", "winlogon.exe", "services.exe",
+                   "lsass.exe", "smss.exe", "svchost.exe", "explorer.exe",
+                   "system", "registry"}
 
 
 def _devctrl_step(daemon, reply_to, action, arg):
@@ -2490,6 +2660,61 @@ def _devctrl_step(daemon, reply_to, action, arg):
         res, backend = search_web(arg[:80])
         return ("searchweb「%s」(%s)：%s" % (arg[:60], backend or "无结果",
                 res.replace("\n", " ｜ ")[:900] if res else "无结果"))
+    if action == "apps":
+        hits = _list_start_apps(arg[:30])
+        return ("apps「%s」→ %d 个：%s" % (arg[:20], len(hits),
+                "；".join(n for n, _p in hits[:20]) if hits else "无匹配（可留空列出全部）"))
+    if action == "open":
+        if not _actions_enabled():
+            return ("open 拒绝：动作执行未开启——请主人到控制台「设备操控」页开启"
+                    "「动作执行（打开/关闭程序）」后重试；把这句话如实告诉主人")
+        kind, payload = _resolve_open_target(arg)
+        if not kind:
+            return "open 失败：%s" % payload[:300]
+        try:
+            if kind == "url":
+                import webbrowser
+                webbrowser.open(payload)
+            else:
+                os.startfile(payload)  # path / .lnk
+            out("AGENT_DEVCTRL_OPEN %s %s" % (kind, payload[:120]))
+            return "open 成功（%s）：%s" % (kind, payload[:200])
+        except OSError as e:
+            return "open 失败：%r" % e
+    if action == "close":
+        if not _actions_enabled():
+            return ("close 拒绝：动作执行未开启——请主人到控制台「设备操控」页开启"
+                    "「动作执行（打开/关闭程序）」后重试；把这句话如实告诉主人")
+        name = arg.strip().strip('"')
+        if not name.lower().endswith(".exe"):
+            name += ".exe"
+        if name.lower() in _SYS_PROC_BLOCK:
+            return "close 拒绝：%s 是系统关键进程，不允许关闭" % name
+
+        def _proc_running(nm):
+            try:
+                chk = subprocess.run(
+                    ["tasklist", "/FI", "IMAGENAME eq " + nm, "/NH"],
+                    capture_output=True, timeout=10,
+                    creationflags=CREATE_NO_WINDOW)
+                return nm.lower().encode() in (chk.stdout or b"").lower()
+            except OSError:
+                return False
+        try:
+            if not _proc_running(name):
+                return "close：%s 当前没有在运行" % name
+            subprocess.run(
+                ["taskkill", "/IM", name],
+                capture_output=True, timeout=10,
+                creationflags=CREATE_NO_WINDOW)  # 优雅关闭，不 /F
+            time.sleep(1.5)
+            if not _proc_running(name):
+                out("AGENT_DEVCTRL_CLOSE %s" % name)
+                return "close 成功：%s 已关闭" % name
+            return ("close 部分成功：已发送关闭请求但 %s 仍在运行"
+                    "（可能有未保存内容弹窗挡着），建议主人手动确认" % name)
+        except OSError as e:
+            return "close 失败：%r" % e
     return "不支持的动作 %s" % action
 
 
@@ -3153,6 +3378,21 @@ def _daily_review_once(daemon):
                 % (time.strftime("%m-%d %H:%M"), report, done, skip, err)])
         except Exception as e:
             out("AGENT_REVIEW_SEND_FAIL %r" % e)
+    # ZCode 联动：报告同步写入工作区 BOT_REPORTS/（供 ZCode 会话审阅）
+    if _zcode_on("zcode_reports_enabled"):
+        try:
+            root = _zcode_workspace_root() or os.path.join(DATA_DIR, "tasks")
+            rdir = os.path.join(root, "qq-bot", "BOT_REPORTS")
+            pathlib.Path(rdir).mkdir(parents=True, exist_ok=True)
+            pathlib.Path(os.path.join(
+                rdir, time.strftime("%Y%m%d") + ".md")).write_text(
+                "# 运行日报 %s\n\n- 回复 %d · 沉默 %d · 错误 %d\n- 激活人设：%s\n\n## 日报\n%s\n%s\n"
+                % (time.strftime("%Y-%m-%d"), done, skip, err, active, report,
+                   ("\n## 新增风格观察\n" + "\n".join("- " + n for n in notes)) if notes else ""),
+                encoding="utf-8")
+            out("AGENT_ZCODE_REPORT %s" % rdir)
+        except OSError as e:
+            out("AGENT_ZCODE_REPORT_FAIL %r" % e)
     out("AGENT_REVIEW_DONE done=%d skip=%d err=%d notes=%d"
         % (done, skip, err, len(notes)))
 
@@ -3263,6 +3503,11 @@ def main():
                         process(daemon, msg)
                 _proactive_tick(daemon)
                 _cron_tick(daemon)
+                global _last_zcode_return
+                now_ts = time.time()
+                if now_ts - _last_zcode_return > 60:
+                    _last_zcode_return = now_ts
+                    _zcode_return_tick(daemon)
         except Exception as e:
             out("AGENT_LOOP_ERROR %r" % e)
             time.sleep(5)

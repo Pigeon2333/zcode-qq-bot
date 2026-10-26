@@ -45,6 +45,7 @@ DEFAULT_CONFIG = {
     "device_ctrl_enabled": False,  # 设备操控（高危，默认关）
     "device_ctrl_2fa": True,       # 设备操控动态授权码（每次需验证）
     "device_ctrl_protected_dirs": [],  # 额外保护目录（不可搜索/发送）
+    "device_ctrl_actions": False,  # 动作执行（打开/关闭程序等真操作；独立高危开关，默认关）
     "sched_pause_enabled": False,  # 定时暂停（时段内停止一切回复+零消耗）
     "sched_pause_start": "23:00",  # 暂停开始时间
     "sched_pause_end": "07:00",    # 暂停结束时间（支持跨午夜）
@@ -57,7 +58,15 @@ DEFAULT_CONFIG = {
     "owner_name_enabled": False,   # 固定主人称呼（开=覆盖人设里对主人的叫法）
     "owner_name_value": "主人",
     "api_proxy": "",               # API 出站代理（http://host:port；供 OpenAI/Grok/Gemini 等境外供应商用）
-    "zcode_bridge_enabled": False, # ZCode 联动（转交任务到 ZCode 工作区；需本机安装 ZCode）
+    "zcode_bridge_enabled": False, # ZCode 联动总开关（需本机安装 ZCode；以下子项都受它门控）
+    "zcode_handoff_enabled": False,    # 任务转交（转交ZCode 指令 + 收件箱）
+    "zcode_return_enabled": True,      # 收件箱任务完成后自动回传 QQ
+    "zcode_notify_enabled": True,      # 允许 ZCode 侧（MCP qq_notify）向主人 QQ 发通知
+    "zcode_reports_enabled": False,    # 每日复盘报告写入 ZCode 工作区 BOT_REPORTS/
+    "zcode_sticker_enabled": False,    # 表情包生产线（MCP qq_sticker_add 一键入库）
+    "zcode_watch_enabled": False,      # ZCode 进程监控（退出/重启时 QQ 提醒）
+    "zcode_cron_enabled": False,       # 定时 ZCode 任务（定时 HH:MM zcode 任务）
+    "zcode_context_enabled": False,    # 主动消息感知主人在 ZCode 的近期项目（默认关，隐私）
 }
 
 # 备份/恢复统一文件清单（basename 冲突无；子目录文件扁平存放）
