@@ -1993,6 +1993,23 @@ def _is_protected(path):
     return False
 
 
+_DEVCTRL_DEV_WORDS = ("电脑", "本机", "本地磁盘", "硬盘", "磁盘", "文件管理器", "资源管理器")
+_DEVCTRL_ACT_WORDS = ("找", "搜", "查", "打开", "读", "发我", "发给我", "发过来", "文档", "文件", "资料", "图片", "照片", "文件夹")
+
+
+def _devctrl_intent(text):
+    """判断主人这句话是否表达"要操作本机文件"的意图（比只说「设备」更灵活）。
+    命中条件：明确关键词，或 设备词 + 动作词 同时出现。"""
+    t = str(text or "").strip()
+    if "设备操控" in t or t in ("设备", "设备 授权", "设备 授权码", "连线"):
+        return True
+    if len(t) > 60:
+        return False
+    has_dev = any(w in t for w in _DEVCTRL_DEV_WORDS)
+    has_act = any(w in t for w in _DEVCTRL_ACT_WORDS)
+    return has_dev and has_act
+
+
 def _bot_self_name():
     """机器人自称：当前激活人设名（跟随人设切换）；无人设时回退 智谱娘。"""
     try:
@@ -2049,8 +2066,8 @@ def _handle_devctrl(daemon, msg):
         return True
     m = _re.match(r"^设备\s+(\d{6})\s*[|｜]\s*(.+)$", text, _re.S)
     if not m:
-        # 请求授权码
-        if text in ("设备", "设备 授权", "设备 授权码"):
+        # 请求授权码（意图触发：设备操控关键词，或 设备词+动作词）
+        if _devctrl_intent(text):
             nl2 = chr(10)
             daemon.send(msg["chat_type"], msg["chat_id"],
                         ["协议一：连线主人" + nl2 +

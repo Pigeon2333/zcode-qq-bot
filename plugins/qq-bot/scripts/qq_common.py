@@ -84,15 +84,34 @@ def load_app_config():
 
 
 def save_app_config(cfg):
-    """原子写 app_config.json（仅数据目录内；pathlib 常量路径）。"""
+    """写 app_config.json（仅数据目录内；pathlib 常量路径）。
+
+    Windows 下 os.replace 需要目标文件没有其他进程持有句柄——agent/daemon
+    高频读取本文件时原子替换会偶发 WinError 5。策略：
+    ① 最多重试 6 次 os.replace（每次间隔递增）；② 仍失败则退化为就地写入。
+    """
     merged = load_app_config()
     for k in DEFAULT_CONFIG:
         if k in cfg:
             merged[k] = cfg[k]
+    text = json.dumps(merged, ensure_ascii=False, indent=2)
     tmp = DATA_ROOT / "app_config.json.tmp"
-    tmp.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(str(tmp), str(APP_CONFIG_PATH))
-    return merged
+    tmp.write_text(text, encoding="utf-8")
+    last = None
+    for attempt in range(6):
+        try:
+            os.replace(str(tmp), str(APP_CONFIG_PATH))
+            return merged
+        except PermissionError as e:
+            last = e
+            time.sleep(0.08 * (attempt + 1))
+    # 兜底：就地覆盖（放弃原子性，保证保存成功）；失败才向上抛
+    try:
+        APP_CONFIG_PATH.write_text(text, encoding="utf-8")
+        os.remove(str(tmp)) if tmp.exists() else None
+        return merged
+    except OSError:
+        raise last if last else OSError("保存 app_config 失败")
 
 
 def qqnt_dir_resolved(cfg=None):

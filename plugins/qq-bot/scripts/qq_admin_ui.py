@@ -527,352 +527,79 @@ async function backupNow(){
  const r=await api('/api/backup-now',{method:'POST'});
  toast(r.ok?'备份完成（目录见运行日志 AGENT_BACKUP_OK）':'备份失败',r.ok!==false)}
 async function toggleDevCtrl(on){
- if(on&&!await dlgConfirm({title:'开启设备操控',body:'⚠ 这是一项高危功能：开启后主人可以从 QQ 远程搜索、读取、发送你电脑上的文件。'
- +String.fromCharCode(10)+String.fromCharCode(10)+'已内置保护：仅主人可用、结果只发私聊、系统目录+你的保护目录不可触达、默认需动态授权码。'
- +String.fromCharCode(10)+String.fromCharCode(10)+'确定开启？',okText:'确认开启（我已了解风险）',danger:true}))return;
- await saveKV('/api/app-config',{device_ctrl_enabled:on},on?'设备操控已开启':'设备操控已关闭');load()}
-async function saveDevDirs(){
- const dirs=document.getElementById('pdevdirs').value.split('\n').map(x=>x.trim()).filter(Boolean);
- const r=await saveKV('/api/app-config',{device_ctrl_protected_dirs:dirs},'保护目录已保存（'+dirs.length+' 个）');
- if(r.ok!==false)load()}
-async function saveNight(key,val){
- const msg={review_time:'复盘时间',backup_enabled:'自动备份',backup_time:'备份时间',backup_dir:'备份目录'}[key]+'已更新（次日生效）';
- const r=await saveKV('/api/app-config',{[key]:key==='backup_dir'?String(val).trim():val},msg);
- if(r.ok!==false)load()}
-let _trendRange='d30',_usageCache=null;
-function setTrendRange(r){_trendRange=r;if(_usageCache){renderTrend()}}
-function renderTrend(){
- const u=_usageCache;if(!u)return;
- let series;
- if(_trendRange==='today'){series=(u.hourly||[]).map(x=>({label:x.label,tokens:x.tokens}));}
- else{const n=_trendRange==='d7'?7:30;series=(u.daily||[]).slice(-n).map(x=>({label:x.date.slice(5),tokens:x.tokens}));}
- drawTrend(series);
- ['d30','d7','today'].forEach(id=>{const b=document.getElementById('tr_'+id);if(b)b.style.borderColor=(id===_trendRange)?'var(--acc)':'transparent'});
-}
-function drawTrend(series){
- const el=document.getElementById('trend');if(!el||!series.length)return;
- const W=el.clientWidth||900,H=170,P=30;
- const vals=series.map(d=>d.tokens);const max=Math.max(10,...vals);
- const step=(W-P*2)/Math.max(1,series.length-1);
- const pts=vals.map((v,i)=>[P+i*step,H-24-(v/max)*(H-52)]);
- const path=pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ');
- const area=path+' L '+(P+(series.length-1)*step).toFixed(1)+' '+(H-24)+' L '+P+' '+(H-24)+' Z';
- const grid=[0,0.5,1].map(f=>'<line x1="'+P+'" y1="'+(H-24-f*(H-52)).toFixed(1)+'" x2="'+(W-P)+'" y2="'+(H-24-f*(H-52)).toFixed(1)+'" stroke="var(--border)" stroke-width="1"/>').join('');
- const labels=[0,0.5,1].map(f=>'<text x="'+(P-6)+'" y="'+(H-20-f*(H-52)).toFixed(1)+'" fill="var(--dim)" font-size="10" text-anchor="end">'+Math.round(max*f).toLocaleString()+'</text>').join('');
- const xi=[0,Math.floor(series.length/2),series.length-1].filter((v,i,a)=>a.indexOf(v)===i);
- const xticks=xi.map(i=>'<text x="'+(P+i*step).toFixed(1)+'" y="'+(H-8)+'" fill="var(--dim)" font-size="10" text-anchor="middle">'+(series[i]?series[i].label:'')+'</text>').join('');
- const dots=pts.map(p=>'<circle cx="'+p[0].toFixed(1)+'" cy="'+p[1].toFixed(1)+'" r="2.5" fill="var(--acc)"/>').join('');
- el.innerHTML='<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:'+H+'px" role="img" aria-label="token调用趋势">'+grid+labels+xticks+
-  '<path d="'+area+'" fill="var(--acc)" opacity="0.12"/><path d="'+path+'" fill="none" stroke="var(--acc)" stroke-width="2"/>'+dots+'</svg>';
-}
-function mv(i,d){const e=window._mEntries||[];const j=i+d;if(j<0||j>=e.length)return;[e[i],e[j]]=[e[j],e[i]];postChainReorder()}
-async function postChainReorder(){await saveKV('/api/config',{models:chainOf(window._mEntries||[])},'模型链已更新（agent 已热加载）');load()}
-async function del(i){const e=window._mEntries||[];const m=e[i]&&e[i].model;
- if(!await dlgConfirm({title:'移除模型',body:'从降级链移除「'+(m||'')+'」？（链中剩余模型仍正常工作，可随时重新添加）',okText:'移除',danger:true}))return;
- e.splice(i,1);postChainReorder()}
-function chainOf(entries){return entries.map(e=>(e.key||e.ctx||e.maxout)?{model:e.model,...(e.key?{key:e.key}:{}),...(e.ctx?{ctx:e.ctx}:{}),...(e.maxout?{max_out:e.maxout}:{})}:e.model)}
-async function editModel(i){
- const creating=i<0;const e=creating?{model:'',key:'',ctx:'',think:'',maxout:''}:Object.assign({},window._mEntries[i]);
- const keysL=window._mKeys||[];
- const keyOpts='<option value=""'+(!e.key?' selected':'')+'>主 Key</option>'
-  +keysL.map(k=>`<option value="${esc(k.id)}"${e.key===k.id?' selected':''}>${k.primary?'★ ':''}${esc(k.label||k.id)}</option>`).join('');
- const thOpts=['','off','high','low'].map(v=>'<option value="'+v+'"'+((e.think||'')===v?' selected':'')+'>'+({'' :'跟随默认','off':'关闭思考','high':'思考·高','low':'思考·低'})[v]+'</option>').join('');
- const row=(label,inner,hint)=>'<div style="margin-top:10px"><div class="k" style="margin-bottom:4px">'+label+'</div>'+inner+(hint?'<div class="k" style="margin-top:3px">'+hint+'</div>':'')+'</div>';
- const m=document.createElement('div');m.className='dlg-mask';
- m.innerHTML='<div class="dlg" role="dialog" style="max-width:440px;max-height:86vh;overflow-y:auto"><h3>'+(creating?'添加模型':'编辑模型')+'</h3>'
-  +row('模型名','<input id="em_model" value="'+esc(e.model)+'" placeholder="如 glm-5.3-flash" style="width:100%">')
-  +row('API Key','<select id="em_key" class="mini" style="width:100%">'+keyOpts+'</select>','该条目调用时使用的智谱账号')
-  +row('上下文档位（千 token）','<input id="em_ctx" type="number" min="4" max="128" value="'+(e.ctx||'')+'" placeholder="按模型默认（flash 系 128）" style="width:100%">','控制注入的对话历史与记忆规模；人设/风格/安全规则永不裁剪')
-  +row('思考模式','<select id="em_th" class="mini" style="width:100%">'+thOpts+'</select>')
-  +row('最大输出（tokens）','<input id="em_maxout" type="number" min="256" max="32768" step="256" value="'+(e.maxout||'')+'" placeholder="默认（按思考档 600–4096）" style="width:100%">','单次回复的输出上限；开思考时会自动放大以留出思考空间')
-  +'<div class="dlg-btns"><button class="act ghost">取消</button><button class="act">'+(creating?'添加':'保存')+'</button></div></div>';
- document.body.appendChild(m);
- const close=()=>m.remove();
- m.querySelector('.dlg-btns .ghost').onclick=close;
- m.onclick=ev=>{if(ev.target===m)close()};
- m.onkeydown=ev=>{if(ev.key==='Escape')close()};
- m.querySelector('.dlg-btns .act:not(.ghost)').onclick=async()=>{
-  const model=document.getElementById('em_model').value.trim().toLowerCase();
-  const key=document.getElementById('em_key').value;
-  const ctx=parseInt(document.getElementById('em_ctx').value)||0;
-  const th=document.getElementById('em_th').value;
-  const mo=parseInt(document.getElementById('em_maxout').value)||0;
-  if(!model){toast('模型名不能为空',false);return}
-  close();
-  const ent={model,key,ctx:ctx?Math.max(4,Math.min(128,ctx)):'',think:th,maxout:mo?Math.max(256,Math.min(32768,mo)):''};
-  if(creating){(window._mEntries=window._mEntries||[]).push(ent)}
-  else{window._mEntries[i]=ent}
-  const think=Object.assign({},window._mThink||{});
-  if(th)think[model]=th==='off'?{enabled:false,level:'high'}:{enabled:true,level:th};
-  else delete think[model];
-  window._mThink=think;
-  const r=await saveKV('/api/config',{models:chainOf(window._mEntries),thinking:think},(creating?'已添加 ':'已保存 ')+model+'（agent 已热加载）');
-  load()}}
-async function vGroups(){
- const [g,c,gm,rv]=await Promise.all([
-  api('/api/groups').catch(()=>({})),
-  api('/api/reply-config').catch(()=>({})),
-  api('/api/group-modes').catch(()=>({modes:{}})),
-  api('/api/reply-config').catch(()=>({})),
- ]);
- _gmModes=gm.modes||{};_gmGlobal=c;rvState=rv;
- const on=g.enabled!==false, allOn=!!g.allow_all, m=c.reply_mode||'standard';
- const rows=(g.groups||[]).map((x,i)=>{
-  const ov=_gmModes[x]||{};
-  const cur=ov.paused?'paused':(ov.reply_mode||'');
-  const opt=(v,t)=>`<option value="${v}"${cur===v?' selected':''}>${t}</option>`;
-  const pcur=ov.paused?'x':(ov.proactive===true?'on':(ov.proactive===false?'off':''));
-  const opt2=(v,t)=>`<option value="${v}"${pcur===v?' selected':''}>${t}</option>`;
-  let params='';
-  if(ov.reply_mode==='keyword'){
-   params=`<div class="gm-sub">该群关键词（逗号分隔，覆盖全局；回车保存）：<input value="${esc((ov.keywords||_gmGlobal.keywords||[]).join(', '))}" style="width:230px" onchange="saveGmFieldFor('${esc(x)}','keywords',this)"></div>`;
-  }else if(ov.reply_mode==='chat'){
-   params=`<div class="gm-sub">插话概率 <input type="number" min="0" max="100" style="width:60px" value="${Math.round((ov.chat_probability??_gmGlobal.chat_probability??0.5)*100)}" onchange="saveGmFieldFor('${esc(x)}','chat_probability',this)">%
-   　最小间隔 <input type="number" min="0" max="3600" style="width:68px" value="${ov.chat_min_interval_sec??_gmGlobal.chat_min_interval_sec??45}" onchange="saveGmFieldFor('${esc(x)}','chat_min_interval_sec',this)"> 秒（仅该群生效）</div>`;
-  }
-  if(ov.proactive===true){
-   params+=`<div class="gm-sub">该群主动：概率 <input type="number" min="0" max="100" style="width:56px" value="${Math.round((ov.proactive_probability??rv.proactive_groups_probability??0.1)*100)}" onchange="saveGmProNum('${esc(x)}','proactive_probability',(parseInt(this.value)||0)/100)">%
-   　频率 每 <input type="number" min="5" max="1440" style="width:60px" value="${Math.round((ov.proactive_min_interval_sec??rv.proactive_groups_min_interval_sec??1800)/60)}" onchange="saveGmProNum('${esc(x)}','proactive_min_interval_sec',(parseInt(this.value)||30)*60)"> 分钟（仅该群；未修改时跟随全局）</div>`;
-  }
-  return `<div class="gm-wrap"><div class="row"><span class="no">${i+1}.</span>
-   <input class="gin" value="${esc(x)}" data-i="${i}" style="flex:1;min-width:110px" placeholder="群号" onchange="saveGroups()">
-   <select class="mini" style="width:116px;flex:none" title="该群回复模式" onchange="rowGmMode(this)">
-    ${opt('','跟随全局')}${opt('standard','标准')}${opt('keyword','关键词')}${opt('chat','闲聊')}${opt('paused','暂停回应')}
-   </select>
-   <select class="mini" style="width:96px;flex:none" title="该群是否参与主动发消息" onchange="rowGmPro(this)">
-    ${opt2('','跟随')}${opt2('on','主动开')}${opt2('off','主动关')}
-   </select>
-   <button class="act ghost" onclick="delg(${i})">删除</button></div>${params}</div>`;
- }).join('');
- const modeCard=(v,title,desc)=>`<div class="card rm ${m===v?'on':''}" onclick="pickMode('${v}')">
-  <b>${title}</b>${m===v?' <span class="badge b-ok">当前</span>':''}<div class="k" style="margin-top:5px">${desc}</div></div>`;
- $('#view').innerHTML=head('回应群消息总开关、回复模式与群白名单')+saveHint(_SAVE_HINT)+
- `<div class="card"><label class="master"><input type="checkbox" id="genabled" ${on?'checked':''} onchange="saveGroupEnabled(this.checked)">
-  <span><b>回应群消息</b><div class="k" style="margin-top:3px">总开关：关闭后机器人不再回应任何群消息（私聊不受影响，适合只想私聊用的场景）；改动即时生效</div></span></label></div>
- <div class="${on?'':'dimmed'}">
- <div class="card"><div class="k" style="display:flex;gap:8px;align-items:center">回复模式<span class="badge" style="background:var(--tint);color:var(--dim)">全局通用默认</span>（决定机器人在群里什么时候说话，仅对群生效；每个群可在下方白名单行内单独覆盖）</div>
-  <div class="rmgrid">
-   ${modeCard('standard','标准模式','只有被 @ 或回复机器人时才说话')}
-   ${modeCard('keyword','关键词模式','标准模式基础上，群消息包含关键词也会触发回复')}
-   ${modeCard('chat','闲聊模式','群里任何聊天都可能插话：按概率抽样 + 最小间隔防刷屏')}
-  </div>
-  ${m==='keyword'?`<div style="margin-top:12px"><div class="k">关键词（逗号分隔，包含即触发；改完按回车或点别处自动保存）</div>
-   <input id="kwedit" style="width:100%;margin-top:6px" value="${esc((c.keywords||[]).join(', '))}" onchange="saveKw()"></div>`:''}
-  ${m==='chat'?`<div style="margin-top:12px">
-   <div class="k">插话概率：<b id="pval">${Math.round((c.chat_probability||0)*100)}%</b>（100%=每条都回；拖完松手即保存）</div>
-   <input type="range" id="pslide" min="0" max="100" value="${Math.round((c.chat_probability||0)*100)}" style="width:100%;margin-top:6px"
-    oninput="$('#pval').textContent=this.value+'%'" onchange="saveProb()">
-   <div class="k" style="margin-top:10px">两次主动搭话最小间隔（秒）：<input id="mintv" type="number" min="0" max="3600" value="${c.chat_min_interval_sec??45}" class="mini" style="width:90px" onchange="saveIntv()"></div>
-   <div style="margin-top:10px"><label class="master"><input type="checkbox" id="intr" ${c.chat_interesting?'checked':''} onchange="saveCk('chat_interesting',this.checked,'感兴趣判定')">
-    <span><b>感兴趣才回</b><div class="k" style="margin-top:2px">AI 按人设判断这条消息值不值得接话，不感兴趣就静默；关闭则纯随机</div></span></label></div>
-   <div style="margin-top:8px"><label class="master"><input type="checkbox" id="anti" ${c.chat_anti_interrupt!==false?'checked':''} onchange="saveCk('chat_anti_interrupt',this.checked,'防插嘴')">
-    <span><b>防插嘴</b><div class="k" style="margin-top:2px">结合上下文判断：与自己无关的话题、他人之间正在讨论的对话、无人叫你时保持沉默；开启时覆盖上一项，判定更严格</div></span></label></div>
-  </div>`:''}
- </div>
- <div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">主动发消息<span class="badge" style="background:var(--tint);color:var(--dim)">全局通用默认</span>（每个群可在下方白名单行内单独覆盖）</div>
-  <label class="master"><input type="checkbox" ${rv.proactive_groups_enabled?'checked':''} onchange="savePro('proactive_groups_enabled',this.checked)">
-   <span><b>允许机器人主动在群里发消息</b><div class="k" style="margin-top:3px">开启后机器人会不定期根据最近对话、当前时间、记忆主动开个话头：只选最近 6 小时内有活动的白名单群；安静模式/暂停/群暂停回应/限额停响应时都不发；发送前过复读与脏话守卫</div></span></label>
-  ${proCard('groups')}
-  <div class="k" style="margin-top:6px">例：30 分钟 + 10% ≈ 平均每 5 小时主动说一句。私聊的设置在「私聊消息」页，互不影响。</div></div>
- <div class="card">
-  <label class="master" style="margin-bottom:8px"><input type="checkbox" id="allowall" ${allOn?'checked':''} onchange="saveGroups(true)">
-   <span><b>响应所有群</b><div class="k" style="margin-top:3px">开启后忽略下方白名单；关闭即恢复白名单，列表保留不丢</div></span></label>
-  <div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">白名单群与分群模式<span class="badge" style="background:var(--tint);color:var(--dim)">每行可覆盖全局</span><span>机器人只在列表内群响应；模式下拉=该群回复模式，主动下拉=该群是否参与主动发消息（跟随全局=用上方全局设置，暂停回应=该群一切回应停止（@也不回）但群保留在列表、随时切回；改动即时生效${allOn?'；当前被上面的开关覆盖':''}）</span></div>
-  <div class="chain" style="margin-top:10px;${allOn?'opacity:.45':''}">
-   <div class="row" style="background:transparent;border:0;padding:2px 12px"><span class="no"></span>
-    <span class="k" style="flex:1;min-width:110px">群号</span>
-    <span class="k" style="width:116px;flex:none">回复模式</span>
-    <span class="k" style="width:96px;flex:none">主动发消息</span>
-    <span class="k" style="width:52px;flex:none">操作</span></div>
-   ${rows||'<i class="k">空（无白名单生效）</i>'}</div>
-  <div style="margin-top:10px;display:flex;gap:8px"><input id="newg" placeholder="群号，如 661206749" onkeydown="if(event.key==='Enter')addg()"><button class="act" onclick="addg()">添加</button></div></div>
- </div>`;
-}
-async function vPrivate(){
- const [c,rv]=await Promise.all([
-  api('/api/private-config').catch(()=>({})),
-  api('/api/reply-config').catch(()=>({})),
- ]);
- const on=c.enabled, all=c.allow_all;
- rvState=rv;
- const rows=(c.qq_whitelist||[]).map((x,i)=>`<div class="row"><span class="no">${i+1}.</span>
-  <input value="${esc(x)}" data-i="${i}" style="flex:1" placeholder="QQ号" onchange="savePrivate()">
-  <button class="act ghost" onclick="delpq(${i})">删除</button></div>`).join('');
- $('#view').innerHTML=head('私聊回应开关与私信白名单（私聊始终全部回复，无需回复模式）')+saveHint(_SAVE_HINT)+
- `<div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">主动发消息<span class="badge" style="background:var(--tint);color:var(--dim)">全局通用</span>（对所有可私聊对象生效；与群聊设置互不影响）</div>
-  <label class="master"><input type="checkbox" ${rv.proactive_private_enabled?'checked':''} onchange="savePro('proactive_private_enabled',this.checked)">
-   <span><b>允许机器人主动私聊</b><div class="k" style="margin-top:3px">只发给私信白名单内、最近 6 小时聊过的人（与「回应私信」开关互不影响，回复所有人的私信开启时也不会主动打扰陌生人）；安静模式/暂停/限额时都不发</div></span></label>
-  ${proCard('private')}
- </div> <div class="card">
-  <label class="master" style="margin-bottom:8px"><input type="checkbox" id="penabled" ${on?'checked':''} onchange="savePrivate()">
-   <span><b>回应私信</b><div class="k" style="margin-top:3px">默认关闭；开启后机器人会回复私聊消息</div></span></label>
-  <label class="master"><input type="checkbox" id="pallowall" ${all?'checked':''} onchange="savePrivate()">
-   <span>回复所有人的私信<div class="k" style="margin-top:3px">关闭后仅回复下方白名单中的 QQ 号</div></span></label>
- </div>
- <div class="card" style="${all?'opacity:.45':''}"><div class="k">私信白名单（仅回复列表内 QQ 号的私信，改动即时生效${all?'；当前被上面的"回复所有人"覆盖，列表保留不丢':''}）</div>
-  <div class="chain" style="margin-top:10px">${rows||'<i class="k">空（未配置任何 QQ，将无人可私聊触发）</i>'}</div>
-  <div style="margin-top:10px;display:flex;gap:8px"><input id="newpq" placeholder="QQ号，如 3349525227" onkeydown="if(event.key==='Enter')addpq()"><button class="act" onclick="addpq()">添加</button></div></div>`;
-}
-function getPQ(){return [...document.querySelectorAll('.chain input')].map(x=>x.value.trim()).filter(x=>/^\d{5,12}$/.test(x))}
-async function savePrivate(){
- const body={enabled:$('#penabled').checked,allow_all:$('#pallowall').checked,qq_whitelist:getPQ()};
- const r=await api('/api/private-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
- toast(r.ok?'私聊白名单已生效（'+getPQ().length+' 个 QQ）':'保存失败: '+(r.error||''),r.ok!==false)
-}
-async function delpq(i){const c=getPQ();const q=c[i];c.splice(i,1);
- if(!await dlgConfirm({title:'移除私聊白名单',body:'移除 QQ '+q+'？机器人将不再回复该账号的私信（可随时重新添加）。',okText:'移除',danger:true}))return;
- postPQ(c)}
-async function postPQ(c){const a=await api('/api/private-config');await api('/api/private-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:a.enabled,allow_all:a.allow_all,qq_whitelist:c})});load()}
-function addpq(){const v=$('#newpq').value.trim();if(!v)return;const c=getPQ();c.push(v);postPQ(c)}
-function getGroups(){return [...document.querySelectorAll('.chain input.gin')].map(x=>x.value.trim()).filter(x=>/^\d{5,12}$/.test(x))}
-async function saveGroupEnabled(on){
- const g=await api('/api/groups');
- await api('/api/groups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:on,allow_all:!!g.allow_all,groups:g.groups||[]})});
- toast(on?'已开启回应群消息（已生效）':'已关闭：机器人不再回应任何群消息（已生效，私聊不受影响）');load()}
-async function saveGroups(fromToggle){
- const cur=await api('/api/groups');
- const c=getGroups();
- if(!c.length&&(cur.groups||[]).length&&!fromToggle){
-  if(!await dlgConfirm({title:'清空白名单',body:'白名单即将清空（现有 '+(cur.groups||[]).length+' 个群），机器人将不再回应任何群消息。确定？',okText:'清空',danger:true}))return}
- const r=await api('/api/groups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:cur.enabled!==false,allow_all:$('#allowall')?$('#allowall').checked:!!cur.allow_all,groups:c})});
- toast(r.ok===false?('保存失败: '+(r.error||'')):((c.length||0)+' 个群已生效'),r.ok!==false);
- if(fromToggle)load()}
-async function delg(i){const c=getGroups();const gid=c[i];c.splice(i,1);
- if(!gid||!await dlgConfirm({title:'删除白名单群',body:'删除群 '+gid+'？机器人将不再响应该群消息'+(_gmModes[gid]?'\n注意：该群已配置分群模式覆盖，将一并清除（重新添加后需重配）':'')+'。',okText:'删除',danger:true}))return;
- postGroupsReorder(c);
- if(gid&&_gmModes[gid])api('/api/group-modes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:gid,override:null})})}
-async function postGroupsReorder(c){const a=await api('/api/groups');await api('/api/groups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:a.enabled!==false,allow_all:a.allow_all,groups:c})});load()}
-function addg(){const v=$('#newg').value.trim();if(!v)return;const c=getGroups();c.push(v);postGroupsReorder(c)}
-let _gmModes={},_gmGlobal={};
-const _GM_ROW_NAME={standard:'标准模式',keyword:'关键词模式',chat:'闲聊模式',paused:'暂停回应（@也不回，随时切回）'};
-async function rowGmMode(sel){
- const gid=sel.closest('.gm-wrap').querySelector('input.gin').value.trim();
- if(!/^\d{5,12}$/.test(gid)){toast('群号无效：先修正行内群号再设置模式',false);sel.value='';return}
- const v=sel.value;
- if(v===''){
-  const r=await saveKV('/api/group-modes',{chat_id:gid,override:null},'群 '+gid+' 已恢复跟随全局（已生效）');
-  if(r.ok!==false)load();return}
- const ov=v==='paused'?{paused:true}:{reply_mode:v};
- const r=await saveKV('/api/group-modes',{chat_id:gid,override:ov},'群 '+gid+'：'+_GM_ROW_NAME[v]+'（已生效）');
- if(r.ok!==false)load();
-}
-async function saveGmFieldFor(gid,f,el){
- if(!/^\d{5,12}$/.test(gid)){toast('群号无效',false);return}
- const names={keywords:'关键词',chat_probability:'插话概率',chat_min_interval_sec:'最小间隔'};
- const ov={};
- if(f==='keywords')ov.keywords=el.value.split(/[,，]/).map(x=>x.trim()).filter(Boolean);
- if(f==='chat_probability')ov.chat_probability=(parseInt(el.value)||0)/100;
- if(f==='chat_min_interval_sec')ov.chat_min_interval_sec=parseInt(el.value)||0;
- const r=await saveKV('/api/group-modes',{chat_id:gid,override:ov},names[f]+'已生效（仅群 '+gid+'）');
- if(r.ok!==false)_gmModes[gid]=Object.assign({},_gmModes[gid],ov);
-}
-async function vPersonas(){
- const d=await api('/api/personas');
- const opts=(d.names||[]).map(n=>`<option value="${esc(n)}" ${n===d.active?'selected':''}>${esc(n)}</option>`).join('');
- $('#view').innerHTML=head('多人设管理与全局通用设定')+saveHint('长文本需点所在卡片的「保存」按钮生效（按钮只保存该卡片）；未保存的修改以蓝色边框标记，切换人设或离开本页会提示。')+
- `<div class="card"><div class="k">全局通用设定（所有人设共用：主人是谁、通用禁忌等，跨人设生效）</div>
-  <textarea id="gedit" style="min-height:150px;margin-top:8px" oninput="dirtyOn(this,'bsaveg')">${esc(d.global||'')}</textarea>
-  <button class="act" id="bsaveg" disabled onclick="saveGlobal()">保存全局设定</button></div>
- <div class="card"><div class="k">人设列表（当前激活：<b style="color:var(--fg-strong)">${esc(d.active||'无')}</b>，切换即时生效）</div>
-  <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-   <select id="psel">${opts}</select>
-   <button class="act ghost" onclick="switchPersona()">切换到此设</button>
-   <button class="act ghost" onclick="renamePersona()">重命名</button>
-   <button class="act ghost" onclick="newPersona()">新建</button>
-   <button class="act ghost danger" onclick="delPersona()">删除</button>
-  </div>
-  <div class="k" style="margin-top:10px">人设内容（<span id="pname">${esc(d.active||'')}</span>）</div>
-  <textarea id="pedit" style="margin-top:6px" oninput="dirtyOn(this,'bsavep')">${esc(d.text||'')}</textarea>
-  <button class="act" id="bsavep" disabled onclick="savePersona()">保存当前编辑的人设</button></div>`;
- const sel=$('#psel');_pSelPrev=sel.value;
- sel.onchange=async()=>{
-  if($('#pedit').classList.contains('dirty')&&!await dlgConfirm({title:'未保存的修改',body:'当前人设有未保存的修改，放弃并切换？',okText:'放弃并切换',danger:true})){sel.value=_pSelPrev;return}
-  _pSelPrev=sel.value;
-  const r=await api('/api/personas/detail?name='+encodeURIComponent(sel.value));
-  $('#pedit').value=r.text||'';$('#pname').textContent=sel.value;
-  $('#pedit').classList.remove('dirty');$('#bsavep').disabled=true;
- };
-}
-let _pSelPrev='';
-async function saveGlobal(){const r=await saveKV('/api/personas/global',{text:$('#gedit').value},'全局设定已保存（即时生效）');if(r.ok!==false)dirtyOff('bsaveg')}
-async function switchPersona(){if(!await dirtyGuard())return;const n=$('#psel').value;await api('/api/personas/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n})});toast('已切换到「'+n+'」（即时生效）');load()}
-async function newPersona(){if(!await dirtyGuard())return;const n=await dlgPrompt({title:'新建人设',body:'输入新人设名称：',placeholder:'如：智谱娘·傲娇',okText:'创建'});if(!n)return;await api('/api/personas/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n,text:'# 人设：'+n+'\n\n- 身份：\n- 性格：\n- 说话基准：\n'})});toast('已创建「'+n+'」');load()}
-async function delPersona(){if(!await dirtyGuard())return;const n=$('#psel').value;if(!n)return;if(!await dlgConfirm({title:'删除人设',body:'确认删除人设「'+n+'」？删除后不可恢复。',okText:'删除',danger:true}))return;const r=await api('/api/personas/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n})});if(r.ok===false){toast(r.error||'删除失败',false);return}toast('已删除');load()}
-async function renamePersona(){
- if(!await dirtyGuard())return;
- const n=$('#psel').value;if(!n)return;
- const nn=await dlgPrompt({title:'重命名人设',body:'将「'+n+'」重命名为：',value:n,okText:'重命名'});if(!nn||nn===n)return;
- const r=await api('/api/personas/rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n,new_name:nn})});
- if(r.ok===false){toast(r.error||'重命名失败',false);return}
- toast('已重命名为「'+nn+'」'+((r.moved&&r.moved.length)?'（已同步：'+r.moved.join('、')+'）':''));load()}
-async function savePersona(){const n=$('#psel').value;const t=$('#pedit').value;const r=await saveKV('/api/personas/save',{name:n,text:t},'人设「'+n+'」已保存（即时生效）');if(r.ok!==false)dirtyOff('bsavep')}
-async function vFile(kind){
- const d=await api('/api/file?kind='+kind);
- const ev=await api('/api/evolved');
- let evHtml='';
- if(kind==='style'){
-  const rows=(ev.personas||[]).map(p=>{
-   const notesHtml=p.notes&&p.notes.length
-    ?'<div class="k" style="margin-top:8px">'+p.notes.map(n=>'- '+esc(n)).join('<br>')+'</div>'
-    :'<div class="k" style="margin-top:6px">（尚无积累：机器人每 6 次回复会自动从群聊中提炼 1-2 条风格观察）</div>';
-   const clearBtn=p.notes&&p.notes.length
-    ?'<button class="act ghost" style="color:var(--err)" data-pname="'+esc(p.name)+'" onclick="clearEvolved(this.dataset.pname)">清空</button>'
-    :'';
-   return '<div class="card">'
-    +'<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
-    +'<b>'+esc(p.name)+'</b>'+(p.active?'<span class="badge b-ok">当前人设</span>':'')
-    +'<label><input type="checkbox" '+(p.enabled?'checked':'')+' data-pname="'+esc(p.name)+'" onchange="toggleEvolved(this.dataset.pname,this.checked)"> 启用自进化</label>'
-    +'<span class="k mono">'+(p.notes?p.notes.length:0)+' 条观察</span>'+clearBtn
-    +'</div>'+notesHtml+'</div>';
-  }).join('');
-  evHtml='<div class="card"><div class="k">自进化风格（绑定人设：机器人聊天中自动积累表达经验，注入到对应人设的提示词；可随时开关/清空，与人设卡叠加生效）</div>'
-   +'<div style="margin-top:10px">'+(rows||'<i class="k">暂无人设</i>')+'</div></div>';
+ const box=document.getElementById('devon');
+ if(on&&!await dlgConfirm({title:'开启设备操控',body:'⚠ 这是一项高危功能：开启后主人可以从 QQ 远程搜索、读取、发送你电脑上的文件。' + String.fromCharCode(10) + String.fromCharCode(10) + '已内置保护：仅主人可用、结果只发私聊、系统目录+你的保护目录不可触达、默认需动态授权码。' + String.fromCharCode(10) + String.fromCharCode(10) + '确定开启？',okText:'确认开启（我已了解风险）',danger:true})){
+  if(box)box.checked=false;  // 取消：回滚勾选状态
+  return;
  }
- $('#view').innerHTML=head('说话风格卡（模仿目标语言风格，留空=纯人设；与自进化叠加生效）')+saveHint('风格卡内容需点「保存」按钮生效（只保存本卡片）；未保存的修改以蓝色边框标记。')+evHtml+
- `<div class="card"><div class="k">${kind==='style'?'风格卡内容':'文件内容'}</div>
-  <textarea id="fedit" style="margin-top:10px" oninput="dirtyOn(this,'bsavef')">${esc(d.text||'')}</textarea>
-  <div><button class="act" id="bsavef" data-kind="${kind}" disabled onclick="saveFile(this.dataset.kind)">保存${kind==='style'?'风格卡':'文件内容'}</button></div></div>`;
-}
-async function toggleEvolved(name,on){await api('/api/evolved/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,enabled:on})});toast('「'+name+'」自进化已'+(on?'启用':'停用')+'（已生效）');load()}
-async function clearEvolved(name){if(!await dlgConfirm({title:'清空风格观察',body:'清空「'+name+'」的全部风格观察？',okText:'清空',danger:true}))return;await api('/api/evolved/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});toast('已清空');load()}
-async function saveFile(kind){const t=$('#fedit').value;const r=await saveKV('/api/file?kind='+kind,{text:t},'已保存（agent 下一轮生效）');if(r.ok!==false)dirtyOff('bsavef')}
+ const r=await saveKV('/api/app-config',{device_ctrl_enabled:on},on?'设备操控已开启':'设备操控已关闭');
+ if(r.ok===false){if(box)box.checked=!on;return}  // 保存失败：回滚
+ load()}
+
 async function vDevCtrl(){
  const [c,code]=await Promise.all([
   api('/api/app-config').catch(()=>({})),
   api('/api/devctrl-code').catch(()=>({code:'',expires_in:0})),
  ]);
  const on=!!c.device_ctrl_enabled;
- $('#view').innerHTML=head('设备操控（高危功能：让机器人搜索/读取/发送你电脑上的文件')+saveHint('仅限主人 QQ · 结果只发私聊 · 保护目录不可触达 · 授权码一次一换')+
+ window._pdDirs=(c.device_ctrl_protected_dirs||[]).slice();
+ $('#view').innerHTML=head('设备操控（高危功能：让机器人搜索/读取/发送你电脑上的文件）')+saveHint('仅限主人 QQ · 结果只发私聊 · 保护目录不可触达 · 授权码一次一换')+
  `<div class="card" style="border:1px solid ${on?'var(--err)':'var(--border)'}">
-  <label class="master" style="margin-bottom:10px"><input type="checkbox" ${on?'checked':''} onchange="toggleDevCtrl(this.checked)">
+  <label class="master" style="margin-bottom:10px"><input type="checkbox" id="devon" ${on?'checked':''} onchange="toggleDevCtrl(this.checked)">
    <span><b>启用设备操控</b><div class="k" style="margin-top:3px">⚠ 开启后主人可从 QQ 远程搜索/读取/发送电脑文件。默认关闭，开启需二次确认。</div></span></label>
 
   <div style="margin-top:14px;padding:14px;border:2px solid ${on?'var(--err)':'var(--line)'};border-radius:10px;text-align:center">
-   <div class="k" style="margin-bottom:6px">当前动态授权码（机器人使用后自动换新）</div>
+   <div class="k" style="margin-bottom:6px">当前动态授权码（使用后自动换新）</div>
    <div id="devcode" style="font-size:36px;font-weight:700;letter-spacing:8px;font-family:monospace;color:${on?'var(--err)':'var(--dim)'}">${on?esc(code.code||'------'):'------'}</div>
    <div class="k" style="margin-top:6px">${on?'有效期剩 '+Math.max(0,code.expires_in||0)+' 秒 · 用完即换新 · 也可手动刷新':'功能未启用'}</div>
    ${on?'<button class="act ghost" style="margin-top:8px" onclick="refreshDevCode()">刷新授权码</button>':''}
   </div>
 
-  <div class="k" style="margin-top:14px;margin-bottom:6px">使用流程（仪式感版）</div>
+  <div class="k" style="margin-top:14px;margin-bottom:6px">使用流程</div>
   <div class="k" style="line-height:1.8">
-   ① 主人在 QQ 里对机器人说「设备」<br>
-   ② 机器人中二地索要控制台上闪烁的六位真言<br>
-   ③ 主人把上方显示的 6 位数字直接发给机器人<br>
-   ④ 验证通过 → 机器人说"门开了"，2 分钟内直接发命令即可<br>
-   ⑤ 命令：找文件 &lt;名称&gt; / 读文件 &lt;路径&gt; / 发文件 &lt;路径&gt; · 结果只发私聊
+   ① 主人在 QQ 里表达要操作电脑的意图（如「去电脑上找个文档」「设备操控」）<br>
+   ② 机器人回复「协议一：连线主人」，等待授权码<br>
+   ③ 主人把上方显示的 6 位授权码发给机器人<br>
+   ④ 验证通过后 2 分钟内可直接发命令：找文件 / 读文件 / 发文件（结果只发私聊）
   </div>
 
   <div class="k" style="margin-top:14px;margin-bottom:6px">安全设置</div>
   <label class="master" style="margin-bottom:8px"><input type="checkbox" ${c.device_ctrl_2fa!==false?'checked':''} onchange="saveKV('/api/app-config',{device_ctrl_2fa:this.checked?1:0},'动态授权码已'+(this.checked?'开启（推荐）':'关闭——极危险'));load()">
    <span><b>动态授权码（2FA）</b><div class="k" style="margin-top:3px">每次操控需授权码验证，一次用完自动换新；关闭后只需主人 QQ 即可操控——极不推荐</div></span></label>
 
-  <div class="k" style="margin-top:10px;margin-bottom:4px">额外保护目录（每行一个路径；这些目录下的文件永远不会被搜索/读取/发送）</div>
-  <textarea id="pdevdirs" style="min-height:70px" placeholder="D:\私密文档\${String.fromCharCode(10)}E:\备份">${esc((c.device_ctrl_protected_dirs||[]).join(String.fromCharCode(10)))}</textarea>
-  <button class="act" onclick="saveDevDirs()">保存保护目录</button>
+  <div class="k" style="margin-top:10px;margin-bottom:6px">额外保护目录（这些目录下的文件永远不会被搜索/读取/发送）</div>
+  <div id="pdlist"></div>
+  <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+   <button class="act ghost" style="margin:0" onclick="addPdDir()">＋ 添加目录（选择文件夹）</button>
+   <button class="act ghost" style="margin:0" onclick="addPdDirManual()">手动输入路径</button>
+   <button class="act" style="margin:0" onclick="saveDevDirs()">保存保护目录</button>
+  </div>
   <div class="k" style="margin-top:6px">系统目录自动保护：Windows / Program Files / ProgramData / AppData（不可移除）</div>
  </div>`;
+ renderPdList();
 }
+function renderPdList(){
+ const box=document.getElementById('pdlist');if(!box)return;
+ const dirs=window._pdDirs||[];
+ box.innerHTML=dirs.length?dirs.map((d,i)=>
+  `<div class="row" style="margin-bottom:6px"><span class="mono" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis">${esc(d)}</span>
+   <button class="act ghost danger" style="margin:0" onclick="delPdDir(${i})">移除</button></div>`).join('')
+  :'<i class="k">（暂无额外保护目录）</i>';
+}
+async function addPdDir(){
+ const r=await api('/api/pick-dir',{method:'POST'});
+ if(r.ok&&r.dir){(window._pdDirs=window._pdDirs||[]).push(r.dir);renderPdList()}
+}
+async function addPdDirManual(){
+ const v=await dlgPrompt({title:'添加保护目录',body:'输入要保护的目录完整路径：',placeholder:'D:' + String.fromCharCode(92) + '私密文档',okText:'添加'});
+ if(!v)return;
+ (window._pdDirs=window._pdDirs||[]).push(v.trim());renderPdList()}
+function delPdDir(i){(window._pdDirs||[]).splice(i,1);renderPdList()}
+async function saveDevDirs(){
+ const dirs=(window._pdDirs||[]).filter(Boolean);
+ const r=await saveKV('/api/app-config',{device_ctrl_protected_dirs:dirs},'保护目录已保存（'+dirs.length+' 个）');
+ if(r.ok!==false)load()}
+
 async function refreshDevCode(){
  const r=await api('/api/devctrl-code',{method:'POST'});
  toast(r.ok?'授权码已刷新':'刷新失败',r.ok!==false);load()}
