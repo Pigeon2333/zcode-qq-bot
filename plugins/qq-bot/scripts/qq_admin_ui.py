@@ -327,10 +327,11 @@ function manageBootTimer(b){
  }else if(_bootTimer){clearInterval(_bootTimer);_bootTimer=null}
 }
 async function vStatus(){
- const [d,a,b]=await Promise.all([
+ const [d,a,b,c]=await Promise.all([
   api('/api/daemon-status').catch(()=>({ok:false})),
   api('/api/agent-status').catch(()=>({ok:false})),
   api('/api/power/status').catch(()=>({})),
+  api('/api/app-config').catch(()=>({})),
  ]);
  manageBootTimer(b);
  const ws=d.ws_connected, login=d.login||{};
@@ -355,7 +356,16 @@ async function vStatus(){
   <div><span class="k">暂停</span> ${a.paused?'是':'否'}</div>
  </div>
  <div style="margin-top:12px"><button class="act ghost" onclick="togglePause()">${a.paused?'恢复回复':'暂停回复'}</button>
- <button class="act ghost" onclick="load()">刷新</button></div></div>
+ <button class="act ghost" onclick="load()">刷新</button></div>
+ <div class="k" style="margin-top:8px">手动暂停 = 立即停止一切回复与主动行为，零 token 消耗（不是安静模式那种只停主动插话、@仍回——是彻底停止；恢复后不补发暂停期间的消息）</div>
+ <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--line)">
+  <label style="display:inline-flex;align-items:center;gap:6px"><input type="checkbox" ${c.sched_pause_enabled?'checked':''} onchange="toggleSchedPause(this.checked)"> <b>定时暂停</b></label>
+  <span style="margin-left:10px">
+   <input type="time" value="${esc(c.sched_pause_start||'23:00')}" onchange="saveSchedPause('sched_pause_start',this.value)"> –
+   <input type="time" value="${esc(c.sched_pause_end||'07:00')}" onchange="saveSchedPause('sched_pause_end',this.value)">
+  </span>
+  <div class="k" style="margin-top:4px">时段内机器人完全停止一切活动（零消耗，同手动暂停），时段结束自动恢复。支持跨午夜（如 23:00–07:00）。恢复后不补发暂停期间消息。与安静模式/分群暂停/仅私聊模式不同：这是全局一刀切。</div>
+ </div></div>
  <div class="card"><div class="k">收发统计</div><div class="kv" style="margin-top:8px">
   <div>收到 ${d.stats?.received??0}</div><div>触发 ${d.stats?.triggered??0}</div>
   <div>已发 ${d.stats?.sent??0}</div><div>限流丢弃 ${d.stats?.dropped_rate??0}</div>
@@ -373,6 +383,11 @@ async function powerOff(napcatToo){
   ?{title:'停止 NapCat',body:'确认连 NapCat 一起停止？（下次启动需重新登录）',okText:'全部停止',danger:true}
   :{title:'停止机器人',body:'大脑与消息管道将停止，机器人不再响应任何消息（QQ 登录保留，可随时重新启动）。',okText:'停止',danger:true}))return;
  const r=await api('/api/power/off',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({include_napcat:!!napcatToo})});toast('已停止');load()}
+async function toggleSchedPause(on){
+ await saveKV('/api/app-config',{sched_pause_enabled:on},on?'定时暂停已开启（时段内机器人完全停止）':'定时暂停已关闭');load()}
+async function saveSchedPause(key,val){
+ if(!val)return;
+ await saveKV('/api/app-config',{[key]:val},'定时暂停时间已更新（即时生效）');load()}
 async function togglePause(){const a=await api('/api/agent-status');await api('/api/pause',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paused:!a.paused})});toast('已'+(!a.paused?'暂停':'恢复'));load()}
 let _runlogTimer=null,_runlogSrc='all';
 const _lvlColor={ok:'var(--ok)',err:'var(--err)',warn:'var(--warn)',info:'var(--fg)',dim:'var(--dim)'};

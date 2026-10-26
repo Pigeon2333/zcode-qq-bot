@@ -45,6 +45,9 @@ DEFAULT_CONFIG = {
     "device_ctrl_enabled": False,  # 设备操控（高危，默认关）
     "device_ctrl_2fa": True,       # 设备操控动态授权码（每次需验证）
     "device_ctrl_protected_dirs": [],  # 额外保护目录（不可搜索/发送）
+    "sched_pause_enabled": False,  # 定时暂停（时段内停止一切回复+零消耗）
+    "sched_pause_start": "23:00",  # 暂停开始时间
+    "sched_pause_end": "07:00",    # 暂停结束时间（支持跨午夜）
 }
 
 

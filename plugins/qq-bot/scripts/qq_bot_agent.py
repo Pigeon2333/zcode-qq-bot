@@ -1669,6 +1669,27 @@ def _proactive_state_save():
         pass
 
 
+
+def _in_sched_pause():
+    """定时暂停时段判定（支持跨午夜；开启且在时段内→暂停一切活动零消耗）。"""
+    cfg = C.load_app_config()
+    if not cfg.get("sched_pause_enabled"):
+        return False
+    def hm(key):
+        try:
+            h, m = str(cfg.get(key, "")).strip().split(":")
+            v = int(h) * 60 + int(m)
+            return v if 0 <= v < 1440 else None
+        except (ValueError, AttributeError):
+            return None
+    start, end = hm("sched_pause_start"), hm("sched_pause_end")
+    if start is None or end is None or start == end:
+        return False
+    now = time.localtime()
+    cur = now.tm_hour * 60 + now.tm_min
+    return start <= cur < end if start < end else (cur >= start or cur < end)
+
+
 def _in_silent_window(cfg, kind, lt):
     """主动发消息禁用时段判定（支持跨午夜；留空=不禁用）。"""
     def m(key):
@@ -2679,6 +2700,10 @@ def main():
         try:
             RT.reload_chain()
             snap = RT.snapshot()
+            sched_hold = _in_sched_pause()
+            if sched_hold:
+                time.sleep(30)  # 定时暂停中：30s 检查一次，零 LLM 零 token
+                continue
             if not snap["paused"]:
                 items = daemon.inbox_triggered()
                 for msg in items:
