@@ -188,6 +188,13 @@ def _cooldown_sec(detail):
     return COOLDOWN_SECONDS
 
 
+def write_const(path, text):
+    """原子写常量路径文件（tmp + os.replace）。"""
+    tmp = pathlib.Path(str(path) + ".ag.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(str(tmp), str(path))
+
+
 def read_const(path, default=""):
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -1158,6 +1165,94 @@ def sticker_menu(active_persona=""):
     return "\n".join(rows) if rows else "（表情包仓库为空）"
 
 
+_STICKER_DESC_PLACEHOLDER = ("QQ收藏表情", "")
+
+
+def _vision_describe_file(path):
+    """用视觉模型识别一张本地图（base64 data URI），返回中文描述（≤30字）。
+    供表情包内容缓存识别——同一张只识别一次，结果写回 stickers.json。"""
+    import base64
+    try:
+        raw = open(path, "rb").read()
+    except OSError:
+        return ""
+    if len(raw) > 4 * 1024 * 1024:
+        return ""
+    ext = ".jpg"
+    if path.lower().endswith(".png"):
+        ext = ".png"
+    elif path.lower().endswith(".webp"):
+        ext = ".webp"
+    elif path.lower().endswith(".gif"):
+        ext = ".gif"
+    uri = "data:image/%s;base64,%s" % (ext.lstrip("."), base64.b64encode(raw).decode("ascii"))
+    msgs = [{"role": "system", "content": "你是表情包描述器。看图用不超过25个中文字描述这张表情包的画面内容和情绪用法（例：一只猫竖大拇指表示赞许）。只输出描述文字。"},
+            {"role": "user", "content": "描述这张表情包。"}]
+    content = [{"type": "text", "text": msgs[1]["content"]},
+               {"type": "image_url", "image_url": {"url": uri}}]
+    vmsgs = [{"role": "system", "content": msgs[0]["content"]}, {"role": "user", "content": content}]
+    for kid, kv, model, _ctx, _mo in _chain_candidates():
+        try:
+            _th, mt = resolve_thinking(model, "")
+            status, data = glm_chat(model, vmsgs, timeout=45, key=kv,
+                                    extra_body={"max_tokens": 200})
+        except (OSError, ValueError):
+            continue
+        if status == 200:
+            try:
+                text = str(data["choices"][0]["message"]["content"] or "").strip()
+                log_usage(model, data.get("usage") or {}, "sticker-vision")
+                return text[:30].replace("\n", " ")
+            except (KeyError, IndexError, TypeError):
+                continue
+    return ""
+
+
+_sticker_describing = {"running": False}
+_sticker_rate = {}
+
+
+def describe_all_stickers():
+    """幂等遍历所有表情库：desc 为空/占位的用视觉模型识别一次并写回（永久缓存）。
+    后台线程跑，识别失败保持原 desc（下次再试）。"""
+    if _sticker_describing["running"]:
+        return
+    _sticker_describing["running"] = True
+    try:
+        data = load_json_const(STICKERS_PATH, {})
+        if not isinstance(data, dict):
+            return
+        changed = 0
+        for pool, pd in data.items():
+            if not isinstance(pd, dict) or not isinstance(pd.get("items"), list):
+                continue
+            for it in pd["items"]:
+                if not isinstance(it, dict):
+                    continue
+                desc = str(it.get("desc", "") or "").strip()
+                if desc and desc not in _STICKER_DESC_PLACEHOLDER:
+                    continue
+                fn = str(it.get("file", "") or "")
+                if not fn:
+                    continue
+                fp = os.path.join(DATA_DIR, "stickers", os.path.basename(fn))
+                if not os.path.isfile(fp):
+                    continue
+                got = _vision_describe_file(fp)
+                if got:
+                    it["desc"] = got
+                    changed += 1
+                    out("AGENT_STICKER_DESC id=%s %s" % (it.get("id"), got))
+                    # 每张成功即落盘：中途卡死/失败也不丢已识别的
+                    write_const(STICKERS_PATH, json.dumps(data, ensure_ascii=False, indent=2))
+        if changed:
+            out("AGENT_STICKER_DESC_DONE +%d" % changed)
+        else:
+            out("AGENT_STICKER_DESC_PASS (全部已有描述或无可识别)")
+    finally:
+        _sticker_describing["running"] = False
+
+
 def sticker_file_path(sid, active_persona=""):
     """按 id 在 专属库→通用库→QQ收藏库 中查找文件路径；找不到返回 None。"""
     data = load_json_const(STICKERS_PATH, {})
@@ -1374,6 +1469,7 @@ def build_messages(daemon, msg, ctx_k=32):
         "任何情绪下都不行）：你的角色再惊讶再生气也不说脏话，用\"哎呀/天哪/好家伙\"表达\n"
         "- 遵守人设的语气与长度习惯；高冷人设就要少说话\n"
         "- 想连发多条短消息时用 [[SPLIT]] 分隔（最多3条）\n"
+        "- 表情包要克制：只在情绪真正契合时偶尔发（约七八条回复最多一次），两句话内不重复发；只在列表中某张的描述与当前对话情绪/内容真正匹配时才选它，拿不准就不发（不发永远不会错）\n"
         "- 想发某张表情包时，单独输出一行 [STICKER:表情包id]\n"
         "- 出现值得长期记住的信息时，单独输出一行记忆标记，格式只有两种："
         "[记忆@QQ号] 内容（关于某个具体人的事实/近况/约定，QQ号在对话括号里）"
@@ -1966,6 +2062,14 @@ def process(daemon, msg):
         except Exception as e:
             out("AGENT_QUIET_SELF_FAIL %r" % e)
     texts, stickers, memo = parse_reply(reply)
+    # 硬频控：同会话 3 分钟内已发过表情则丢弃本次（防高频）
+    now_t = time.time()
+    last_t = _sticker_rate.get("%s_%s" % (msg["chat_type"], msg["chat_id"]), 0)
+    if stickers and now_t - last_t < 180:
+        stickers = []
+        out("AGENT_STICKER_RATE_DROP msg_id=%s" % msg["id"])
+    if stickers:
+        _sticker_rate["%s_%s" % (msg["chat_type"], msg["chat_id"])] = now_t
     sent_desc = []
     if texts is None:
         daemon.ack([msg["id"]])
@@ -2273,6 +2377,7 @@ def main():
         sys.exit(1)
     RT.reload_chain()
     start_admin_server(args.admin_port)
+    threading.Thread(target=lambda: (time.sleep(15), describe_all_stickers()), daemon=True).start()
     threading.Thread(target=_daily_review_loop, args=(daemon,), daemon=True).start()
     out("AGENT_READY chain=%s daemon=127.0.0.1:%d admin=127.0.0.1:%d"
         % (",".join(RT.snapshot()["chain"]), args.port, args.admin_port))
