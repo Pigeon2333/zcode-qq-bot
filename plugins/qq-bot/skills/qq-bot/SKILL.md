@@ -114,7 +114,7 @@ NapCat Shell 文件内嵌释放与 QQ 版本校验 + 日志轮转 + UI 鉴权。
 1. 列出 zcode-tasks/ 下未处理文件，向用户汇报待办任务清单
 2. 用户选择接手 → 按文件内的任务描述在 ZCode 中完成
 3. 完成后把结果摘要回复用户，并可选：POST daemon :39763 `/send`
-   （body: chat_type=private, chat_id=3349525227, texts=[结果]，
+   （body: chat_type=private, chat_id=<主人QQ>, texts=[结果]，
    Header X-QQBot-Token）把结果转发到主人 QQ
 4. 已处理文件删除或加 `.done` 后缀归档，避免重复处理
 

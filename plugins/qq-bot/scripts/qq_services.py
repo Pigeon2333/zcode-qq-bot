@@ -65,15 +65,38 @@ def read_token_file(name):
 
 
 def _spawn(script, args, log_name):
-    """以参数列表启动组件脚本，stdout/stderr 追加重定向到数据目录日志。"""
+    """以参数列表启动组件脚本，stdout/stderr 追加重定向到数据目录日志。
+    frozen（exe 发布版）：组件由主 exe 分身承载（qq_app --service <名>）。
+    日志超过 20MB 时先轮转到 .old（组件重启时生效）。"""
     log_path = C.DATA_ROOT / "logs" / log_name
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if log_path.exists() and log_path.stat().st_size > 20 * 1024 * 1024:
+            old = log_path.with_suffix(".log.old")
+            try:
+                old.unlink()
+            except OSError:
+                pass
+            log_path.replace(old)
+    except OSError:
+        pass
     logf = open(log_path, "a", encoding="utf-8", errors="replace")
     try:
-        subprocess.Popen(
-            [PY_EXE, script] + args,
-            cwd=C.SCRIPTS_DIR, stdout=logf, stderr=subprocess.STDOUT,
-            creationflags=CREATE_NO_WINDOW)
+        if getattr(sys, "frozen", False):
+            # 打包模式：本 exe 即组件载体（qq_app main 里的 --service 分支）
+            exe = os.path.abspath(sys.executable)
+            base = os.path.basename(script).replace("qq_", "").replace(".py", "")
+            service = {"daemon": "daemon", "bot_agent": "agent",
+                       "admin_ui": "ui"}.get(base, base)
+            subprocess.Popen(
+                [exe, "--service", service] + args,
+                cwd=C.SCRIPTS_DIR, stdout=logf, stderr=subprocess.STDOUT,
+                creationflags=CREATE_NO_WINDOW)
+        else:
+            subprocess.Popen(
+                [PY_EXE, script] + args,
+                cwd=C.SCRIPTS_DIR, stdout=logf, stderr=subprocess.STDOUT,
+                creationflags=CREATE_NO_WINDOW)
     finally:
         # Popen 已继承句柄；父进程立即关闭自己的引用
         logf.close()

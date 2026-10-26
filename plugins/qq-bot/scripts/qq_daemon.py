@@ -39,7 +39,8 @@ from collections import defaultdict, deque
 
 from qq_common import econ_active, load_app_config
 
-DATA_DIR = os.path.join(os.path.expanduser("~"), ".zcode-qq-bot")
+DATA_DIR = os.environ.get("QQBOT_DATA_DIR") or os.path.join(
+    os.path.expanduser("~"), ".zcode-qq-bot")
 DATA_ROOT = os.path.realpath(DATA_DIR)
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 MEDIA_SUBDIRS = ("cache/images", "images", "stickers")  # 允许发送的图片所在数据目录子集（images=AI生成图）

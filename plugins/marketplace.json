@@ -5,15 +5,15 @@
       "name": "qq-bot",
       "source": "./qq-bot",
       "version": "0.1.0",
-      "description": "QQ 群聊 AI 机器人：人设、指定群友风格模仿、长期记忆、联网搜索、看图、表情包自管理",
+      "description": "QQ 群聊 AI 机器人：多人设、长期记忆、表情包、看图生图、任务沙箱、设备操控、主动消息、ZCode 联动",
       "displayName": "QQ 机器人",
       "displayName_i18n": {
         "zh-CN": "QQ 机器人"
       },
       "description_i18n": {
-        "zh-CN": "QQ 群聊 AI 机器人：人设、群友风格模仿、长期记忆、联网、看图、表情包管理"
+        "zh-CN": "QQ 群聊 AI 机器人：多人设、长期记忆、表情包、看图生图、任务沙箱、设备操控、主动消息、ZCode 联动"
       },
-      "icon": "file:///D:/ZCode/workspaces/qq-bot/plugins/qq-bot/icon.png"
+      "icon": "qq-bot/icon.png"
     }
   ]
 }

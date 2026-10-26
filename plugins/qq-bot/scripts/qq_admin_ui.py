@@ -469,8 +469,22 @@ async function vStatus(){
   +(wd.last_check?'<div class="k">最近检查：'+new Date(wd.last_check*1000).toLocaleTimeString()+' · '+(wd.last_result||'正常')+'</div>':'<div class="k">等待首次检查…</div>')
   +(wdEvents?'<div style="margin-top:6px"><div class="k">最近事件：</div>'+wdEvents+'</div>':'')
   +'</div>':'';
+ const wizard=(!String(c.bot_qq||'').trim()) ? (
+  '<div class="card" style="border:1px solid var(--acc)">'
+  +'<div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">欢迎使用 ZCode QQ机器人'
+  +'<span class="badge" style="background:var(--tint);color:var(--dim)">首次使用 · 三步跑起来</span></div>'
+  +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">'
+  +'<div><div class="k" style="margin-bottom:4px">① 机器人 QQ 号（登录 NapCat 的账号）</div><input id="wzbot" style="width:100%" placeholder="如 123456789"></div>'
+  +'<div><div class="k" style="margin-bottom:4px">② 你的 QQ 号（主人，独占全部高级功能）</div><input id="wzowner" style="width:100%" placeholder="如 987654321"></div>'
+  +'</div>'
+  +'<div style="margin-top:10px"><div class="k" style="margin-bottom:4px">QQNT 安装目录（留空自动探测；需已安装 NapCat Shell——QQNT 目录下有 launcher-user.bat）</div>'
+  +'<input id="wzqqnt" style="width:100%" placeholder="留空自动探测"></div>'
+  +'<div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="act" onclick="wizardSave()">保存并开始使用</button>'
+  +'<span class="k">③ 保存后到「设置 → API Key」填智谱 Key，回本页点「启动机器人」扫码登录即可</span></div>'
+  +'<div class="k" style="margin-top:8px">NapCat Shell 安装说明见项目 README（github.com/Pigeon2333/zcode-qq-bot）。</div></div>') : '';
  $('#view').innerHTML=head('组件运行状态与机器人开关')+
- ` <div class="card"><div class="kv">
+ `${wizard}
+ <div class="card"><div class="kv">
   <div><span class="k">消息管道</span> <span class="badge ${d.ok?'b-ok':'b-bad'}">${d.ok?'运行':'停止'}</span></div>
   <div><span class="k">NapCat WS</span> <span class="badge ${ws?'b-ok':'b-bad'}">${ws?'已连接':'断开'}</span></div>
   <div><span class="k">自治大脑</span> <span class="badge ${a&&a.ok?'b-ok':'b-bad'}">${a&&a.ok?'运行':'停止'}</span></div>
@@ -512,6 +526,17 @@ async function powerOn(){
  else{toast('启动任务已开始：每一步进度在状态页实时显示')}
  load();
 }
+async function wizardSave(){
+ const bot=String(document.getElementById('wzbot').value||'').trim();
+ const owner=String(document.getElementById('wzowner').value||'').trim();
+ const qqnt=String(document.getElementById('wzqqnt').value||'').trim();
+ if(!bot||!/^\d{5,12}$/.test(bot)){toast('机器人 QQ 号格式不对',false);return}
+ if(owner&&!/^\d{5,12}$/.test(owner)){toast('主人 QQ 号格式不对',false);return}
+ const body={bot_qq:bot};
+ if(owner)body.owner_qq=owner;
+ if(qqnt)body.qqnt_dir=qqnt;
+ const r=await saveKV('/api/app-config',body,'初始化完成！去「设置 → API Key」填 Key，然后回这里点「启动机器人」');
+ if(r.ok!==false)load()}
 async function powerOff(napcatToo){
  if(!await dlgConfirm(napcatToo
   ?{title:'停止 NapCat',body:'确认连 NapCat 一起停止？（下次启动需重新登录）',okText:'全部停止',danger:true}
@@ -848,7 +873,7 @@ async function vGroups(){
     <span class="k" style="width:96px;flex:none">主动发消息</span>
     <span class="k" style="width:52px;flex:none">操作</span></div>
    ${rows||'<i class="k">空（无白名单生效）</i>'}</div>
-  <div style="margin-top:10px;display:flex;gap:8px"><input id="newg" placeholder="群号，如 661206749" onkeydown="if(event.key==='Enter')addg()"><button class="act" onclick="addg()">添加</button></div></div>
+  <div style="margin-top:10px;display:flex;gap:8px"><input id="newg" placeholder="群号，如 123456789" onkeydown="if(event.key==='Enter')addg()"><button class="act" onclick="addg()">添加</button></div></div>
  </div>`;
 }
 async function vPrivate(){
@@ -874,7 +899,7 @@ async function vPrivate(){
  </div>
  <div class="card" style="${all?'opacity:.45':''}"><div class="k">私信白名单（仅回复列表内 QQ 号的私信，改动即时生效${all?'；当前被上面的"回复所有人"覆盖，列表保留不丢':''}）</div>
   <div class="chain" style="margin-top:10px">${rows||'<i class="k">空（未配置任何 QQ，将无人可私聊触发）</i>'}</div>
-  <div style="margin-top:10px;display:flex;gap:8px"><input id="newpq" placeholder="QQ号，如 3349525227" onkeydown="if(event.key==='Enter')addpq()"><button class="act" onclick="addpq()">添加</button></div></div>`;
+  <div style="margin-top:10px;display:flex;gap:8px"><input id="newpq" placeholder="QQ号，如 987654321" onkeydown="if(event.key==='Enter')addpq()"><button class="act" onclick="addpq()">添加</button></div></div>`;
 }
 function getPQ(){return [...document.querySelectorAll('.chain input')].map(x=>x.value.trim()).filter(x=>/^\d{5,12}$/.test(x))}
 async function savePrivate(){
@@ -1194,8 +1219,8 @@ async function vSettings(){
  `<div class="k" style="margin:2px 0 -6px;font-weight:600;letter-spacing:1px">① 身份与称呼</div>
  <div class="card"><div class="k">机器人是谁、怎么称呼（每项改动回车/失焦后自动保存，即时生效）</div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px">
-   <div><div class="k" style="margin-bottom:4px">机器人 QQ 号</div><input id="sbotqq" value="${esc(String(c.bot_qq||''))}" style="width:100%" placeholder="如 3126940548" onchange="saveEnv('sbotqq','bot_qq',0,'机器人 QQ 已保存（已生效）')"></div>
-   <div><div class="k" style="margin-bottom:4px">主人 QQ 号（任务/遥控白名单）</div><input id="sownerqq" value="${esc(String(c.owner_qq||''))}" style="width:100%" placeholder="如 3349525227" onchange="saveEnv('sownerqq','owner_qq',0,'主人 QQ 已保存（已生效）')"></div>
+   <div><div class="k" style="margin-bottom:4px">机器人 QQ 号</div><input id="sbotqq" value="${esc(String(c.bot_qq||''))}" style="width:100%" placeholder="如 123456789" onchange="saveEnv('sbotqq','bot_qq',0,'机器人 QQ 已保存（已生效）')"></div>
+   <div><div class="k" style="margin-bottom:4px">主人 QQ 号（任务/遥控白名单）</div><input id="sownerqq" value="${esc(String(c.owner_qq||''))}" style="width:100%" placeholder="如 987654321" onchange="saveEnv('sownerqq','owner_qq',0,'主人 QQ 已保存（已生效）')"></div>
   </div>
   <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">
    <label class="master" style="margin-bottom:8px"><input type="checkbox" ${c.bot_name_enabled?'checked':''} onchange="saveKVLoad('/api/app-config',{bot_name_enabled:this.checked?1:0},this.checked?'已开启固定自称':'已关闭：跟随人设卡名字')">
@@ -1507,7 +1532,7 @@ async function delMemo(idx){
 async function addMemo(){
  const m=document.createElement('div');m.className='dlg-mask';
  m.innerHTML='<div class="dlg" role="dialog"><h3>手动新增记忆</h3>'
-  +'<div class="dlg-body">给指定群或联系人写入一条记忆，机器人与其对话时会记得。例如：群 661206749 →「周三有小组作业讨论」。</div>'
+  +'<div class="dlg-body">给指定群或联系人写入一条记忆，机器人与其对话时会记得。例如：选群 → 输入群号 →「周三有小组作业讨论」。</div>'
   +'<div style="display:flex;gap:8px;margin-top:12px;align-items:center">'
   +'<select class="mini"><option value="group">群</option><option value="contact">联系人</option></select>'
   +'<input placeholder="群号/QQ号" style="width:130px">'

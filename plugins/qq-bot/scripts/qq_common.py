@@ -18,7 +18,10 @@ import winreg
 # 脚本目录（本文件所在目录），所有业务脚本与其同级
 SCRIPTS_DIR = os.path.dirname(os.path.realpath(__file__))
 # 数据目录（用户家目录下）
-DATA_DIR = os.path.join(os.path.expanduser("~"), ".zcode-qq-bot")
+# 数据目录：默认 ~/.zcode-qq-bot；可用环境变量 QQBOT_DATA_DIR 覆盖
+# （发布版测试 / 便携多实例用；生产保持默认）
+DATA_DIR = os.environ.get("QQBOT_DATA_DIR") or os.path.join(
+    os.path.expanduser("~"), ".zcode-qq-bot")
 DATA_ROOT = pathlib.Path(DATA_DIR)
 
 APP_CONFIG_PATH = DATA_ROOT / "app_config.json"

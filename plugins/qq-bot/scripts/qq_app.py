@@ -144,7 +144,38 @@ def _notify_already_running(woke):
         pass
 
 
+def _run_service(args):
+    """frozen（exe）模式的服务自举：qq_app.exe --service <daemon|agent|ui> …
+    打包后各组件进程由本 exe 分身承载，参数与脚本模式一一对应。"""
+    if len(args) < 2 or args[0] != "--service":
+        return False
+    which = args[1]
+    rest = args[2:]
+    if which == "ui":
+        import qq_admin_ui as ui
+        sys.argv = [sys.argv[0]] + rest
+        ui.main()
+    elif which == "daemon":
+        import qq_daemon as dm
+        sys.argv = [sys.argv[0]] + rest
+        dm.main()
+    elif which == "agent":
+        import qq_bot_agent as ag
+        sys.argv = [sys.argv[0]] + rest
+        ag.main()
+    elif which == "worker":
+        import qq_task_worker as wk
+        sys.argv = [sys.argv[0]] + rest
+        wk.main()
+    else:
+        print("unknown service: %s" % which, flush=True)
+    return True
+
+
 def main():
+    # frozen 服务自举（打包后 spawn 的分身进程从这里进入对应组件）
+    if getattr(sys, "frozen", False) and _run_service(sys.argv[1:]):
+        return
     # 单实例锁：已有实例运行时唤出原窗口并退出，杜绝托盘图标堆叠
     if not _acquire_single_instance():
         _notify_already_running(_signal_existing())

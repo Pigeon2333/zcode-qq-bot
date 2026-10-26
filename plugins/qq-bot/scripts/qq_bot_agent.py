@@ -44,6 +44,15 @@ DATA_DIR = C.DATA_DIR
 TOKEN_PATH = os.path.join(DATA_DIR, "token")
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 WORKER_PATH = os.path.join(SCRIPT_DIR, "qq_task_worker.py")
+
+def _worker_cmd(workdir):
+    """任务沙盒 worker 启动命令：脚本模式 python qq_task_worker.py；
+    frozen（exe 发布版）主 exe 分身承载。"""
+    if getattr(sys, "frozen", False):
+        return [os.path.abspath(sys.executable), "--service", "worker",
+                "--workdir", workdir]
+    return [sys.executable, WORKER_PATH, "--workdir", workdir]
+
 API_KEY_PATH = os.path.join(DATA_DIR, "zhipu_api_key")
 PERSONA_COLLECTION_PATH = os.path.join(DATA_DIR, "personas", "collection.json")
 STYLE_PATH = os.path.join(DATA_DIR, "styles", "current_style.md")
@@ -1340,7 +1349,7 @@ def bridge_task(daemon, msg):
     def _run():
         try:
             p = subprocess.run(
-                [sys.executable, WORKER_PATH, "--workdir", workdir],
+                _worker_cmd(workdir),
                 input=task_text, capture_output=True, timeout=900, shell=False,
                 cwd=SCRIPT_DIR)
             result = (p.stdout or b"").decode("utf-8", "replace").strip()
@@ -2289,7 +2298,7 @@ def _cron_run_task(daemon, fake_msg):
     os.makedirs(workdir, exist_ok=True)
     try:
         p = subprocess.run(
-            [sys.executable, WORKER_PATH, "--workdir", workdir],
+            _worker_cmd(workdir),
             input=str(fake_msg.get("text") or ""), capture_output=True,
             timeout=900, shell=False, cwd=SCRIPT_DIR)
         result = (p.stdout or b"").decode("utf-8", "replace").strip()
