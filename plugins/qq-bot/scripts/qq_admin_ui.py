@@ -794,16 +794,16 @@ async function vGroups(){
    params+=`<div class="gm-sub">该群主动：概率 <input type="number" min="0" max="100" style="width:56px" value="${Math.round((ov.proactive_probability??rv.proactive_groups_probability??0.1)*100)}" onchange="saveGmProNum('${esc(x)}','proactive_probability',(parseInt(this.value)||0)/100)">%
    　频率 每 <input type="number" min="5" max="1440" style="width:60px" value="${Math.round((ov.proactive_min_interval_sec??rv.proactive_groups_min_interval_sec??1800)/60)}" onchange="saveGmProNum('${esc(x)}','proactive_min_interval_sec',(parseInt(this.value)||30)*60)"> 分钟（仅该群；未修改时跟随全局）</div>`;
   }
+  const nameLine=(x)=>'<div class="gm-sub k" style="margin-top:2px;opacity:.85;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(gname(x))+'">🏷 '+esc(gname(x)||'群名未获取（机器人需在该群内）')+'</div>';
   return `<div class="gm-wrap"><div class="row"><span class="no">${i+1}.</span>
    <input class="gin" value="${esc(x)}" data-i="${i}" style="flex:1;min-width:110px" placeholder="群号" onchange="saveGroups()">
-   <span class="k" style="flex:none;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(gname(x))||'群名未获取（机器人需在该群内）'}">${esc(gname(x))||'<i>未获取</i>'}</span>
    <select class="mini" style="width:116px;flex:none" title="该群回复模式" onchange="rowGmMode(this)">
     ${opt('','跟随全局')}${opt('standard','标准')}${opt('keyword','关键词')}${opt('chat','闲聊')}${opt('paused','暂停回应')}
    </select>
    <select class="mini" style="width:96px;flex:none" title="该群是否参与主动发消息" onchange="rowGmPro(this)">
     ${opt2('','跟随')}${opt2('on','主动开')}${opt2('off','主动关')}
    </select>
-   <button class="act ghost" onclick="delg(${i})">删除</button></div>${params}</div>`;
+   <button class="act ghost" onclick="delg(${i})">删除</button></div>${nameLine(x)}${params}</div>`;
  }).join('');
  const modeCard=(v,title,desc)=>`<div class="card rm ${m===v?'on':''}" onclick="pickMode('${v}')">
   <b>${title}</b>${m===v?' <span class="badge b-ok">当前</span>':''}<div class="k" style="margin-top:5px">${desc}</div></div>`;
@@ -902,7 +902,7 @@ async function delg(i){const c=getGroups();const gid=c[i];c.splice(i,1);
  if(!gid||!await dlgConfirm({title:'删除白名单群',body:'删除群 '+gid+'？机器人将不再响应该群消息'+(_gmModes[gid]?(String.fromCharCode(10)+'注意：该群已配置分群模式覆盖，将一并清除（重新添加后需重配）'):'')+'。',okText:'删除',danger:true}))return;
  postGroupsReorder(c);
  if(gid&&_gmModes[gid])api('/api/group-modes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:gid,override:null})})}
-async function postGroupsReorder(c){const a=await api('/api/groups');await api('/api/groups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:a.enabled!==false,allow_all:a.allow_all,groups:c})});load()}
+async function postGroupsReorder(c){const a=await api('/api/groups');await api('/api/groups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:a.enabled!==false,allow_all:a.allow_all,groups:c})});await api('/api/group-names?refresh=1').catch(()=>{});load()}
 function addg(){const v=$('#newg').value.trim();if(!v)return;const c=getGroups();c.push(v);postGroupsReorder(c)}
 let _gmModes={},_gmGlobal={};
 const _GM_ROW_NAME={standard:'标准模式',keyword:'关键词模式',chat:'闲聊模式',paused:'暂停回应（@也不回，随时切回）'};
@@ -2259,7 +2259,8 @@ class UiHandler(BaseHTTPRequestHandler):
                                      "cap": cap, "hours": hours,
                                      "hold": bool(enabled and cap > 0 and used >= cap)})
         if u.path == "/api/group-names":
-            r = proxy_get("127.0.0.1", PORTS["daemon"], "/group-list",
+            r = proxy_get("127.0.0.1", PORTS["daemon"],
+                          "/group-list" + ("?refresh=1" if q.get("refresh") else ""),
                           read_const(TOKEN_PATH), timeout=15)
             return self._reply(200, r if isinstance(r, dict) else {"ok": False})
         if u.path == "/api/watchdog":

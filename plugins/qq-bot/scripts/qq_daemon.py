@@ -567,6 +567,8 @@ class Daemon:
                 out("AGENT_LOG {\"msg\": \"login\", \"nickname\": %s, \"user_id\": %s}"
                     % (json.dumps(self.login["nickname"], ensure_ascii=False), self.login["user_id"]))
                 self._auto_status("online")
+                threading.Thread(target=lambda: self.group_names(force=True),
+                                 daemon=True).start()  # 启动登录后预取群名
                 return
             except Exception:
                 time.sleep(2)
@@ -1061,12 +1063,11 @@ class Daemon:
             "data_dir": DATA_DIR,
         }
 
-    def group_names(self, max_age=600):
-        """群号→群名映射（get_group_list，10 分钟缓存；失败返回旧值或空）。"""
+    def group_names(self, force=False):
+        """群号→群名映射（get_group_list；缓存常驻，启动登录后预取、
+        新增白名单群时 force 刷新；失败返回旧值或空）。"""
         with self.lock:
-            fresh = self._group_names is not None \
-                and time.time() - self._group_names_ts < max_age
-            if fresh:
+            if self._group_names is not None and not force:
                 return self._group_names
         try:
             data = self._call_action("get_group_list", {}, timeout=12)
@@ -1170,7 +1171,8 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
                                          "chats": self.daemon.recent_chats()})
             if u.path == "/group-list":
                 return self._reply(200, {"ok": True,
-                                         "names": self.daemon.group_names()})
+                                         "names": self.daemon.group_names(
+                                             force=q.get("refresh") in ("1", "true"))})
             if u.path == "/history":
                 recs = self.daemon.history(
                     q.get("chat_type", "group"), q.get("chat_id", ""),
