@@ -52,6 +52,10 @@ DEFAULT_CONFIG = {
     "watchdog_mode": "auto",       # auto=自动恢复（重连+重启 NapCat）| alert=仅告警
     "watchdog_interval": 120,      # 探测间隔秒（60-600）
     "qq_status_auto": False,       # 自动设置 QQ 在线状态（上线→在线；手动停止前→离开）
+    "bot_name_enabled": False,     # 固定自称（开=覆盖所有人设卡的名字）
+    "bot_name_value": "智谱娘",
+    "owner_name_enabled": False,   # 固定主人称呼（开=覆盖人设里对主人的叫法）
+    "owner_name_value": "主人",
 }
 
 # 备份/恢复统一文件清单（basename 冲突无；子目录文件扁平存放）

@@ -307,6 +307,8 @@ class WSClient:
         while True:
             if self._stop.is_set():
                 raise ConnectionError("stopping")
+            if not self.sock:
+                raise ConnectionError("socket 已复位，走重连")
             self.sock.settimeout(max(1.0, self.idle_timeout))
             try:
                 fin, opcode, payload = self._recv_frame()
@@ -346,13 +348,15 @@ class WSClient:
             pass
 
     def reset(self):
-        """硬复位：只断开当前 socket（不置 _stop），让 run_forever 走重连。
+        """硬复位：断开当前 socket（不置 _stop），让 run_forever 走重连。
         用于「半死连接」：TCP 在但对端既不响应动作也不推事件。"""
         try:
             if self.sock:
                 self.sock.close()
         except OSError:
             pass
+        self.sock = None   # 置空，避免后续对已关 socket 操作（10038 风暴）
+        self.connected = False
 
     def run_forever(self):
         """阻塞式：连接 -> 收事件 -> 断线自动重连（指数退避，上限 60s）。"""
@@ -547,6 +551,7 @@ class Daemon:
     def _on_ws_status(self, st, detail):
         out("AGENT_LOG {\"msg\": \"ws_%s\", \"detail\": %s}" % (st, json.dumps(str(detail), ensure_ascii=False)))
         if st == "connected":
+            self.ws_last_ok = time.time()  # 新连接先记活，探活随后接管
             threading.Thread(target=self._query_login, daemon=True).start()
 
     def _query_login(self):
@@ -1046,8 +1051,8 @@ class Daemon:
             "ws_url": self.ws.url,
             "ws_connected": self.ws.connected,
             "ws_last_ok": last_ok,
-            # 动作通道探活：超过 3 个探测周期无成功响应 = 半死
-            "ws_alive": bool(last_ok) and (now_ts() - last_ok) < 180,
+            # 动作通道探活：120s 内无成功响应 = 半死（探活独立于消息流量）
+            "ws_alive": bool(last_ok) and (now_ts() - last_ok) < 120,
             "login": self.login,
             "inbox_pending": len(self.inbox),
             "stats": self.stats,
@@ -1056,8 +1061,10 @@ class Daemon:
 
     def _probe_loop(self):
         """动作通道探活（45s 一次）：get_login_info 探测 NapCat 是否仍响应。
-        连续 2 次失败且连接显示在线 = 半死连接 → 硬复位 socket 触发重连。"""
+        连续 2 次失败且连接显示在线 = 半死连接 → 硬复位 socket 触发重连。
+        复位至少间隔 120s（防止对刚重连好的新连接反复拆线）。"""
         fails = 0
+        last_reset = 0.0
         while not self.stop_flag.is_set():
             time.sleep(45)
             if self.stop_flag.is_set() or not self.ws.connected:
@@ -1071,7 +1078,8 @@ class Daemon:
                 fails += 1
                 out("AGENT_LOG {\"msg\": \"ws_probe_fail\", \"detail\": %s, \"fails\": %d}"
                     % (json.dumps(repr(e)[:120]), fails))
-                if fails >= 2:
+                if fails >= 2 and time.time() - last_reset > 120:
+                    last_reset = time.time()
                     out("AGENT_LOG {\"msg\": \"ws_probe_reset\", \"detail\": \"半死连接，硬复位重连\"}")
                     try:
                         self.ws.reset()

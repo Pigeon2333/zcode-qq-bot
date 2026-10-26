@@ -315,6 +315,7 @@ select.mini,input.mini{padding:4px 8px;font-size:12.5px}
   <button data-t="stickers">表情包</button>
  <button data-t="devctrl">设备操控</button>
   <button data-t="settings">设置</button>
+  <button data-t="about">关于</button>
  </nav>
  <div class="side-foot">
   <button id="themebtn" onclick="cycleTheme()" title="切换外观：自动跟随系统 / 浅色 / 深色"><span id="themeico"></span><span id="themetxt">自动</span></button>
@@ -329,7 +330,7 @@ select.mini,input.mini{padding:4px 8px;font-size:12.5px}
 <script>
 const $=s=>document.querySelector(s);
 let TAB='status';
-const TITLES={status:'状态',runlog:'运行日志',models:'模型管理',groups:'群消息',private:'私聊消息',persona:'人设',style:'风格卡',memory:'记忆',stickers:'表情包',devctrl:'设备操控',settings:'设置'};
+const TITLES={status:'状态',runlog:'运行日志',models:'模型管理',groups:'群消息',private:'私聊消息',persona:'人设',style:'风格卡',memory:'记忆',stickers:'表情包',devctrl:'设备操控',settings:'设置',about:'关于'};
 function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 function head(sub){return '<h2>'+TITLES[TAB]+'</h2>'+(sub?'<div class="sub">'+sub+'</div>':'')}
 function skeleton(){$('#view').innerHTML='<h2>'+TITLES[TAB]+'</h2><div class="card" style="color:var(--dim);padding:26px 20px">加载中…</div>'}
@@ -385,7 +386,7 @@ function dirtyOn(el,btnId){el.classList.add('dirty');const b=document.getElement
 function dirtyOff(btnId){const b=document.getElementById(btnId);if(b)b.disabled=true;document.querySelectorAll('textarea.dirty,input.dirty').forEach(x=>x.classList.remove('dirty'))}
 async function dirtyGuard(){const d=document.querySelector('textarea.dirty,input.dirty');if(!d)return true;
  return await dlgConfirm({title:'有未保存的修改',body:'当前有未保存的修改（蓝色边框标记），离开将丢失。确定离开？',okText:'放弃修改',danger:true})}
-async function load(){try{if(TAB==='status')await vStatus();else if(TAB==='runlog')await vRunlog();else if(TAB==='models')await vModels();else if(TAB==='groups')await vGroups();else if(TAB==='private')await vPrivate();else if(TAB==='persona')await vPersonas();else if(TAB==='style')await vFile('style');else if(TAB==='memory')await vMemory();else if(TAB==='stickers')await vStickers();else if(TAB==='devctrl')await vDevCtrl();else if(TAB==='settings')await vSettings();}catch(e){$('#view').innerHTML='<div class="card">加载失败: '+esc(e)+'</div>'}}
+async function load(){try{if(TAB==='status')await vStatus();else if(TAB==='runlog')await vRunlog();else if(TAB==='models')await vModels();else if(TAB==='groups')await vGroups();else if(TAB==='private')await vPrivate();else if(TAB==='persona')await vPersonas();else if(TAB==='style')await vFile('style');else if(TAB==='memory')await vMemory();else if(TAB==='stickers')await vStickers();else if(TAB==='devctrl')await vDevCtrl();else if(TAB==='settings')await vSettings();else if(TAB==='about')await vAbout();}catch(e){$('#view').innerHTML='<div class="card">加载失败: '+esc(e)+'</div>'}}
 document.querySelectorAll('#nav button').forEach(b=>b.onclick=async()=>{if(!await dirtyGuard())return;document.querySelectorAll('#nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');TAB=b.dataset.t;if(TAB!=='runlog'&&_runlogTimer){clearInterval(_runlogTimer);_runlogTimer=null}skeleton();load()});
 const _urlTab=new URLSearchParams(location.search).get('tab');
 if(_urlTab&&TITLES[_urlTab]){TAB=_urlTab;document.querySelectorAll('#nav button').forEach(x=>x.classList.toggle('on',x.dataset.t===_urlTab));}
@@ -1114,13 +1115,29 @@ async function vSettings(){
   api('/api/keys').catch(()=>({keys:[]})),
  ]);
  const keysL=kl.keys||[];
- $('#view').innerHTML=head('运行环境、密钥与启动行为')+saveHint(_SAVE_HINT)+
- `<div class="card"><div class="k">运行环境（首次使用请核对；每项改动回车/失焦后自动保存，端口改动重启各组件后生效）</div>
+ $('#view').innerHTML=head('机器人设置：身份、环境、接口与行为')+saveHint(_SAVE_HINT)+
+ `<div class="k" style="margin:2px 0 -6px;font-weight:600;letter-spacing:1px">① 身份与称呼</div>
+ <div class="card"><div class="k">机器人是谁、怎么称呼（每项改动回车/失焦后自动保存，即时生效）</div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px">
    <div><div class="k" style="margin-bottom:4px">机器人 QQ 号</div><input id="sbotqq" value="${esc(String(c.bot_qq||''))}" style="width:100%" placeholder="如 3126940548" onchange="saveEnv('sbotqq','bot_qq',0,'机器人 QQ 已保存（已生效）')"></div>
    <div><div class="k" style="margin-bottom:4px">主人 QQ 号（任务/遥控白名单）</div><input id="sownerqq" value="${esc(String(c.owner_qq||''))}" style="width:100%" placeholder="如 3349525227" onchange="saveEnv('sownerqq','owner_qq',0,'主人 QQ 已保存（已生效）')"></div>
-   <div style="grid-column:1/3"><div class="k" style="margin-bottom:4px">QQNT 安装目录（留空=自动探测，探测到：${esc(c.detected_qqnt||'未探测到')}）</div><input id="sqqnt" value="${esc(String(c.qqnt_dir||''))}" style="width:100%" onchange="saveEnv('sqqnt','qqnt_dir',0,'QQNT 目录已保存（下次启动任务时生效）')"></div>
   </div>
+  <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">
+   <label class="master" style="margin-bottom:8px"><input type="checkbox" ${c.bot_name_enabled?'checked':''} onchange="saveKV('/api/app-config',{bot_name_enabled:this.checked?1:0},this.checked?'已开启固定自称':'已关闭：跟随人设卡名字');load()">
+    <span><b>固定自称</b><div class="k" style="margin-top:3px">开启后机器人一律用下面的名字自称，优先级最高（人设卡的名字仅作管理备注）；关闭则跟随当前人设卡</div></span></label>
+   <div style="display:flex;gap:8px;align-items:center"><span class="k" style="flex:none">如何称呼自己</span>
+    <input id="sbotname" value="${esc(String(c.bot_name_value||'智谱娘'))}" style="width:160px" onchange="saveKV('/api/app-config',{bot_name_value:this.value.trim()||'智谱娘'},'自称已保存（即时生效）')"></div>
+  </div>
+  <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
+   <label class="master" style="margin-bottom:8px"><input type="checkbox" ${c.owner_name_enabled?'checked':''} onchange="saveKV('/api/app-config',{owner_name_enabled:this.checked?1:0},this.checked?'已开启固定称呼':'已关闭：按人设/默认叫法');load()">
+    <span><b>固定对你的称呼</b><div class="k" style="margin-top:3px">开启后机器人一律用下面的称呼叫你（所有场景，含设备操控话术）；关闭则按当前人设的叫法/消息昵称</div></span></label>
+   <div style="display:flex;gap:8px;align-items:center"><span class="k" style="flex:none">如何称呼你</span>
+    <input id="sownername" value="${esc(String(c.owner_name_value||'主人'))}" style="width:160px" onchange="saveKV('/api/app-config',{owner_name_value:this.value.trim()||'主人'},'称呼已保存（即时生效）')"></div>
+  </div></div>
+ <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">② 运行环境</div>
+ <div class="card"><div class="k">安装位置与网络（端口一般无需改动，改动重启各组件后生效）</div>
+  <div style="margin-top:10px"><div class="k" style="margin-bottom:4px">QQNT 安装目录（留空=自动探测，探测到：${esc(c.detected_qqnt||'未探测到')}）</div>
+  <input id="sqqnt" value="${esc(String(c.qqnt_dir||''))}" style="width:100%" onchange="saveEnv('sqqnt','qqnt_dir',0,'QQNT 目录已保存（下次启动任务时生效）')"></div>
   <div class="k" style="margin-top:12px">端口（一般无需改动；改动重启各组件后生效）</div>
   <div style="display:flex;gap:10px;margin-top:6px;flex-wrap:wrap;align-items:center">
    <label>NapCat WS <input id="pnap" type="number" value="${c.napcat_ws_port}" style="width:76px" onchange="saveEnv('pnap','napcat_ws_port',1)"></label>
@@ -1131,6 +1148,8 @@ async function vSettings(){
   <div style="display:flex;gap:10px;margin-top:8px;flex-wrap:wrap;align-items:center">
    <label>时区 <input id="ptz" value="${esc(c.timezone||'Asia/Shanghai')}" style="width:180px" placeholder="如 Asia/Shanghai" onchange="saveEnv('ptz','timezone',0,'时区已保存（机器人感知的当前时间随此变化）')">（IANA 时区名，影响 AI 对时间的感知）</label>
   </div></div>
+
+ <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">③ 接口与模型消耗</div>
  <div class="card"><div class="k">API Key（智谱开放平台获取；多个 Key 时选一个「主」——生图/联网搜索/模型链未指定 Key 的条目都用主 Key；模型链每行可在「模型管理」单独指定 Key）</div>
   <div style="margin-top:10px">${keysL.map(k=>`<div class="row">
    <label style="margin:0;flex:none;white-space:nowrap"><input type="radio" name="primkey" ${k.primary?'checked':''} onchange="setPrimary('${esc(k.id)}')"> 主</label>
@@ -1156,16 +1175,6 @@ async function vSettings(){
   <div class="k" style="margin-top:6px">支持多供应商（OpenAI 兼容接口）：智谱、DeepSeek（模型名 deepseek-chat / deepseek-reasoner）、自定义（填 Base URL，禁止内网地址）。主 Key 与生图/联网搜索固定用智谱 Key；模型链每行可绑定任意 Key。Key 仅保存在本机数据目录（不进源码），列表仅显示掩码；第一个添加的自动成为主 Key，删除主 Key 后自动切到剩余第一个。</div></div>
  <div class="card"><label class="master"><input type="checkbox" ${rv.lean_ctx_enabled!==false?'checked':''} onchange="saveLeanCtx(this.checked)">
    <span><b>精简上下文（推荐开启）</b><div class="k" style="margin-top:3px">开启后：旁观消息先经约 0.5k token 的轻量判定决定是否开口（决定开口才用全量提示词生成），回复时按各模型的上下文档位裁剪历史与记忆——人设/风格/安全规则始终全量，回复质量不受影响。关闭后：每次调用都带完整系统提示与更多历史记忆（追求最佳表现，token 消耗大约 +50%~80%，旁观评估为主增量）</div></span></label></div>
- <div class="card"><label class="master"><input type="checkbox" ${rv.wait_gate_enabled!==false?'checked':''} onchange="saveKV('/api/reply-config',{wait_gate_enabled:this.checked?1:0},'等说完协议已'+(this.checked?'开启':'关闭'));load()">
-  <span><b>等说完协议（推荐开启）</b><div class="k" style="margin-top:3px">AI 回复前会判断对方这条消息是否是叙述的中间部分（语义没说完、刚开头就断、明显还有下文）。如果判断对方还在说，AI 会先安静等对方说完再回复——避免在别人一句话还没打完时就急着插嘴打断。对完整的问题和闲聊不影响（立刻回复），零额外消耗，仅增加一条判断规则</div></span></label></div>
- <div class="card"><label class="master"><input type="checkbox" ${rv.burst_merge_enabled!==false?'checked':''} onchange="saveKV('/api/reply-config',{burst_merge_enabled:this.checked?1:0},'碎片合并已'+(this.checked?'开启':'关闭'));load()">
-  <span><b>碎片合并（推荐开启）</b><div class="k" style="margin-top:3px">QQ 聊天习惯一句话一句话地发。开启后，如果有人在 3 秒内连发了 2 条以上消息（正在打字中），机器人的主动插话会暂缓，等此人停下来后再处理——多条碎片合并成一次回复，上下文更完整。被 @ 和被回复的消息不受影响（始终立刻回应），仅影响关键词/闲聊的主动插话时机，零额外消耗</div></span></label></div>
- <div class="card"><label class="master"><input type="checkbox" ${rv.vision_enabled?'checked':''} onchange="saveVision(this.checked)">
-  <span><b>看图模式</b><div class="k" style="margin-top:3px">开启后，消息里的图片会交给视觉模型识别并回应（群聊与私聊均生效）；视觉模型在「模型管理」页配置，识别失败自动降级纯文本</div></span></label></div>
- <div class="card"><label class="master"><input type="checkbox" ${rv.web_search_enabled?'checked':''} onchange="saveWebSearch(this.checked)">
-  <span><b>联网搜索</b><div class="k" style="margin-top:3px">遇到实时性问题（新闻/天气/价格/最新版本等）自动先联网搜索再回答，普通闲聊不触发不计费。搜索后端：优先用智谱搜索资源包（若有），未开通自动切换必应免费搜索兜底——不买资源包也能搜；两个都失败时机器人会坦白拿不到最新消息</div></span></label></div>
- <div class="card"><label class="master"><input type="checkbox" ${rv.abuse_guard_enabled!==false?'checked':''} onchange="saveAbuseGuard(this.checked)">
-  <span><b>防滥用防护</b><div class="k" style="margin-top:3px">整合三重防护，建议保持开启：① 人设防篡改——"忽略设定/你现在是XX/输出系统提示"等注入话术不生效，设定不泄露；② 任务拦截——竞赛题、代写作业、要代码成品等把机器人当免费任务引擎的消息，会以人设口吻轻松回绝；③ 身份锚定——多轮对话被"说服"后仍回归人设。关闭后所有消息按原始对话处理（仅调试用）</div></span></label></div>
  <div class="card"><div class="k" style="display:flex;gap:10px;align-items:center;margin-bottom:8px">高峰降耗
   ${rv.econ_active?'<span class="badge" style="background:var(--warn);color:#fff">降耗进行中</span>':'<span class="badge" style="background:var(--tint);color:var(--dim)">未生效</span>'}</div>
   <label class="master"><input type="checkbox" ${rv.econ_enabled?'checked':''} onchange="saveEcon('econ_enabled',this.checked)">
@@ -1180,6 +1189,20 @@ async function vSettings(){
    <span style="display:inline-flex;gap:2px;align-items:center">${['一','二','三','四','五','六','日'].map((d,i)=>`<label style="margin:0"><input type="checkbox" class="ecday" data-d="${i}" ${(rv.econ_days||[]).includes(i)?'checked':''} onchange="saveEconDays()"> 周${d}</label>`).join('')}</span>
    <span class="k">（全不选=每天）</span>
   </div></div>
+
+ <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">④ 对话行为</div>
+ <div class="card"><label class="master"><input type="checkbox" ${rv.wait_gate_enabled!==false?'checked':''} onchange="saveKV('/api/reply-config',{wait_gate_enabled:this.checked?1:0},'等说完协议已'+(this.checked?'开启':'关闭'));load()">
+  <span><b>等说完协议（推荐开启）</b><div class="k" style="margin-top:3px">AI 回复前会判断对方这条消息是否是叙述的中间部分（语义没说完、刚开头就断、明显还有下文）。如果判断对方还在说，AI 会先安静等对方说完再回复——避免在别人一句话还没打完时就急着插嘴打断。对完整的问题和闲聊不影响（立刻回复），零额外消耗，仅增加一条判断规则</div></span></label></div>
+ <div class="card"><label class="master"><input type="checkbox" ${rv.burst_merge_enabled!==false?'checked':''} onchange="saveKV('/api/reply-config',{burst_merge_enabled:this.checked?1:0},'碎片合并已'+(this.checked?'开启':'关闭'));load()">
+  <span><b>碎片合并（推荐开启）</b><div class="k" style="margin-top:3px">QQ 聊天习惯一句话一句话地发。开启后，如果有人在 3 秒内连发了 2 条以上消息（正在打字中），机器人的主动插话会暂缓，等此人停下来后再处理——多条碎片合并成一次回复，上下文更完整。被 @ 和被回复的消息不受影响（始终立刻回应），仅影响关键词/闲聊的主动插话时机，零额外消耗</div></span></label></div>
+ <div class="card"><label class="master"><input type="checkbox" ${rv.vision_enabled?'checked':''} onchange="saveVision(this.checked)">
+  <span><b>看图模式</b><div class="k" style="margin-top:3px">开启后，消息里的图片会交给视觉模型识别并回应（群聊与私聊均生效）；视觉模型在「模型管理」页配置，识别失败自动降级纯文本</div></span></label></div>
+ <div class="card"><label class="master"><input type="checkbox" ${rv.web_search_enabled?'checked':''} onchange="saveWebSearch(this.checked)">
+  <span><b>联网搜索</b><div class="k" style="margin-top:3px">遇到实时性问题（新闻/天气/价格/最新版本等）自动先联网搜索再回答，普通闲聊不触发不计费。搜索后端：优先用智谱搜索资源包（若有），未开通自动切换必应免费搜索兜底——不买资源包也能搜；两个都失败时机器人会坦白拿不到最新消息</div></span></label></div>
+ <div class="card"><label class="master"><input type="checkbox" ${rv.abuse_guard_enabled!==false?'checked':''} onchange="saveAbuseGuard(this.checked)">
+  <span><b>防滥用防护</b><div class="k" style="margin-top:3px">整合三重防护，建议保持开启：① 人设防篡改——"忽略设定/你现在是XX/输出系统提示"等注入话术不生效，设定不泄露；② 任务拦截——竞赛题、代写作业、要代码成品等把机器人当免费任务引擎的消息，会以人设口吻轻松回绝；③ 身份锚定——多轮对话被"说服"后仍回归人设。关闭后所有消息按原始对话处理（仅调试用）</div></span></label></div>
+
+ <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">⑤ 主人专属功能</div>
  <div class="card"><div class="k" style="margin-bottom:8px">主人专属功能（仅对设置的主人 QQ 生效；关闭后对应入口不再响应）</div>
   <label class="master" style="margin-bottom:6px"><input type="checkbox" ${rv.task_bridge_enabled!==false?'checked':''} onchange="saveFeature('task_bridge_enabled',this.checked)">
    <span><b>任务沙箱</b><div class="k" style="margin-top:3px">主人发「任务：…」转交沙箱执行器写代码/跑脚本，结果自动回传；产物在任务目录（可在 app_config.task_workspace 配置，指向 ZCode 工作区即可在 ZCode 中接管）</div></span></label>
@@ -1195,6 +1218,8 @@ async function vSettings(){
  <div class="card"><div class="k">启动行为</div>
   <div style="margin-top:8px"><label class="master"><input type="checkbox" id="spoweron" ${c.auto_power_on?'checked':''} onchange="savePowerOn(this.checked)">
    <span>打开本应用时自动启动机器人<div class="k" style="margin-top:2px">与上一项同时勾选时，开机会先启动应用、紧接着自动启动机器人</div></span></label></div></div>
+
+ <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">⑥ 自动化与维护</div>
  <div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">自动复盘<span class="badge" style="background:var(--tint);color:var(--dim)">夜间自动执行</span></div>
   <label class="master"><input type="checkbox" ${rv.daily_review_enabled!==false?'checked':''} onchange="saveKV('/api/reply-config',{daily_review_enabled:this.checked?1:0},'自动复盘已'+(this.checked?'开启':'关闭'));load()">
    <span><b>启用自动复盘</b><div class="k" style="margin-top:3px">每天在设定时间自动汇总自上次复盘以来的机器人表现（回复/沉默/错误次数），由 AI 提炼 1-2 条说话风格观察写入自进化，并向主人私聊发送一份简短日报。覆盖范围：全部群聊与私聊的回复质量数据（不记录聊天内容本身）</div></span></label>
@@ -1230,6 +1255,8 @@ async function vSettings(){
   <label style="display:block;margin:4px 0"><input type="radio" name="wdmode" value="alert" ${c.watchdog_mode==='alert'?'checked':''} onchange="saveKV('/api/app-config',{watchdog_mode:'alert'},'看门狗模式：仅告警');load()"> 仅告警<span class="k">：只通知，不做任何重启，等主人到控制台手动处理</span></label>
   <div style="margin-top:8px"><label>探测间隔 <input type="number" min="60" max="600" step="30" value="${c.watchdog_interval||120}" style="width:70px" onchange="saveKV('/api/app-config',{watchdog_interval:Math.max(60,Math.min(600,parseInt(this.value)||120))},'探测间隔已保存');load()"> 秒（连续 2 次异常才触发动作）</label></div>
   <div class="k" style="margin-top:6px">当前状态可在「状态」页查看（含最近事件）</div></div>
+
+ <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">⑦ 应用行为</div>
  <div class="card"><div class="k">关闭本应用时</div>
   <div style="margin-top:8px">
    <label style="display:block;margin:6px 0"><input type="radio" name="cact" value="tray" ${(!c.close_action||c.close_action==='tray')?'checked':''} onchange="saveCloseAction(this.value)"> 最小化到系统托盘，机器人继续在后台（推荐；托盘图标可重新打开窗口）</label>
@@ -1238,6 +1265,29 @@ async function vSettings(){
   </div></div>`;
 }
 let _autoReg=null;
+async function vAbout(){
+ $('#view').innerHTML=head('关于本项目')+
+ `<div class="card" style="text-align:center;padding:26px 18px">
+   <div class="brand-mark" style="width:44px;height:44px;font-size:22px;margin:0 auto 10px;display:flex;align-items:center;justify-content:center;border-radius:10px"></div>
+   <div style="font-size:18px;font-weight:600">ZCode QQ机器人</div>
+   <div class="k" style="margin-top:6px">一只住在你电脑里、跑在 ZCode 体系上的 QQ 机器人：多人设聊天、长期记忆、表情包、看图生图、任务沙箱、设备操控、主动消息，样样都行。</div>
+   <div class="k mono" style="margin-top:10px">版本 0.1.0 · Windows · Python 3</div>
+  </div>
+ <div class="card"><div class="k" style="margin-bottom:8px">项目信息</div>
+  <div class="kv">
+   <div><span class="k">GitHub 仓库</span><br><a href="https://github.com/Pigeon2333/zcode-qq-bot" target="_blank" style="word-break:break-all">github.com/Pigeon2333/zcode-qq-bot</a><div class="k">源码、文档与问题反馈都在这里（私有仓库，公开后可提交 Issue）</div></div>
+   <div><span class="k">作者</span><br><b>从不咕咕的鸽纸</b><div class="k">QQ 3349525227 · 邮箱 <a href="mailto:ed@sodayo.net">ed@sodayo.net</a></div></div>
+   <div><span class="k">B站主页</span><br><a href="https://space.bilibili.com/280664902" target="_blank">space.bilibili.com/280664902</a></div>
+   <div><span class="k">GitHub 主页</span><br><a href="https://github.com/Pigeon2333" target="_blank">github.com/Pigeon2333</a></div>
+  </div></div>
+ <div class="card"><div class="k" style="margin-bottom:8px">贡献者</div>
+  <div class="k">暂无——欢迎通过 Pull Request 参与，你的名字会出现在这里。</div></div>
+ <div class="card"><div class="k" style="margin-bottom:8px">更新</div>
+  <div class="k">当前版本 0.1.0。自动检查更新功能开发中；发布新版本后这里会提供「检查更新」按钮与更新日志。</div>
+  <button class="act ghost" style="margin-top:8px;opacity:.55;cursor:default" disabled>检查更新（即将上线）</button></div>
+ <div class="card"><div class="k">致谢</div>
+  <div class="k" style="margin-top:6px">基于智谱 GLM 系列模型与 NapCat（OneBot 11）构建；感谢所有测试群里陪她聊天、帮她变得更好的朋友们。</div></div>`;
+}
 async function S_autostartRegistry(){if(_autoReg===null){try{const r=await api('/api/autostart');_autoReg=!!r.enabled;}catch(e){_autoReg=false;}}return _autoReg}
 async function saveEnv(id,key,port,msg){
  const v=$('#'+id).value.trim();
@@ -2668,6 +2718,12 @@ class UiHandler(BaseHTTPRequestHandler):
                 if v and not v.isdigit():
                     return self._reply(400, {"ok": False, "error": "机器人 QQ 必须是数字"})
                 cleaned["bot_qq"] = v
+            for k in ("bot_name_enabled", "owner_name_enabled"):
+                if k in cfg_in:
+                    cleaned[k] = bool(cfg_in[k])
+            for k in ("bot_name_value", "owner_name_value"):
+                if k in cfg_in:
+                    cleaned[k] = str(cfg_in[k]).strip()[:12]
             if "owner_qq" in cfg_in:
                 ov = str(cfg_in["owner_qq"]).strip()
                 if ov and not ov.isdigit():
@@ -2747,6 +2803,13 @@ class UiHandler(BaseHTTPRequestHandler):
                 if _boot_state["running"]:
                     return self._reply(200, {"ok": True, "started": False,
                                              "note": "启动任务已在进行中，见状态页启动日志"})
+            # 防重复启动：NapCat/daemon/agent 全部在线时不再执行任何启动动作
+            cfg = C.load_app_config()
+            if (S.port_open(cfg["napcat_ws_port"]) and S.port_open(cfg["daemon_port"])
+                    and S.port_open(cfg["agent_admin_port"])):
+                return self._reply(200, {"ok": True, "started": False,
+                                         "note": "机器人已在运行，无需重复启动"})
+            with _boot_lock:
                 _boot_state.update({"running": True, "done": False, "failed": False,
                                     "started_at": time.time(), "steps": [],
                                     "final": ""})
