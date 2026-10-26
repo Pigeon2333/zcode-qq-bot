@@ -1993,6 +1993,15 @@ def _is_protected(path):
     return False
 
 
+def _bot_self_name():
+    """机器人自称：当前激活人设名（跟随人设切换）；无人设时回退 智谱娘。"""
+    try:
+        coll, active = load_persona_collection()
+        return active or "智谱娘"
+    except Exception:
+        return "智谱娘"
+
+
 def cfg_2fa_on():
     return bool(C.load_app_config().get("device_ctrl_2fa", True))
 
@@ -2014,18 +2023,21 @@ def _handle_devctrl(daemon, msg):
         # 校验码
         if not _DEVCTRL_CODE["code"] or time.time() > _DEVCTRL_CODE["expires"]:
             daemon.send(msg["chat_type"], msg["chat_id"],
-                        ["门还没有钥匙。请打开控制台「设备操控」页获取当前授权码"])
+                        ["协议一：连线主人" + chr(10) + "授权码已过期。请在电脑控制台「设备操控」页查看当前码"])
             return True
         if text != _DEVCTRL_CODE["code"]:
             daemon.send(msg["chat_type"], msg["chat_id"],
-                        ["❌ 真言不对……再看看控制台上闪烁的数字吧"])
+                        [str(msg.get("sender_name") or "主人") + "，授权码有误，请重新尝试"])
             return True
         _DEVCTRL_CODE["code"] = C.gen_auth_code()
         _DEVCTRL_CODE["expires"] = time.time() + 300
         _DEVCTRL_AUTH["ok_until"] = time.time() + 120  # 2 分钟内可执行命令
+        owner_nick = str(msg.get("sender_name") or owner_qq() or "主人")
         daemon.send(msg["chat_type"], msg["chat_id"],
-                    ["✅ 真言确认——门开了！" + chr(10) +
-                     "接下来 2 分钟内直接发命令即可（不用再加码）：" + chr(10) +
+                    ["连线成功。" + owner_nick + "，你现在确认为「" + _bot_self_name() + "」的主人"
+                     + chr(10) + chr(10) +
+                     "协议二：执行任务" + chr(10) +
+                     "2 分钟内直接发命令：" + chr(10) +
                      "找文件 <名称> / 读文件 <路径> / 发文件 <路径>"])
         return True
     # 已授权窗口内：直接执行命令（不带码）
@@ -2041,22 +2053,20 @@ def _handle_devctrl(daemon, msg):
         if text in ("设备", "设备 授权", "设备 授权码"):
             nl2 = chr(10)
             daemon.send(msg["chat_type"], msg["chat_id"],
-                        ["⚡ 检测到设备操控请求——权限等级：MAX" + nl2 +
-                         "⚠ 停下吧，凡人。这片领域的钥匙不掌握在你手中。" + nl2 + nl2 +
-                         "给妈妈看控制台上闪烁的六位「真言」，念出来，妈妈就帮你打开这扇门。" + nl2 +
-                         "（打开机器人控制台 → 设备操控 页，把当前的 6 位授权码直接发给妈妈即可）" + nl2 + nl2 +
-                         "格式：直接发 6 位数字，不用加别的"])
+                        ["协议一：连线主人" + nl2 +
+                         "神经连线中…请输入授权码" + nl2 + nl2 +
+                         "（在电脑控制台「设备操控」页查看 6 位授权码，直接发送数字即可）"])
             return True
     code, cmd = m.group(1), m.group(2).strip()
     cfg = C.load_app_config()
     if cfg.get("device_ctrl_2fa", True):
         if not _DEVCTRL_CODE["code"] or time.time() > _DEVCTRL_CODE["expires"]:
             daemon.send(msg["chat_type"], msg["chat_id"],
-                        ["门还没有钥匙。请打开控制台「设备操控」页获取当前授权码"])
+                        ["协议一：连线主人" + chr(10) + "授权码已过期。请在电脑控制台「设备操控」页查看当前码"])
             return True
         if code != _DEVCTRL_CODE["code"]:
             daemon.send(msg["chat_type"], msg["chat_id"],
-                        ["❌ 真言不对……再看看控制台上闪烁的数字吧"])
+                        [str(msg.get("sender_name") or "主人") + "，授权码有误，请重新尝试"])
             return True
         # 一次性作废 + 立即换新码（防二次利用）
         _DEVCTRL_CODE["code"] = C.gen_auth_code()
@@ -2094,6 +2104,9 @@ def _handle_devctrl(daemon, msg):
         daemon.send(reply_to[0], reply_to[1],
                     ["不支持的命令。可用：找文件 <名称> / 读文件 <路径> / 发文件 <路径>"])
     out("AGENT_DEVCTRL cmd=%.30s" % cmd)
+    left = int(_DEVCTRL_AUTH["ok_until"] - time.time())
+    daemon.send(reply_to[0], reply_to[1],
+                ["协议二：任务完成" + chr(10) + "（授权窗口剩余 " + str(left) + " 秒）"])
     return True
 
 
