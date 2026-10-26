@@ -725,6 +725,32 @@ def owner_command(msg, daemon=None):
         return False, ""
     if _re.fullmatch(r"(帮助|指令|help|菜单)", t, _re.I):
         return True, OWNER_HELP
+    # 定时代码任务管理
+    mc = _re.match(r"^定时\s+(\d{1,2}:\d{2})\s+(.{4,300})$", t)
+    if mc:
+        hh, mm = mc.group(1).split(":")
+        if int(hh) > 23 or int(mm) > 59:
+            return True, "时间格式：HH:MM（00:00–23:59）"
+        tasks = [x for x in _cron_tasks() if isinstance(x, dict)]
+        nid = max([int(x.get("id", 0)) for x in tasks] or [0]) + 1
+        tasks.append({"id": nid, "time": mc.group(1), "text": mc.group(2).strip(),
+                      "chat_type": "private", "chat_id": str(msg.get("sender_id") or owner_qq())})
+        _cron_save(tasks)
+        return True, "已设定时 #%d：每天 %s 执行「%s…」，结果完成后自动私聊发你。发「定时列表」查看" % (
+            nid, mc.group(1), mc.group(2)[:30])
+    if t == "定时列表":
+        tasks = [x for x in _cron_tasks() if isinstance(x, dict)]
+        if not tasks:
+            return True, "暂无定时代码任务。添加：定时 HH:MM 任务描述"
+        lines = ["#%s  每天 %s  %s" % (x.get("id"), x.get("time"), str(x.get("text", ""))[:30])
+                 for x in tasks]
+        return True, "定时代码任务：\n" + "\n".join(lines) + "\n删除：删定时 <编号>"
+    md = _re.match(r"^删定时\s+(\d+)$", t)
+    if md:
+        nid = int(md.group(1))
+        tasks = [x for x in _cron_tasks() if isinstance(x, dict) and int(x.get("id", 0)) != nid]
+        _cron_save(tasks)
+        return True, "已删除定时 #%d" % nid
     m = _re.match(r"^安静\s*(\d{1,3})?\s*分钟?$", t)
     if m and daemon is not None:
         minutes = min(int(m.group(1) or 10), 720)
@@ -1026,6 +1052,18 @@ def bridge_task(daemon, msg):
             else:
                 err = (p.stderr or b"").decode("utf-8", "replace").strip()[:300]
                 head = "任务失败：%s" % (result[:400] or err or "执行器异常退出")
+                # 任务接力：失败任务落 PENDING.md，ZCode 技能可发现并接管
+                try:
+                    pend = os.path.join(_task_root(), "PENDING.md")
+                    entry = ("\n## %s 失败任务（待 ZCode 接管）\n- 时间：%s\n"
+                             "- 原始任务：%s\n- 沙箱目录：%s\n- 失败原因：%s\n"
+                             % (os.path.basename(workdir), time.strftime("%m-%d %H:%M"),
+                                task_text[:200], workdir, head[:200]))
+                    with open(pend, "a", encoding="utf-8") as f:
+                        f.write(entry)
+                    head += "\n（已记入待接管清单，可在 ZCode 中用 qq-bot 技能接管继续）"
+                except OSError:
+                    pass
             daemon.send(msg["chat_type"], msg["chat_id"],
                               [x for x in head.split("\n") if x.strip()][:8])
             out("AGENT_TASK_DONE chat=%s/%s rc=%d" % (
@@ -1429,12 +1467,12 @@ def build_messages(daemon, msg, ctx_k=32):
             lead = "%s（@的是QQ:%s，不是你）说：" % (speaker, msg["at_users"][0])
         else:
             lead = "%s 说：" % speaker
-        content = "【群 %s | 最近对话】\n%s\n\n【现在】%s%s%s" % (
+        content = "【当前场景：群聊（群号 %s，群内所有人可见你发的消息）| 最近对话】\n%s\n\n【现在】%s%s%s" % (
             msg["chat_name"], hist_block, lead,
             msg["text"] or "（发了一张图/表情）",
             ("\n【被引用的原文】" + rt_text) if rt_text else "")
     else:
-        content = "【私聊 | 最近对话】\n%s\n\n【现在】对方(QQ:%s)对你说：%s%s" % (
+        content = "【当前场景：私聊（一对一对话，仅对方可见）| 最近对话】\n%s\n\n【现在】对方(QQ:%s)对你说：%s%s" % (
             hist_block, msg["sender_id"], msg["text"] or "（发了一张图/表情）",
             ("\n【被引用的原文】" + rt_text) if rt_text else "")
 
@@ -1827,6 +1865,203 @@ def _memo_same_source(a, b):
     return a[:n] == b[:n]
 
 
+
+# ---------------- 定时代码任务（C） ----------------
+
+CRON_TASKS_PATH = os.path.join(DATA_DIR, "cron_tasks.json")
+
+
+def _cron_tasks():
+    data = load_json_const(CRON_TASKS_PATH, {})
+    return data.get("tasks") if isinstance(data.get("tasks"), list) else []
+
+
+def _cron_save(tasks):
+    write_const(CRON_TASKS_PATH, json.dumps({"tasks": tasks}, ensure_ascii=False, indent=2))
+
+
+def _cron_tick(daemon):
+    """主循环每分钟检查一次：到点的定时代码任务触发沙箱执行器，结果发回指定会话。"""
+    if not feature_enabled("remote_control_enabled"):
+        return
+    now_key = time.strftime("%Y-%m-%d %H:%M")
+    lt = time.localtime()
+    now_hm = "%02d:%02d" % (lt.tm_hour, lt.tm_min)
+    today = time.strftime("%Y-%m-%d")
+    fired = False
+    for t in _cron_tasks():
+        if not isinstance(t, dict):
+            continue
+        if t.get("time") != now_hm:
+            continue
+        if t.get("_last_day") == today:
+            continue
+        t["_last_day"] = today
+        fired = True
+        out("AGENT_CRON_FIRE id=%s task=%.50s" % (t.get("id"), t.get("text", "")))
+        text = str(t.get("text") or "").strip()[:3800]
+        if not text:
+            continue
+        ct = str(t.get("chat_type") or "private")
+        cid = str(t.get("chat_id") or owner_qq() or "")
+        fake = {"chat_type": ct, "chat_id": cid, "id": "cron", "text": text,
+                "sender_id": owner_qq(), "sender_name": "定时任务",
+                "trigger_reason": "cron", "at_me": False, "image_urls": [],
+                "has_reply": False, "reply_to": None, "message_id": "cron"}
+        threading.Thread(
+            target=lambda f=fake: _cron_run_task(daemon, f), daemon=True).start()
+    if fired:
+        _cron_save([t for t in _cron_tasks() if isinstance(t, dict)])
+
+
+def _cron_run_task(daemon, fake_msg):
+    """定时任务执行（不走 bridge_task 的限频/忙锁，因为定时到达不受人为频率影响）。"""
+    _task_busy["flag"] = True
+    workdir = os.path.join(_task_root(), "cron_" + time.strftime("%Y%m%d_%H%M%S"))
+    os.makedirs(workdir, exist_ok=True)
+    try:
+        p = subprocess.run(
+            [sys.executable, WORKER_PATH, "--workdir", workdir],
+            input=str(fake_msg.get("text") or ""), capture_output=True,
+            timeout=900, shell=False, cwd=SCRIPT_DIR)
+        result = (p.stdout or b"").decode("utf-8", "replace").strip()
+        if p.returncode == 0 and result:
+            head = chr(0x23F0) + " 定时任务完成：\n" + result[:1500]
+        else:
+            head = "⏰ 定时任务失败：%s" % result[:300]
+        daemon.send(fake_msg["chat_type"], fake_msg["chat_id"],
+                    [x for x in head.split("\n") if x.strip()][:6])
+        out("AGENT_CRON_DONE rc=%d" % p.returncode)
+    except Exception as e:
+        out("AGENT_CRON_FAIL %r" % e)
+    finally:
+        _task_busy["flag"] = False
+
+
+
+# ---------------- 设备操控（D：高危，仅主人+可选动态码） ----------------
+
+_DEVCTRL_CODE = {"code": "", "expires": 0.0}
+
+# 系统目录自动识别（Windows 常见）+ 用户额外保护
+_PROTECTED_SYSTEM = [
+    os.path.expandvars("%SystemRoot%"),       # C:\Windows
+    os.path.expandvars("%ProgramFiles%"),     # C:\Program Files
+    os.path.expandvars("%ProgramFiles(x86)%"),
+    os.path.expandvars("%ProgramData%"),
+    os.path.expandvars("%AppData%"),
+    os.path.expandvars("%LocalAppData%"),
+    os.path.join(os.path.expanduser("~"), "AppData"),
+]
+
+
+def _protected_dirs():
+    cfg = C.load_app_config()
+    return [os.path.realpath(x) for x in
+            (_PROTECTED_SYSTEM + list(cfg.get("device_ctrl_protected_dirs") or []))
+            if x and os.path.isdir(x)]
+
+
+def _is_protected(path):
+    rp = os.path.realpath(str(path))
+    for pd in _protected_dirs():
+        if rp.startswith(pd + os.sep) or rp == pd:
+            return True
+    return False
+
+
+def _device_ctrl_enabled():
+    return bool(C.load_app_config().get("device_ctrl_enabled"))
+
+
+def _handle_devctrl(daemon, msg):
+    """设备操控入口：主人发「设备 授权码|命令」执行本机文件搜索/读取。
+    开关关闭→不响应；2FA 开启时必须携带当次有效授权码。"""
+    if not _device_ctrl_enabled() or not is_owner(msg):
+        return False
+    text = str(msg.get("text") or "").strip()
+    import re as _re
+    m = _re.match(r"^设备\s+(\d{6})\s*[|｜]\s*(.+)$", text, _re.S)
+    if not m:
+        # 请求授权码
+        if text in ("设备", "设备 授权"):
+            code = C.gen_auth_code()
+            _DEVCTRL_CODE.update(code=code, expires=time.time() + 300)
+            nl = chr(10)
+            daemon.send(msg["chat_type"], msg["chat_id"],
+                        ["设备操控授权码：%s（5 分钟内有效）。" % code + nl +
+                         "用法：设备 %s|命令" % code + nl +
+                         "可执行：找文件 <名称> / 读文件 <路径> / 发文件 <路径>" + nl +
+                         "注意：文件只会发到你的私聊，不会发到群里"])
+            return True
+        return False
+    code, cmd = m.group(1), m.group(2).strip()
+    cfg = C.load_app_config()
+    if cfg.get("device_ctrl_2fa", True):
+        if code != _DEVCTRL_CODE["code"] or time.time() > _DEVCTRL_CODE["expires"]:
+            daemon.send(msg["chat_type"], msg["chat_id"],
+                        ["授权码无效或已过期。发「设备」获取新授权码"])
+            return True
+        _DEVCTRL_CODE["expires"] = 0  # 一次性作废
+    # 强制私聊返回结果（隐私不出群）
+    reply_to = ("private", str(msg.get("sender_id") or owner_qq()))
+    import re as _re2
+    if cmd.startswith("找文件 "):
+        pattern = cmd[4:].strip()[:100]
+        results = _devctrl_search(pattern)
+        daemon.send(reply_to[0], reply_to[1], [
+            ("搜索「%s」结果（%d 条）：" % (pattern, len(results))) + chr(10) +
+            (chr(10).join(results[:10]) if results else "（无匹配）")])
+    elif cmd.startswith("读文件 "):
+        fp = cmd[4:].strip()[:260]
+        if _is_protected(fp):
+            daemon.send(reply_to[0], reply_to[1], ["该路径在保护目录内，拒绝读取"])
+        else:
+            try:
+                content = open(fp, "r", encoding="utf-8", errors="replace").read(2000)
+                daemon.send(reply_to[0], reply_to[1],
+                            ["文件内容（前2000字）：" + chr(10) + content])
+            except OSError as e:
+                daemon.send(reply_to[0], reply_to[1], ["读取失败：%r" % e])
+    elif cmd.startswith("发文件 "):
+        fp = cmd[4:].strip()[:260]
+        if _is_protected(fp):
+            daemon.send(reply_to[0], reply_to[1], ["该路径在保护目录内，拒绝发送"])
+        elif not os.path.isfile(fp):
+            daemon.send(reply_to[0], reply_to[1], ["文件不存在"])
+        else:
+            daemon.send_image(reply_to[0], reply_to[1], fp)
+            daemon.send(reply_to[0], reply_to[1], ["已发送：%s" % os.path.basename(fp)])
+    else:
+        daemon.send(reply_to[0], reply_to[1],
+                    ["不支持的命令。可用：找文件 <名称> / 读文件 <路径> / 发文件 <路径>"])
+    out("AGENT_DEVCTRL cmd=%.30s" % cmd)
+    return True
+
+
+def _devctrl_search(pattern):
+    """在用户目录和常见文档目录中搜索文件名匹配（只读，不进入保护目录）。"""
+    import fnmatch
+    roots = [os.path.expanduser("~"),
+             "D:/ZCode/workspaces"]
+    hits = []
+    prot = _protected_dirs()
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        for dirpath, dirnames, filenames in os.walk(root):
+            dp = os.path.realpath(dirpath)
+            if any(dp.startswith(p + os.sep) for p in prot):
+                dirnames[:] = []
+                continue
+            if len(hits) >= 30:
+                return hits
+            for fn in filenames:
+                if fnmatch.fnmatch(fn.lower(), "*" + pattern.lower() + "*"):
+                    hits.append(os.path.join(dirpath, fn))
+    return hits
+
+
 def persist_memo(scope, cid, text):
     """写一条记忆；同源文本 24 小时内已写过则跳过（互为前缀防变体绕过）。"""
     key = _norm_dup(text)[:18]
@@ -2019,6 +2254,11 @@ def process(daemon, msg):
             % (msg["id"], msg["chat_type"], msg["chat_id"], used, cap, hours, owner))
         return
     if owner:
+        if _handle_devctrl(daemon, msg):
+            daemon.ack([msg["id"]])
+            RT.count_processed()
+            out("AGENT_DEVCTRL_ACCEPT msg_id=%s" % msg["id"])
+            return
         if feature_enabled("draw_enabled") and _handle_draw(daemon, msg):
             daemon.ack([msg["id"]])
             RT.count_processed()
@@ -2444,6 +2684,7 @@ def main():
                     if isinstance(msg, dict) and "id" in msg:
                         process(daemon, msg)
                 _proactive_tick(daemon)
+                _cron_tick(daemon)
         except Exception as e:
             out("AGENT_LOOP_ERROR %r" % e)
             time.sleep(5)

@@ -510,6 +510,15 @@ async function backupNow(){
  toast('正在执行备份…');
  const r=await api('/api/backup-now',{method:'POST'});
  toast(r.ok?'备份完成（目录见运行日志 AGENT_BACKUP_OK）':'备份失败',r.ok!==false)}
+async function toggleDevCtrl(on){
+ if(on&&!await dlgConfirm({title:'开启设备操控',body:'⚠ 这是一项高危功能：开启后主人可以从 QQ 远程搜索、读取、发送你电脑上的文件。'
+ +String.fromCharCode(10)+String.fromCharCode(10)+'已内置保护：仅主人可用、结果只发私聊、系统目录+你的保护目录不可触达、默认需动态授权码。'
+ +String.fromCharCode(10)+String.fromCharCode(10)+'确定开启？',okText:'确认开启（我已了解风险）',danger:true}))return;
+ await saveKV('/api/app-config',{device_ctrl_enabled:on},on?'设备操控已开启':'设备操控已关闭');load()}
+async function saveDevDirs(){
+ const dirs=document.getElementById('pdevdirs').value.split('\n').map(x=>x.trim()).filter(Boolean);
+ const r=await saveKV('/api/app-config',{device_ctrl_protected_dirs:dirs},'保护目录已保存（'+dirs.length+' 个）');
+ if(r.ok!==false)load()}
 async function saveNight(key,val){
  const msg={review_time:'复盘时间',backup_enabled:'自动备份',backup_time:'备份时间',backup_dir:'备份目录'}[key]+'已更新（次日生效）';
  const r=await saveKV('/api/app-config',{[key]:key==='backup_dir'?String(val).trim():val},msg);
@@ -905,6 +914,15 @@ async function vSettings(){
   <button class="act ghost" style="margin:0" onclick="pickBackupDir()">浏览…</button>
   <button class="act ghost" style="margin:0" onclick="backupNow()">立即备份</button></div>
   <div class="k" style="margin-top:4px">超过保留天数或保留份数的旧备份自动清理（最旧的先清）</div></div></div>
+ <div class="card" style="border:1px solid var(--err)"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px;color:var(--err)">⚠ 设备操控（高危功能）</div>
+  <div class="k" style="margin-bottom:10px">允许机器人搜索/读取/发送你电脑上的文件。仅限主人 QQ 使用，且结果只发私聊（绝不在群里发送文件）。系统目录（Windows/Program Files/AppData 等）自动列入保护清单，不可读取/发送；你可以在下方额外添加保护目录。默认关闭。</div>
+  <label class="master" style="margin-bottom:8px"><input type="checkbox" ${c.device_ctrl_enabled?'checked':''} onchange="toggleDevCtrl(this.checked)">
+   <span><b>启用设备操控</b><div class="k" style="margin-top:3px">开启后主人私聊发「设备」获取授权码，然后「设备 授权码|命令」执行</div></span></label>
+  <label class="master" style="margin-bottom:8px"><input type="checkbox" ${c.device_ctrl_2fa!==false?'checked':''} onchange="saveKV('/api/app-config',{device_ctrl_2fa:this.checked?1:0},'动态授权码已'+(this.checked?'开启（推荐）':'关闭——危险！任何人拿到主人QQ都能操控'));load()">
+   <span><b>动态授权码（2FA，强烈推荐保持开启）</b><div class="k" style="margin-top:3px">每次使用设备操控都需先获取 6 位动态码（发「设备」即可获取，5 分钟有效、一次作废）；关闭后只需主人 QQ 即可操控——极不推荐</div></span></label>
+  <div class="k" style="margin-bottom:4px">额外保护目录（每行一个路径；这些目录下的文件永远不会被搜索/读取/发送）</div>
+  <textarea id="pdevdirs" style="min-height:70px" placeholder="D:\私密文档\${chr(10)}E:\备份">${esc((c.device_ctrl_protected_dirs||[]).join(String.fromCharCode(10)))}</textarea>
+  <button class="act" onclick="saveDevDirs()">保存保护目录</button></div>
  <div class="card"><div class="k">关闭本应用时</div>
   <div style="margin-top:8px">
    <label style="display:block;margin:6px 0"><input type="radio" name="cact" value="tray" ${(!c.close_action||c.close_action==='tray')?'checked':''} onchange="saveCloseAction(this.value)"> 最小化到系统托盘，机器人继续在后台（推荐；托盘图标可重新打开窗口）</label>
@@ -2228,6 +2246,16 @@ class UiHandler(BaseHTTPRequestHandler):
                         cleaned[k] = port
                     except (TypeError, ValueError):
                         return self._reply(400, {"ok": False, "error": "%s 必须是 1024-65535" % k})
+            if "device_ctrl_enabled" in cfg_in:
+                cleaned["device_ctrl_enabled"] = bool(cfg_in["device_ctrl_enabled"])
+            if "device_ctrl_2fa" in cfg_in:
+                cleaned["device_ctrl_2fa"] = bool(cfg_in["device_ctrl_2fa"])
+            if "device_ctrl_protected_dirs" in cfg_in:
+                dirs = cfg_in["device_ctrl_protected_dirs"]
+                if not isinstance(dirs, list) or len(dirs) > 20:
+                    return self._reply(400, {"ok": False, "error": "保护目录列表非法"})
+                cleaned["device_ctrl_protected_dirs"] = [
+                    str(x).strip()[:260] for x in dirs if str(x).strip()]
             if "timezone" in cfg_in:
                 cleaned["timezone"] = str(cfg_in["timezone"]).strip()[:50]
             if "auto_power_on" in cfg_in:

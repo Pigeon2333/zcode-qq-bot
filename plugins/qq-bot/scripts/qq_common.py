@@ -42,6 +42,9 @@ DEFAULT_CONFIG = {
     "backup_keep_days": 30,    # 备份保留天数（超过自动清理）
     "backup_keep_copies": 30,  # 每个备份保留份数（超过自动清理最旧的）
     "timezone": "Asia/Shanghai",  # 机器人时区（IANA 名，影响 AI 感知的时间）
+    "device_ctrl_enabled": False,  # 设备操控（高危，默认关）
+    "device_ctrl_2fa": True,       # 设备操控动态授权码（每次需验证）
+    "device_ctrl_protected_dirs": [],  # 额外保护目录（不可搜索/发送）
 }
 
 
@@ -164,3 +167,9 @@ def tz_now_info():
         "hour": now.hour,
         "tz": tz_name,
     }
+
+
+def gen_auth_code():
+    """生成 6 位数字动态授权码（设备操控用）。"""
+    import secrets
+    return str(secrets.randbelow(900000) + 100000)

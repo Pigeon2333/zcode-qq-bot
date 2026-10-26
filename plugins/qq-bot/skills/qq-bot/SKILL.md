@@ -89,3 +89,17 @@ qq_task_worker.py(沙箱执行器)     qq_admin_ui.py(:39765 管理台)
 
 PyInstaller 冻结（含 pywebview/pystray/PIL）+ 单实例锁 + 首次运行向导 +
 NapCat Shell 文件内嵌释放与 QQ 版本校验 + 日志轮转 + UI 鉴权。
+
+
+## 任务接力（ZCode 接管失败任务）
+沙箱执行器处理失败的任务会记入 `<task_workspace>/PENDING.md`。
+1. 读 PENDING.md 查看待接管任务（原始任务描述、沙箱目录、失败原因）
+2. 与用户确认接管哪个 → 在 ZCode 全能环境中继续完成
+3. 完成后告知用户，可选：把结果发回主人 QQ（POST daemon /send）
+
+## 沙盒试运行（调试人设/防插嘴）
+不打开 QQ 就能测试机器人的真实反应：
+1. 构造 OneBot 消息事件 JSON（参照 mock_onebot.py 格式）
+2. POST 到 daemon :39763 `/test/inject`，Header `X-QQBot-Token: <token>`
+3. 等 5s 后查 agent.log 的 AGENT_DONE/AGENT_SKIP/AGENT_GATE_SKIP 看反应
+4. 适合验证：人设修改效果、防插嘴判定、记忆标记格式
