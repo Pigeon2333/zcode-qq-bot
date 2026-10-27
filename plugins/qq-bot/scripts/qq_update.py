@@ -210,7 +210,7 @@ def _fetch_to(url, token, part, expect, allow=None, tag=""):
         _set(phase="download", pct=pct,
              msg="下载中 %.1f/%s" % (got / 1048576.0,
                                      ("%.1fMB" % (total / 1048576.0)) if total else "?"))
-        if time.time() - started > 30 and got < 2 * 1024 * 1024:
+        if time.time() - started > 30 and got < 4 * 1024 * 1024:
             raise RuntimeError("速度过慢（30 秒 %d KB）" % (got // 1024))
     with part.open("wb") as sink:
         st, _h, size = _https(up.hostname,

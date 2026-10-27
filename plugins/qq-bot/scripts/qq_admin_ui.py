@@ -1632,7 +1632,7 @@ async function vAbout(){
     <span class="k" style="flex:none">私有库 Token（可选）</span>
     <input id="uptoken" type="password" placeholder="${vi.has_update_token?'已保存（留空不改）':'公开库留空'}" style="width:200px" onchange="upSaveToken(this.value)">
    </div>
-   <div class="k">更新源就是你自己的 Release 仓库；私有仓库需要填一个只读 Token（fine-grained，Contents: Read），否则会 404。</div>
+   <div class="k">更新源就是你自己的 Release 仓库；私有仓库需要填一个只读 Token（fine-grained，Contents: Read），否则会 404。国内直连超过 30 秒仍很慢会自动换加速镜像，镜像内容必须通过 GitHub 的 SHA256 校验才会被采用。</div>
   </div></div>
  <div class="card"><div class="k">致谢</div>
   <div class="k" style="margin-top:6px">基于智谱 GLM 系列模型与 NapCat（OneBot 11）构建；感谢所有测试群里陪她聊天、帮她变得更好的朋友们。</div></div>`;
