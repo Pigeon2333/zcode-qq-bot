@@ -3630,8 +3630,15 @@ def main():
 
     daemon = DaemonClient(args.port, ctl_token := read_const(TOKEN_PATH))
     if not glm_key():
-        out("AGENT_FATAL missing api key")
-        sys.exit(1)
+        # 缺 Key 是「还没配置」而不是「启动失败」：保持管理接口在线并等待热加载，
+        # 用户在心智里补好 Key 后无需重启组件（避免控制台误报 agent 启动失败）。
+        out("AGENT_WAIT missing api key — 等待在控制台配置 API Key（进程保持在线）")
+        start_admin_server(args.admin_port)
+        while True:
+            time.sleep(3)
+            if glm_key():
+                out("AGENT_READY api key configured")
+                break
     RT.reload_chain()
     start_admin_server(args.admin_port)
     _proactive_state_load()

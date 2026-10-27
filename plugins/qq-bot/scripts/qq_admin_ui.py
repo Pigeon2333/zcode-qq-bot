@@ -77,7 +77,12 @@ _boot_state = {"running": False, "done": False, "failed": False,
 # NapCat 活性看门狗（UI 进程内运行：能调 power_off/on 做整机恢复而不自杀）
 _wd_lock = threading.Lock()
 _wd_state = {"events": [], "strikes": 0, "last_check": 0.0, "busy": False,
-             "last_result": ""}
+             "last_result": "", "last_comp": 0.0, "last_full": 0.0,
+             "full_times": []}
+
+# 最近一次「检查更新」结果（内存缓存；只在用户点检查或自动检查时刷新）
+_update_lock = threading.Lock()
+_update_cache = {}
 
 
 def _wd_event(kind, detail):
@@ -105,20 +110,47 @@ def _wd_notify_owner(cfg, text):
         pass
 
 
-def _wd_recover(cfg):
-    """自动恢复：整机电源周期（NapCat+daemon+agent）。仅在 UI 进程执行安全。"""
+def _wd_recover(cfg, scope="components"):
+    """自动恢复。scope:
+      components = 只补启没在跑的本程序组件（绝不动 QQ/NapCat，避免反复登录触发风控）
+      full       = 整机电源周期（NapCat+daemon+agent）——仅用于 WS 半死（TCP 在但不推事件）
+    带冷却：components 5 分钟内不重复；full 15 分钟内不重复且每小时最多 3 次。
+    """
+    now = time.time()
     with _wd_lock:
         if _wd_state["busy"]:
             return "上一次恢复仍在进行"
+        if scope == "full":
+            if now - _wd_state.get("last_full", 0) < 900:
+                return "整机恢复冷却中，跳过"
+            recent = [t for t in _wd_state.get("full_times", []) if now - t < 3600]
+            if len(recent) >= 3:
+                _wd_state["last_result"] = "整机恢复过于频繁（1 小时 3 次），已暂停自动恢复，请人工检查"
+                return _wd_state["last_result"]
+        elif now - _wd_state.get("last_comp", 0) < 300:
+            return "补启冷却中，跳过"
         _wd_state["busy"] = True
     try:
-        S.power_off(cfg, include_napcat=True)
-        time.sleep(2)
-        notes = S.power_on(cfg)
-        ok = any(n.get("component") == "napcat" and n.get("ok") for n in notes)
-        result = "已自动重启 NapCat 与组件" + ("（成功）" if ok else "（WS 未就绪，登录可能需要扫码）")
+        if scope == "full":
+            S.power_off(cfg, include_napcat=True)
+            time.sleep(2)
+            notes = S.power_on(cfg)
+            ok = any(n.get("component") == "napcat" and n.get("ok") for n in notes)
+            result = "WS 半死：已整机重启 NapCat 与组件" + ("（成功）" if ok else "（WS 未就绪，可能需扫码）")
+            with _wd_lock:
+                _wd_state["last_full"] = time.time()
+                _wd_state["full_times"] = recent + [time.time()]
+            _wd_notify_owner(cfg, "看门狗：" + result)
+        else:
+            parts = []
+            if not S.port_open(PORTS["daemon"]):
+                parts.append(S.ensure_daemon(cfg))
+            if not S.port_open(PORTS["agent"]):
+                parts.append(S.ensure_agent(cfg))
+            result = "已补启组件（未动 QQ）：" + ("；".join(p for p in parts if p) or "无需补启")
+            with _wd_lock:
+                _wd_state["last_comp"] = time.time()
         _wd_event("recover", result)
-        _wd_notify_owner(cfg, "看门狗：检测到 NapCat 消息推送失联，" + result)
         return result
     finally:
         with _wd_lock:
@@ -126,7 +158,11 @@ def _wd_recover(cfg):
 
 
 def _wd_check_once():
-    """单次健康检查。返回 (healthy, detail)。连续异常累计 strikes，达阈值动作。"""
+    """单次健康检查。返回 (healthy, detail)。连续异常累计 strikes，达阈值动作。
+
+    分级：只有 daemon 活着但动作通道没响应（WS 半死）才值得重启 QQ；
+    daemon 不在跑/没连上，最多补启组件，绝不为此重启 NapCat。
+    """
     cfg = C.load_app_config()
     if not cfg.get("watchdog_enabled"):
         return True, "disabled"
@@ -139,16 +175,17 @@ def _wd_check_once():
         with _wd_lock:  # 用户主动停止的全部组件：不算故障
             _wd_state["strikes"] = 0
         return True, "all-stopped"
-    healthy, detail = True, ""
+    healthy, detail, scope = True, "", "components"
     if daemon_up:
         r = proxy_get("127.0.0.1", PORTS["daemon"], "/status",
                       read_const(TOKEN_PATH), timeout=4)
         if not r.get("ok"):
             healthy, detail = False, "daemon /status 异常"
         elif not r.get("ws_connected"):
-            healthy, detail = False, "WS 未连接（重连中）"
+            healthy, detail = False, "WS 未连接（daemon 会自动重连）"
         elif r.get("ws_alive") is False:  # 老版本 daemon 无此字段时不误报
             healthy, detail = False, "WS 半死（动作通道无响应）"
+            scope = "full"
     else:
         healthy, detail = False, "daemon 未运行（NapCat 仍在线）"
     with _wd_lock:
@@ -163,7 +200,7 @@ def _wd_check_once():
     if strikes >= 2:
         mode = str(cfg.get("watchdog_mode") or "auto")
         if mode == "auto":
-            result = _wd_recover(cfg)
+            result = _wd_recover(cfg, scope)
             with _wd_lock:
                 _wd_state["strikes"] = 0
                 _wd_state["last_result"] = result
@@ -172,6 +209,25 @@ def _wd_check_once():
         with _wd_lock:
             _wd_state["last_result"] = "告警：%s" % detail
     return healthy, detail
+
+
+def _auto_update_check():
+    """启动后后台检查一次新版本（只提示，不安装）。"""
+    time.sleep(20)
+    try:
+        cfg = C.load_app_config()
+        if not cfg.get("update_check", True):
+            return
+        import qq_update as U
+        info = U.check(cfg)
+        if info.get("ok"):
+            with _update_lock:
+                _update_cache.clear()
+                _update_cache.update(info)
+            if info.get("newer"):
+                _wd_event("info", "发现新版本 %s（「关于」页可一键更新）" % info.get("latest"))
+    except Exception:
+        pass
 
 
 def _watchdog_loop():
@@ -238,7 +294,7 @@ h2{font-size:19px;font-weight:600;margin-bottom:4px;letter-spacing:.2px}
 .kv>div{min-width:150px}
 .k{color:var(--dim);font-size:12.5px}
 .badge{padding:2.5px 10px;border-radius:20px;font-size:12px;display:inline-block}
-.b-ok{background:var(--ok-bg);color:var(--ok)}.b-bad{background:var(--err-bg);color:var(--err)}
+.b-ok{background:var(--ok-bg);color:var(--ok)}.b-bad{background:var(--err-bg);color:var(--err)}.b-warn{background:var(--warn-bg,var(--tint));color:var(--warn)}
 textarea{width:100%;min-height:260px;background:var(--input);color:var(--fg);border:1px solid var(--line2);border-radius:8px;padding:10px;font-family:Consolas,monospace;font-size:13px;resize:vertical}
 textarea:focus,input:focus,select:focus{outline:2px solid var(--line2);border-color:var(--fg-strong)}
 input,select{background:var(--input);color:var(--fg);border:1px solid var(--line2);border-radius:7px;padding:6px 10px;font-family:inherit;font-size:13.5px}
@@ -351,6 +407,7 @@ let TAB='status';
 const TITLES={status:'状态',runlog:'运行日志',models:'模型管理',groups:'群消息',private:'私聊消息',persona:'人设',style:'风格卡',memory:'记忆',stickers:'表情包',devctrl:'设备操控',zcode:'ZCode 联动',settings:'设置',about:'关于'};
 function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 function head(sub){return '<h2>'+TITLES[TAB]+'</h2>'+(sub?'<div class="sub">'+sub+'</div>':'')}
+function goTab(t){const b=document.querySelector('#nav button[data-t="'+t+'"]');if(b)b.click()}
 function skeleton(){$('#view').innerHTML='<h2>'+TITLES[TAB]+'</h2><div class="card" style="color:var(--dim);padding:26px 20px">加载中…</div>'}
 function toast(m,ok=true){const t=$('#toast');t.textContent=m;t.style.display='block';t.style.borderColor=ok?'var(--ok)':'var(--err)';setTimeout(()=>t.style.display='none',2600)}
 /* ---- 自制弹窗：dlgConfirm/dlgPrompt 返回 Promise（取消=false/null，ESC/点遮罩=取消） ---- */
@@ -475,12 +532,13 @@ function manageBootTimer(b){
  }else if(_bootTimer){clearInterval(_bootTimer);_bootTimer=null}
 }
 async function vStatus(){
- const [d,a,b,c,wd]=await Promise.all([
+ const [d,a,b,c,wd,vi]=await Promise.all([
   api('/api/daemon-status').catch(()=>({ok:false})),
   api('/api/agent-status').catch(()=>({ok:false})),
   api('/api/power/status').catch(()=>({})),
   api('/api/app-config').catch(()=>({})),
   api('/api/watchdog').catch(()=>({enabled:false})),
+  api('/api/app-info').catch(()=>({})),
  ]);
  manageBootTimer(b);
  const ws=d.ws_connected, login=d.login||{};
@@ -500,6 +558,12 @@ async function vStatus(){
   +'<span class="badge '+(ok?'b-ok':'b-bad')+'" style="flex:none;margin-top:1px">'+(ok?'✓':'!')+'</span>'
   +'<span><b>'+t+'</b>'+(tip?'<div class="k">'+tip+'</div>':'')+'</span></div>';
  const qqntOk=!!(c.detected_qqnt||String(c.qqnt_dir||'').trim());
+ const upInfo=(vi&&vi.cached_update)||null;
+ const upBanner=(upInfo&&upInfo.ok&&upInfo.newer)?
+  '<div class="card" style="border:1px solid var(--acc);display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+  +'<span class="badge b-ok">有新版</span><span><b>'+esc(upInfo.latest||'')+'</b>'
+  +'<span class="k">（当前 '+esc(upInfo.current||'')+'）</span></span>'
+  +'<button class="act ghost" style="margin:0" onclick="goTab(\'about\')">去「关于」页一键更新</button></div>':'';
  const wizard=(!String(c.bot_qq||'').trim()) ? (
   '<div class="card" style="border:1px solid var(--acc)">'
   +'<div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">欢迎使用 ZCode QQ机器人'
@@ -523,14 +587,18 @@ async function vStatus(){
   +'<div class="k" style="margin:12px 0 4px;font-weight:600">第 3 步 · 启动并扫码</div>'
   +'<div class="k">回本页点「启动机器人」→ 会自动弹出 NapCat 登录页 → 用<b>机器人那个 QQ 号</b>扫码。登录页若要求填「登录密钥 / Token」：回本页「NapCat 登录密钥」卡片点<b>「打开登录页（免密钥）」</b>直接进（密钥自动从 NapCat 配置读取，也能一键复制）。登录成功后，把机器人拉进群或私聊它，@它说句话试试。第一条回复到了，就全部完成了🎉</div>'
   +'<div class="k" style="margin-top:10px;border-top:1px solid var(--line);padding-top:8px">常见卡点：①登录页没弹出→看本页启动日志；②登录页要密钥→用「打开登录页（免密钥）」；③扫码后 WebUI 又要求登录→NapCat 换新密钥了，回「NapCat 登录密钥」卡片点「刷新」；④机器人不回→确认群里没被「暂停回应」、Key 有效。更多说明见 README（github.com/Pigeon2333/zcode-qq-bot）</div></div>'
-  +(String(c.bot_qq||'').trim()&&!hasKey?
-  '<div class="card" style="border:1px solid var(--warn)">还差最后一步：AI 大脑还没有 API Key（免费注册 open.bigmodel.cn → 创建 Key → 「设置 → API Key」粘贴），填好前机器人无法说话</div>':'')) : '';
+  ) : '';
+ const keyWarn=(String(c.bot_qq||'').trim()&&!hasKey)?
+  '<div class="card" style="border:1px solid var(--warn)"><b>还差最后一步：AI 大脑还没有 API Key</b>'
+  +'<div class="k" style="margin-top:4px">机器人现在能连上 QQ，但不会说话（agent 会一直在线等待，不会算启动失败）。'
+  +'填好后立即生效、无需重启：免费注册 <a href="https://open.bigmodel.cn" target="_blank">open.bigmodel.cn</a> → 创建 API Key → 到「设置 → ③ 接口与模型消耗 → API Key」粘贴（供应商选「智谱」），或用 DeepSeek Key（供应商选 DeepSeek）。</div>'
+  +'<div style="margin-top:8px"><button class="act" onclick="goTab(\'settings\')">去填 Key</button></div></div>':'';
  $('#view').innerHTML=head('组件运行状态与机器人开关')+
- `${wizard}
+ `${wizard}${keyWarn}${upBanner}
  <div class="card"><div class="kv">
   <div><span class="k">消息管道</span> <span class="badge ${d.ok?'b-ok':'b-bad'}">${d.ok?'运行':'停止'}</span></div>
   <div><span class="k">NapCat WS</span> <span class="badge ${ws?'b-ok':'b-bad'}">${ws?'已连接':'断开'}</span></div>
-  <div><span class="k">自治大脑</span> <span class="badge ${a&&a.ok?'b-ok':'b-bad'}">${a&&a.ok?'运行':'停止'}</span></div>
+  <div><span class="k">自治大脑</span> ${a&&a.ok?(a.ready===false?'<span class="badge b-warn">等待 API Key</span>':'<span class="badge b-ok">运行</span>'):'<span class="badge b-bad">停止</span>'}</div>
   <div><span class="k">机器人</span> ${esc(login.nickname||'?')} <span class="mono">(${esc(String(login.user_id||'?'))})</span></div>
  </div>
  <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
@@ -1528,14 +1596,15 @@ async function vSettings(){
    <label style="display:block;margin:6px 0"><input type="radio" name="cact" value="exit_all" ${c.close_action==='exit_all'?'checked':''} onchange="saveCloseAction(this.value)"> 退出本应用并停止机器人（关闭时会二次确认）</label>
   </div></div>`;
 }
-let _autoReg=null;
+let _autoReg=null,_upTimer=null;
 async function vAbout(){
+ const vi=await api('/api/app-info').catch(()=>({}));
  $('#view').innerHTML=head('关于本项目')+
  `<div class="card" style="text-align:center;padding:26px 18px">
    <div class="brand-mark" style="width:44px;height:44px;font-size:22px;margin:0 auto 10px;display:flex;align-items:center;justify-content:center;border-radius:10px"></div>
    <div style="font-size:18px;font-weight:600">ZCode QQ机器人</div>
    <div class="k" style="margin-top:6px">一只住在你电脑里、跑在 ZCode 体系上的 QQ 机器人：多人设聊天、长期记忆、表情包、看图生图、任务沙箱、设备操控、主动消息，样样都行。</div>
-   <div class="k mono" style="margin-top:10px">版本 0.1.0 · Windows · Python 3</div>
+   <div class="k mono" style="margin-top:10px">版本 ${esc(vi.version||'—')} · Windows · Python 3</div>
   </div>
  <div class="card"><div class="k" style="margin-bottom:8px">项目信息</div>
   <div class="kv">
@@ -1547,10 +1616,82 @@ async function vAbout(){
  <div class="card"><div class="k" style="margin-bottom:8px">贡献者</div>
   <div class="k">暂无——欢迎通过 Pull Request 参与，你的名字会出现在这里。</div></div>
  <div class="card"><div class="k" style="margin-bottom:8px">更新</div>
-  <div class="k">当前版本 0.1.0。自动检查更新功能开发中；发布新版本后这里会提供「检查更新」按钮与更新日志。</div>
-  <button class="act ghost" style="margin-top:8px;opacity:.55;cursor:default" disabled>检查更新（即将上线）</button></div>
+  <div class="k">当前版本 <b>${esc(vi.version||'—')}</b> · 更新源 <span class="mono">${esc(vi.repo||'')}</span>${vi.frozen?'':' · <span style="color:var(--warn)">源码模式不支持自动安装（请 git pull）</span>'}</div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
+   <button class="act ghost" style="margin:0" onclick="upCheck()">检查更新</button>
+   <button class="act" style="margin:0" onclick="upInstall()">下载并安装更新（自动重启）</button>
+  </div>
+  <div id="upstat" class="k" style="margin-top:6px"></div>
+  <div id="upnotes" class="k" style="margin-top:6px;white-space:pre-wrap"></div>
+  <div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--line)">
+   <label class="master" style="margin-bottom:6px"><input type="checkbox" ${vi.update_check?'checked':''} onchange="upToggle(this.checked)">
+    <span><b>启动时自动检查更新</b><div class="k" style="margin-top:3px">只检查并提示，不会自动安装（安装永远需要你点一下确认）</div></span></label>
+   <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px">
+    <span class="k" style="flex:none">更新源</span>
+    <input id="uprepo" value="${esc(vi.repo||'')}" style="width:230px" placeholder="owner/name" onchange="upSaveRepo(this.value)">
+    <span class="k" style="flex:none">私有库 Token（可选）</span>
+    <input id="uptoken" type="password" placeholder="${vi.has_update_token?'已保存（留空不改）':'公开库留空'}" style="width:200px" onchange="upSaveToken(this.value)">
+   </div>
+   <div class="k">更新源就是你自己的 Release 仓库；私有仓库需要填一个只读 Token（fine-grained，Contents: Read），否则会 404。</div>
+  </div></div>
  <div class="card"><div class="k">致谢</div>
   <div class="k" style="margin-top:6px">基于智谱 GLM 系列模型与 NapCat（OneBot 11）构建；感谢所有测试群里陪她聊天、帮她变得更好的朋友们。</div></div>`;
+ if(vi.cached_update&&vi.cached_update.ok)upShow(vi.cached_update);
+}
+
+async function upShow(info){
+ const st=document.getElementById('upstat'),nt=document.getElementById('upnotes');
+ if(!st)return;
+ st.innerHTML='线上最新版本 <b>'+esc(info.latest||'—')+'</b> · '
+  +(info.newer?'<span style="color:var(--warn)">有新版本可用</span>'
+    :('线上没有更新的版本（当前 '+esc(info.current||'')+'）'))
+  +(info.size?' · 安装包 '+(info.size/1048576).toFixed(1)+'MB':'');
+ if(nt)nt.textContent=info.notes?('更新内容：\n'+info.notes):'';
+}
+async function upCheck(){
+ const st=document.getElementById('upstat');
+ if(st)st.textContent='正在检查…';
+ const r=await api('/api/update/check').catch(()=>({ok:false,error:'请求失败'}));
+ if(!r.ok){if(st)st.textContent='✗ '+(r.error||'检查失败');toast(r.error||'检查失败',false);return}
+ upShow(r);
+ toast(r.newer?('发现新版本 '+r.latest):('已是最新版本 '+r.current),true);
+}
+async function upPoll(){
+ const s=await api('/api/update/status').catch(()=>null);
+ const st=document.getElementById('upstat');
+ if(s&&st){
+  if(s.phase==='download')st.textContent='下载中 '+(s.pct||0)+'% · '+(s.msg||'');
+  else if(s.phase==='stage')st.textContent='解压中…';
+  else if(s.phase==='applying')st.textContent='安装完成，程序即将自动重启（本窗口会关闭，稍等几秒重开即可）';
+  else if(s.phase==='error'){st.textContent='✗ '+(s.error||'更新失败');if(_upTimer){clearInterval(_upTimer);_upTimer=null}}
+ }
+}
+async function upInstall(){
+ const vi=await api('/api/app-info').catch(()=>({}));
+ if(!vi.frozen){toast('源码模式不支持自动更新，请 git pull',false);return}
+ if(!await dlgConfirm({title:'下载并安装更新',body:'将下载最新发布包并覆盖程序目录（不含数据目录 ~/.zcode-qq-bot，人设/记忆/Key/白名单都会保留），随后程序自动重启。安装期间机器人会短暂离线。继续？',okText:'下载并安装',danger:true}))return;
+ const r=await api('/api/update/run',{method:'POST'}).catch(()=>({ok:false,error:'请求失败'}));
+ if(!r.ok){toast(r.error||'启动更新失败',false);return}
+ toast('已开始下载更新…');
+ if(_upTimer)clearInterval(_upTimer);
+ _upTimer=setInterval(upPoll,1200);
+ upPoll();
+}
+async function upToggle(on){
+ await saveKV('/api/app-config',{update_check:on},on?'已开启启动时自动检查更新':'已关闭启动时自动检查更新');
+}
+async function upSaveRepo(v){
+ const r=await api('/api/app-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({update_repo:String(v||'').trim()})}).catch(()=>({ok:false,error:'请求失败'}));
+ if(r.ok===false){toast(r.error||'保存失败',false);return}
+ toast('更新源已保存');
+}
+async function upSaveToken(v){
+ const t=String(v||'').trim();
+ if(!t)return;
+ const r=await api('/api/app-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({update_token:t})}).catch(()=>({ok:false,error:'请求失败'}));
+ if(r.ok===false){toast(r.error||'保存失败',false);return}
+ const el=document.getElementById('uptoken');if(el){el.value='';el.placeholder='已保存（留空不改）'}
+ toast('Token 已保存（仅存本机）');
 }
 async function S_autostartRegistry(){if(_autoReg===null){try{const r=await api('/api/autostart');_autoReg=!!r.enabled;}catch(e){_autoReg=false;}}return _autoReg}
 async function saveEnv(id,key,port,msg){
@@ -2282,6 +2423,28 @@ class UiHandler(BaseHTTPRequestHandler):
                                 "base_url": str(e.get("base_url", ""))[:120]
                                 if prov == "custom" else ""})
             return self._reply(200, {"ok": True, "keys": out})
+        if u.path == "/api/app-info":
+            cfg = C.load_app_config()
+            with _update_lock:
+                cached = dict(_update_cache) if _update_cache else None
+            return self._reply(200, {
+                "ok": True, "version": C.APP_VERSION,
+                "frozen": bool(getattr(sys, "frozen", False)),
+                "repo": cfg.get("update_repo") or C.DEFAULT_UPDATE_REPO,
+                "update_check": bool(cfg.get("update_check", True)),
+                "has_update_token": bool(str(cfg.get("update_token") or "").strip()),
+                "cached_update": cached})
+        if u.path == "/api/update/check":
+            import qq_update as _U
+            info = _U.check(C.load_app_config())
+            if info.get("ok"):
+                with _update_lock:
+                    _update_cache.clear()
+                    _update_cache.update(info)
+            return self._reply(200, info)
+        if u.path == "/api/update/status":
+            import qq_update as _U
+            return self._reply(200, {"ok": True, **_U.status()})
         if u.path == "/api/napcat-dl-status":
             import qq_napcat_dl as _ND
             return self._reply(200, {"ok": True, **_ND.status()})
@@ -2683,6 +2846,20 @@ class UiHandler(BaseHTTPRequestHandler):
             tz.start()
             tz.join(timeout=120)
             return self._reply(200, {"ok": True, "file": boxz.get("f", "")})
+        if u.path == "/api/update/run":
+            import qq_update as _U
+            cfg = C.load_app_config()
+            if not bool(getattr(sys, "frozen", False)):
+                return self._reply(200, {"ok": False, "error":
+                    "源码模式不支持自动更新（请 git pull）；发布版才有此功能"})
+            info = _U.check(cfg)
+            if not info.get("ok"):
+                return self._reply(200, {"ok": False, "error": info.get("error") or "检查失败"})
+            if not info.get("newer"):
+                return self._reply(200, {"ok": False, "error":
+                    "已是最新版本 %s" % info.get("current")})
+            threading.Thread(target=_U.run_update, args=(cfg,), daemon=True).start()
+            return self._reply(200, {"ok": True, "latest": info.get("latest")})
         if u.path == "/api/napcat-open-login":
             cfg = C.load_app_config()
             if not S.port_open(6099):
@@ -2741,9 +2918,12 @@ class UiHandler(BaseHTTPRequestHandler):
             logs_dir = ddir / "logs"
             out = ddir / ("qqbot-diag-%s.zip" % time.strftime("%Y%m%d-%H%M%S"))
             def _mask(text):
-                # 掩码所有疑似密钥/令牌的长 token
-                return re.sub(r"[A-Za-z0-9]{24,}", lambda m: m.group(0)[:6] + "…MASKED",
-                              text)
+                # 掩码所有疑似密钥/令牌的长 token，以及配置里明确是凭据的字段
+                text = re.sub(r"[A-Za-z0-9]{24,}",
+                              lambda m: m.group(0)[:6] + "…MASKED", text)
+                return re.sub(
+                    r'("(?:update_token|api_key|token|key|zhipu_api_key)"\s*:\s*")[^"]{6,}"',
+                    r'\1MASKED"', text)
             with zipfile.ZipFile(str(out), "w", zipfile.ZIP_DEFLATED) as z:
                 for name in ("daemon.log", "agent.log", "ui.log"):
                     lp = logs_dir / name
@@ -3250,6 +3430,21 @@ class UiHandler(BaseHTTPRequestHandler):
                         cleaned[k] = max(1, min(365, int(cfg_in[k])))
                     except (TypeError, ValueError):
                         pass
+            if "update_check" in cfg_in:
+                cleaned["update_check"] = bool(cfg_in["update_check"])
+            if "update_repo" in cfg_in:
+                rp = str(cfg_in["update_repo"]).strip()[:120]
+                if rp and (rp.count("/") != 1 or any(c in rp for c in " \t\\?#")):
+                    return self._reply(400, {"ok": False, "error": "更新源格式应为 owner/name"})
+                cleaned["update_repo"] = rp or C.DEFAULT_UPDATE_REPO
+            if "update_token" in cfg_in:
+                tv = str(cfg_in["update_token"]).strip()
+                if len(tv) > 300 or any(c.isspace() for c in tv):
+                    return self._reply(400, {"ok": False, "error": "GitHub Token 格式异常"})
+                cleaned["update_token"] = tv
+            if "update_skip_version" in cfg_in:
+                cleaned["update_skip_version"] = str(
+                    cfg_in["update_skip_version"]).strip()[:20]
             for k in ("sched_pause_start", "sched_pause_end"):
                 if k in cfg_in:
                     v = str(cfg_in[k]).strip()
@@ -3673,6 +3868,7 @@ def main():
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), UiHandler)
     srv.daemon_threads = True
     threading.Thread(target=_watchdog_loop, daemon=True).start()
+    threading.Thread(target=_auto_update_check, daemon=True).start()
     print(json.dumps({"admin_ui_ready": True, "url": "http://127.0.0.1:%d" % args.port,
                       "watchdog": True}, ensure_ascii=False), flush=True)
     srv.serve_forever()

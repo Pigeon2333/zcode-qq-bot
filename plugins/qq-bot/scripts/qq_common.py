@@ -24,6 +24,9 @@ DATA_DIR = os.environ.get("QQBOT_DATA_DIR") or os.path.join(
     os.path.expanduser("~"), ".zcode-qq-bot")
 DATA_ROOT = pathlib.Path(DATA_DIR)
 
+APP_VERSION = "0.1.1"          # 发布版本号（更新检查与本页展示用；发版时同步改）
+DEFAULT_UPDATE_REPO = "Pigeon2333/zcode-qq-bot"
+
 APP_CONFIG_PATH = DATA_ROOT / "app_config.json"
 
 DEFAULT_CONFIG = {
@@ -70,6 +73,10 @@ DEFAULT_CONFIG = {
     "zcode_watch_enabled": False,      # ZCode 进程监控（退出/重启时 QQ 提醒）
     "zcode_cron_enabled": False,       # 定时 ZCode 任务（定时 HH:MM zcode 任务）
     "zcode_context_enabled": False,    # 主动消息感知主人在 ZCode 的近期项目（默认关，隐私）
+    "update_check": True,          # 启动时检查 GitHub Release 新版本（只查一次，不自动装）
+    "update_repo": DEFAULT_UPDATE_REPO,  # 更新源仓库 owner/name（可改成自己的 fork/镜像）
+    "update_token": "",            # 私有仓库读取 Release 用的 GitHub Token（留空=公开仓库匿名读）
+    "update_skip_version": "",     # 用户选择跳过的版本号（如 0.1.2）
 }
 
 # 备份/恢复统一文件清单（basename 冲突无；子目录文件扁平存放）
