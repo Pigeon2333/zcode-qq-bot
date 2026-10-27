@@ -592,6 +592,8 @@ class Daemon:
         user_id = ev.get("user_id") or ev.get("user_id")
         if user_id is None:
             return
+        if str(user_id) in self._user_blacklist():
+            return  # 黑名单：连戳一戳也不理
         chat_type = "group" if ev.get("group_id") else "private"
         chat_id = ev.get("group_id") or user_id
         chat_name = str(ev.get("group_name") or chat_id)
@@ -623,7 +625,7 @@ class Daemon:
         self_id = ev.get("self_id") or self.login.get("user_id")
         if user_id is None or str(user_id) == str(self_id):
             return
-        if str(user_id) in [str(x) for x in self.cfg.get("user_blacklist", [])]:
+        if str(user_id) in self._user_blacklist():
             return
 
         if chat_type == "group":
@@ -739,6 +741,28 @@ class Daemon:
                 self._pc_cache = load_private_config_file()
                 self._pc_sig = sig
         return self._pc_cache
+
+    def _user_blacklist(self):
+        """用户黑名单热加载（来源 app_config.json 的 user_blacklist，管理台维护）。
+
+        黑名单优先级最高：命中即丢弃——不进收件箱、不进记忆历史、不触发任何
+        回复模式（群聊/私聊/@/关键词/戳一戳全部无效）。
+        """
+        import qq_common as _C
+        try:
+            sig = file_sig(str(_C.APP_CONFIG_PATH))
+        except Exception:
+            sig = None
+        if getattr(self, "_bl_sig", "_") != sig:
+            try:
+                bl = [str(x) for x in (_C.load_app_config().get(
+                    "user_blacklist") or [])]
+            except Exception:
+                bl = []
+            with self.lock:
+                self._bl_cache = set(bl)
+                self._bl_sig = sig
+        return self._bl_cache
 
     def _reply_config(self):
         """回复模式配置热加载（mtime 秒级失效，来源 reply_config.json，daemon 只读）。"""

@@ -20,6 +20,7 @@ import os
 import pathlib
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -418,7 +419,7 @@ function _dlgBuild(title,body,withInput,okText,danger){
   +'<div class="dlg-btns"><button class="act ghost">取消</button>'
   +'<button class="act'+(danger?' dlg-danger':'')+'">'+(okText||'确定')+'</button></div></div>';
  m.querySelector('h3').textContent=title||'';
- m.querySelector('.dlg-body').textContent=body||'';
+ m.querySelector('.dlg-body').innerHTML=body||'';
  document.body.appendChild(m);return m}
 function _dlgWire(m,onOk,onCancel){
  const cancel=m.querySelector('.dlg-btns .ghost'),ok=m.querySelector('.dlg-btns .act:not(.ghost)');
@@ -452,11 +453,14 @@ const UI_TOKEN=(function(){ // 服务端注入（?tk= 有效时）；否则回�
  try{if('__UITOKEN__'.length>20)return '__UITOKEN__'}catch(e){}
  return localStorage.getItem('zbtk')||''})();
 function uiShowUnlock(){
- document.body.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100vh"><div class="card" style="max-width:420px"><h3>控制台已锁定</h3><div class="k" style="margin-top:8px">本页直接从浏览器打开需要访问令牌。<br>令牌文件：<span class="mono">~/.zcode-qq-bot/ui_token</span><br>（用 ZCode QQ机器人 桌面程序打开则无需此步骤）</div><input id="zbunlock" style="width:100%;margin-top:12px" placeholder="粘贴令牌"><div style="margin-top:10px"><button class="act" onclick="localStorage.setItem(\'zbtk\',document.getElementById(\'zbunlock\').value.trim());location.reload()">解锁</button></div></div></div>';}
+ document.body.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100vh"><div class="card" style="max-width:420px"><h3>控制台已锁定</h3><div class="k" style="margin-top:8px">如果你是用<b>桌面程序</b>打开的：这是显示异常，点下面按钮重新进入即可。<br><br>如果是从浏览器打开的：需要访问令牌，文件位置 <span class="mono">C:\\Users\\你的用户名\\.zcode-qq-bot\\ui_token</span>（用记事本打开复制）。</div><div style="margin-top:10px"><button class="act" onclick="uiUnlockWith(prompt(\'粘贴令牌（桌面程序显示异常时直接点取消再重开程序即可）：\',\'\'))">重新进入 / 粘贴令牌</button></div></div></div></div>';}
 async function api(p,opts){
  if(!UI_TOKEN){uiShowUnlock();throw new Error('locked')}
  opts=opts||{};opts.headers=Object.assign({},opts.headers||{},{'X-UI-Token':UI_TOKEN});
  const r=await fetch(p,opts);return r.json()}
+async function uiUnlockWith(t){ // 桌面窗口兜底：带令牌重载并记住
+ if(!t)return;
+ localStorage.setItem('zbtk',t);location.href='/?tk='+encodeURIComponent(t)}
 /* ---- 统一保存交互 ----
    规则：开关/选项/模式卡/列表增删 = 点击即保存即生效；
    输入框 = 改完（回车/失焦）自动保存；长文本 = 点所在卡片的「保存」按钮，仅保存该卡片。 */
@@ -572,7 +576,7 @@ async function vStatus(){
   +ck(qqntOk,'已安装 QQ（QQNT 桌面版）', qqntOk?'':'去 im.qq.com 下载安装普通版 QQ（不要 TIM/轻量版），装完回到本页刷新')
   +ck(!!c.napcat_ok,'QQ 里已装 NapCat Shell（机器人的消息通道）', c.napcat_ok?'':'最简单：「设置 → 运行环境 → 在线下载并安装 NapCat」一键完成（国内自动走镜像）。或自己下 zip（github.com/NapNeko/NapCatQQ/releases）后用「本地 zip 安装」。装完刷新本页')
   +ck(hasKey,'已配置 AI 大脑的 API Key', hasKey?'':'二选一：智谱 open.bigmodel.cn（免费额度、生图/联网/默认推荐）或 DeepSeek platform.deepseek.com（便宜、国产直连）。注册后建一个 Key，稍后在「设置 → API Key」粘贴（供应商选对应家）')
-  +ck(!!c.zcode_installed,'（可选）ZCode 已安装', c.zcode_installed?'装了更强：任务收件箱 / MCP 工具 / 进程监控 / 复盘审阅，在「ZCode 联动」页开启':'非必须，但装了机器人能力更多。两步：① zcode.ai 下载安装 ZCode；② ZCode 插件市场搜「QQ机器人」装本插件（自带 MCP 服务器，装完即生效，可在 ZCode 里用 /qq-bot 管理机器人）。装好本页刷新')
+  +ck(!!c.zcode_installed,'（可选）ZCode 已安装', c.zcode_installed?'装了更强：任务收件箱 / MCP 工具 / 进程监控 / 复盘审阅（机器人本体不依赖它，随时可后补）：在 ZCode 里把本项目的 plugins/ 目录添加为插件市场（或等项目公开后直接在市场搜「QQ机器人」一键装），再到「ZCode 联动」页开启':'非必须，机器人所有聊天功能都不需要它。装了可以联动（任务收件箱 / MCP 工具等）：① zcode.ai 下载安装 ZCode；② 把本项目的 plugins/ 目录添加为 ZCode 插件市场来安装本插件（项目公开后可直接在市场搜「QQ机器人」）。装好后回本页刷新')
   +'<div class="k" style="margin:12px 0 4px;font-weight:600">第 1 步 · 告诉机器人它是谁</div>'
   +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">'
   +'<div><div class="k" style="margin-bottom:4px">机器人 QQ 号（建议用小号，扫码登录的就是它）</div><input id="wzbot" style="width:100%" placeholder="如 123456789"></div>'
@@ -1452,7 +1456,18 @@ async function vSettings(){
    <button class="act ghost" style="margin:0" onclick="napcatInstall()">本地 zip 安装…</button>
    <span class="k">在线版自动从 NapCat 官方 GitHub 下载最新 Shell 并安装（国内自动走镜像）；本地版选自己下载的 zip（github.com/NapNeko/NapCatQQ/releases）。Program Files 目录需管理员权限运行本程序</span></div>
   <div id="ncdl-status" class="k" style="margin-top:6px"></div>
-  <div class="k" style="margin-top:8px">扫码登录：密钥（登录页要填的 Token）与「打开登录页（免密钥）」按钮见「状态」页的 <b>NapCat 登录密钥</b> 卡片（密钥由程序自动从 NapCat 配置读取，不用手抄）</div></div>
+  <div class="k" style="margin-top:8px">扫码登录：密钥（登录页要填的 Token）与「打开登录页（免密钥）」按钮见「状态」页的 <b>NapCat 登录密钥</b> 卡片（密钥由程序自动从 NapCat 配置读取，不用手抄）</div>
+  <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">
+   <div class="k" style="font-weight:600">切换机器人账号</div>
+   <div class="k" style="margin-top:4px">换一个小号当机器人：填新号 → 程序会停止当前账号（含 QQ）→ 用新号重新启动。新号在这台电脑登录过 QQ 就会自动快速登录；没登录过会弹出二维码，用新号的手机 QQ 扫码即可。</div>
+   <div class="k" style="margin-top:4px;color:var(--warn)">⚠ 同一个 QQ 号不能同时在两个机器人框架登录（会被顶下线）：如果这个号还在 dsh / 别的机器人上挂着，先在那边退出，再在这里切换。</div>
+   <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <span class="k" style="flex:none">当前：<b class="mono">${esc(String(c.bot_qq||'未设置'))}</b> →</span>
+    <input id="swqq" placeholder="新机器人 QQ 号" style="width:170px" onkeydown="if(event.key==='Enter')switchAccount()">
+    <button class="act danger" style="margin:0" onclick="switchAccount()">切换并重启</button>
+   </div>
+   <div class="k" style="margin-top:4px">进度在「状态」页启动日志实时显示；人设/记忆/设置不受影响（它们跟程序走，不跟 QQ 号走）</div>
+  </div></div>
   <div class="k" style="margin-top:12px">端口（一般无需改动；改动重启各组件后生效）</div>
   <div style="display:flex;gap:10px;margin-top:6px;flex-wrap:wrap;align-items:center">
    <label>NapCat WS <input id="pnap" type="number" value="${c.napcat_ws_port}" style="width:76px" onchange="saveEnv('pnap','napcat_ws_port',1)"></label>
@@ -1587,6 +1602,12 @@ async function vSettings(){
   <label style="display:block;margin:4px 0"><input type="radio" name="wdmode" value="alert" ${c.watchdog_mode==='alert'?'checked':''} onchange="saveKVLoad('/api/app-config',{watchdog_mode:'alert'},'看门狗模式：仅告警')"> 仅告警<span class="k">：只通知，不做任何重启，等主人到控制台手动处理</span></label>
   <div style="margin-top:8px"><label>探测间隔 <input type="number" min="60" max="600" step="30" value="${c.watchdog_interval||120}" style="width:70px" onchange="saveKVLoad('/api/app-config',{watchdog_interval:Math.max(60,Math.min(600,parseInt(this.value)||120))},'探测间隔已保存')"> 秒（连续 2 次异常才触发动作）</label></div>
   <div class="k" style="margin-top:6px">当前状态可在「状态」页查看（含最近事件）</div></div>
+ <div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">用户黑名单<span class="badge b-bad">最高优先级 · 一律无视</span></div>
+  <div class="k">命中名单的 QQ 号：群聊、私聊、@机器人、关键词、戳一戳<b>全部不响应</b>，消息不进入机器人记忆，改动即时生效。优先级高于一切白名单与回复模式。</div>
+  <div style="margin-top:8px;display:flex;gap:8px">
+   <input id="bladd" placeholder="输入要拉黑的 QQ 号后回车" style="flex:1" onkeydown="if(event.key==='Enter')blAdd()">
+   <button class="act" style="margin:0" onclick="blAdd()">拉黑</button></div>
+  <div style="margin-top:8px">${(c.user_blacklist||[]).length?((c.user_blacklist||[]).map((x,i)=>'<div class="row"><span class="no">'+(i+1)+'.</span><span class="mono" style="flex:1">'+esc(String(x))+'</span><button class="act ghost" style="margin:0" onclick="blDel('+i+')">移出</button></div>').join('')):'<div class="k">名单为空</div>'}</div></div>
 
  <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">⑦ 应用行为</div>
  <div class="card"><div class="k">关闭本应用时</div>
@@ -1594,9 +1615,53 @@ async function vSettings(){
    <label style="display:block;margin:6px 0"><input type="radio" name="cact" value="tray" ${(!c.close_action||c.close_action==='tray')?'checked':''} onchange="saveCloseAction(this.value)"> 最小化到系统托盘，机器人继续在后台（推荐；托盘图标可重新打开窗口）</label>
    <label style="display:block;margin:6px 0"><input type="radio" name="cact" value="exit_app" ${c.close_action==='exit_app'?'checked':''} onchange="saveCloseAction(this.value)"> 退出本应用，机器人保持运行（下次双击图标重新打开）</label>
    <label style="display:block;margin:6px 0"><input type="radio" name="cact" value="exit_all" ${c.close_action==='exit_all'?'checked':''} onchange="saveCloseAction(this.value)"> 退出本应用并停止机器人（关闭时会二次确认）</label>
-  </div></div>`;
+  </div></div>
+ <div class="card" style="border:1px solid var(--err)"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px;color:var(--err)">卸载本应用</div>
+  <div class="k">两种卸载方式：</div>
+  <label style="display:block;margin:6px 0"><input type="radio" name="unmode" value="keep-data" checked> <b>卸载程序，保留数据</b><span class="k">（推荐）：删除程序文件与开机自启，人设、记忆、备份、聊天数据都留在 ~/.zcode-qq-bot，以后重装可无缝接上</span></label>
+  <label style="display:block;margin:6px 0"><input type="radio" name="unmode" value="wipe"> <b>彻底卸载</b><span class="k">：连同 ~/.zcode-qq-bot 一起删除——人设、记忆、备份、API Key 全部消失且不可恢复</span></label>
+  <div style="margin-top:8px;display:flex;gap:8px">
+   <button class="act danger" onclick="doUninstall()">卸载</button>
+   <span class="k">点击后程序会自动退出并完成清理</span></div></div>`;
 }
 let _autoReg=null,_upTimer=null;
+async function blList(){const c=await api('/api/app-config').catch(()=>({}));return c.user_blacklist||[]}
+async function blAdd(){
+ const inp=document.getElementById('bladd');const v=String(inp.value||'').trim();
+ if(!v){return}
+ if(!/^\d{5,12}$/.test(v)){toast('QQ 号格式不对',false);return}
+ const cur=await blList();
+ if(cur.indexOf(v)>=0){toast('已在黑名单里',false);return}
+ const r=await saveKVLoad('/api/app-config',{user_blacklist:cur.concat([v])},'已拉黑 '+v+'（即时生效，所有场景不再响应）');
+ if(r.ok!==false&&inp)inp.value=''}
+async function blDel(i){
+ const cur=await blList();const v=cur[i];
+ if(!v)return;
+ if(!await dlgConfirm({title:'移出黑名单',body:'解除对 '+v+' 的屏蔽？之后机器人恢复正常响应。',okText:'移出'}))return;
+ await saveKVLoad('/api/app-config',{user_blacklist:cur.filter((x,j)=>j!==i)},'已解除 '+v)}
+async function switchAccount(){
+ const inp=document.getElementById('swqq');const v=String(inp.value||'').trim();
+ if(!v){toast('先填新机器人 QQ 号',false);return}
+ if(!/^\d{5,12}$/.test(v)){toast('QQ 号格式不对',false);return}
+ if(!await dlgConfirm({title:'切换机器人账号',body:'将停止当前账号（含 QQ）并用 <b>'+v+'</b> 重新登录启动。<br>· 新号在本机登录过 → 自动快速登录<br>· 没登录过 → 弹二维码，用新号手机 QQ 扫码<br>· 若该号还挂在 dsh 等其他机器人上，<b>先在那边退出</b>，否则会互相顶下线<br><br>人设/记忆/设置全部保留。继续？',okText:'切换并重启',danger:true}))return;
+ const r=await api('/api/switch-account',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({qq:v})}).catch(()=>({ok:false,error:'请求失败'}));
+ if(r.ok===false||r.error){toast(r.error||'切换失败',false);return}
+ toast('切换任务已开始：进度见状态页启动日志');
+ goTab('status')}
+async function doUninstall(){
+ const mode=document.querySelector('input[name="unmode"]:checked').value;
+ if(mode==='keep-data'){
+  if(!await dlgConfirm({title:'卸载程序（保留数据）',body:'将退出程序、删除程序文件与开机自启。<br><b>保留</b>：~/.zcode-qq-bot 里的人设、记忆、备份、API Key。<br>重装新版本后可无缝接上。继续？',okText:'卸载（保留数据）',danger:true}))return;
+ }else{
+  if(!await dlgConfirm({title:'彻底卸载（不可恢复）',body:'将删除程序文件<b>和整个数据目录</b> ~/.zcode-qq-bot：<br>人设、记忆、备份、API Key、聊天数据<b>全部永久消失</b>，无法恢复！',okText:'继续',danger:true}))return;
+  const word=await dlgPrompt({title:'最后确认',body:'此操作不可恢复。输入「<b>卸载</b>」两个字确认：',placeholder:'卸载',okText:'确认彻底卸载'});
+  if(word===null)return;
+  if(word!=='卸载'&&word.toLowerCase()!=='uninstall'){toast('输入不符，已取消',false);return}
+ }
+ const r=await api('/api/uninstall',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode})}).catch(()=>({ok:false,error:'请求失败'}));
+ if(r.ok===false||r.error){toast(r.error||'无法启动卸载',false);return}
+ document.body.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100vh"><div class="card" style="max-width:440px"><h3>'+(mode==='wipe'?'正在彻底卸载…':'正在卸载…')+'</h3><div class="k" style="margin-top:8px">程序正在退出并清理文件，本窗口会自动关闭'+(mode==='wipe'?'，数据目录也将被删除':'（数据已保留在 ~/.zcode-qq-bot）')+'。</div></div></div>';
+}
 async function vAbout(){
  const vi=await api('/api/app-info').catch(()=>({}));
  $('#view').innerHTML=head('关于本项目')+
@@ -3454,6 +3519,21 @@ class UiHandler(BaseHTTPRequestHandler):
                     if not mv.endswith("/"):
                         mv += "/"
                 cleaned["update_mirror"] = mv
+            if "user_blacklist" in cfg_in:
+                bl = cfg_in["user_blacklist"]
+                if not isinstance(bl, list) or len(bl) > 200:
+                    return self._reply(400, {"ok": False, "error": "黑名单列表非法（最多 200 个）"})
+                out_bl, seen = [], set()
+                for x in bl:
+                    v = str(x).strip()
+                    if not v:
+                        continue
+                    if not v.isdigit() or not (5 <= len(v) <= 12):
+                        return self._reply(400, {"ok": False, "error": "黑名单里的 %r 不是合法 QQ 号" % v[:14]})
+                    if v not in seen:
+                        seen.add(v)
+                        out_bl.append(v)
+                cleaned["user_blacklist"] = out_bl
             for k in ("sched_pause_start", "sched_pause_end"):
                 if k in cfg_in:
                     v = str(cfg_in[k]).strip()
@@ -3484,6 +3564,95 @@ class UiHandler(BaseHTTPRequestHandler):
             ok, msg = S.set_autostart(enable)
             return self._reply(200 if ok else 400, {"ok": ok, "message": msg,
                                                     "enabled": enable})
+        if u.path == "/api/switch-account":
+            new_qq = str(body.get("qq") or "").strip()
+            if not new_qq.isdigit() or not (5 <= len(new_qq) <= 12):
+                return self._reply(400, {"ok": False, "error": "QQ 号格式不对"})
+            with _boot_lock:
+                if _boot_state["running"]:
+                    return self._reply(200, {"ok": False, "started": False,
+                                             "error": "有启动/切换任务正在进行，稍后再试"})
+            cfg = C.load_app_config()
+            old_qq = str(cfg.get("bot_qq") or "").strip()
+            if new_qq == old_qq:
+                return self._reply(200, {"ok": False,
+                                         "error": "和当前登录的机器人 QQ 相同，无需切换"})
+            C.save_app_config({"bot_qq": new_qq})
+            with _boot_lock:
+                _boot_state.update({"running": True, "done": False, "failed": False,
+                                    "started_at": time.time(), "steps": [],
+                                    "final": ""})
+
+            def _run_switch():
+                try:
+                    def on_note(step):
+                        with _boot_lock:
+                            _boot_state["steps"].append(
+                                {"ts": time.time(), **{k: step.get(k) for k in
+                                 ("component", "ok", "message", "progress")}})
+                    on_note({"component": "switch", "ok": None,
+                             "message": "已保存新机器人 QQ %s，正在停止旧账号 %s…"
+                                        % (new_qq, old_qq or "?")})
+                    for note in S.power_off(cfg, include_napcat=True):
+                        on_note({"component": "napcat", "ok": None,
+                                 "message": "停止：%s" % note.get("message", "")})
+                    time.sleep(2)
+                    on_note({"component": "switch", "ok": None,
+                             "message": "正在用新账号 %s 启动（本机登录过则快速登录，否则弹二维码扫码）…" % new_qq})
+                    S.power_on(C.load_app_config(), on_note=on_note)
+                    with _boot_lock:
+                        _boot_state["done"] = True
+                        hard_fail = [s for s in _boot_state["steps"]
+                                     if s.get("ok") is False and not s.get("progress")]
+                        _boot_state["failed"] = bool(hard_fail)
+                        _boot_state["final"] = ("账号切换完成（存在失败项，看下方日志）"
+                                                if hard_fail else
+                                                "账号切换完成：现在登录的是 %s" % new_qq)
+                except Exception as e:
+                    with _boot_lock:
+                        _boot_state["done"] = True
+                        _boot_state["failed"] = True
+                        _boot_state["final"] = "切换异常：%r" % e
+                finally:
+                    with _boot_lock:
+                        _boot_state["running"] = False
+
+            threading.Thread(target=_run_switch, daemon=True).start()
+            return self._reply(200, {"ok": True, "started": True, "qq": new_qq})
+        if u.path == "/api/uninstall":
+            mode = str(body.get("mode") or "")
+            if mode not in ("keep-data", "wipe"):
+                return self._reply(400, {"ok": False, "error": "mode 非法"})
+            if not getattr(sys, "frozen", False):
+                return self._reply(200, {"ok": False, "error":
+                    "源码模式没有可卸载的安装目录：删除仓库目录与 ~/.zcode-qq-bot 即可"})
+            # 先摘掉开机自启（注册表操作在服务端做，比 bat 里删更稳）
+            try:
+                S.set_autostart(False)
+            except Exception:
+                pass
+            import tempfile
+            app_dir = os.path.dirname(os.path.abspath(sys.executable))
+            bat = pathlib.Path(tempfile.gettempdir()) / "uninstall-qqbot.bat"
+            lines = [
+                "@echo off",
+                "chcp 65001 >nul",
+                "ping -n 4 127.0.0.1 >nul",
+                "taskkill /IM ZCodeQQBot.exe /F >nul 2>&1",
+                "ping -n 3 127.0.0.1 >nul",
+                'rmdir /s /q "%s" >nul 2>&1' % app_dir,
+            ]
+            if mode == "wipe":
+                lines.append('rmdir /s /q "%s" >nul 2>&1' % C.DATA_DIR)
+            lines.append('del /q "%~f0"')
+            bat.write_text("\r\n".join(lines) + "\r\n", encoding="ascii")
+            subprocess.Popen(["cmd", "/c", str(bat)], cwd=str(bat.parent),
+                             creationflags=0x00000008 | 0x00000200,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             stdin=subprocess.DEVNULL)
+            return self._reply(200, {"ok": True, "mode": mode,
+                                     "app_dir": app_dir,
+                                     "data_dir": C.DATA_DIR if mode == "wipe" else ""})
         if u.path == "/api/power/on":
             with _boot_lock:
                 if _boot_state["running"]:
@@ -3876,6 +4045,7 @@ def main():
     PORTS["agent"] = args.agent_port
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), UiHandler)
     srv.daemon_threads = True
+    ui_token()  # 启动即生成令牌文件（不等首个请求；配合 qq_app 的 ensure_ui_token）
     threading.Thread(target=_watchdog_loop, daemon=True).start()
     threading.Thread(target=_auto_update_check, daemon=True).start()
     print(json.dumps({"admin_ui_ready": True, "url": "http://127.0.0.1:%d" % args.port,

@@ -186,6 +186,8 @@ def main():
     cfg = C.load_app_config()
     msg = S.ensure_ui(cfg)  # 管理台是窗口的内容源，必须先就绪
     print(msg, flush=True)
+    # 先确保令牌存在再拼 URL：首次安装时 ui_token 尚未生成会导致窗口落锁
+    ui_tk = S.ensure_ui_token()
 
     # 设置了「打开应用自动启动机器人」：开窗后异步拉起（不阻塞窗口）
     if cfg.get("auto_power_on"):
@@ -197,7 +199,7 @@ def main():
 
     window = webview.create_window(
         APP_NAME,
-        "http://127.0.0.1:%d/?tk=%s" % (cfg["ui_port"], S.read_token_file("ui_token")),
+        "http://127.0.0.1:%d/?tk=%s" % (cfg["ui_port"], ui_tk),
         width=1180, height=820, min_size=(900, 620))
     del window
 

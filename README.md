@@ -160,7 +160,7 @@ pip install pywebview pystray pillow
 cd plugins/qq-bot/scripts
 python qq_app.py
 ```
-ZCode 插件以本地 marketplace 方式安装 `plugins/` 目录。
+ZCode 插件（可选联动，机器人本体不依赖）以本地 marketplace 方式安装 `plugins/` 目录——**目前不在官方插件市场**；仓库公开后计划上架，届时可直接在市场搜「QQ机器人」一键安装。
 
 ### 前置要求
 - Windows 10/11 x64

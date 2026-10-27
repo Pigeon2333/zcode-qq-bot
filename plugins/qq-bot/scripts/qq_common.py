@@ -24,7 +24,7 @@ DATA_DIR = os.environ.get("QQBOT_DATA_DIR") or os.path.join(
     os.path.expanduser("~"), ".zcode-qq-bot")
 DATA_ROOT = pathlib.Path(DATA_DIR)
 
-APP_VERSION = "0.1.1"          # 发布版本号（更新检查与本页展示用；发版时同步改）
+APP_VERSION = "0.1.2"          # 发布版本号（更新检查与本页展示用；发版时同步改）
 DEFAULT_UPDATE_REPO = "Pigeon2333/zcode-qq-bot"
 
 APP_CONFIG_PATH = DATA_ROOT / "app_config.json"
@@ -63,6 +63,7 @@ DEFAULT_CONFIG = {
     "bot_name_value": "智谱娘",
     "owner_name_enabled": False,   # 固定主人称呼（开=覆盖人设里对主人的叫法）
     "owner_name_value": "主人",
+    "user_blacklist": [],         # 用户黑名单：命中的 QQ 号无论群聊/私聊/@/关键词/戳一戳一律不响应
     "api_proxy": "",               # API 出站代理（http://host:port；供 OpenAI/Grok/Gemini 等境外供应商用）
     "zcode_bridge_enabled": False, # ZCode 联动总开关（需本机安装 ZCode；以下子项都受它门控）
     "zcode_handoff_enabled": False,    # 任务转交（转交ZCode 指令 + 收件箱）

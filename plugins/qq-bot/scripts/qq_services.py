@@ -69,6 +69,28 @@ def read_token_file(name):
         return ""
 
 
+def ensure_ui_token():
+    """确保 ui_token 文件存在（不存在则生成 32 hex），返回令牌。
+
+    修复首次安装时序：窗口 URL 需要 ?tk=，但旧逻辑里令牌在 UI 进程收到
+    第一个 HTTP 请求时才生成——qq_app 先读文件会拿到空串，窗口落锁。"""
+    import secrets as _secrets
+    p = C.DATA_ROOT / "ui_token"
+    try:
+        t = p.read_text(encoding="utf-8").strip()
+        if len(t) >= 24:
+            return t
+    except OSError:
+        pass
+    t = _secrets.token_hex(16)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(t, encoding="utf-8")
+    except OSError:
+        return t
+    return t
+
+
 def napcat_config_dir(cfg):
     """QQNT 目录下 NapCat 的 config 目录（不存在返回空串）。"""
     qqnt = C.qqnt_dir_resolved(cfg)
