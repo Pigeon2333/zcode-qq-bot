@@ -506,8 +506,9 @@ async function vStatus(){
   +'<span class="badge" style="background:var(--tint);color:var(--dim)">新手引导 · 跟着做 10 分钟跑起来</span></div>'
   +'<div class="k" style="margin-bottom:4px;font-weight:600">第 0 步 · 环境自检（✓=就绪，!=缺什么补什么）</div>'
   +ck(qqntOk,'已安装 QQ（QQNT 桌面版）', qqntOk?'':'去 im.qq.com 下载安装普通版 QQ（不要 TIM/轻量版），装完回到本页刷新')
-  +ck(!!c.napcat_ok,'QQ 里已装 NapCat Shell（机器人的消息通道）', c.napcat_ok?'':'两种装法任选：A. 到 github.com/NapNeko/NapCat-Shell 下载 zip，用「设置 → 运行环境 → 安装 NapCat（本地 zip）」一键装；B. 手动解压到 QQ 安装目录。装完刷新本页')
-  +ck(hasKey,'已配置 AI 大脑的 API Key', hasKey?'':'到 open.bigmodel.cn 注册 → 右上角「API Keys」创建一个 → 本页稍后在「设置 → API Key」粘贴。有免费额度，不填机器人不会说话')
+  +ck(!!c.napcat_ok,'QQ 里已装 NapCat Shell（机器人的消息通道）', c.napcat_ok?'':'最简单：「设置 → 运行环境 → 在线下载并安装 NapCat」一键完成（国内自动走镜像）。或自己下 zip（github.com/NapNeko/NapCatQQ/releases）后用「本地 zip 安装」。装完刷新本页')
+  +ck(hasKey,'已配置 AI 大脑的 API Key', hasKey?'':'二选一：智谱 open.bigmodel.cn（免费额度、生图/联网/默认推荐）或 DeepSeek platform.deepseek.com（便宜、国产直连）。注册后建一个 Key，稍后在「设置 → API Key」粘贴（供应商选对应家）')
+  +ck(!!c.zcode_installed,'（可选）ZCode 已安装', c.zcode_installed?'装了更强：任务收件箱 / MCP 工具 / 进程监控 / 复盘审阅，在「ZCode 联动」页开启':'非必须，但装了机器人能力更多（从 QQ 转交任务到 ZCode 接手等）。到 zcode.ai 下载安装即可，装好后本页刷新')
   +'<div class="k" style="margin:12px 0 4px;font-weight:600">第 1 步 · 告诉机器人它是谁</div>'
   +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">'
   +'<div><div class="k" style="margin-bottom:4px">机器人 QQ 号（建议用小号，扫码登录的就是它）</div><input id="wzbot" style="width:100%" placeholder="如 123456789"></div>'
@@ -517,8 +518,8 @@ async function vStatus(){
   +'<input id="wzqqnt" style="width:100%" placeholder="留空自动探测"></div>'
   +'<div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="act" onclick="wizardSave()">保存</button>'
   +'<span class="k">保存后，若上面还有「!」项，先按提示补齐，再做第 2 步</span></div>'
-  +'<div class="k" style="margin:12px 0 4px;font-weight:600">第 2 步 · 填 API Key</div>'
-  +'<div class="k">左侧「设置 → ① 身份与称呼」下面就是「③ 接口与模型消耗 → API Key」，粘贴 Key 点添加。智谱 Key 有免费额度，够日常聊天。</div>'
+  +'<div class="k" style="margin:12px 0 4px;font-weight:600">第 2 步 · 填 API Key（智谱 或 DeepSeek）</div>'
+  +'<div class="k">到「设置 → ③ 接口与模型消耗 → API Key」：粘贴 Key 点添加（智谱 Key 供应商留「智谱」，DeepSeek Key 选「DeepSeek」，模型链已预置两家默认模型）。智谱有免费额度够日常聊天；DeepSeek 便宜量足。</div>'
   +'<div class="k" style="margin:12px 0 4px;font-weight:600">第 3 步 · 启动并扫码</div>'
   +'<div class="k">回本页点「启动机器人」→ 会自动弹出 NapCat 登录页 → 用<b>机器人那个 QQ 号</b>扫码。登录成功后，把机器人拉进群或私聊它，@它说句话试试。第一条回复到了，就全部完成了🎉</div>'
   +'<div class="k" style="margin-top:10px;border-top:1px solid var(--line);padding-top:8px">常见卡点：扫码页没弹出→看本页启动日志；机器人不回→确认群里没被「暂停回应」、Key 有效；更多说明见 README（github.com/Pigeon2333/zcode-qq-bot）</div></div>'
@@ -588,6 +589,19 @@ async function napcatInstall(){
  const r=await api('/api/napcat-install',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({zip:f})});
  toast(r.ok?'安装成功':'安装失败：'+(r.message||r.error||''),r.ok!==false);
  if(r.ok)load()}
+let _ncdlTimer=null;
+async function napcatOnline(){
+ const r=await api('/api/napcat-dl-start',{method:'POST'}).catch(()=>({ok:false,error:'请求失败'}));
+ if(r.ok===false){toast(r.error||'启动下载失败',false);return}
+ toast('已开始在线下载 NapCat Shell（自动装到 QQ 目录）');
+ if(_ncdlTimer)clearInterval(_ncdlTimer);
+ _ncdlTimer=setInterval(async()=>{
+  const st=await api('/api/napcat-dl-status').catch(()=>null);
+  if(!st){return}
+  const el=document.getElementById('ncdl-status');
+  if(el)el.textContent=st.running?('下载中 '+st.pct+'% · '+(st.status||'')):((st.error?'✗ '+st.error:('✓ '+(st.status||'完成'))));
+  if(!st.running){clearInterval(_ncdlTimer);_ncdlTimer=null;if(!st.error)load()}
+ },1500)}
 async function powerOff(napcatToo){
  if(!await dlgConfirm(napcatToo
   ?{title:'停止 NapCat',body:'确认连 NapCat 一起停止？（下次启动需重新登录）',okText:'全部停止',danger:true}
@@ -618,10 +632,17 @@ async function vRunlog(){
  $('#view').innerHTML=head('机器人运行全日志：消息管道（daemon）、自治大脑（agent）、启动任务实时汇聚')+
  '<div class="card"><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:10px">'
  +chip('all','全部')+chip('daemon','消息管道')+chip('agent','自治大脑')+chip('boot','启动任务')
+ +'<button class="act ghost" style="margin:0;margin-left:8px" onclick="logsExport()">导出诊断包…</button>'
  +'<span class="k" style="margin-left:auto">3 秒自动刷新·跟随滚动</span></div>'
  +'<div style="max-height:calc(100vh - 210px);overflow-y:auto" id="logbox">'+(runlogRows(d)||'<div class="k" style="padding:20px 0">暂无日志</div>')+'</div></div>';
  const box=$('#logbox');if(box)box.scrollTop=box.scrollHeight;
  if(!_runlogTimer)_runlogTimer=setInterval(refreshRunlog,3000);
+}
+async function logsExport(){
+ toast('正在打包…');
+ const r=await api('/api/logs-export',{method:'POST'}).catch(()=>({ok:false}));
+ if(r.ok===false){toast('导出失败',false);return}
+ toast('已导出：'+r.path+'（日志+配置，密钥已掩码；可直接发给开发者排查）');
 }
 async function refreshRunlog(){
  if(TAB!=='runlog'){if(_runlogTimer){clearInterval(_runlogTimer);_runlogTimer=null}return}
@@ -1018,6 +1039,8 @@ async function vPersonas(){
    <button class="act ghost" onclick="switchPersona()">切换到此设</button>
    <button class="act ghost" onclick="renamePersona()">重命名</button>
    <button class="act ghost" onclick="newPersona()">新建</button>
+   <button class="act ghost" onclick="personaImport()">导入…</button>
+   <button class="act ghost" onclick="personaMigrate()">生成迁移指令</button>
    <button class="act ghost danger" onclick="delPersona()">删除</button>
   </div>
   <div class="k" style="margin-top:10px">人设内容（<span id="pname">${esc(d.active||'')}</span>）</div>
@@ -1045,6 +1068,31 @@ async function renamePersona(){
  if(r.ok===false){toast(r.error||'重命名失败',false);return}
  toast('已重命名为「'+nn+'」'+((r.moved&&r.moved.length)?'（已同步：'+r.moved.join('、')+'）':''));load()}
 async function savePersona(){const n=$('#psel').value;const t=$('#pedit').value;const r=await saveKV('/api/personas/save',{name:n,text:t},'人设「'+n+'」已保存（即时生效）');if(r.ok!==false)dirtyOff('bsavep')}
+async function personaImport(){
+ if(!await dirtyGuard())return;
+ const p=await api('/api/personas/pick-import',{method:'POST'}).catch(()=>({file:''}));
+ const f=(p&&p.file)||'';
+ if(!f){toast('未选择文件',false);return}
+ const r=await api('/api/personas/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:f})});
+ if(r.ok===false){toast(r.error||'导入失败',false);return}
+ toast(r.message||('导入 '+r.count+' 个'));load()}
+async function personaMigrate(){
+ const r=await api('/api/personas/migrate-cmd').catch(()=>null);
+ const cmd=(r&&r.command)||'';
+ if(!cmd){toast('生成失败',false);return}
+ const m=document.createElement('div');m.className='dlg-mask';
+ m.innerHTML='<div class="dlg" role="dialog" style="max-width:560px"><h3>一键迁移指令</h3>'
+  +'<div class="dlg-body">把下面这段发给另一边的 Agent（如 dsh 会话），它会把那边的人设/记忆写到本机数据目录，机器人重启即完成迁移：</div>'
+  +'<textarea id="migcmd" readonly style="width:100%;min-height:170px;margin-top:10px;font-family:monospace;font-size:12px">'+esc(cmd)+'</textarea>'
+  +'<div class="dlg-btns"><button class="act ghost">关闭</button><button class="act">复制指令</button></div></div>';
+ document.body.appendChild(m);
+ const close=()=>m.remove();
+ m.querySelector('.dlg-btns .ghost').onclick=close;
+ m.onclick=ev=>{if(ev.target===m)close()};
+ m.querySelector('.dlg-btns .act:not(.ghost)').onclick=async()=>{
+  const ta=document.getElementById('migcmd');ta.select();
+  try{await navigator.clipboard.writeText(ta.value);toast('已复制，去发给那边的 Agent 吧')}catch(e){document.execCommand('copy');toast('已复制')}
+  }}
 async function vFile(kind){
  const d=await api('/api/file?kind='+kind);
  const ev=await api('/api/evolved');
@@ -1290,8 +1338,10 @@ async function vSettings(){
   <div style="margin-top:10px"><div class="k" style="margin-bottom:4px">QQNT 安装目录（留空=自动探测，探测到：${esc(c.detected_qqnt||'未探测到')}）</div>
   <input id="sqqnt" value="${esc(String(c.qqnt_dir||''))}" style="width:100%" onchange="saveEnv('sqqnt','qqnt_dir',0,'QQNT 目录已保存（下次启动任务时生效）')">
   <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-   <button class="act ghost" style="margin:0" onclick="napcatInstall()">安装 NapCat（本地 zip）…</button>
-   <span class="k">QQNT 目录缺 launcher-user.bat 时用：选 NapCat Shell 的 zip 包，自动备份旧文件并安装（Program Files 需管理员权限运行本程序）</span></div></div>
+   <button class="act ghost" style="margin:0" onclick="napcatOnline()">在线下载并安装 NapCat…</button>
+   <button class="act ghost" style="margin:0" onclick="napcatInstall()">本地 zip 安装…</button>
+   <span class="k">在线版自动从 NapCat 官方 GitHub 下载最新 Shell 并安装（国内自动走镜像）；本地版选自己下载的 zip（github.com/NapNeko/NapCatQQ/releases）。Program Files 目录需管理员权限运行本程序</span></div>
+  <div id="ncdl-status" class="k" style="margin-top:6px"></div></div>
   <div class="k" style="margin-top:12px">端口（一般无需改动；改动重启各组件后生效）</div>
   <div style="display:flex;gap:10px;margin-top:6px;flex-wrap:wrap;align-items:center">
    <label>NapCat WS <input id="pnap" type="number" value="${c.napcat_ws_port}" style="width:76px" onchange="saveEnv('pnap','napcat_ws_port',1)"></label>
@@ -2165,6 +2215,9 @@ class UiHandler(BaseHTTPRequestHandler):
                                 "base_url": str(e.get("base_url", ""))[:120]
                                 if prov == "custom" else ""})
             return self._reply(200, {"ok": True, "keys": out})
+        if u.path == "/api/napcat-dl-status":
+            import qq_napcat_dl as _ND
+            return self._reply(200, {"ok": True, **_ND.status()})
         if u.path == "/api/runlog":
             src = q.get("src", "all")
             if src not in ("all", "daemon", "agent", "boot"):
@@ -2201,6 +2254,9 @@ class UiHandler(BaseHTTPRequestHandler):
             if not name or name.startswith("_") or name not in data:
                 return self._reply(400, {"ok": False, "error": "人设不存在"})
             return self._reply(200, {"ok": True, "name": name, "text": str(data.get(name, ""))})
+        if u.path == "/api/personas/migrate-cmd":
+            import qq_persona_io as _PIO
+            return self._reply(200, {"ok": True, "command": _PIO.migrate_command()})
         if u.path == "/api/evolved":
             data = load_json_const(EVOLVED_PATH, {})
             personas = load_json_const(PERSONA_COLLECTION_PATH, {})
@@ -2545,6 +2601,72 @@ class UiHandler(BaseHTTPRequestHandler):
                 return self._reply(400, {"ok": False, "error": "先选择 zip 文件"})
             ok, msg = S.install_napcat_zip(C.load_app_config(), zpath)
             return self._reply(200, {"ok": ok, "message": msg})
+        if u.path == "/api/napcat-dl-start":
+            import qq_napcat_dl as _ND
+            return self._reply(200, _ND.start(C.load_app_config()))
+        if u.path == "/api/personas/pick-import":
+            def _pickp():
+                try:
+                    import tkinter as tk
+                    from tkinter import filedialog
+                    root = tk.Tk()
+                    root.withdraw()
+                    root.attributes("-topmost", True)
+                    f = filedialog.askopenfilename(
+                        title="选择人设导出文件",
+                        filetypes=[("人设文件", "*.json *.md *.txt"),
+                                   ("所有文件", "*.*")])
+                    root.destroy()
+                    return f or ""
+                except Exception:
+                    return ""
+            import threading as _th
+            boxp = {}
+            tp = _th.Thread(target=lambda: boxp.update(f=_pickp()), daemon=True)
+            tp.start()
+            tp.join(timeout=120)
+            return self._reply(200, {"ok": True, "file": boxp.get("f", "")})
+        if u.path == "/api/personas/import":
+            import qq_persona_io as _PIO
+            cnt, msg = _PIO.do_import(str(body.get("path") or ""))
+            if not cnt:
+                return self._reply(400, {"ok": False, "error": msg})
+            return self._reply(200, {"ok": True, "count": cnt, "message": msg})
+        if u.path == "/api/logs-export":
+            # 导出诊断包：三源日志尾部 + 关键配置（脱敏）打包 zip 到桌面/数据目录
+            import zipfile
+            ddir = pathlib.Path(C.DATA_DIR)
+            logs_dir = ddir / "logs"
+            out = ddir / ("qqbot-diag-%s.zip" % time.strftime("%Y%m%d-%H%M%S"))
+            def _mask(text):
+                # 掩码所有疑似密钥/令牌的长 token
+                return re.sub(r"[A-Za-z0-9]{24,}", lambda m: m.group(0)[:6] + "…MASKED",
+                              text)
+            with zipfile.ZipFile(str(out), "w", zipfile.ZIP_DEFLATED) as z:
+                for name in ("daemon.log", "agent.log", "ui.log"):
+                    lp = logs_dir / name
+                    if lp.is_file():
+                        try:
+                            tail = lp.read_text(encoding="utf-8",
+                                                errors="replace").splitlines()[-800:]
+                            z.writestr(name, _mask("\n".join(tail)))
+                        except OSError:
+                            pass
+                cfgs = {"app_config.json": ddir / "app_config.json",
+                        "reply_config.json": ddir / "reply_config.json",
+                        "group_whitelist.json": ddir / "group_whitelist.json",
+                        "model_chain.json": ddir / "model_chain.json"}
+                for name, p in cfgs.items():
+                    if p.is_file():
+                        try:
+                            z.writestr("config-" + name, _mask(p.read_text(
+                                encoding="utf-8", errors="replace")))
+                        except OSError:
+                            pass
+                z.writestr("说明.txt",
+                           "诊断包由 ZCode QQ机器人 导出（日志各取末800行；配置中密钥已掩码）。\n"
+                           "时间：%s" % time.strftime("%Y-%m-%d %H:%M:%S"))
+            return self._reply(200, {"ok": True, "path": str(out)})
         if u.path == "/api/devctrl-code":
             # 刷新 = 让 agent 立刻作废旧码并换新（代理请求）
             r = proxy_get("127.0.0.1", PORTS["agent"], "/admin/devctrl-code?refresh=1")

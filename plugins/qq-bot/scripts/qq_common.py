@@ -86,6 +86,7 @@ BACKUP_FILES = [
     "proactive_state.json",     # 主动消息发送状态
     "personas/collection.json", # 人设合集（含激活项）
     "usage_log.jsonl",          # token 用量流水（统计）
+    ".last_review_pos",         # 复盘增量游标（丢了仅多复盘一次）
 ]
 # 密钥类（api_keys.json / zhipu_api_key / token / ws_token）刻意不备份：备份目录
 # 可能被用户指向网盘同步盘，避免明文密钥外泄。
