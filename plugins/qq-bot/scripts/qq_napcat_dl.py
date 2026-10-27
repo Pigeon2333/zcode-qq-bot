@@ -11,6 +11,7 @@
 import http.client
 import ipaddress
 import json
+import os
 import pathlib
 import re
 import socket
@@ -121,10 +122,26 @@ def _download_public(url, name, state):
         return False
 
 
-def start(cfg):
-    """后台线程：下载最新 NapCat Shell → 走既有 install_napcat_zip 安装。"""
+def start(cfg, force=False):
+    """后台线程：下载最新 NapCat Shell → 走既有 install_napcat_zip 安装。
+
+    已安装且未 force 时返回 need_confirm=True（由 UI 弹确认再带 force 重试），
+    防止手滑重复安装覆盖了正在用的 NapCat。"""
     if _STATE["running"]:
         return {"ok": False, "error": "已有下载任务进行中"}
+    import qq_services as _S
+    installed = False
+    try:
+        qqnt = C.qqnt_dir_resolved(cfg)
+        installed = bool(qqnt) and os.path.isfile(
+            os.path.join(qqnt, "launcher-user.bat"))
+    except Exception:
+        installed = False
+    if installed and not force:
+        return {"ok": False, "need_confirm": True,
+                "error": ("检测到本机已安装 NapCat（QQ 目录里已有启动器）。"
+                          "重复安装会先自动备份现有文件再覆盖，"
+                          "且正在运行的 QQ 可能需要重启——确定要重装吗？")}
 
     def _run():
         _STATE.update(running=True, pct=0, status="正在查询最新版本…", error="")

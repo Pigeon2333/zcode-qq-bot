@@ -700,8 +700,15 @@ async function napcatInstall(){
  toast(r.ok?'安装成功':'安装失败：'+(r.message||r.error||''),r.ok!==false);
  if(r.ok)load()}
 let _ncdlTimer=null;
-async function napcatOnline(){
- const r=await api('/api/napcat-dl-start',{method:'POST'}).catch(()=>({ok:false,error:'请求失败'}));
+async function napcatOnline(force){
+ if(!force){
+  const pre=await api('/api/napcat-dl-start',{method:'POST'}).catch(()=>({ok:false,error:'请求失败'}));
+  if(pre.need_confirm){
+   if(!await dlgConfirm({title:'已安装 NapCat',body:pre.error+'<br><br>（不确定就点取消——已装好的不用动；想升级或修复安装才继续）',okText:'仍要重装',danger:true}))return;
+   force=true;
+  } else if(pre.ok===false){toast(pre.error||'启动下载失败',false);return}
+ }
+ const r=await api('/api/napcat-dl-start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({force:!!force})}).catch(()=>({ok:false,error:'请求失败'}));
  if(r.ok===false){toast(r.error||'启动下载失败',false);return}
  toast('已开始在线下载 NapCat Shell（自动装到 QQ 目录）');
  if(_ncdlTimer)clearInterval(_ncdlTimer);
@@ -749,8 +756,11 @@ async function vRunlog(){
  if(!_runlogTimer)_runlogTimer=setInterval(refreshRunlog,3000);
 }
 async function logsExport(){
+ const d=await api('/api/pick-dir',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:'选择日志导出位置'})}).catch(()=>({dir:''}));
+ const dir=(d&&d.dir)||'';
+ if(!dir){toast('已取消（未选导出位置）',false);return}
  toast('正在打包…');
- const r=await api('/api/logs-export',{method:'POST'}).catch(()=>({ok:false}));
+ const r=await api('/api/logs-export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dir})}).catch(()=>({ok:false}));
  if(r.ok===false){toast('导出失败',false);return}
  toast('已导出：'+r.path+'（日志+配置，密钥已掩码；可直接发给开发者排查）');
 }
@@ -2872,6 +2882,7 @@ class UiHandler(BaseHTTPRequestHandler):
             return self._reply(401, {"ok": False, "error": "unauthorized"})
         body = self._body()
         if u.path == "/api/pick-dir":
+            _title = str(body.get("title") or "选择目录")[:40]
             def _pick():
                 try:
                     import tkinter as tk
@@ -2879,7 +2890,7 @@ class UiHandler(BaseHTTPRequestHandler):
                     root = tk.Tk()
                     root.withdraw()
                     root.attributes("-topmost", True)
-                    d = filedialog.askdirectory(title="选择备份目录")
+                    d = filedialog.askdirectory(title=_title)
                     root.destroy()
                     return d or ""
                 except Exception:
@@ -2947,7 +2958,8 @@ class UiHandler(BaseHTTPRequestHandler):
             return self._reply(200, {"ok": ok, "message": msg})
         if u.path == "/api/napcat-dl-start":
             import qq_napcat_dl as _ND
-            return self._reply(200, _ND.start(C.load_app_config()))
+            return self._reply(200, _ND.start(
+                C.load_app_config(), force=bool(body.get("force"))))
         if u.path == "/api/personas/pick-import":
             def _pickp():
                 try:
@@ -2977,11 +2989,17 @@ class UiHandler(BaseHTTPRequestHandler):
                 return self._reply(400, {"ok": False, "error": msg})
             return self._reply(200, {"ok": True, "count": cnt, "message": msg})
         if u.path == "/api/logs-export":
-            # 导出诊断包：三源日志尾部 + 关键配置（脱敏）打包 zip 到桌面/数据目录
+            # 导出诊断包：三源日志尾部 + 关键配置（脱敏）打包 zip；
+            # 目录由前端先弹资源管理器目录选择框传入（未传则回落数据目录）
             import zipfile
             ddir = pathlib.Path(C.DATA_DIR)
             logs_dir = ddir / "logs"
-            out = ddir / ("qqbot-diag-%s.zip" % time.strftime("%Y%m%d-%H%M%S"))
+            out_dir = pathlib.Path(str(body.get("dir") or "").strip() or str(ddir))
+            if not out_dir.is_dir():
+                return self._reply(400, {"ok": False,
+                                         "error": "导出目录不存在：%s" % out_dir})
+            out = out_dir / ("qqbot-diag-%s.zip" % time.strftime("%Y%m%d-%H%M%S"))
+            out.resolve().relative_to(out_dir.resolve())  # 目标必须落在所选目录内
             def _mask(text):
                 # 掩码所有疑似密钥/令牌的长 token，以及配置里明确是凭据的字段
                 text = re.sub(r"[A-Za-z0-9]{24,}",
@@ -3013,6 +3031,10 @@ class UiHandler(BaseHTTPRequestHandler):
                 z.writestr("说明.txt",
                            "诊断包由 ZCode QQ机器人 导出（日志各取末800行；配置中密钥已掩码）。\n"
                            "时间：%s" % time.strftime("%Y-%m-%d %H:%M:%S"))
+            try:  # 导出后直接打开资源管理器定位到文件（免得用户找不到）
+                os.startfile(str(out_dir))  # noqa: Windows 仅 UI 进程使用
+            except Exception:
+                pass
             return self._reply(200, {"ok": True, "path": str(out)})
         if u.path == "/api/devctrl-code":
             # 刷新 = 让 agent 立刻作废旧码并换新（代理请求）
