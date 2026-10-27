@@ -3445,6 +3445,15 @@ class UiHandler(BaseHTTPRequestHandler):
             if "update_skip_version" in cfg_in:
                 cleaned["update_skip_version"] = str(
                     cfg_in["update_skip_version"]).strip()[:20]
+            if "update_mirror" in cfg_in:
+                mv = str(cfg_in["update_mirror"]).strip()[:160] or "auto"
+                if mv not in ("auto", "off"):
+                    if not mv.startswith("https://"):
+                        return self._reply(400, {"ok": False,
+                                                 "error": "加速镜像必须是 https:// 开头"})
+                    if not mv.endswith("/"):
+                        mv += "/"
+                cleaned["update_mirror"] = mv
             for k in ("sched_pause_start", "sched_pause_end"):
                 if k in cfg_in:
                     v = str(cfg_in[k]).strip()

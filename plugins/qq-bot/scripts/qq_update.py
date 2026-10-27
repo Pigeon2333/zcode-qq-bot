@@ -35,6 +35,9 @@ ALLOW_HOSTS = {
     "release-assets.githubusercontent.com", "codeload.github.com",
 }
 MAX_ZIP = 300 * 1024 * 1024
+# 国内直连 GitHub 很慢/不稳：auto 模式下失败会改用这些加速前缀重试。
+# 加速站不可信也没关系——内容必须通过 GitHub 提供的 SHA256 才被接受。
+MIRRORS = ["https://gh-proxy.com/", "https://ghfast.top/"]
 STATE = {"phase": "idle", "pct": 0, "msg": "", "version": "", "zip": "",
          "error": "", "ts": 0.0}
 _LOCK = threading.Lock()
@@ -62,10 +65,11 @@ def _ver_tuple(s):
 
 
 def _https(host, path, token="", accept="application/json", timeout=20,
-           sink=None, redirect_left=4):
+           sink=None, redirect_left=4, on_chunk=None, total_hint=0, allow=None):
     """GET 指定主机路径；返回 (status, headers, size|body)。
-    sink 给出时把响应体写入该二进制句柄（须由调用方在数据目录内打开）。"""
-    if host not in ALLOW_HOSTS:
+    sink 给出时把响应体写入该二进制句柄（须由调用方在数据目录内打开）；
+    on_chunk(got, total) 用于汇报下载进度。"""
+    if host not in (allow or ALLOW_HOSTS):
         raise ValueError("非白名单域名：%s" % host)
     conn = http.client.HTTPSConnection(host, timeout=timeout,
                                        context=ssl.create_default_context())
@@ -85,8 +89,10 @@ def _https(host, path, token="", accept="application/json", timeout=20,
                 raise RuntimeError("拒绝非 https 跳转")
             return _https(up.hostname or "", up.path + ("?" + up.query if up.query else ""),
                           token=token, accept=accept, timeout=timeout,
-                          sink=sink, redirect_left=redirect_left - 1)
+                          sink=sink, redirect_left=redirect_left - 1,
+                          on_chunk=on_chunk, total_hint=total_hint, allow=allow)
         if sink is not None:
+            total = int(resp.getheader("Content-Length") or 0) or int(total_hint or 0)
             got = 0
             while True:
                 chunk = resp.read(262144)
@@ -96,6 +102,8 @@ def _https(host, path, token="", accept="application/json", timeout=20,
                 if got > MAX_ZIP:
                     raise RuntimeError("文件超过大小上限")
                 sink.write(chunk)
+                if on_chunk:
+                    on_chunk(got, total)   # 允许回调抛异常中止（如"速度过慢"）
             return resp.status, dict(resp.getheaders()), got
         body = resp.read()
         return resp.status, dict(resp.getheaders()), body
@@ -180,8 +188,57 @@ def _updates_dir():
     return d
 
 
+def _mirror_bases(cfg):
+    m = str((cfg or {}).get("update_mirror") or "auto").strip()
+    if m == "off":
+        return []
+    if m in ("", "auto"):
+        return list(MIRRORS)
+    return [m if m.endswith("/") else m + "/"]
+
+
+def _fetch_to(url, token, part, expect, allow=None, tag=""):
+    """把 url 下到 part；返回实际字节数。进度写入 STATE。
+    30 秒内不足 2MB 视为直连过慢，抛异常以触发镜像重试。"""
+    up = urllib.parse.urlsplit(url or "")
+    if not up.hostname or up.scheme != "https":
+        raise RuntimeError("下载地址异常")
+    started = time.time()
+    def _prog(got, total):
+        total = total or expect
+        pct = int(min(90, got * 90.0 / total)) if total else 0
+        _set(phase="download", pct=pct,
+             msg="下载中 %.1f/%s" % (got / 1048576.0,
+                                     ("%.1fMB" % (total / 1048576.0)) if total else "?"))
+        if time.time() - started > 30 and got < 2 * 1024 * 1024:
+            raise RuntimeError("速度过慢（30 秒 %d KB）" % (got // 1024))
+    with part.open("wb") as sink:
+        st, _h, size = _https(up.hostname,
+                              up.path + ("?" + up.query if up.query else ""),
+                              token=token, accept="application/octet-stream",
+                              timeout=60, sink=sink, on_chunk=_prog,
+                              total_hint=expect, allow=allow)
+    if st != 200:
+        raise RuntimeError("下载失败 HTTP %s" % st)
+    if expect and int(size) != expect:
+        raise RuntimeError("大小不符（%s != %s）" % (size, expect))
+    return size
+
+
+def _sha256(path):
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest().lower()
+
+
 def download(info, cfg=None):
-    """下载并校验资产到数据目录 updates/；返回 zip 路径。"""
+    """下载并校验资产到数据目录 updates/；返回 zip 路径。
+
+    先直连 GitHub；失败（超时/被墙/非 200）时按配置走加速镜像重试。
+    只有 SHA256 与 GitHub 提供值一致才接受镜像内容。
+    """
     cfg = cfg or C.load_app_config()
     if not info.get("ok"):
         raise RuntimeError(info.get("error") or "更新信息无效")
@@ -192,43 +249,58 @@ def download(info, cfg=None):
     part = udir / ("update-%s.part" % tag)
     dest.relative_to(udir)
     part.relative_to(udir)
+    expect = int(info.get("size") or 0)
+    want = str(info.get("sha256") or "")
     _set(phase="download", pct=0, msg="连接下载服务器…", version=tag)
     # 私有仓库用资产 API（带 Accept: octet-stream），公开仓库直接用下载地址
     target = info.get("asset_api") if token else info.get("browser_url")
-    up = urllib.parse.urlsplit(target or "")
-    if not up.hostname or up.scheme != "https":
-        raise RuntimeError("下载地址异常")
-    with part.open("wb") as sink:
-        st, _h, size = _https(up.hostname,
-                              up.path + ("?" + up.query if up.query else ""),
-                              token=token, accept="application/octet-stream",
-                              timeout=60, sink=sink)
-    if st != 200:
-        try:
-            part.unlink()
-        except OSError:
-            pass
-        raise RuntimeError("下载失败 HTTP %s" % st)
-    expect = int(info.get("size") or 0)
-    if expect and int(size) != expect:
-        try:
-            part.unlink()
-        except OSError:
-            pass
-        raise RuntimeError("大小不符（%s != %s）" % (size, expect))
-    want = str(info.get("sha256") or "")
-    if want:
-        _set(phase="download", pct=95, msg="校验文件完整性…")
-        h = hashlib.sha256()
-        with part.open("rb") as f:
-            for chunk in iter(lambda: f.read(1 << 20), b""):
-                h.update(chunk)
-        if h.hexdigest().lower() != want.lower():
+    errors = []
+    try:
+        _fetch_to(target, token, part, expect, tag=tag)
+    except Exception as e:
+        errors.append("直连失败：%s" % e)
+        if token:
+            # 私有仓库的资产需要 Authorization 头，第三方镜像无法携带
             try:
                 part.unlink()
             except OSError:
                 pass
-            raise RuntimeError("SHA256 校验失败")
+            raise RuntimeError("；".join(errors) +
+                               "（私有仓库不支持镜像加速：镜像无法携带 Token，请检查网络或代理）")
+        if not want:
+            # 没有官方摘要就不接受第三方镜像（无法证明内容未被篡改）
+            try:
+                part.unlink()
+            except OSError:
+                pass
+            raise RuntimeError("；".join(errors))
+        got_ok = False
+        for base in _mirror_bases(cfg):
+            try:
+                _set(phase="download", pct=0,
+                     msg="直连较慢/失败，改用加速镜像 %s" % base)
+                murl = base + str(info.get("browser_url") or "")
+                mhost = urllib.parse.urlsplit(murl).hostname or ""
+                _fetch_to(murl, "", part, expect,
+                          allow={mhost} | ALLOW_HOSTS, tag=tag)
+                got_ok = True
+                break
+            except Exception as e2:
+                errors.append("镜像 %s 失败：%s" % (base, e2))
+        if not got_ok:
+            try:
+                part.unlink()
+            except OSError:
+                pass
+            raise RuntimeError("；".join(errors))
+    if want:
+        _set(phase="download", pct=95, msg="校验文件完整性…")
+        if _sha256(part) != want.lower():
+            try:
+                part.unlink()
+            except OSError:
+                pass
+            raise RuntimeError("SHA256 校验失败（已丢弃下载内容）")
     if dest.exists():
         dest.unlink()
     part.replace(dest)

@@ -76,6 +76,7 @@ DEFAULT_CONFIG = {
     "update_check": True,          # 启动时检查 GitHub Release 新版本（只查一次，不自动装）
     "update_repo": DEFAULT_UPDATE_REPO,  # 更新源仓库 owner/name（可改成自己的 fork/镜像）
     "update_token": "",            # 私有仓库读取 Release 用的 GitHub Token（留空=公开仓库匿名读）
+    "update_mirror": "auto",       # 下载加速：auto=直连失败自动换镜像 | off=只直连 | 自定义前缀
     "update_skip_version": "",     # 用户选择跳过的版本号（如 0.1.2）
 }
 
