@@ -376,10 +376,11 @@ def write_installer(staged_dir, zip_path, app_dir=None):
     lines = [
         "@echo off",
         "chcp 65001 >nul",
-        "timeout /t 4 /nobreak >nul",
+        # 无控制台启动时 timeout 会直接报错跳过，用 ping 计时
+        "ping -n 5 127.0.0.1 >nul",
         "taskkill /IM ZCodeQQBot.exe /F >nul 2>&1",
-        "timeout /t 2 /nobreak >nul",
-        'robocopy "%s" "%s" /E /R:2 /W:1 /NFL /NDL /NJH /NJS >> "%s" 2>&1'
+        "ping -n 3 127.0.0.1 >nul",
+        'robocopy "%s" "%s" /E /R:3 /W:2 /NFL /NDL /NJH /NJS >> "%s" 2>&1'
         % (staged, app, logf),
         'del /q "%s" >nul 2>&1' % zpath,
         'rmdir /s /q "%s" >nul 2>&1' % staged,
