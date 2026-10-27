@@ -494,19 +494,36 @@ async function vStatus(){
   +(wd.last_check?'<div class="k">最近检查：'+new Date(wd.last_check*1000).toLocaleTimeString()+' · '+(wd.last_result||'正常')+'</div>':'<div class="k">等待首次检查…</div>')
   +(wdEvents?'<div style="margin-top:6px"><div class="k">最近事件：</div>'+wdEvents+'</div>':'')
   +'</div>':'';
+ const kl=(await api('/api/keys').catch(()=>({keys:[]}))).keys||[];
+ const hasKey=kl.length>0;
+ const ck=(ok,t,tip)=>'<div style="display:flex;gap:8px;align-items:flex-start;margin:4px 0">'
+  +'<span class="badge '+(ok?'b-ok':'b-bad')+'" style="flex:none;margin-top:1px">'+(ok?'✓':'!')+'</span>'
+  +'<span><b>'+t+'</b>'+(tip?'<div class="k">'+tip+'</div>':'')+'</span></div>';
+ const qqntOk=!!(c.detected_qqnt||String(c.qqnt_dir||'').trim());
  const wizard=(!String(c.bot_qq||'').trim()) ? (
   '<div class="card" style="border:1px solid var(--acc)">'
   +'<div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">欢迎使用 ZCode QQ机器人'
-  +'<span class="badge" style="background:var(--tint);color:var(--dim)">首次使用 · 三步跑起来</span></div>'
+  +'<span class="badge" style="background:var(--tint);color:var(--dim)">新手引导 · 跟着做 10 分钟跑起来</span></div>'
+  +'<div class="k" style="margin-bottom:4px;font-weight:600">第 0 步 · 环境自检（✓=就绪，!=缺什么补什么）</div>'
+  +ck(qqntOk,'已安装 QQ（QQNT 桌面版）', qqntOk?'':'去 im.qq.com 下载安装普通版 QQ（不要 TIM/轻量版），装完回到本页刷新')
+  +ck(!!c.napcat_ok,'QQ 里已装 NapCat Shell（机器人的消息通道）', c.napcat_ok?'':'两种装法任选：A. 到 github.com/NapNeko/NapCat-Shell 下载 zip，用「设置 → 运行环境 → 安装 NapCat（本地 zip）」一键装；B. 手动解压到 QQ 安装目录。装完刷新本页')
+  +ck(hasKey,'已配置 AI 大脑的 API Key', hasKey?'':'到 open.bigmodel.cn 注册 → 右上角「API Keys」创建一个 → 本页稍后在「设置 → API Key」粘贴。有免费额度，不填机器人不会说话')
+  +'<div class="k" style="margin:12px 0 4px;font-weight:600">第 1 步 · 告诉机器人它是谁</div>'
   +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">'
-  +'<div><div class="k" style="margin-bottom:4px">① 机器人 QQ 号（登录 NapCat 的账号）</div><input id="wzbot" style="width:100%" placeholder="如 123456789"></div>'
-  +'<div><div class="k" style="margin-bottom:4px">② 你的 QQ 号（主人，独占全部高级功能）</div><input id="wzowner" style="width:100%" placeholder="如 987654321"></div>'
+  +'<div><div class="k" style="margin-bottom:4px">机器人 QQ 号（建议用小号，扫码登录的就是它）</div><input id="wzbot" style="width:100%" placeholder="如 123456789"></div>'
+  +'<div><div class="k" style="margin-bottom:4px">你的 QQ 号（主人：独占画画/操控电脑/遥控等高级功能）</div><input id="wzowner" style="width:100%" placeholder="如 987654321"></div>'
   +'</div>'
-  +'<div style="margin-top:10px"><div class="k" style="margin-bottom:4px">QQNT 安装目录（留空自动探测；需已安装 NapCat Shell——QQNT 目录下有 launcher-user.bat）</div>'
+  +'<div style="margin-top:10px"><div class="k" style="margin-bottom:4px">QQ 安装目录（留空=自动探测'+(c.detected_qqnt?('，已探测到：'+esc(c.detected_qqnt)):'，探测不到再手填')+'）</div>'
   +'<input id="wzqqnt" style="width:100%" placeholder="留空自动探测"></div>'
-  +'<div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="act" onclick="wizardSave()">保存并开始使用</button>'
-  +'<span class="k">③ 保存后到「设置 → API Key」填智谱 Key，回本页点「启动机器人」扫码登录即可</span></div>'
-  +'<div class="k" style="margin-top:8px">NapCat Shell 安装说明见项目 README（github.com/Pigeon2333/zcode-qq-bot）。</div></div>') : '';
+  +'<div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="act" onclick="wizardSave()">保存</button>'
+  +'<span class="k">保存后，若上面还有「!」项，先按提示补齐，再做第 2 步</span></div>'
+  +'<div class="k" style="margin:12px 0 4px;font-weight:600">第 2 步 · 填 API Key</div>'
+  +'<div class="k">左侧「设置 → ① 身份与称呼」下面就是「③ 接口与模型消耗 → API Key」，粘贴 Key 点添加。智谱 Key 有免费额度，够日常聊天。</div>'
+  +'<div class="k" style="margin:12px 0 4px;font-weight:600">第 3 步 · 启动并扫码</div>'
+  +'<div class="k">回本页点「启动机器人」→ 会自动弹出 NapCat 登录页 → 用<b>机器人那个 QQ 号</b>扫码。登录成功后，把机器人拉进群或私聊它，@它说句话试试。第一条回复到了，就全部完成了🎉</div>'
+  +'<div class="k" style="margin-top:10px;border-top:1px solid var(--line);padding-top:8px">常见卡点：扫码页没弹出→看本页启动日志；机器人不回→确认群里没被「暂停回应」、Key 有效；更多说明见 README（github.com/Pigeon2333/zcode-qq-bot）</div></div>'
+  +(String(c.bot_qq||'').trim()&&!hasKey?
+  '<div class="card" style="border:1px solid var(--warn)">还差最后一步：AI 大脑还没有 API Key（免费注册 open.bigmodel.cn → 创建 Key → 「设置 → API Key」粘贴），填好前机器人无法说话</div>':'')) : '';
  $('#view').innerHTML=head('组件运行状态与机器人开关')+
  `${wizard}
  <div class="card"><div class="kv">
@@ -2259,6 +2276,9 @@ class UiHandler(BaseHTTPRequestHandler):
             cfg["detected_qqnt"] = C.detect_qqnt_dir()
             cfg["autostart_with_windows"] = S.autostart_enabled()
             cfg["zcode_installed"] = C.zcode_installed()
+            qqnt = C.qqnt_dir_resolved(cfg)
+            cfg["napcat_ok"] = bool(qqnt and os.path.isfile(
+                os.path.join(qqnt, "launcher-user.bat")))
             return self._reply(200, {"ok": True, **cfg})
         if u.path == "/api/apikey-status":
             key = read_const(API_KEY_PATH)
