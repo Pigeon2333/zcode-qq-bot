@@ -508,7 +508,7 @@ async function vStatus(){
   +ck(qqntOk,'已安装 QQ（QQNT 桌面版）', qqntOk?'':'去 im.qq.com 下载安装普通版 QQ（不要 TIM/轻量版），装完回到本页刷新')
   +ck(!!c.napcat_ok,'QQ 里已装 NapCat Shell（机器人的消息通道）', c.napcat_ok?'':'最简单：「设置 → 运行环境 → 在线下载并安装 NapCat」一键完成（国内自动走镜像）。或自己下 zip（github.com/NapNeko/NapCatQQ/releases）后用「本地 zip 安装」。装完刷新本页')
   +ck(hasKey,'已配置 AI 大脑的 API Key', hasKey?'':'二选一：智谱 open.bigmodel.cn（免费额度、生图/联网/默认推荐）或 DeepSeek platform.deepseek.com（便宜、国产直连）。注册后建一个 Key，稍后在「设置 → API Key」粘贴（供应商选对应家）')
-  +ck(!!c.zcode_installed,'（可选）ZCode 已安装', c.zcode_installed?'装了更强：任务收件箱 / MCP 工具 / 进程监控 / 复盘审阅，在「ZCode 联动」页开启':'非必须，但装了机器人能力更多（从 QQ 转交任务到 ZCode 接手等）。到 zcode.ai 下载安装即可，装好后本页刷新')
+  +ck(!!c.zcode_installed,'（可选）ZCode 已安装', c.zcode_installed?'装了更强：任务收件箱 / MCP 工具 / 进程监控 / 复盘审阅，在「ZCode 联动」页开启':'非必须，但装了机器人能力更多。两步：① zcode.ai 下载安装 ZCode；② ZCode 插件市场搜「QQ机器人」装本插件（自带 MCP 服务器，装完即生效，可在 ZCode 里用 /qq-bot 管理机器人）。装好本页刷新')
   +'<div class="k" style="margin:12px 0 4px;font-weight:600">第 1 步 · 告诉机器人它是谁</div>'
   +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">'
   +'<div><div class="k" style="margin-bottom:4px">机器人 QQ 号（建议用小号，扫码登录的就是它）</div><input id="wzbot" style="width:100%" placeholder="如 123456789"></div>'
@@ -949,14 +949,18 @@ async function vGroups(){
  </div>`;
 }
 async function vPrivate(){
- const [c,rv]=await Promise.all([
+ const [c,rv,fnr]=await Promise.all([
   api('/api/private-config').catch(()=>({})),
   api('/api/reply-config').catch(()=>({})),
+  api('/api/friend-names').catch(()=>({names:{}})),
  ]);
+ const fn=(fnr&&fnr.names)||{};
+ const fname=x=>fn[String(x)]||'';
  const on=c.enabled, all=c.allow_all;
  rvState=rv;
  const rows=(c.qq_whitelist||[]).map((x,i)=>`<div class="row"><span class="no">${i+1}.</span>
-  <input value="${esc(x)}" data-i="${i}" style="flex:1" placeholder="QQ号" onchange="savePrivate()">
+  <input value="${esc(x)}" data-i="${i}" style="flex:1;min-width:100px" placeholder="QQ号" onchange="savePrivate()">
+  <span class="k" style="flex:none;max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(fname(x))||'昵称未获取（需是机器人好友）'}">${esc(fname(x))||'<i>未获取</i>'}</span>
   <button class="act ghost" onclick="delpq(${i})">删除</button></div>`).join('');
  $('#view').innerHTML=head('私聊回应开关与私信白名单（私聊始终全部回复，无需回复模式）')+saveHint(_SAVE_HINT)+
  `<div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">主动发消息<span class="badge" style="background:var(--tint);color:var(--dim)">全局通用</span>（对所有可私聊对象生效；与群聊设置互不影响）</div>
@@ -982,7 +986,7 @@ async function savePrivate(){
 async function delpq(i){const c=getPQ();const q=c[i];c.splice(i,1);
  if(!await dlgConfirm({title:'移除私聊白名单',body:'移除 QQ '+q+'？机器人将不再回复该账号的私信（可随时重新添加）。',okText:'移除',danger:true}))return;
  postPQ(c)}
-async function postPQ(c){const a=await api('/api/private-config');await api('/api/private-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:a.enabled,allow_all:a.allow_all,qq_whitelist:c})});load()}
+async function postPQ(c){const a=await api('/api/private-config');await api('/api/private-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:a.enabled,allow_all:a.allow_all,qq_whitelist:c})});await api('/api/friend-names?refresh=1').catch(()=>{});load()}
 function addpq(){const v=$('#newpq').value.trim();if(!v)return;const c=getPQ();c.push(v);postPQ(c)}
 function getGroups(){return [...document.querySelectorAll('.chain input.gin')].map(x=>x.value.trim()).filter(x=>/^\d{5,12}$/.test(x))}
 async function saveGroupEnabled(on){
@@ -2488,6 +2492,11 @@ class UiHandler(BaseHTTPRequestHandler):
         if u.path == "/api/group-names":
             r = proxy_get("127.0.0.1", PORTS["daemon"],
                           "/group-list" + ("?refresh=1" if q.get("refresh") else ""),
+                          read_const(TOKEN_PATH), timeout=15)
+            return self._reply(200, r if isinstance(r, dict) else {"ok": False})
+        if u.path == "/api/friend-names":
+            r = proxy_get("127.0.0.1", PORTS["daemon"],
+                          "/friend-list" + ("?refresh=1" if q.get("refresh") else ""),
                           read_const(TOKEN_PATH), timeout=15)
             return self._reply(200, r if isinstance(r, dict) else {"ok": False})
         if u.path == "/api/zcode-status":

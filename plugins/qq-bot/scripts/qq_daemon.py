@@ -520,6 +520,8 @@ class Daemon:
         self.ws_last_ok = time.time()  # 动作通道最近一次成功响应
         self._group_names = None       # {group_id: group_name} 缓存
         self._group_names_ts = 0.0
+        self._friend_names = None      # {qq: nickname} 缓存
+        self._friend_names_ts = 0.0
         self.ws = WSClient(
             ws_url, token,
             on_event=self._dispatch_ws_event,
@@ -571,6 +573,8 @@ class Daemon:
                 self._auto_status("online")
                 threading.Thread(target=lambda: self.group_names(force=True),
                                  daemon=True).start()  # 启动登录后预取群名
+                threading.Thread(target=lambda: self.friend_names(force=True),
+                                 daemon=True).start()  # 预取好友昵称
                 return
             except Exception:
                 time.sleep(2)
@@ -809,6 +813,23 @@ class Daemon:
         now = time.time()
         # 最后一条距今 < gap 且倒数第二条距今 < gap*3 → 连发中
         return (now - ts_list[-1] < gap) and (now - ts_list[-2] < gap * 3)
+
+    def send_file(self, chat_type, chat_id, file_path):
+        """发送任意文件到私聊/群（NapCat upload_private_file/upload_group_file）。"""
+        import urllib.parse as _up
+        p = os.path.realpath(os.path.abspath(str(file_path)))
+        if not os.path.isfile(p):
+            raise FileNotFoundError("文件不存在: %s" % p)
+        if chat_type == "private":
+            action, params = "upload_private_file", {
+                "user_id": int(chat_id), "file": p,
+                "name": os.path.basename(p)}
+        else:
+            action, params = "upload_group_file", {
+                "group_id": int(chat_id), "file": p,
+                "name": os.path.basename(p)}
+        data = self._call_action(action, params, timeout=120)
+        return {"ok": True, "data": data}
 
     def _botloop_hit(self, chat_type, chat_id, sender_id):
         """AI 互聊节奏检测（v2 的触发条件）：同一发送者 120s 内 ≥4 条、
@@ -1182,6 +1203,29 @@ class Daemon:
             "data_dir": DATA_DIR,
         }
 
+    def friend_names(self, force=False):
+        """QQ号→昵称映射（get_friend_list；缓存常驻，启动登录后预取）。"""
+        with self.lock:
+            if self._friend_names is not None and not force:
+                return self._friend_names
+        try:
+            data = self._call_action("get_friend_list", {}, timeout=12)
+            names = {}
+            for f in data if isinstance(data, list) else []:
+                if isinstance(f, dict) and f.get("user_id"):
+                    names[str(f["user_id"])] = str(
+                        f.get("nickname") or f.get("remark") or "")
+            with self.lock:
+                self._friend_names = names
+                self._friend_names_ts = time.time()
+            out("AGENT_LOG {\"msg\": \"friend_list\", \"count\": %d}" % len(names))
+            return names
+        except Exception as e:
+            out("AGENT_LOG {\"msg\": \"friend_list_fail\", \"detail\": %s}"
+                % json.dumps(repr(e)[:120]))
+            with self.lock:
+                return self._friend_names or {}
+
     def group_names(self, force=False):
         """群号→群名映射（get_group_list；缓存常驻，启动登录后预取、
         新增白名单群时 force 刷新；失败返回旧值或空）。"""
@@ -1292,6 +1336,10 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
                 return self._reply(200, {"ok": True,
                                          "names": self.daemon.group_names(
                                              force=q.get("refresh") in ("1", "true"))})
+            if u.path == "/friend-list":
+                return self._reply(200, {"ok": True,
+                                         "names": self.daemon.friend_names(
+                                             force=q.get("refresh") in ("1", "true"))})
             if u.path == "/history":
                 recs = self.daemon.history(
                     q.get("chat_type", "group"), q.get("chat_id", ""),
@@ -1347,6 +1395,10 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
                                    body["file"], body.get("caption"),
                                    wait=bool(body.get("wait")),
                                    allow_any=bool(body.get("allow_any")))
+                return self._reply(200, {"ok": True, **res})
+            if u.path == "/send-file":
+                res = d.send_file(body["chat_type"], body["chat_id"],
+                                  body["file"])
                 return self._reply(200, {"ok": True, **res})
             if u.path == "/test/inject":
                 d._dispatch_ws_event(body["event"])
