@@ -43,11 +43,19 @@ def _ports():
 
 def _req(port, method, path, body=None, timeout=30):
     tok = _token()
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
-    payload = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
     headers = {"Content-Type": "application/json"}
     if tok:
         headers["X-QQBot-Token"] = tok
+    # 管理台端口需要 UI 访问令牌（发布版起全量鉴权）
+    _d, _a, ui_port = _ports()
+    if int(port) == int(ui_port):
+        try:
+            headers["X-UI-Token"] = open(
+                os.path.join(DATA_DIR, "ui_token"), "r", encoding="utf-8").read().strip()
+        except OSError:
+            pass
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    payload = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
     conn.request(method, path, body=payload, headers=headers)
     raw = conn.getresponse().read().decode("utf-8", "replace")
     conn.close()

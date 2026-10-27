@@ -521,8 +521,8 @@ async function vStatus(){
   +'<div class="k" style="margin:12px 0 4px;font-weight:600">第 2 步 · 填 API Key（智谱 或 DeepSeek）</div>'
   +'<div class="k">到「设置 → ③ 接口与模型消耗 → API Key」：粘贴 Key 点添加（智谱 Key 供应商留「智谱」，DeepSeek Key 选「DeepSeek」，模型链已预置两家默认模型）。智谱有免费额度够日常聊天；DeepSeek 便宜量足。</div>'
   +'<div class="k" style="margin:12px 0 4px;font-weight:600">第 3 步 · 启动并扫码</div>'
-  +'<div class="k">回本页点「启动机器人」→ 会自动弹出 NapCat 登录页 → 用<b>机器人那个 QQ 号</b>扫码。登录成功后，把机器人拉进群或私聊它，@它说句话试试。第一条回复到了，就全部完成了🎉</div>'
-  +'<div class="k" style="margin-top:10px;border-top:1px solid var(--line);padding-top:8px">常见卡点：扫码页没弹出→看本页启动日志；机器人不回→确认群里没被「暂停回应」、Key 有效；更多说明见 README（github.com/Pigeon2333/zcode-qq-bot）</div></div>'
+  +'<div class="k">回本页点「启动机器人」→ 会自动弹出 NapCat 登录页 → 用<b>机器人那个 QQ 号</b>扫码。登录页若要求填「登录密钥 / Token」：回本页「NapCat 登录密钥」卡片点<b>「打开登录页（免密钥）」</b>直接进（密钥自动从 NapCat 配置读取，也能一键复制）。登录成功后，把机器人拉进群或私聊它，@它说句话试试。第一条回复到了，就全部完成了🎉</div>'
+  +'<div class="k" style="margin-top:10px;border-top:1px solid var(--line);padding-top:8px">常见卡点：①登录页没弹出→看本页启动日志；②登录页要密钥→用「打开登录页（免密钥）」；③扫码后 WebUI 又要求登录→NapCat 换新密钥了，回「NapCat 登录密钥」卡片点「刷新」；④机器人不回→确认群里没被「暂停回应」、Key 有效。更多说明见 README（github.com/Pigeon2333/zcode-qq-bot）</div></div>'
   +(String(c.bot_qq||'').trim()&&!hasKey?
   '<div class="card" style="border:1px solid var(--warn)">还差最后一步：AI 大脑还没有 API Key（免费注册 open.bigmodel.cn → 创建 Key → 「设置 → API Key」粘贴），填好前机器人无法说话</div>':'')) : '';
  $('#view').innerHTML=head('组件运行状态与机器人开关')+
@@ -538,6 +538,16 @@ async function vStatus(){
   <button class="act ghost" onclick="powerOff(false)">停止大脑与管道（保留登录）</button>
   <button class="act ghost danger" onclick="powerOff(true)">全部停止（含 NapCat）</button>
  </div></div>
+ <div class="card"><div class="k" style="font-weight:600">NapCat 登录密钥（WebUI Token）
+  <span class="badge" style="margin-left:8px;background:var(--tint);color:var(--dim)">登录页要填的就是它</span></div>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+   <span id="nctoken" class="mono" style="font-size:15px;letter-spacing:1px">读取中…</span>
+   <button class="act ghost" style="margin:0" onclick="ncCopy()">复制密钥</button>
+   <button class="act" style="margin:0" onclick="ncOpenLogin()">打开登录页（免密钥）</button>
+   <button class="act ghost" style="margin:0" onclick="ncFill()">刷新</button>
+  </div>
+  <div id="nchint" class="k" style="margin-top:6px">NapCat 启动后会自动生成密钥，这里直接读取；扫码登录成功后 NapCat 会更换一次密钥，点「刷新」即可</div>
+ </div>
  ${bootCardHtml(b)}
  <div class="card"><div class="kv">
   <div><span class="k">当前模型</span> <b>${esc(a.current_model||'—')}</b></div>
@@ -562,6 +572,34 @@ async function vStatus(){
   <div>已发 ${d.stats?.sent??0}</div><div>限流丢弃 ${d.stats?.dropped_rate??0}</div>
  </div></div>`;
  $('#headline').textContent=(d.ok&&a&&a.ok)?'运行中':'已停止';
+ ncFill();
+}
+let _ncTok='';
+async function ncFill(){
+ const d=await api('/api/napcat-login-info').catch(()=>null);
+ const t=document.getElementById('nctoken'),h=document.getElementById('nchint');
+ if(!t||!h)return;
+ if(!d){t.textContent='读取失败';h.textContent='读取 NapCat 登录密钥失败，稍后点「刷新」重试';return}
+ _ncTok=d.token||'';
+ t.textContent=_ncTok||'未获取';
+ const parts=[];
+ if(!d.webui_up)parts.push('NapCat 未运行（6099 端口没开）——先点上方「启动机器人」');
+ else if(d.ws_ready)parts.push('NapCat 已登录，WS 已就绪');
+ else parts.push('NapCat 已启动、账号尚未登录：点「打开登录页（免密钥）」扫码或快速登录');
+ if(_ncTok)parts.push('密钥来源：'+(d.source||'NapCat 配置')+'，扫码登录成功后可能更换，届时点「刷新」');
+ else if(d.webui_up)parts.push('密钥还没生成：等 NapCat 启动完点「刷新」；也可在「运行日志」里找 WebUi Token 行，或看 QQNT\\config\\webui.json');
+ h.textContent=parts.join(' · ');
+}
+async function ncCopy(){
+ if(!_ncTok){toast('还没有密钥可取（NapCat 未启动或未生成）',false);return}
+ try{await navigator.clipboard.writeText(_ncTok);toast('密钥已复制，粘到 NapCat 登录页即可')}
+ catch(e){toast('复制失败：请手动选中密钥复制',false)}
+}
+async function ncOpenLogin(){
+ const r=await api('/api/napcat-open-login',{method:'POST'}).catch(()=>({ok:false,error:'请求失败'}));
+ if(r&&r.ok)toast(r.tokenized?'已打开登录页（已自动带上密钥，直接扫码）':'已打开登录页，把上方密钥粘进去')
+ else toast((r&&(r.error||r.message))||'打开登录页失败',false);
+ if(r&&r.ok)ncFill();
 }
 async function powerOn(){
  const r=await api('/api/power/on',{method:'POST'}).catch(()=>({started:false,note:'请求失败'}));
@@ -615,7 +653,7 @@ async function saveSchedPause(key,val){
 async function togglePause(){const a=await api('/api/agent-status');await api('/api/pause',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paused:!a.paused})});toast('已'+(!a.paused?'暂停':'恢复'));load()}
 let _runlogTimer=null,_runlogSrc='all';
 const _lvlColor={ok:'var(--ok)',err:'var(--err)',warn:'var(--warn)',info:'var(--fg)',dim:'var(--dim)'};
-const _srcName={daemon:'管道',agent:'大脑',boot:'启动'};
+const _srcName={daemon:'管道',agent:'大脑',boot:'启动',napcat:'NapCat'};
 function runlogRows(d){
  return (d.lines||[]).slice(-250).map(l=>{
   const c=_lvlColor[l.level]||'var(--fg)';
@@ -629,9 +667,9 @@ function runlogRows(d){
 async function vRunlog(){
  const d=await api('/api/runlog?src='+_runlogSrc).catch(()=>({lines:[]}));
  const chip=(v,label)=>'<button class="badge" style="border:1px solid var(--line2);background:'+(_runlogSrc===v?'var(--nav-on)':'var(--card)')+';color:' +(_runlogSrc===v?'var(--fg-strong)':'var(--dim)')+';cursor:pointer;font-size:12px" onclick="setRunlogSrc(\''+v+'\')">'+label+'</button>';
- $('#view').innerHTML=head('机器人运行全日志：消息管道（daemon）、自治大脑（agent）、启动任务实时汇聚')+
+ $('#view').innerHTML=head('机器人运行全日志：消息管道（daemon）、自治大脑（agent）、启动任务实时汇聚；NapCat 页签含 WebUi Token 与登录二维码')+
  '<div class="card"><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:10px">'
- +chip('all','全部')+chip('daemon','消息管道')+chip('agent','自治大脑')+chip('boot','启动任务')
+ +chip('all','全部')+chip('daemon','消息管道')+chip('agent','自治大脑')+chip('boot','启动任务')+chip('napcat','NapCat')
  +'<button class="act ghost" style="margin:0;margin-left:8px" onclick="logsExport()">导出诊断包…</button>'
  +'<span class="k" style="margin-left:auto">3 秒自动刷新·跟随滚动</span></div>'
  +'<div style="max-height:calc(100vh - 210px);overflow-y:auto" id="logbox">'+(runlogRows(d)||'<div class="k" style="padding:20px 0">暂无日志</div>')+'</div></div>';
@@ -1345,7 +1383,8 @@ async function vSettings(){
    <button class="act ghost" style="margin:0" onclick="napcatOnline()">在线下载并安装 NapCat…</button>
    <button class="act ghost" style="margin:0" onclick="napcatInstall()">本地 zip 安装…</button>
    <span class="k">在线版自动从 NapCat 官方 GitHub 下载最新 Shell 并安装（国内自动走镜像）；本地版选自己下载的 zip（github.com/NapNeko/NapCatQQ/releases）。Program Files 目录需管理员权限运行本程序</span></div>
-  <div id="ncdl-status" class="k" style="margin-top:6px"></div></div>
+  <div id="ncdl-status" class="k" style="margin-top:6px"></div>
+  <div class="k" style="margin-top:8px">扫码登录：密钥（登录页要填的 Token）与「打开登录页（免密钥）」按钮见「状态」页的 <b>NapCat 登录密钥</b> 卡片（密钥由程序自动从 NapCat 配置读取，不用手抄）</div></div>
   <div class="k" style="margin-top:12px">端口（一般无需改动；改动重启各组件后生效）</div>
   <div style="display:flex;gap:10px;margin-top:6px;flex-wrap:wrap;align-items:center">
    <label>NapCat WS <input id="pnap" type="number" value="${c.napcat_ws_port}" style="width:76px" onchange="saveEnv('pnap','napcat_ws_port',1)"></label>
@@ -1845,8 +1884,29 @@ def _parse_agent_lines(lines):
     return out
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _parse_napcat_lines(lines):
+    """NapCat 控制台输出 → 运行日志条目（去 ANSI 色码；保留密钥与二维码原文）。"""
+    out = []
+    for ln in lines:
+        s = _ANSI_RE.sub("", ln).rstrip()
+        if not s:
+            continue
+        m = re.match(r"^(?:\d{2}-\d{2} )?(\d{2}:\d{2}:\d{2})\s+\[(\w+)\]\s*(.*)$", s)
+        if m:
+            lvl = {"error": "err", "warn": "warn"}.get(m.group(2), "info")
+            out.append({"src": "napcat", "level": lvl,
+                        "ts": m.group(1), "text": m.group(3)[:400]})
+        else:
+            out.append({"src": "napcat", "level": "info", "ts": "",
+                        "text": s[:400]})
+    return out
+
+
 def collect_runlog(src="all", tail=250):
-    """聚合 daemon/agent 日志与启动任务步骤 → 展示记录列表（正序）。"""
+    """聚合 daemon/agent/NapCat 日志与启动任务步骤 → 展示记录列表（正序）。"""
     items = []
     if src in ("all", "daemon"):
         items += [_parse_daemon_line(ln) for ln in
@@ -1854,6 +1914,9 @@ def collect_runlog(src="all", tail=250):
     if src in ("all", "agent"):
         items += _parse_agent_lines(
             _tail_lines(os.path.join(C.DATA_DIR, "logs", "agent.log"), tail))
+    if src == "napcat":
+        items += _parse_napcat_lines(_tail_lines(
+            str(S.napcat_console_log()), tail))
     if src in ("all", "boot"):
         with _boot_lock:
             steps = list(_boot_state["steps"])
@@ -2222,9 +2285,25 @@ class UiHandler(BaseHTTPRequestHandler):
         if u.path == "/api/napcat-dl-status":
             import qq_napcat_dl as _ND
             return self._reply(200, {"ok": True, **_ND.status()})
+        if u.path == "/api/napcat-login-info":
+            cfg = C.load_app_config()
+            cfg_dir = S.napcat_config_dir(cfg)
+            tok = S.napcat_webui_token(cfg)
+            src = ""
+            if tok:
+                src = ("NapCat 配置 webui.json" if cfg_dir and os.path.isfile(
+                    os.path.join(cfg_dir, "webui.json")) else "NapCat 控制台日志")
+            base = "http://127.0.0.1:6099/webui"
+            return self._reply(200, {
+                "ok": True,
+                "webui_up": S.port_open(6099),
+                "ws_ready": S.port_open(int(cfg.get("napcat_ws_port") or 3001)),
+                "token": tok, "source": src,
+                "url": (base + "?token=" + urllib.parse.quote(tok, safe=""))
+                if tok else base})
         if u.path == "/api/runlog":
             src = q.get("src", "all")
-            if src not in ("all", "daemon", "agent", "boot"):
+            if src not in ("all", "daemon", "agent", "boot", "napcat"):
                 src = "all"
             return self._reply(200, {"ok": True, "src": src,
                                      "lines": collect_runlog(src, tail=250)})
@@ -2604,6 +2683,20 @@ class UiHandler(BaseHTTPRequestHandler):
             tz.start()
             tz.join(timeout=120)
             return self._reply(200, {"ok": True, "file": boxz.get("f", "")})
+        if u.path == "/api/napcat-open-login":
+            cfg = C.load_app_config()
+            if not S.port_open(6099):
+                return self._reply(200, {"ok": False, "error":
+                    "NapCat 还没启动（6099 端口未监听）：先点「启动机器人」，等它拉起 QQ + NapCat 后再试"})
+            url = S.napcat_webui_url(cfg)
+            try:
+                import webbrowser
+                webbrowser.open(url)
+            except Exception:
+                return self._reply(200, {"ok": False, "error": "打开浏览器失败",
+                                         "url": url})
+            return self._reply(200, {"ok": True, "url": url,
+                                     "tokenized": "?token=" in url})
         if u.path == "/api/napcat-install":
             zpath = str(body.get("zip") or "").strip()
             if not zpath or not os.path.isfile(zpath):

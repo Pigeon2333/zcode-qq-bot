@@ -15,14 +15,18 @@
 """
 
 import http.client
+import ipaddress
 import json
 import os
 import pathlib
 import re
 import socket
+import ssl
 import subprocess
 import sys
+import threading
 import time
+import urllib.parse
 import winreg
 
 import qq_common as C
@@ -63,6 +67,74 @@ def read_token_file(name):
         return (C.DATA_ROOT / name).read_text(encoding="utf-8").strip()
     except OSError:
         return ""
+
+
+def napcat_config_dir(cfg):
+    """QQNT 目录下 NapCat 的 config 目录（不存在返回空串）。"""
+    qqnt = C.qqnt_dir_resolved(cfg)
+    if not qqnt:
+        return ""
+    d = os.path.realpath(os.path.join(qqnt, "config"))
+    return d if os.path.isdir(d) else ""
+
+
+def napcat_console_log():
+    """NapCat 控制台输出落盘位置（启动时重定向；含 WebUi Token 与登录二维码）。"""
+    return C.DATA_ROOT / "logs" / "napcat_console.log"
+
+
+def napcat_webui_token(cfg):
+    """读取 NapCat WebUI 登录密钥（扫码页要求填的 Token）。
+
+    优先读 QQNT/config/webui.json 的 token；读不到（权限不足/尚未生成）则解析
+    重定向下来的控制台日志里的 "WebUi Token:" 行。只读，不写日志、不外发。
+    """
+    cfg_dir = napcat_config_dir(cfg)
+    if cfg_dir:
+        p = os.path.join(cfg_dir, "webui.json")
+        try:
+            real = os.path.realpath(p)
+            if os.path.dirname(real) == cfg_dir and os.path.isfile(real):
+                data = json.loads(pathlib.Path(real).read_text(encoding="utf-8"))
+                tok = str(data.get("token") or "").strip()
+                if tok:
+                    return tok
+        except (OSError, ValueError, AttributeError):
+            pass
+    log = napcat_console_log()
+    try:
+        if log.is_file() and log.stat().st_size <= 8 * 1024 * 1024:
+            hits = re.findall(r"WebUi Token:\s*(\S+)", log.read_text(
+                encoding="utf-8", errors="replace"))
+            if hits:
+                return hits[-1]
+    except OSError:
+        pass
+    return ""
+
+
+def napcat_webui_url(cfg):
+    """NapCat WebUI 地址；能取到密钥时带 ?token= 免输密钥直接进。"""
+    base = "http://127.0.0.1:6099/webui"
+    tok = napcat_webui_token(cfg)
+    return (base + "?token=" + urllib.parse.quote(tok, safe="")) if tok else base
+
+
+def _napcat_log_handle():
+    """NapCat 控制台日志句柄（超过 4MB 轮转到 .old）。"""
+    path = napcat_console_log()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and path.stat().st_size > 4 * 1024 * 1024:
+            old = path.with_suffix(".log.old")
+            try:
+                old.unlink()
+            except OSError:
+                pass
+            path.replace(old)
+    except OSError:
+        pass
+    return open(path, "a", encoding="utf-8", errors="replace")
 
 
 def _spawn(script, args, log_name):
@@ -350,8 +422,15 @@ def start_napcat(cfg, wait_sec=150, on_progress=None):
         _p("NapCat 已在运行（WebUI 在线），无需重复启动 QQ，直接等待账号登录…")
     else:
         _p("正在启动 QQNT + NapCat（快速登录 %s），登录可能需要扫码…" % qq)
-        subprocess.Popen(["cmd", "/c", launcher, qq], cwd=qqnt,
-                         creationflags=CREATE_NO_WINDOW)
+        # 控制台输出落盘：WebUi Token 与二维码都只在这里出现（无窗口启动看不到）
+        logf = _napcat_log_handle()
+        try:
+            subprocess.Popen(["cmd", "/c", launcher, qq], cwd=qqnt,
+                             stdin=subprocess.DEVNULL,
+                             stdout=logf, stderr=subprocess.STDOUT,
+                             creationflags=CREATE_NO_WINDOW)
+        finally:
+            logf.close()
     deadline = time.time() + wait_sec
     webui_seen = False
     while time.time() < deadline:
@@ -361,20 +440,25 @@ def start_napcat(cfg, wait_sec=150, on_progress=None):
         if port_open(6099):
             if not webui_seen:
                 webui_seen = True
+                url = napcat_webui_url(cfg)
                 _p("NapCat WebUI 已启动，但 WS 尚未开放 —— 正在等待账号登录；"
-                   "即将自动打开登录页面（http://127.0.0.1:6099/webui），请扫码或快速登录")
+                   "即将自动打开登录页面"
+                   + ("（已自动带上登录密钥）" if "?token=" in url else "")
+                   + "，请扫码或快速登录")
                 try:
                     import webbrowser
-                    webbrowser.open("http://127.0.0.1:6099/webui")
+                    webbrowser.open(url)
                 except Exception:
                     pass
         time.sleep(2)
     if port_open(6099):
-        return False, ("NapCat 已运行但账号未登录（WS 未开放）：请打开 "
-                       "http://127.0.0.1:6099/webui 完成扫码或快速登录，"
+        return False, ("NapCat 已运行但账号未登录（WS 未开放）：请到「状态」页"
+                       "「NapCat 登录密钥」卡片点「打开登录页（免密钥）」，"
+                       "或打开 http://127.0.0.1:6099/webui 手动填密钥，完成扫码/快速登录；"
                        "登录成功后 WS 会自动开放，daemon 将自动连上")
-    return False, ("NapCat 启动超时（%d 秒内 WS 未就绪）：若登录凭据失效，请打开 "
-                   "NapCat WebUI 扫码（http://127.0.0.1:6099/webui）" % wait_sec)
+    return False, ("NapCat 启动超时（%d 秒内 WS 未就绪）：若登录凭据失效，请到「状态」页"
+                   "「NapCat 登录密钥」卡片打开登录页重新扫码（%d 秒）"
+                   % (wait_sec, wait_sec))
 
 
 def power_on(cfg, on_note=None):
