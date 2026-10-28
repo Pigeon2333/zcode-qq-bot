@@ -475,7 +475,7 @@ function dirtyOff(btnId){const b=document.getElementById(btnId);if(b)b.disabled=
 async function dirtyGuard(){const d=document.querySelector('textarea.dirty,input.dirty');if(!d)return true;
  return await dlgConfirm({title:'有未保存的修改',body:'当前有未保存的修改（蓝色边框标记），离开将丢失。确定离开？',okText:'放弃修改',danger:true})}
 async function load(){try{if(TAB==='status')await vStatus();else if(TAB==='runlog')await vRunlog();else if(TAB==='models')await vModels();else if(TAB==='groups')await vGroups();else if(TAB==='private')await vPrivate();else if(TAB==='persona')await vPersonas();else if(TAB==='style')await vFile('style');else if(TAB==='memory')await vMemory();else if(TAB==='stickers')await vStickers();else if(TAB==='devctrl')await vDevCtrl();else if(TAB==='zcode')await vZcode();else if(TAB==='settings')await vSettings();else if(TAB==='about')await vAbout();}catch(e){$('#view').innerHTML='<div class="card">加载失败: '+esc(e)+'</div>'}}
-document.querySelectorAll('#nav button').forEach(b=>b.onclick=async()=>{if(!await dirtyGuard())return;document.querySelectorAll('#nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');TAB=b.dataset.t;if(TAB!=='runlog'&&_runlogTimer){clearInterval(_runlogTimer);_runlogTimer=null}if(TAB!=='devctrl'&&_devCodeTimer){clearInterval(_devCodeTimer);_devCodeTimer=null}skeleton();load()});
+document.querySelectorAll('#nav button').forEach(b=>b.onclick=async()=>{if(!await dirtyGuard())return;document.querySelectorAll('#nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');TAB=b.dataset.t;if(TAB!=='runlog'&&_runlogTimer){clearInterval(_runlogTimer);_runlogTimer=null}if(TAB!=='devctrl'&&_devCodeTimer){clearInterval(_devCodeTimer);_devCodeTimer=null}if(TAB!=='status'&&_ncTokTimer){clearInterval(_ncTokTimer);_ncTokTimer=null}skeleton();load()});
 const _urlTab=new URLSearchParams(location.search).get('tab');
 if(_urlTab&&TITLES[_urlTab]){TAB=_urlTab;document.querySelectorAll('#nav button').forEach(x=>x.classList.toggle('on',x.dataset.t===_urlTab));}
 /* 启动闪屏：每次新窗口首播，UI 自愈刷新（reload）不重播 */
@@ -644,14 +644,19 @@ async function vStatus(){
   <div>已发 ${d.stats?.sent??0}</div><div>限流丢弃 ${d.stats?.dropped_rate??0}</div>
  </div></div>`;
  $('#headline').textContent=(d.ok&&a&&a.ok)?'运行中':'已停止';
- ncFill();
+ ncFill(true);
+ if(!_ncTokTimer)_ncTokTimer=setInterval(()=>{if(TAB==='status')ncFill()},30000);
 }
 let _ncTok='';
-async function ncFill(){
+let _ncTokTimer=null;
+async function ncFill(quiet){
  const d=await api('/api/napcat-login-info').catch(()=>null);
  const t=document.getElementById('nctoken'),h=document.getElementById('nchint');
  if(!t||!h)return;
  if(!d){t.textContent='读取失败';h.textContent='读取 NapCat 登录密钥失败，稍后点「刷新」重试';return}
+ if(_ncTok&&d.token&&d.token!==_ncTok&&!quiet){
+  toast('NapCat 登录密钥已变化（新密钥已显示）');
+ }
  _ncTok=d.token||'';
  t.textContent=_ncTok||'未获取';
  const parts=[];
@@ -3620,6 +3625,10 @@ class UiHandler(BaseHTTPRequestHandler):
                         _boot_state["final"] = ("账号切换完成（存在失败项，看下方日志）"
                                                 if hard_fail else
                                                 "账号切换完成：现在登录的是 %s" % new_qq)
+                    on_note({"component": "switch", "ok": True,
+                             "message": "新账号登录后 NapCat 会更换登录密钥——"
+                                        "本页「NapCat 登录密钥」卡片自动读取实时值，"
+                                        "无需手动处理"})
                 except Exception as e:
                     with _boot_lock:
                         _boot_state["done"] = True

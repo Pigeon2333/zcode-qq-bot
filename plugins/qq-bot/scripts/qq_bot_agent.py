@@ -968,16 +968,25 @@ def _zcode_recent_projects(n=3):
             for mt, name in items[:n]]
 
 
-def _zcode_context_line():
-    """主动消息注入：主人在 ZCode 的近期项目（zcode_context_enabled 时）。"""
+def _zcode_context_line(chat_type=None, chat_id=None):
+    """主动消息注入：主人在 ZCode 的近期项目。
+
+    隐私边界：只在**主人私聊**里注入——主人的工作内容绝不进群聊上下文
+    （否则模型会在群里拿它当谈资，且多群各说一遍）。
+    """
     if not _zcode_on("zcode_context_enabled"):
+        return ""
+    if chat_type != "private":
+        return ""
+    if str(chat_id or "") != str(owner_qq() or ""):
         return ""
     projs = _zcode_recent_projects()
     if not projs:
         return ""
-    return ("（参考：主人最近在 ZCode 里活跃的项目/目录：%s——关心工作进展时可以自然提及，"
-            "但不要每条都提。）"
-            % "、".join("%s（%s 有改动）" % (n, t) for n, t in projs))
+    return ("（只跟你主人一个人相关的背景：他最近在 ZCode 里活跃的项目：%s——"
+            "只用来私下关心他忙不忙，别复述具体文件或目录名，也别在任何人面前"
+            "展开细节。）"
+            % "、".join(n for n, _t in projs))
 
 
 def _zcode_handoff(task_text, msg):
@@ -1965,7 +1974,13 @@ def build_messages(daemon, msg, ctx_k=32):
         "那时再回复更自然)。已完整表达完毕的消息不要 WAIT\n"
         "- 觉得自己刚才话太多、或对方明显嫌你吵/让你少说点时，可以在回复末尾"
         "单独一行输出 [QUIET]（可带分钟如 [QUIET:15]，默认10）——这会真实生效："
-        "期间你不再主动插话，被@和被回复时仍会正常回答。不要输出给普通提问\n\n"
+        "期间你不再主动插话，被@和被回复时仍会正常回答。不要输出给普通提问\n"
+        "- 【隐私红线·最高优先级】主人的工作内容——他在电脑/ZCode 上做的项目、"
+        "改动的文件、任务、报告、用量数据——属于他个人的隐私，"
+        "**只允许在与主人的一对一私聊里提及**；在**任何群里**（包括只有他一个人"
+        "的群）绝不能主动说起、不能当话题聊、不能暗示细节，群员问起也只说"
+        "\"那是主人的事，我不方便说～\"之类带过。就算上下文/记忆里出现了这些信息，"
+        "群里也当它们不存在；主动在群里开话头时，永远不要拿主人的工作当素材\n\n"
         "%s## 可用表情包\n%s"
         % (global_block, persona_block, style_block, evolved_block, mem_block,
            skip_block, guard_block, security, draw_rule, sticker_menu(active_name))
@@ -2296,7 +2311,9 @@ def _proactive_compose(daemon, chat_type, chat_id):
            evolved_block, mem_block,
            ((naming_lines() + "\n\n") if naming_lines() else ""),
            tstr, label))
-    content = "【%s | 最近对话】\n%s\n%s\n\n【现在】请你主动发一条消息。" % (label, hist_block, _zcode_context_line())
+    content = ("【%s | 最近对话】\n%s\n%s\n\n【现在】请你主动发一条消息。"
+               % (label, hist_block,
+                  _zcode_context_line(chat_type, chat_id)))
     return [{"role": "system", "content": system},
             {"role": "user", "content": content}], active
 
