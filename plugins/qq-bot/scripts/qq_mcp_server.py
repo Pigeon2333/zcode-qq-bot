@@ -17,15 +17,38 @@ import base64
 import http.client
 import json
 import os
+import pathlib
 import sys
 import time
 import uuid
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import qq_common as C  # noqa: E402
-
-DATA_DIR = C.DATA_DIR
+# 自包含：不 import qq_common —— 插件缓存/marketplace 复制本文件时曾漏带依赖模块，
+# import 即 ModuleNotFoundError → MCP「进程启动失败 / Connection closed」。
+DATA_DIR = os.environ.get("QQBOT_DATA_DIR") or os.path.join(
+    os.path.expanduser("~"), ".zcode-qq-bot")
 TOOLS = []
+
+
+def _load_cfg():
+    """读 app_config.json（不存在/坏 JSON 返回空 dict，调用处都有默认值兜底）。"""
+    try:
+        data = json.loads(pathlib.Path(
+            os.path.join(DATA_DIR, "app_config.json")).read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _zcode_installed():
+    try:
+        markers = [
+            os.path.join(os.path.expanduser("~"), ".zcode"),
+            r"D:\Program Files\ZCode\resources",
+            r"C:\Program Files\ZCode\resources",
+        ]
+        return any(os.path.isdir(m) for m in markers)
+    except OSError:
+        return False
 
 
 def _token():
@@ -36,7 +59,7 @@ def _token():
 
 
 def _ports():
-    cfg = C.load_app_config()
+    cfg = _load_cfg()
     return int(cfg.get("daemon_port") or 39763), int(cfg.get("agent_admin_port") or 39764), \
         int(cfg.get("ui_port") or 39765)
 
@@ -66,12 +89,12 @@ def _req(port, method, path, body=None, timeout=30):
 
 
 def _zcode_on(key):
-    cfg = C.load_app_config()
-    return bool(cfg.get("zcode_bridge_enabled")) and C.zcode_installed() and bool(cfg.get(key))
+    cfg = _load_cfg()
+    return bool(cfg.get("zcode_bridge_enabled")) and _zcode_installed() and bool(cfg.get(key))
 
 
 def _owner():
-    return str(C.load_app_config().get("owner_qq") or "").strip()
+    return str(_load_cfg().get("owner_qq") or "").strip()
 
 
 def _inbox_dir():
@@ -126,7 +149,7 @@ def t_qq_inject(a):
     _d, _ag, _u = _ports()
     ct = "group" if a.get("chat_type") == "group" else "private"
     ev = {"post_type": "message", "message_type": ct, "time": int(time.time()),
-          "self_id": int(C.load_app_config().get("bot_qq") or 0),
+          "self_id": int(_load_cfg().get("bot_qq") or 0),
           "message_id": "mcp" + uuid.uuid4().hex[:8],
           "sender": {"user_id": int(a.get("user_id") or _owner() or 0),
                      "nickname": a.get("name") or "MCP测试"},
@@ -143,7 +166,7 @@ def t_qq_inject(a):
 def t_qq_config_get(a):
     _d, _ag, ui = _ports()
     if a.get("kind") == "app":
-        cfg = C.load_app_config()
+        cfg = _load_cfg()
         return {"ok": True, "config": {k: v for k, v in cfg.items() if "key" not in k.lower()}}
     r = _req(ui, "GET", "/api/reply-config")
     r.pop("ok", None)
