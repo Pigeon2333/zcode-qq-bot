@@ -2178,18 +2178,23 @@ def load_json_const(path, default):
 
 def write_const(path, text):
     """写模块级常量路径文件（本文件所有写入路径均为常量）。
+    首次保存时父目录可能尚不存在（如 styles/ 在第一次存风格卡前不会建）
+    → 先自建目录，否则 tmp.write_text 直接抛 FileNotFoundError，旧版表现为
+    前端"保存失败：网络错误"；tmp 带进程号，避免固定名被杀软反复盯上。
     os.replace 可能撞上 agent/daemon 进程的瞬时读句柄（Windows 读句柄不共享
     删除权）→ PermissionError；重试若干次后就地写兜底，避免保存必现失败。"""
-    tmp = pathlib.Path(path + ".ui.tmp")
+    p = pathlib.Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name("%s.ui.%d.tmp" % (p.name, os.getpid()))
     tmp.write_text(text, encoding="utf-8")
     for i in range(6):
         try:
-            os.replace(str(tmp), path)
+            os.replace(str(tmp), str(p))
             return
         except PermissionError:
             time.sleep(0.05 * (i + 1))
     try:
-        pathlib.Path(path).write_text(text, encoding="utf-8")
+        p.write_text(text, encoding="utf-8")
         tmp.unlink()
     except OSError:
         raise

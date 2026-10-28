@@ -232,10 +232,21 @@ def _cooldown_sec(detail):
 
 
 def write_const(path, text):
-    """原子写常量路径文件（tmp + os.replace）。"""
-    tmp = pathlib.Path(str(path) + ".ag.tmp")
+    """原子写常量路径文件（tmp + os.replace）。
+    首次写入时父目录可能尚不存在（如 stickers/）→ 先自建；tmp 带进程号
+    避免固定名被杀软反复盯上；replace 撞读句柄（Windows 不共享删除权）重试。"""
+    p = pathlib.Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name("%s.ag.%d.tmp" % (p.name, os.getpid()))
     tmp.write_text(text, encoding="utf-8")
-    os.replace(str(tmp), str(path))
+    for i in range(6):
+        try:
+            os.replace(str(tmp), str(p))
+            return
+        except PermissionError:
+            time.sleep(0.05 * (i + 1))
+    p.write_text(text, encoding="utf-8")
+    tmp.unlink()
 
 
 def read_const(path, default=""):
