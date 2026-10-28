@@ -2508,19 +2508,32 @@ def _is_protected(path):
 
 
 _DEVCTRL_DEV_WORDS = ("电脑", "本机", "本地磁盘", "硬盘", "磁盘", "文件管理器", "资源管理器")
-_DEVCTRL_ACT_WORDS = ("找", "搜", "查", "打开", "读", "发我", "发给我", "发过来", "文档", "文件", "资料", "图片", "照片", "文件夹")
+_DEVCTRL_ACT_WORDS = ("找一下", "帮我找", "找找", "找份", "找个文件", "搜一下", "帮我搜",
+                      "搜搜", "查一下", "帮我查", "打开", "开一下", "关掉", "关闭",
+                      "读一下", "读读", "发我", "发给我", "发过来", "看看", "看下",
+                      "看一下", "列一下", "列列", "删掉", "删除", "复制", "移动",
+                      "翻翻", "翻一下", "上传", "下载")
+# 纯状态/闲聊描述（"电脑在开着"这类）：无操作短语时一律不触发
+_DEVCTRL_STATUS_RE = re.compile(
+    r"(开着|关着|亮着|灭着|死机|死机了|卡了|卡住|蓝屏|没电|发烫|很卡|睡眠|休眠|"
+    r"在运行|运行着|还开着|开着呢|开着呢|锁屏)")
 
 
 def _devctrl_intent(text):
     """判断主人这句话是否表达"要操作本机文件"的意图（比只说「设备」更灵活）。
-    命中条件：明确关键词，或 设备词 + 动作词 同时出现。"""
+    命中条件：明确关键词，或 设备词 + 动作短语 同时出现。
+    纯状态描述（"电脑在开着"）绝不命中。"""
     t = str(text or "").strip()
     if "设备操控" in t or t in ("设备", "设备 授权", "设备 授权码", "连线"):
         return True
     if len(t) > 60:
         return False
     has_dev = any(w in t for w in _DEVCTRL_DEV_WORDS)
+    if not has_dev:
+        return False
     has_act = any(w in t for w in _DEVCTRL_ACT_WORDS)
+    if _DEVCTRL_STATUS_RE.search(t) and not has_act:
+        return False  # "电脑在开着/机子有点卡"这类状态闲聊
     return has_dev and has_act
 
 
@@ -2622,13 +2635,15 @@ def _botloop_judge(text):
 
 def _devctrl_llm_judge(text):
     """自主判断补强：本地规则没命中时，用小模型判断是否在要求操作本机文件。
-    仅在主人私聊消息里出现文件类字眼时才会走到这里，调用成本极低。"""
+    只在主人私聊消息同时出现设备词和文件类字眼时才走到这里，成本极低。"""
     try:
         reply = call_glm_with_fallback(
             [{"role": "system",
-              "content": "判断用户这句话是否在要求「操作本机电脑上的文件/文档」"
-                         "（找文件、读文件、发送电脑上的文件等）。"
-                         "只是聊天提到文件、问格式、讨论概念都不算。只回 Y 或 N。"},
+              "content": "判断用户这句话是否在明确要求「让机器人去操作他本机电脑上的"
+                         "文件/文档」（找文件、读文件、发送电脑上的文件、打开/关闭"
+                         "程序、列目录等具体操作）。"
+                         "只是聊天提到电脑、描述电脑状态（开着/卡了/要重启）、"
+                         "问概念问格式、聊配置聊硬件，都不算。拿不准算 N。只回 Y 或 N。"},
              {"role": "user", "content": str(text)[:200]}], "")
         ans = str(reply[1] if isinstance(reply, tuple) else reply).strip().upper()[:3]
         out("AGENT_DEVCTRL_JUDGE ans=%s text=%.30s" % (ans, str(text)[:30]))
@@ -2646,8 +2661,12 @@ def _devctrl_should_ask(text, mode, flow):
     if _devctrl_keyword_hit(text, flow) or _devctrl_intent(text):
         return True
     t = str(text or "")
-    if len(t) <= 60 and any(w in t for w in
-                            ("文件", "文档", "资料", "图片", "照片", "电脑", "本机", "硬盘")):
+    # 状态闲聊先行排除（"电脑在开着呢"），绝不再送模型判定
+    if _DEVCTRL_STATUS_RE.search(t):
+        return False
+    if len(t) <= 60 and any(w in t for w in _DEVCTRL_DEV_WORDS) and any(
+            w in t for w in ("文件", "文档", "资料", "图片", "照片", "文件夹")
+            + _DEVCTRL_ACT_WORDS):
         return _devctrl_llm_judge(t)
     return False
 
