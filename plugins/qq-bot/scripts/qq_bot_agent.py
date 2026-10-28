@@ -121,10 +121,20 @@ class Runtime:
         self.errors = 0
         self.processed_since_evolve = 0
         self.current_model = None
+        # 手动锁定的冷却键 "kid:model"（控制台「立即使用」：无视冷却优先用该模型）
+        self.pinned = None
 
     @staticmethod
     def _entry_model(e):
         return str(e.get("model", "")).strip() if isinstance(e, dict) else str(e).strip()
+
+    @staticmethod
+    def _entry_ck(e):
+        """条目 → 冷却键（主 Key 统一记作 "main"，与控制台展示一致）。"""
+        if isinstance(e, dict):
+            kid = str(e.get("key", "")).strip() or "main"
+            return "%s:%s" % (kid, str(e.get("model", "")).strip())
+        return "main:%s" % str(e).strip()
 
     def reload_chain(self):
         cfg = load_json_const(MODEL_CHAIN_PATH, {})
@@ -140,6 +150,10 @@ class Runtime:
             names = [self._entry_model(e) for e in self.chain]
             if self.current_model is None or self.current_model not in names:
                 self.current_model = names[0] if names else None
+            # 锁定的条目已不在链上（被删/被改）→ 解除锁定
+            if self.pinned and self.pinned not in [
+                    self._entry_ck(e) for e in self.chain]:
+                self.pinned = None
 
     def snapshot(self):
         with self.lock:
@@ -150,12 +164,25 @@ class Runtime:
                 "processed": self.processed,
                 "errors": self.errors,
                 "current_model": self.current_model,
+                "pinned": self.pinned,
             }
 
     def cooldown(self, model, seconds=None):
         with self.lock:
             self.cooldowns[model] = time.time() + (
                 seconds if seconds is not None else COOLDOWN_SECONDS)
+
+    def pin(self, ck):
+        """锁定某条候选：清掉它的冷却，后续调用无视冷却优先使用。"""
+        with self.lock:
+            self.pinned = ck
+            self.cooldowns.pop(ck, None)
+
+    def unpin(self):
+        with self.lock:
+            ck = self.pinned
+            self.pinned = None
+            return ck
 
     def set_current(self, model):
         with self.lock:
@@ -388,13 +415,14 @@ def _chain_candidates():
             model, kid = str(e).strip(), ""
         if not model:
             continue
-        if kid:
+        if kid:  # 备用 Key 条目（主 Key 条目走 glm_key()）
             ent = keys.get(kid)
             if not ent:
                 continue
             kv = {"key": ent["key"], "provider": ent.get("provider", "zhipu"),
                   "base_url": ent.get("base_url", "")}
         else:
+            kid = "main"  # 冷却键/日志里主 Key 统一记作 main（与控制台一致）
             kv = glm_key()
         if not kv:
             continue
@@ -484,17 +512,40 @@ def glm_chat(model, messages, timeout=40, extra_body=None, key=None):
         conn.close()
 
 
+def _order_candidates(cands):
+    """候选排序：先把「立即使用」锁定的候选挪到最前（手动意图优先于
+    econ 策略）；econ 再剔链首——但链首正是锁定条目时保留（用户点名要用）。
+    锁定候选在调用循环里另行无视冷却。"""
+    pin = RT.pinned
+    pin_head = None
+    if pin:
+        for i, c in enumerate(cands):
+            if "%s:%s" % (c[0], c[2]) == pin:
+                pin_head = c
+                cands = [cands[i]] + cands[:i] + cands[i + 1:]
+                break
+    if econ_on() and len(cands) > 1 and cands[0] is not pin_head:
+        cands = cands[1:]
+    return cands
+
+
+def _pin_check_release(ck):
+    """锁定候选调用失败 → 解除锁定，恢复自动链（避免强锁一个已挂的模型）。"""
+    if RT.pinned and RT.pinned == ck:
+        RT.unpin()
+        out("AGENT_PIN_RELEASE %s（调用失败，恢复自动切换）" % ck)
+
+
 def call_glm_with_fallback(messages, text_ctx=""):
     """按模型链候选序尝试（每条目可绑定不同 API Key，可跨 Key 降级）；
-    失败按错误分级冷却，429/失效自动切下一个。"""
+    失败按错误分级冷却，429/失效自动切下一个。控制台「立即使用」锁定的
+    候选排最前且无视冷却；它一旦失败立即解锁回落自动链。"""
     tried = []
-    cands = _chain_candidates()
-    if econ_on() and len(cands) > 1:
-        cands = cands[1:]
+    cands = _order_candidates(_chain_candidates())
     now = time.time()
     for kid, kv, model, _ctx, _mo in cands:
         ck = "%s:%s" % (kid, model)
-        if RT.cooldowns.get(ck, 0) > now:
+        if ck != RT.pinned and RT.cooldowns.get(ck, 0) > now:
             tried.append("%s@%s(冷却)" % (model, kid))
             continue
         try:
@@ -516,6 +567,7 @@ def call_glm_with_fallback(messages, text_ctx=""):
             RT.cooldown(ck)
             tried.append("%s@%s" % (model, kid))
             out("AGENT_MODEL_FAIL model=%s key=%s net=%r" % (model, kid, e))
+            _pin_check_release(ck)
             continue
         if status == 200:
             try:
@@ -523,6 +575,7 @@ def call_glm_with_fallback(messages, text_ctx=""):
             except (KeyError, IndexError, TypeError):
                 RT.cooldown(ck)
                 tried.append("%s@%s" % (model, kid))
+                _pin_check_release(ck)
                 continue
             RT.set_current(model)
             log_usage(model, data.get("usage") or {}, kid)
@@ -533,6 +586,7 @@ def call_glm_with_fallback(messages, text_ctx=""):
             % (model, kid, status, cool, detail))
         RT.cooldown(ck, cool)
         tried.append("%s@%s" % (model, kid))
+        _pin_check_release(ck)
     raise RuntimeError("模型链全部不可用（冷却中）: %s" % ", ".join(tried))
 
 
@@ -3724,6 +3778,29 @@ class AdminHandler(BaseHTTPRequestHandler):
                 RT.paused = bool(body.get("paused", False))
             out("AGENT_PAUSE set=%s" % RT.paused)
             return self._reply(200, {"ok": True, "paused": RT.paused})
+        if urllib.parse.urlsplit(self.path).path == "/admin/pin-model":
+            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                body = json.loads(self.rfile.read(n).decode("utf-8")) if n else {}
+            except ValueError:
+                return self._reply(400, {"ok": False, "error": "bad json"})
+            if body.get("clear"):
+                ck = RT.unpin()
+                out("AGENT_PIN_CLEAR %s" % (ck or "-"))
+                return self._reply(200, {"ok": True, "pinned": None})
+            model = str(body.get("model") or "").strip()
+            kid = str(body.get("kid") or "main").strip() or "main"
+            if not model:
+                return self._reply(400, {"ok": False, "error": "缺少 model"})
+            ck = "%s:%s" % (kid, model)
+            with RT.lock:
+                cks = [Runtime._entry_ck(e) for e in RT.chain]
+            if ck not in cks:
+                return self._reply(400, {"ok": False,
+                                         "error": "该模型不在当前链上（链已变动，请刷新页面）"})
+            RT.pin(ck)
+            out("AGENT_PIN_SET %s" % ck)
+            return self._reply(200, {"ok": True, "pinned": ck})
         if urllib.parse.urlsplit(self.path).path == "/admin/shutdown":
             self._reply(200, {"ok": True, "bye": True})
             out("AGENT_SHUTDOWN requested")

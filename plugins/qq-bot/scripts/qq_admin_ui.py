@@ -801,11 +801,12 @@ async function vModels(){
  const keyLabel=e=>{if(!e.key)return '主Key';const k=keysL.find(x=>x.id===e.key);return k?(k.primary?'★':'')+esc(k.label||k.id):'（Key已删）'};
  const thName={'':'默认','off':'不思考','high':'思考·高','low':'思考·低'};
  const rows=entries.map((e,i)=>{const v=thKey(e.model);const ck=(e.key||'main')+':'+e.model;
-  const cd=a.cooldowns&&a.cooldowns[ck]>0;
-  return `<div class="row ${cd?'cool':''}"><span class="no">${i+1}.</span>
+  const cd=a.cooldowns&&a.cooldowns[ck]>0;const pinned=a.pinned===ck;
+  return `<div class="row ${cd&&!pinned?'cool':''}"><span class="no">${i+1}.</span>
   <b style="flex:0 0 auto;max-width:46%;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.model)}</b>
   <span class="k mono" style="flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right">${esc(keyLabel(e))}${e.ctx?' · '+esc(e.ctx)+'k':''}${e.maxout?' · out '+esc(e.maxout):''} · ${thName[v]||'默认'}</span>
-  <span class="mono" style="flex:0 0 auto">${cd?('冷却'+a.cooldowns[ck]+'s'):(a.current_model===e.model?'当前':'')}</span>
+  <span class="mono" style="flex:0 0 auto;color:var(--ok,#16a34a)">${pinned?'已锁定':(cd?'冷却'+a.cooldowns[ck]+'s':(a.current_model===e.model?'当前':''))}</span>
+  <button class="act ghost" onclick="pinModel(${i},${pinned?1:0})">${pinned?'取消锁定':'立即使用'}</button>
   <button class="act ghost" onclick="mv(${i},-1)">↑</button><button class="act ghost" onclick="mv(${i},1)">↓</button>
   <button class="act ghost" onclick="editModel(${i})">编辑</button>
   <button class="act ghost" onclick="del(${i})">✕</button></div>`}).join('');
@@ -844,7 +845,7 @@ async function vModels(){
     <span><b>自动思考</b><div class="k" style="margin-top:2px">按消息难度自动决定：简单寒暄不思考秒回；长文/推理/技术难题开最高思考；开启后忽略逐模型设置</div></span></label>
   </div>
   <div class="k" style="margin-top:6px">逐模型覆盖：点模型行「编辑」在弹窗中单独设置（默认=跟随上面的默认思考）。</div></div>
- <div class="card"><div class="k">模型降级链（自上而下尝试；429/失效自动冷却切下一个；点「编辑」修改模型名 / API Key / 上下文档位 / 思考模式）</div>
+ <div class="card"><div class="k">模型降级链（自上而下尝试；429/失效自动冷却切下一个；点「编辑」修改模型名 / API Key / 上下文档位 / 思考模式；「立即使用」= 无视冷却强制切到该模型——自动切换切错了、或原模型已恢复但还在冷却时用，该模型再次失败或被移出链会自动解除锁定）</div>
  <div class="chain" style="margin-top:10px">${rows||'<i class="k">空</i>'}</div>
  <div style="margin-top:10px;display:flex;gap:8px"><button class="act" onclick="editModel(-1)">＋ 添加模型</button></div></div>
  <div class="card"><div class="k" style="display:flex;gap:10px;align-items:center;margin-bottom:8px">限额管理
@@ -951,6 +952,13 @@ async function postChainReorder(){await saveKVLoad('/api/config',{models:chainOf
 async function del(i){const e=window._mEntries||[];const m=e[i]&&e[i].model;
  if(!await dlgConfirm({title:'移除模型',body:'从降级链移除「'+(m||'')+'」？（链中剩余模型仍正常工作，可随时重新添加）',okText:'移除',danger:true}))return;
  e.splice(i,1);postChainReorder()}
+async function pinModel(i,un){
+ const e=(window._mEntries||[])[i];if(!e)return;
+ const r=await api('/api/pin-model',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify(un?{clear:true}:{kid:e.key||'main',model:e.model})}).catch(()=>null);
+ if(!r||r.ok===false){toast((r&&r.error)||'操作失败（agent 未运行？）',false);return}
+ toast(un?'已取消锁定，恢复自动切换':'已切换：下一条消息起使用 '+e.model+'（无视冷却）');
+ load()}
 function chainOf(entries){return entries.map(e=>(e.key||e.ctx||e.maxout)?{model:e.model,...(e.key?{key:e.key}:{}),...(e.ctx?{ctx:e.ctx}:{}),...(e.maxout?{max_out:e.maxout}:{})}:e.model)}
 async function editModel(i){
  const creating=i<0;const e=creating?{model:'',key:'',ctx:'',think:'',maxout:''}:Object.assign({},window._mEntries[i]);
@@ -3858,6 +3866,19 @@ class UiHandler(BaseHTTPRequestHandler):
             except OSError:
                 pass
             return self._reply(200, {"ok": True, "paused": paused})
+        if u.path == "/api/pin-model":
+            # 转发 agent /admin/pin-model（立即使用/取消锁定），原样回传其响应
+            try:
+                conn = http.client.HTTPConnection("127.0.0.1", PORTS["agent"], timeout=5)
+                payload = json.dumps(body).encode("utf-8")
+                conn.request("POST", "/admin/pin-model", body=payload,
+                             headers={"Content-Type": "application/json"})
+                r = json.loads(conn.getresponse().read().decode("utf-8"))
+                conn.close()
+                return self._reply(200, r)
+            except (OSError, ValueError) as e:
+                return self._reply(200, {"ok": False,
+                                         "error": "agent 不可达（未运行？）%r" % e})
         if u.path == "/api/evolved/toggle":
             name = str(body.get("name", "")).strip()
             data = load_json_const(EVOLVED_PATH, {})
