@@ -13,7 +13,7 @@
       "description_i18n": {
         "zh-CN": "QQ 群聊 AI 机器人：多人设、长期记忆、表情包、看图生图、任务沙箱、设备操控、主动消息、ZCode 联动"
       },
-      "icon": "qq-bot/icon.png"
+      "icon": "https://github.com/Pigeon2333/zcode-qq-bot-release/releases/download/v0.1.7/icon.png"
     }
   ]
 }
