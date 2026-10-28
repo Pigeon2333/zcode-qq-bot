@@ -28,6 +28,7 @@ import logging
 import os
 import pathlib
 import re
+import socket
 import ssl
 import subprocess
 import sys
@@ -3810,9 +3811,22 @@ class AdminHandler(BaseHTTPRequestHandler):
         return self._reply(404, {"ok": False, "error": "not found"})
 
 
+class AdminServer(ThreadingHTTPServer):
+    daemon_threads = True
+    # Windows 上 SO_REUSEADDR 是「强占」语义，新旧进程可同时 bind 同一端口
+    # 导致请求随机路由（保存类 POST 打到旧进程 = 前端「网络错误」）。
+    # 独占绑定：第二个实例启动即失败，冲突立刻可见。
+    allow_reuse_address = False
+
+    def server_bind(self):
+        if os.name == "nt":
+            self.socket.setsockopt(socket.SOL_SOCKET,
+                                   socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 def start_admin_server(port):
-    srv = ThreadingHTTPServer((DAEMON_HOST, int(port)), AdminHandler)
-    srv.daemon_threads = True
+    srv = AdminServer((DAEMON_HOST, int(port)), AdminHandler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
 

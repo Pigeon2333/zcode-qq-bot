@@ -20,6 +20,7 @@ import os
 import pathlib
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -2176,10 +2177,22 @@ def load_json_const(path, default):
 
 
 def write_const(path, text):
-    """写模块级常量路径文件（本文件所有写入路径均为常量）。"""
+    """写模块级常量路径文件（本文件所有写入路径均为常量）。
+    os.replace 可能撞上 agent/daemon 进程的瞬时读句柄（Windows 读句柄不共享
+    删除权）→ PermissionError；重试若干次后就地写兜底，避免保存必现失败。"""
     tmp = pathlib.Path(path + ".ui.tmp")
     tmp.write_text(text, encoding="utf-8")
-    os.replace(str(tmp), path)
+    for i in range(6):
+        try:
+            os.replace(str(tmp), path)
+            return
+        except PermissionError:
+            time.sleep(0.05 * (i + 1))
+    try:
+        pathlib.Path(path).write_text(text, encoding="utf-8")
+        tmp.unlink()
+    except OSError:
+        raise
 
 
 def _sticker_pool_items(data, pool):
@@ -2440,6 +2453,17 @@ class UiHandler(BaseHTTPRequestHandler):
         want = ui_token()
         got = self.headers.get("X-UI-Token", "") or str(q.get("tk") or "")
         return got == want
+
+    def handle_one_request(self):
+        # 兜底：任何 handler 异常都返回 JSON 而不是让连接挂断——
+        # 否则前端只能显示无信息的「网络错误」，真实原因被埋没
+        try:
+            super().handle_one_request()
+        except Exception as e:
+            try:
+                self._reply(500, {"ok": False, "error": "%r" % e})
+            except Exception:
+                pass
 
     def _body(self):
         n = int(self.headers.get("Content-Length") or 0)
@@ -4099,8 +4123,30 @@ def main():
     args = ap.parse_args()
     PORTS["daemon"] = args.daemon_port
     PORTS["agent"] = args.agent_port
-    srv = ThreadingHTTPServer(("127.0.0.1", args.port), UiHandler)
-    srv.daemon_threads = True
+
+    class UiServer(ThreadingHTTPServer):
+        daemon_threads = True
+        # Windows 上 SO_REUSEADDR 是「强占」语义：两个进程（如升级残留的旧版
+        # UI 孤儿 + 新版 UI）可同时 bind 同一端口，请求被随机路由到其中一个
+        # ——页面从新进程加载、保存 POST 却打到旧进程，前端必现「网络错误」。
+        # 独占绑定：第二个实例启动即失败，冲突在日志里立刻可见。
+        allow_reuse_address = False
+
+        def server_bind(self):
+            if os.name == "nt":
+                self.socket.setsockopt(socket.SOL_SOCKET,
+                                       socket.SO_EXCLUSIVEADDRUSE, 1)
+            super().server_bind()
+
+    try:
+        srv = UiServer(("127.0.0.1", args.port), UiHandler)
+    except OSError as e:
+        print(json.dumps({"admin_ui_ready": False,
+                          "error": "端口 %d 被占用（多半是旧版本残留进程仍在"
+                                   "运行）：%r。请在任务管理器结束所有 "
+                                   "ZCodeQQBot.exe 后重开。" % (args.port, e)},
+                         ensure_ascii=False), flush=True)
+        sys.exit(1)
     ui_token()  # 启动即生成令牌文件（不等首个请求；配合 qq_app 的 ensure_ui_token）
     threading.Thread(target=_watchdog_loop, daemon=True).start()
     threading.Thread(target=_auto_update_check, daemon=True).start()

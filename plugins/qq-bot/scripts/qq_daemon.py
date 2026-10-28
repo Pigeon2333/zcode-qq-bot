@@ -1507,7 +1507,16 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
 
 class CtlServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    # 不用 SO_REUSEADDR：Windows 上它是「强占」语义——两个进程可同时 bind
+    # 同一端口（新旧实例并存、请求被随机路由到其中一个，前端表现为保存
+    # 「网络错误」）。改独占绑定：第二个实例启动即失败，问题立刻可见。
+    allow_reuse_address = False
+
+    def server_bind(self):
+        if os.name == "nt":
+            self.socket.setsockopt(socket.SOL_SOCKET,
+                                   socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
 
 # ---------------------------------------------------------------------------
