@@ -190,9 +190,14 @@ def resolve_media_file(file_path):
 # ---------------------------------------------------------------------------
 
 class WSClient:
-    def __init__(self, url, token="", on_event=None, on_status=None, idle_timeout=120):
+    def __init__(self, url, token="", on_event=None, on_status=None,
+                 idle_timeout=120, token_file=None, on_401=None):
         self.url = url
         self.token = token
+        # token 热加载：NapCat 换 token 后外部同步进 ws_token 文件，
+        # 每次握手前重读，无需重启 daemon
+        self.token_file = token_file
+        self.on_401 = on_401
         self.on_event = on_event or (lambda ev: None)
         self.on_status = on_status or (lambda st, detail: None)
         self.idle_timeout = idle_timeout
@@ -202,7 +207,19 @@ class WSClient:
         self._stop = threading.Event()
         self._initial_buf = b""
 
+    def refresh_token(self):
+        if not self.token_file:
+            return
+        try:
+            with open(self.token_file, "r", encoding="utf-8") as f:
+                t = f.read().strip()
+            if t:
+                self.token = t
+        except OSError:
+            pass
+
     def connect(self):
+        self.refresh_token()
         p = urllib.parse.urlsplit(self.url)
         if p.scheme not in ("ws", "wss"):
             raise ValueError("ws_url 必须是 ws:// 或 wss://，当前: %s" % self.url)
@@ -380,6 +397,13 @@ class WSClient:
                 if self._stop.is_set():
                     break
                 out("AGENT_LOG {\"msg\": \"ws_disconnected\", \"detail\": %s}" % json.dumps(str(e), ensure_ascii=False))
+                if "401" in str(e) and self.on_401:
+                    # NapCat 侧 token 与我们不一致（重登/WebUI 改配置后常见）：
+                    # 请管理台跑一次 token 同步（采纳 NapCat 的新值），下次重连即通
+                    try:
+                        self.on_401()
+                    except Exception:
+                        pass
                 if self._stop.wait(backoff):
                     break
                 backoff = min(backoff * 2, 60)
@@ -522,12 +546,16 @@ class Daemon:
         self._group_names_ts = 0.0
         self._friend_names = None      # {qq: nickname} 缓存
         self._friend_names_ts = 0.0
+        import qq_common as _qc
         self.ws = WSClient(
             ws_url, token,
             on_event=self._dispatch_ws_event,
             on_status=self._on_ws_status,
             idle_timeout=int(self.cfg.get("ws_idle_timeout", 120)),
+            token_file=os.path.join(_qc.DATA_DIR, "ws_token"),
+            on_401=self._sync_ws_token,
         )
+        self._tok_sync_ts = 0.0  # 401 → 请求管理台同步 token 的节流
 
     # ---------- WS 分发 ----------
 
@@ -559,6 +587,35 @@ class Daemon:
         if st == "connected":
             self.ws_last_ok = time.time()  # 新连接先记活，探活随后接管
             threading.Thread(target=self._query_login, daemon=True).start()
+
+    def _sync_ws_token(self):
+        """WS 401 时请管理台同步 token（采纳 NapCat 侧新值写回 ws_token）。
+        daemon 自身零文件写：只发本机 HTTP；60s 节流；管理台不在线则静默。"""
+        if time.time() - self._tok_sync_ts < 60:
+            return
+        self._tok_sync_ts = time.time()
+        try:
+            import http.client as _hc
+            import qq_common as _qc
+            tok = ""
+            try:
+                with open(os.path.join(_qc.DATA_DIR, "ui_token"), "r",
+                          encoding="utf-8") as f:
+                    tok = f.read().strip()
+            except OSError:
+                pass
+            ui_port = int(self.cfg.get("ui_port") or 39765)
+            conn = _hc.HTTPConnection("127.0.0.1", ui_port, timeout=6)
+            conn.request("POST", "/api/napcat-token-sync", body=b"{}",
+                         headers={"Content-Type": "application/json",
+                                  "X-UI-Token": tok})
+            resp = json.loads(conn.getresponse().read().decode("utf-8"))
+            conn.close()
+            out("AGENT_LOG {\"msg\": \"ws_token_sync\", \"detail\": %s}"
+                % json.dumps(str(resp.get("msg") or resp), ensure_ascii=False))
+        except Exception as e:
+            out("AGENT_LOG {\"msg\": \"ws_token_sync_fail\", \"detail\": %s}"
+                % json.dumps(repr(e), ensure_ascii=False))
 
     def _query_login(self):
         for _ in range(5):

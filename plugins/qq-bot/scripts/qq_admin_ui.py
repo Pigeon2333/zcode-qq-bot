@@ -3866,6 +3866,10 @@ class UiHandler(BaseHTTPRequestHandler):
             except OSError:
                 pass
             return self._reply(200, {"ok": True, "paused": paused})
+        if u.path == "/api/napcat-token-sync":
+            # daemon WS 401 自愈：读 NapCat 当前 token，与 ws_token 不一致则采纳
+            ok, msg = S.ensure_napcat_config(C.load_app_config())
+            return self._reply(200, {"ok": bool(ok), "msg": msg})
         if u.path == "/api/pin-model":
             # 转发 agent /admin/pin-model（立即使用/取消锁定），原样回传其响应
             try:

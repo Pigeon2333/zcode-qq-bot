@@ -377,12 +377,52 @@ def install_napcat_zip(cfg, zip_path):
         return False, "安装失败：%r（旧文件备份在 %s）" % (e, bdir)
 
 
+def napcat_ws_token_of(path, want_port=None):
+    """读 NapCat onebot11 配置里正向 WS 的 token；找不到返回 None。
+    优先 name=qqbot 的条目，其次第一个 enable 且端口匹配的。"""
+    try:
+        data = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+        servers = (((data or {}).get("network") or {}).get("websocketServers")) or []
+    except (OSError, ValueError):
+        return None
+    pick = None
+    for s in servers:
+        if not isinstance(s, dict):
+            continue
+        if str(s.get("name", "")) == "qqbot":
+            pick = s
+            break
+        if want_port is not None and s.get("enable") \
+                and int(s.get("port") or 0) == int(want_port) and pick is None:
+            pick = s
+    if pick is None:
+        return None
+    return str(pick.get("token", ""))
+
+
+def write_token_file(name, value):
+    """写数据目录下的令牌文件（原子替换）。"""
+    p = C.DATA_ROOT / name
+    tmp = C.DATA_ROOT / (name + ".qqbot.tmp")
+    tmp.write_text(str(value), encoding="utf-8")
+    os.replace(str(tmp), str(p))
+
+
 def ensure_napcat_config(cfg):
-    """为当前 bot_qq 生成 OneBot WS 配置（若缺失），token 与 ws_token 文件联动。"""
+    """为当前 bot_qq 生成 OneBot WS 配置（若缺失）；已存在时校验 token：
+    NapCat 侧 token 变了（重登/WebUI 改配置后会重新生成）就采纳它的值写回
+    ws_token 文件——NapCat 是活着的一侧，采纳它无需重启 QQ，下次重连即通。"""
     path = napcat_ws_config_path(cfg)
     if not path:
         return False, "缺少 bot_qq 或 QQNT 目录，无法定位 NapCat 配置"
     if os.path.isfile(path):
+        theirs = napcat_ws_token_of(path, cfg.get("napcat_ws_port"))
+        if theirs is not None and theirs != read_token_file("ws_token"):
+            try:
+                write_token_file("ws_token", theirs)
+                return True, "NapCat 已更换 token，已自动同步（机器人将自动重连）"
+            except OSError:
+                pass
         return True, "NapCat 配置已存在"
     qqnt = C.qqnt_dir_resolved(cfg)
     config_dir = os.path.realpath(os.path.join(qqnt, "config"))
@@ -434,12 +474,14 @@ def start_napcat(cfg, wait_sec=150, on_progress=None):
     launcher = os.path.join(qqnt, "launcher-user.bat")
     if not os.path.isfile(launcher):
         return False, "QQNT 目录下无 launcher-user.bat：请先安装 NapCat Shell"
-    if port_open(cfg["napcat_ws_port"]):
-        return True, "NapCat 已在运行"
+    # 先跑 ensure（含 token 采纳自愈），再判断是否已在运行——
+    # 否则「NapCat 在跑但 token 已变」的场景永远走不到同步逻辑
     ok_cfg, msg_cfg = ensure_napcat_config(cfg)
     _p("NapCat 配置：" + msg_cfg)
     if not ok_cfg and not os.path.isfile(napcat_ws_config_path(cfg)):
         return False, msg_cfg
+    if port_open(cfg["napcat_ws_port"]):
+        return True, "NapCat 已在运行"
     if port_open(6099):
         _p("NapCat 已在运行（WebUI 在线），无需重复启动 QQ，直接等待账号登录…")
     else:
