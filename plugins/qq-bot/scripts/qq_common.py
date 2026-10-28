@@ -65,6 +65,7 @@ DEFAULT_CONFIG = {
     "owner_name_enabled": False,   # 固定主人称呼（开=覆盖人设里对主人的叫法）
     "owner_name_value": "主人",
     "user_blacklist": [],         # 用户黑名单：命中的 QQ 号无论群聊/私聊/@/关键词/戳一戳一律不响应
+    "weather_city": "",           # 机器人所在地（城市名；主动消息感知当地天气，空=不感知）
     "api_proxy": "",               # API 出站代理（http://host:port；供 OpenAI/Grok/Gemini 等境外供应商用）
     "zcode_bridge_enabled": False, # ZCode 联动总开关（需本机安装 ZCode；以下子项都受它门控）
     "zcode_handoff_enabled": False,    # 任务转交（转交ZCode 指令 + 收件箱）

@@ -1590,6 +1590,12 @@ async function vSettings(){
   <button class="act ghost" style="margin:0" onclick="backupNow()">立即备份</button>
   <button class="act" style="margin:0" onclick="restorePicker()">从备份恢复…</button></div>
   <div class="k" style="margin-top:4px">备份范围：人设合集、风格卡、自进化观察、长期记忆、回复/分群/私聊/白名单配置、模型链、表情包索引（含视觉描述缓存）、设备操控流程、定时任务、主动消息状态、用量流水、本页应用设置。密钥类文件（API Key/token）出于安全不备份，恢复后如缺失需重新填写。超过保留天数或保留份数的旧备份自动清理（最旧的先清）</div></div></div>
+ <div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">所在地天气感知<span class="badge" style="background:var(--tint);color:var(--dim)">主动消息素材 · AI 自行取舍</span></div>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+   <span class="k" style="flex:none">所在地</span>
+   <input value="${esc(String(c.weather_city||''))}" placeholder="城市名，如 上海 / 成都（留空=不感知）" style="width:260px" onchange="saveKVLoad('/api/app-config',{weather_city:this.value.trim()},'所在地已保存（下次主动消息起生效）')">
+  </div>
+  <div class="k" style="margin-top:6px">开启后机器人每小时自动获取当地实况天气（免费公开服务，无需 Key），作为主动搭话的素材之一——要不要提由她自己判断，不会每条都带，不会像天气预报播报。留空关闭。</div></div>
  <div class="card"><div class="k" style="margin-bottom:8px">QQ 在线状态</div>
   <label class="master"><input type="checkbox" ${c.qq_status_auto?'checked':''} onchange="saveKVLoad('/api/app-config',{qq_status_auto:this.checked?1:0},'QQ 在线状态自动设置已'+(this.checked?'开启':'关闭'))">
    <span><b>自动设置在线状态</b><div class="k" style="margin-top:3px">机器人上线登录成功后自动把 QQ 状态设为「在线」；手动停止机器人（状态页停止/全部停止）前自动设为「离开」，让群里的人一眼看出机器人是否在岗。依赖 NapCat 扩展能力，若你的 NapCat 版本不支持会记录失败到运行日志、不影响其他功能</div></span></label>
@@ -3551,6 +3557,9 @@ class UiHandler(BaseHTTPRequestHandler):
                         seen.add(v)
                         out_bl.append(v)
                 cleaned["user_blacklist"] = out_bl
+            if "weather_city" in cfg_in:
+                wc = re.sub(r"[\r\n\t]", "", str(cfg_in["weather_city"]).strip())[:30]
+                cleaned["weather_city"] = wc
             for k in ("sched_pause_start", "sched_pause_end"):
                 if k in cfg_in:
                     v = str(cfg_in[k]).strip()
