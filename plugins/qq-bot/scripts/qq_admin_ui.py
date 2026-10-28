@@ -1442,7 +1442,7 @@ async function vSettings(){
  `<div class="k" style="margin:2px 0 -6px;font-weight:600;letter-spacing:1px">① 身份与称呼</div>
  <div class="card"><div class="k">机器人是谁、怎么称呼（每项改动回车/失焦后自动保存，即时生效）</div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px">
-   <div><div class="k" style="margin-bottom:4px">机器人 QQ 号</div><input id="sbotqq" value="${esc(String(c.bot_qq||''))}" style="width:100%" placeholder="如 123456789" onchange="saveEnv('sbotqq','bot_qq',0,'机器人 QQ 已保存（已生效）')"></div>
+   <div><div class="k" style="margin-bottom:4px">机器人 QQ 号（扫码登录的就是它；<b>改动即切换账号</b>：会停止当前号并用新号重新登录）</div><input id="sbotqq" value="${esc(String(c.bot_qq||''))}" style="width:100%" placeholder="如 123456789" onchange="botQqSwitch(this.value,'${esc(String(c.bot_qq||''))}')"></div>
    <div><div class="k" style="margin-bottom:4px">主人 QQ 号（任务/遥控白名单）</div><input id="sownerqq" value="${esc(String(c.owner_qq||''))}" style="width:100%" placeholder="如 987654321" onchange="saveEnv('sownerqq','owner_qq',0,'主人 QQ 已保存（已生效）')"></div>
   </div>
   <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">
@@ -1466,18 +1466,7 @@ async function vSettings(){
    <button class="act ghost" style="margin:0" onclick="napcatInstall()">本地 zip 安装…</button>
    <span class="k">在线版自动从 NapCat 官方 GitHub 下载最新 Shell 并安装（国内自动走镜像）；本地版选自己下载的 zip（github.com/NapNeko/NapCatQQ/releases）。Program Files 目录需管理员权限运行本程序</span></div>
   <div id="ncdl-status" class="k" style="margin-top:6px"></div>
-  <div class="k" style="margin-top:8px">扫码登录：密钥（登录页要填的 Token）与「打开登录页（免密钥）」按钮见「状态」页的 <b>NapCat 登录密钥</b> 卡片（密钥由程序自动从 NapCat 配置读取，不用手抄）</div>
-  <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">
-   <div class="k" style="font-weight:600">切换机器人账号</div>
-   <div class="k" style="margin-top:4px">换一个小号当机器人：填新号 → 程序会停止当前账号（含 QQ）→ 用新号重新启动。新号在这台电脑登录过 QQ 就会自动快速登录；没登录过会弹出二维码，用新号的手机 QQ 扫码即可。</div>
-   <div class="k" style="margin-top:4px;color:var(--warn)">⚠ 同一个 QQ 号不能同时在两个机器人框架登录（会被顶下线）：如果这个号还在 dsh / 别的机器人上挂着，先在那边退出，再在这里切换。</div>
-   <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-    <span class="k" style="flex:none">当前：<b class="mono">${esc(String(c.bot_qq||'未设置'))}</b> →</span>
-    <input id="swqq" placeholder="新机器人 QQ 号" style="width:170px" onkeydown="if(event.key==='Enter')switchAccount()">
-    <button class="act danger" style="margin:0" onclick="switchAccount()">切换并重启</button>
-   </div>
-   <div class="k" style="margin-top:4px">进度在「状态」页启动日志实时显示；人设/记忆/设置不受影响（它们跟程序走，不跟 QQ 号走）</div>
-  </div></div>
+  <div class="k" style="margin-top:8px">扫码登录：密钥（登录页要填的 Token）与「打开登录页（免密钥）」按钮见「状态」页的 <b>NapCat 登录密钥</b> 卡片（密钥由程序自动从 NapCat 配置读取，不用手抄）。切换机器人账号在上方「① 身份与称呼 → 机器人 QQ 号」里改，改完自动走切换流程。</div></div>
   <div class="k" style="margin-top:12px">端口（一般无需改动；改动重启各组件后生效）</div>
   <div style="display:flex;gap:10px;margin-top:6px;flex-wrap:wrap;align-items:center">
    <label>NapCat WS <input id="pnap" type="number" value="${c.napcat_ws_port}" style="width:76px" onchange="saveEnv('pnap','napcat_ws_port',1)"></label>
@@ -1649,11 +1638,12 @@ async function blDel(i){
  if(!v)return;
  if(!await dlgConfirm({title:'移出黑名单',body:'解除对 '+v+' 的屏蔽？之后机器人恢复正常响应。',okText:'移出'}))return;
  await saveKVLoad('/api/app-config',{user_blacklist:cur.filter((x,j)=>j!==i)},'已解除 '+v)}
-async function switchAccount(){
- const inp=document.getElementById('swqq');const v=String(inp.value||'').trim();
- if(!v){toast('先填新机器人 QQ 号',false);return}
- if(!/^\d{5,12}$/.test(v)){toast('QQ 号格式不对',false);return}
- if(!await dlgConfirm({title:'切换机器人账号',body:'将停止当前账号（含 QQ）并用 <b>'+v+'</b> 重新登录启动。<br>· 新号在本机登录过 → 自动快速登录<br>· 没登录过 → 弹二维码，用新号手机 QQ 扫码<br>· 若该号还挂在 dsh 等其他机器人上，<b>先在那边退出</b>，否则会互相顶下线<br><br>人设/记忆/设置全部保留。继续？',okText:'切换并重启',danger:true}))return;
+async function botQqSwitch(v,cur){
+ v=String(v||'').trim();
+ if(!v){toast('机器人 QQ 号不能为空',false);load();return}
+ if(!/^\d{5,12}$/.test(v)){toast('QQ 号格式不对',false);load();return}
+ if(v===String(cur||''))return;   // 没改动
+ if(!await dlgConfirm({title:'切换机器人账号',body:'机器人 QQ 号将从 <b>'+esc(String(cur||'未设置'))+'</b> 改为 <b>'+esc(v)+'</b>。<br>· 会停止当前账号（含 QQ）并用新号重新启动<br>· 新号在这台电脑登录过 → 自动快速登录；没登录过 → 弹二维码，用新号手机 QQ 扫码<br>· <span style="color:var(--warn)">同一个号不能同时挂在 dsh 等其他机器人上，会被互相顶下线——先在那边退出</span><br>· 人设/记忆/设置全部保留（它们跟程序走，不跟号走）<br><br>继续？',okText:'切换并重启',danger:true})){load();return}
  const r=await api('/api/switch-account',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({qq:v})}).catch(()=>({ok:false,error:'请求失败'}));
  if(r.ok===false||r.error){toast(r.error||'切换失败',false);return}
  toast('切换任务已开始：进度见状态页启动日志');
