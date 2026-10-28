@@ -1447,9 +1447,10 @@ async function vSettings(){
  `<div class="k" style="margin:2px 0 -6px;font-weight:600;letter-spacing:1px">① 身份与称呼</div>
  <div class="card"><div class="k">机器人是谁、怎么称呼（每项改动回车/失焦后自动保存，即时生效）</div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px">
-   <div><div class="k" style="margin-bottom:4px">机器人 QQ 号（扫码登录的就是它；<b>改动即切换账号</b>：会停止当前号并用新号重新登录）</div><input id="sbotqq" value="${esc(String(c.bot_qq||''))}" style="width:100%" placeholder="如 123456789" onchange="botQqSwitch(this.value,'${esc(String(c.bot_qq||''))}')"></div>
-   <div><div class="k" style="margin-bottom:4px">主人 QQ 号（任务/遥控白名单）</div><input id="sownerqq" value="${esc(String(c.owner_qq||''))}" style="width:100%" placeholder="如 987654321" onchange="saveEnv('sownerqq','owner_qq',0,'主人 QQ 已保存（已生效）')"></div>
+   <div><div class="k" style="margin-bottom:4px">机器人 QQ 号（改它 = 切换登录账号）</div><input id="sbotqq" value="${esc(String(c.bot_qq||''))}" style="width:100%" placeholder="如 123456789" onchange="botQqSwitch(this.value,'${esc(String(c.bot_qq||''))}')"></div>
+   <div><div class="k" style="margin-bottom:4px">你的 QQ 号（主人，独占高级功能）</div><input id="sownerqq" value="${esc(String(c.owner_qq||''))}" style="width:100%" placeholder="如 987654321" onchange="saveEnv('sownerqq','owner_qq',0,'主人 QQ 已保存（已生效）')"></div>
   </div>
+  <div class="k" style="margin-top:6px">改机器人 QQ 号：确认后停止当前账号（含 QQ）并用新号重新登录——新号在本机登录过会自动快速登录，否则弹二维码扫码；同一个号挂在 dsh 等其他机器人上会互踢，先在那边退出。主人号独占：画画 / 操控电脑 / 私聊遥控 / 高级指令。</div>
   <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">
    <label class="master" style="margin-bottom:8px"><input type="checkbox" ${c.bot_name_enabled?'checked':''} onchange="saveKVLoad('/api/app-config',{bot_name_enabled:this.checked?1:0},this.checked?'已开启固定自称':'已关闭：跟随人设卡名字')">
     <span><b>固定自称</b><div class="k" style="margin-top:3px">开启后机器人一律用下面的名字自称，优先级最高（人设卡的名字仅作管理备注）；关闭则跟随当前人设卡</div></span></label>
