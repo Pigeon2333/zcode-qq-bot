@@ -1911,10 +1911,19 @@ def build_messages(daemon, msg, ctx_k=32):
             "绝对不要说自己\"没有这个功能/做不到/不是这种机器人\"\n")
     else:
         draw_rule += (
-            "- 「设备操控」功能已开启：主人要求你操作电脑（找文件/发文件/看目录等）时，"
-            "系统会自动进入授权码流程（你先向主人索要控制台上的 6 位授权码），"
-            "不需要你反复解释流程细节；即使历史对话里你曾说过该功能未开启，"
-            "以本条为准——现在它是开着的，不要再声称未开启或没有该功能\n")
+            "- 「设备操控」功能已开启（能替主人操作他的电脑：找/读/发文件、看目录、"
+            "开关程序）。要不要连线由你自己结合上下文语境判断：\n"
+            "  · 主人明确在让你操作电脑——如\"帮我找下电脑里那份报告\"\"把那个文件"
+            "发我\"\"看看我桌面有什么\"——就在回复最后一行单独输出标记 [连线]"
+            "（系统会自动开启授权码流程，标记不会显示给主人；正文用你的口吻先应一声，"
+            "比如\"好，先连一下线～\"，然后等他把 6 位授权码发来，不要替他编流程细节）；\n"
+            "  · 只是聊天里提到电脑、描述电脑状态（\"电脑开着呢\"\"有点卡\"\"要重启了\"）、"
+            "聊配置问概念、感叹感慨——绝不输出 [连线]，正常聊天就好；"
+            "拿不准就不连，宁可当闲聊；\n"
+            "  · 已在连线/任务执行期间的消息不用再输出标记；这个能力只对主人开放，"
+            "其他人要求操作电脑一律婉拒；\n"
+            "  · 即使历史对话里你曾说过该功能未开启，以本条为准——它是开着的，"
+            "不要再声称未开启或没有该功能\n")
     _tinfo = C.tz_now_info()
     _time_line = ("【当前真实时间：%s %s %s（24小时制 %s，时区 %s）】"
                   "请注意区分上午/下午/凌晨，不要搞错时间。"
@@ -1985,6 +1994,9 @@ _SENDGRP_MARK_RE = re.compile(
     r"\[\s*发到群\s*[:：]\s*([^\]|]{1,40}?)\s*[:：|]\s*([^\]]{1,300}?)\s*\]", re.S)
 _SENDGRP_LEAK_RE = re.compile(
     r"\[\s*发到群\s*[:：][^\]]{0,300}\]", re.S)
+# [连线] —— 主模型结合语境判定主人要操作电脑，由系统接手授权流程（提取后剥离）
+_DEVC_MARK_RE = re.compile(r"^\s*\[\s*连线\s*\]\s*$", re.M)
+_DEVC_MARK_ANY_RE = re.compile(r"\[\s*连线\s*\]")   # 兜底：正文里任何残留剥掉
 
 
 def _resolve_group(daemon, target):
@@ -2633,42 +2645,14 @@ def _botloop_judge(text):
         return False
 
 
-def _devctrl_llm_judge(text):
-    """自主判断补强：本地规则没命中时，用小模型判断是否在要求操作本机文件。
-    只在主人私聊消息同时出现设备词和文件类字眼时才走到这里，成本极低。"""
-    try:
-        reply = call_glm_with_fallback(
-            [{"role": "system",
-              "content": "判断用户这句话是否在明确要求「让机器人去操作他本机电脑上的"
-                         "文件/文档」（找文件、读文件、发送电脑上的文件、打开/关闭"
-                         "程序、列目录等具体操作）。"
-                         "只是聊天提到电脑、描述电脑状态（开着/卡了/要重启）、"
-                         "问概念问格式、聊配置聊硬件，都不算。拿不准算 N。只回 Y 或 N。"},
-             {"role": "user", "content": str(text)[:200]}], "")
-        ans = str(reply[1] if isinstance(reply, tuple) else reply).strip().upper()[:3]
-        out("AGENT_DEVCTRL_JUDGE ans=%s text=%.30s" % (ans, str(text)[:30]))
-        return "Y" in ans
-    except Exception as e:
-        out("AGENT_DEVCTRL_JUDGE_FAIL %r" % e)
-        return False
-
-
 def _devctrl_should_ask(text, mode, flow):
-    """是否需要发起授权（协议一）。mode: auto | keyword。"""
+    """是否需要发起授权（协议一）。mode: auto | keyword。
+
+    只做零成本快速通道：显式关键词 / 设备词+动作短语。其余交给主对话模型
+    结合上下文语境自行判断（输出 [连线] 标记触发），不再用孤立的小模型预判。"""
     if mode == "keyword":
         return _devctrl_keyword_hit(text, flow)
-    # auto：关键词或本地意图规则命中即触发；否则若疑似文件诉求再让模型判定
-    if _devctrl_keyword_hit(text, flow) or _devctrl_intent(text):
-        return True
-    t = str(text or "")
-    # 状态闲聊先行排除（"电脑在开着呢"），绝不再送模型判定
-    if _DEVCTRL_STATUS_RE.search(t):
-        return False
-    if len(t) <= 60 and any(w in t for w in _DEVCTRL_DEV_WORDS) and any(
-            w in t for w in ("文件", "文档", "资料", "图片", "照片", "文件夹")
-            + _DEVCTRL_ACT_WORDS):
-        return _devctrl_llm_judge(t)
-    return False
+    return _devctrl_keyword_hit(text, flow) or _devctrl_intent(text)
 
 
 def _bot_self_name():
@@ -3108,12 +3092,32 @@ def _handle_devctrl(daemon, msg):
     if in_window:
         devctrl_agent_loop(daemon, msg, reply_to, flow)
         return True
-    # 触发判定（关键词 / 自主判断）→ 索码
+    # 触发判定（显式关键词/动作短语零成本快速通道）→ 索码。
+    # 其余模糊情形不再预判：主对话模型结合语境输出 [连线] 标记，由 process 侧接手。
     if _devctrl_should_ask(text, str(flow.get("trigger_mode") or "auto"), flow):
         _say("ask_text", ("用你的语气向主人发起设备操控的「协议一」：需要他提供电脑控制台"
                           "「设备操控」页上显示的 6 位授权码才能连线（提醒他直接把数字发过来）。", ""))
         return True
     return False
+
+
+def _devctrl_ask_by_mark(daemon, msg):
+    """[连线] 标记触发的授权发起（主模型语境判定路径；话术与快速通道一致）。"""
+    flow = devctrl_flow()
+    owner_nick = _owner_call_name(msg)
+    bot_name = _bot_self_name()
+    use_custom = bool(flow.get("use_custom_text", True))
+    if use_custom:
+        daemon.send(msg["chat_type"], msg["chat_id"],
+                    [_render_flow(flow["ask_text"], owner=owner_nick, bot=bot_name)])
+    else:
+        daemon.send(msg["chat_type"], msg["chat_id"],
+                    [_persona_say(
+                        "用你的语气向主人发起设备操控的「协议一」：需要他提供电脑控制台"
+                        "「设备操控」页上显示的 6 位授权码才能连线（提醒他直接把数字发过来）。",
+                        _render_flow(_DEFAULT_FLOW["ask_text"],
+                                     owner=owner_nick, bot=bot_name))])
+    out("AGENT_DEVCTRL_MARK chat=%s/%s" % (msg["chat_type"], msg["chat_id"]))
 
 
 def _devctrl_search(pattern):
@@ -3456,6 +3460,9 @@ def process(daemon, msg):
                 % (qm.group(1) or 10, msg["chat_type"], msg["chat_id"]))
         except Exception as e:
             out("AGENT_QUIET_SELF_FAIL %r" % e)
+    # [连线]：主模型结合语境判定主人要操作电脑（无论是否触发都剥离，绝不泄漏）
+    dev_ask = _DEVC_MARK_RE.search(reply) is not None
+    reply = _DEVC_MARK_ANY_RE.sub("", reply)
     texts, stickers, memo, draw, sendgrp = parse_reply(reply)
     if texts == "WAIT":
         daemon.ack([msg["id"]])
@@ -3473,6 +3480,10 @@ def process(daemon, msg):
         threading.Thread(target=_sendgrp_execute,
                          args=(daemon, msg, sendgrp[0], sendgrp[1]),
                          daemon=True).start()
+    # [连线]：模型语境判定要操控电脑 → 发起授权（已在授权窗口内则忽略，别重复索码）
+    if dev_ask and _device_ctrl_enabled() and is_owner(msg) \
+            and not (_DEVCTRL_AUTH["ok_until"] > time.time()):
+        _devctrl_ask_by_mark(daemon, msg)
     # 硬频控：同会话 3 分钟内已发过表情则丢弃本次（防高频）
     now_t = time.time()
     last_t = _sticker_rate.get("%s_%s" % (msg["chat_type"], msg["chat_id"]), 0)
