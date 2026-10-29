@@ -650,6 +650,32 @@ def load_persona_collection():
     return {"active": active, "global": global_base, "persona": persona}, active
 
 
+PERSONA_ROUTES_PATH = os.path.join(DATA_DIR, "persona_routes.json")
+
+
+def persona_routes_load():
+    """分对象人设路由：{"routes":[{"key":"private:<qq>"|"group:<gid>","persona":名}]}。"""
+    d = load_json_const(PERSONA_ROUTES_PATH, {})
+    routes = d.get("routes") if isinstance(d, dict) else None
+    return [r for r in (routes or []) if isinstance(r, dict)
+            and r.get("key") and r.get("persona")]
+
+
+def persona_for(chat_type, chat_id):
+    """当前会话应使用的人设名：私聊按对方 QQ、群按群号精确匹配；
+    没有匹配返回 ""（调用方回落全局激活人设=现有行为）。路由结果即全部
+    人设层（正文/自进化/语气）的唯一事实来源，中途不再改变——防串的根本。"""
+    try:
+        key = "%s:%s" % ("private" if chat_type == "private" else "group",
+                         str(chat_id).strip())
+        for r in persona_routes_load():
+            if str(r.get("key")) == key:
+                return str(r.get("persona") or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
 def chat_interesting_enabled():
     """闲聊模式的感兴趣判定开关（reply_config.json 由管理 UI 维护）。"""
     cfg = load_json_const(REPLY_CONFIG_PATH, {})
@@ -2288,14 +2314,27 @@ def build_messages(daemon, msg, ctx_k=32):
     """按上下文档位（ctx_k=千 token 预算）装配消息：
     ≥16k 全量 / 8-16k 标准 / <8k 精简（历史更短、记忆更少、安全段压缩）。"""
     """返回 (messages, active_persona_name)。"""
-    pc, active_name = load_persona_collection()
-    persona = pc.get("persona", "")
+    pc, _global_active = load_persona_collection()
+    # 分对象人设：私聊按对方 QQ、群按群号路由；无匹配回落全局激活人设（原有行为）。
+    # 路由只在这里决定一次，正文/自进化/语气全部跟随此结果——防人设串味的根本。
+    coll_raw = load_json_const(PERSONA_COLLECTION_PATH, {})
+    if not isinstance(coll_raw, dict):
+        coll_raw = {}
+    active_name = persona_for(msg.get("chat_type"), msg.get("chat_id")) or _global_active
+    persona = str(coll_raw.get(active_name, "")).strip() if active_name else ""
     global_base = pc.get("global", "")
     if not persona:
         persona = "（人设缺失：你是群里的AI机器人，名字待定，礼貌回答问题）"
+        active_name = active_name or ""
     persona_block = persona
     if active_name:
         persona_block = "【当前人设：%s】\n%s" % (active_name, persona)
+    routed = persona_for(msg.get("chat_type"), msg.get("chat_id"))
+    if routed and routed != _global_active:
+        persona_block += ("\n（注意：你当前正在和一位单独设定过人设的对象交流，"
+                          "以上人设只对这位对象生效；对其他人你仍是「%s」。"
+                          "记忆是共用的——事实都记得，但语气称呼只按当前人设来）"
+                          % (_global_active or "默认人设"))
     global_block = ""
     if global_base:
         global_block = "\n\n## 全局通用设定（无论人设如何切换都遵守）\n%s" % global_base
@@ -2869,9 +2908,12 @@ def _proactive_targets(daemon, cfg):
 
 def _proactive_compose(daemon, chat_type, chat_id):
     """构造一次主动发消息的 LLM 调用；模型认为不合适可输出 [SKIP]。"""
-    data, active = load_persona_collection()
-    persona_name, global_base = data["active"], data["global"]
-    persona = data["persona"]
+    data, _g = load_persona_collection()
+    # 主动消息也按目标对象路由人设（主动私聊你时用对你的人设，主动进群用该群人设）
+    persona_name = persona_for(chat_type, chat_id) or data["active"]
+    global_base = data["global"]
+    coll_raw = load_json_const(PERSONA_COLLECTION_PATH, {})
+    persona = str(coll_raw.get(persona_name, "")).strip() if persona_name else ""
     style = read_const(STYLE_PATH)
     ev = evolved_notes(persona_name) if persona_name else {"enabled": False, "notes": []}
     evolved_block = ("\n\n## 自进化风格观察\n" + "\n".join("- %s" % n for n in ev["notes"][-12:])
@@ -2915,7 +2957,7 @@ def _proactive_compose(daemon, chat_type, chat_id):
                   _zcode_context_line(chat_type, chat_id),
                   _weather_context_line()))
     return [{"role": "system", "content": system},
-            {"role": "user", "content": content}], active
+            {"role": "user", "content": content}], persona_name
 
 
 def _proactive_pick(cfg, kind, pool, now):
@@ -3360,10 +3402,14 @@ def _device_ctrl_enabled():
     return bool(C.load_app_config().get("device_ctrl_enabled"))
 
 
-def _persona_stack_text():
-    """人设全栈紧凑版（人设/全局/风格/自进化/时间/固定称呼），供设备操控循环与即兴文案共用。"""
+def _persona_stack_text(route=None):
+    """人设全栈攒凑版（人设/全局/风格/自进化/时间/固定称呼），供设备操控循环与即兴文案共用。
+    route=(chat_type, chat_id) 时按分对象人设路由；不传=全局激活人设（原有行为）。"""
     pc, active_name = load_persona_collection()
-    persona = pc.get("persona", "") or "你是QQ机器人「智谱娘」。"
+    if route:
+        active_name = persona_for(route[0], route[1]) or active_name
+    persona = str(pc.get(active_name, "")).strip() if active_name else \
+        (pc.get("persona", "") or "你是QQ机器人「智谱娘」。")
     parts = ["【当前人设：%s】\n%s" % (active_name or "智谱娘", persona)]
     if pc.get("global"):
         parts.append("## 全局通用设定\n%s" % pc["global"])
@@ -3383,10 +3429,11 @@ def _persona_stack_text():
     return "\n\n".join(parts)
 
 
-def _persona_say(instruction, fallback):
-    """让模型按人设即兴说一句话（自定义文案关闭时用）；失败回落 fallback。"""
+def _persona_say(instruction, fallback, route=None):
+    """让模型按人设即兴说一句话（自定义文案关闭时用）；失败回落 fallback。
+    route=(chat_type, chat_id) 时用该会话的分对象人设（对主人的系统话术传 ("private", owner)）。"""
     try:
-        system = (_persona_stack_text() +
+        system = (_persona_stack_text(route) +
                   "\n\n## 任务\n用你一贯的人设语气完成下面的沟通，只输出要说的话本身"
                   "（口语、自然、不要引号、不要任何标记或动作指令）：\n" + instruction)
         _m, t = call_glm_with_fallback(
@@ -3667,7 +3714,8 @@ def devctrl_agent_loop(daemon, msg, reply_to, flow):
         out("AGENT_DEVCTRL_LOOP_ERR %r" % e)
         daemon.send(reply_to[0], reply_to[1],
                     [_persona_say("刚才操作电脑时出了点小故障，跟主人说一声并让他稍后再试。",
-                                  "刚才操作出了点问题，稍后再试试？")])
+                                  "刚才操作出了点问题，稍后再试试？",
+                                  route=("private", owner_qq()))])
     # 窗口临近结束提醒一次（<60s），之后不再刷屏
     left = int(_DEVCTRL_AUTH["ok_until"] - time.time())
     if 0 < left <= 60 and not _DEVCTRL_SESSION["noticed"]:
@@ -3678,7 +3726,8 @@ def devctrl_agent_loop(daemon, msg, reply_to, flow):
         else:
             daemon.send(reply_to[0], reply_to[1],
                         [_persona_say("授权窗口只剩%d秒就要关了，提醒主人如果有后续操作"
-                                      "赶紧说。" % left, "（授权窗口马上结束）")])
+                                      "赶紧说。" % left, "（授权窗口马上结束）",
+                                      route=("private", owner_qq()))])
     elif left > 60:
         _DEVCTRL_SESSION["noticed"] = False
 
@@ -3706,7 +3755,8 @@ def _handle_devctrl(daemon, msg):
             daemon.send(msg["chat_type"], msg["chat_id"],
                         [_persona_say(fallback[0], _render_flow(
                             _DEFAULT_FLOW[tmpl_key], owner=owner_nick,
-                            bot=bot_name, **kw))])
+                            bot=bot_name, **kw),
+                            route=("private", owner_qq()))])
 
     in_window = _DEVCTRL_AUTH["ok_until"] > time.time()
     # 宽松授权码识别：消息里出现独立的 6 位数字即视为尝试（未授权时）
@@ -3758,7 +3808,8 @@ def _devctrl_ask_by_mark(daemon, msg):
                         "用你的语气向主人发起设备操控的「协议一」：需要他提供电脑控制台"
                         "「设备操控」页上显示的 6 位授权码才能连线（提醒他直接把数字发过来）。",
                         _render_flow(_DEFAULT_FLOW["ask_text"],
-                                     owner=owner_nick, bot=bot_name))])
+                                     owner=owner_nick, bot=bot_name),
+                        route=("private", owner_qq()))])
     out("AGENT_DEVCTRL_MARK chat=%s/%s" % (msg["chat_type"], msg["chat_id"]))
 
 
@@ -4019,7 +4070,8 @@ def process(daemon, msg):
             bye = _persona_say(
                 "你刚才好奇问了对方是不是AI，对方（疑似另一个AI程序）承认了。"
                 "用人设的口吻说一句简短的告别：表示不跟程序聊天、去找真人玩更有意思，"
-                "自然收尾即可。", "原来你是程序呀～那妈妈去找真人聊天啦，拜拜～")
+                "自然收尾即可。", "原来你是程序呀～那妈妈去找真人聊天啦，拜拜～",
+                route=(msg.get("chat_type"), msg.get("chat_id")))
             daemon.send(msg["chat_type"], msg["chat_id"], [bye[:400]])
         try:
             _mins = load_json_const(REPLY_CONFIG_PATH, {}).get("botloop_cooldown_min", 60)

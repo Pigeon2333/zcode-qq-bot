@@ -45,6 +45,7 @@ MEMORY_STREAM_PATH = os.path.join(DATA_DIR, "memory_stream.jsonl")
 KEYS_PATH = os.path.join(DATA_DIR, "api_keys.json")
 STICKERS_PATH = os.path.join(DATA_DIR, "stickers.json")
 EVOLVED_PATH = os.path.join(DATA_DIR, "styles", "evolved.json")
+PERSONA_ROUTES_PATH = os.path.join(DATA_DIR, "persona_routes.json")
 MEMBER_PROFILES_PATH = os.path.join(DATA_DIR, "member_profiles.json")
 
 
@@ -1180,8 +1181,15 @@ async function saveGmFieldFor(gid,f,el){
  if(r.ok!==false)_gmModes[gid]=Object.assign({},_gmModes[gid],ov);
 }
 async function vPersonas(){
- const d=await api('/api/personas');
+ const [d,pr,gnr,fnr]=await Promise.all([
+  api('/api/personas'),
+  api('/api/persona-routes').catch(()=>({routes:[]})),
+  api('/api/group-names').catch(()=>({names:{}})),
+  api('/api/friend-names').catch(()=>({names:{}})),
+ ]);
+ window._prNames={g:(gnr&&gnr.names)||{},f:(fnr&&fnr.names)||{}};
  const opts=(d.names||[]).map(n=>`<option value="${esc(n)}" ${n===d.active?'selected':''}>${esc(n)}</option>`).join('');
+ window._prPersonaNames=d.names||[];
  $('#view').innerHTML=head('多人设管理与全局通用设定')+saveHint('长文本需点所在卡片的「保存」按钮生效（按钮只保存该卡片）；未保存的修改以蓝色边框标记，切换人设或离开本页会提示。')+
  `<div class="card"><div class="k">全局通用设定（所有人设共用：主人是谁、通用禁忌等，跨人设生效）</div>
   <textarea id="gedit" style="min-height:150px;margin-top:8px" oninput="dirtyOn(this,'bsaveg')">${esc(d.global||'')}</textarea>
@@ -1198,7 +1206,17 @@ async function vPersonas(){
   </div>
   <div class="k" style="margin-top:10px">人设内容（<span id="pname">${esc(d.active||'')}</span>）</div>
   <textarea id="pedit" style="margin-top:6px" oninput="dirtyOn(this,'bsavep')">${esc(d.text||'')}</textarea>
-  <button class="act" id="bsavep" disabled onclick="savePersona()">保存当前编辑的人设</button></div>`;
+  <button class="act" id="bsavep" disabled onclick="savePersona()">保存当前编辑的人设</button></div>
+ <div class="card"><div class="k" style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">分对象人设<span class="badge" style="background:var(--tint);color:var(--dim)">对不同的人，展现不同的一面</span></div>
+  <div class="k" style="margin-bottom:8px">为特定的私聊对象或群单独指定人设（例如：私聊主人=贴心人设，某群=高冷人设）。<b>没有列出的对象一律用上面的全局激活人设</b>；修改全局激活人设不会影响这里单独设置过的对象。<b>记忆是全机器人共用的</b>——她记得所有人说过的事，只是对不同人展现不同的一面。</div>
+  <div class="chain" id="proutes">${routeRows(pr)}</div>
+  <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+   <select id="prtype"><option value="private">私聊对象（QQ 号）</option><option value="group">群（群号）</option></select>
+   <input id="prid" placeholder="QQ 号 / 群号" style="width:150px">
+   <select id="prpersona">${opts}</select>
+   <button class="act" onclick="prAdd()">添加分对象人设</button>
+  </div>
+  <div class="k" style="margin-top:6px">匹配规则：私聊按对方 QQ 精确匹配；群按群号精确匹配。同一对象同时命中时私聊优先（互不冲突）。删除/重命名上方人设时，这里的设置会自动同步或清理。</div></div>`;
  const sel=$('#psel');_pSelPrev=sel.value;
  sel.onchange=async()=>{
   if($('#pedit').classList.contains('dirty')&&!await dlgConfirm({title:'未保存的修改',body:'当前人设有未保存的修改，放弃并切换？',okText:'放弃并切换',danger:true})){sel.value=_pSelPrev;return}
@@ -1208,6 +1226,36 @@ async function vPersonas(){
   $('#pedit').classList.remove('dirty');$('#bsavep').disabled=true;
  };
 }
+function routeRows(d){
+ const pr=(d.routes||[]);
+ if(!pr.length)return '<div class="k" style="padding:6px 2px">暂无分对象设置（所有对象都用上面的全局激活人设）</div>';
+ return pr.map(r=>{
+  const [t,id]=String(r.key).split(':');
+  const nm=t==='group'?(window._prNames.g[id]||''):(window._prNames.f[id]||'');
+  const opts=(window._prPersonaNames||[]).map(n=>`<option value="${esc(n)}" ${n===r.persona?'selected':''}>${esc(n)}</option>`).join('');
+  return `<div class="row"><span class="no">${t==='group'?'👥':'💬'}</span>
+   <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(nm)}">${esc(nm||'（名字未获取）')} <span class="k mono">${esc(id)}</span></span>
+   <select onchange="prUpdate('${esc(r.key)}',this.value)">${opts}</select>
+   <button class="act ghost danger" onclick="prDel('${esc(r.key)}')">删除</button></div>`;
+ }).join('');
+}
+async function prSave(routes,okMsg){
+ const r=await saveKV('/api/persona-routes/save',{routes:routes},okMsg);
+ if(r.ok!==false)load()}
+async function prAdd(){
+ const t=document.getElementById('prtype').value,id=document.getElementById('prid').value.trim();
+ if(!/^\d{5,12}$/.test(id)){toast('请输入正确的 QQ 号 / 群号（5-12 位数字）',false);return}
+ const persona=document.getElementById('prpersona').value;
+ const cur=(await api('/api/persona-routes').catch(()=>({routes:[]}))).routes||[];
+ if(cur.some(x=>x.key===t+':'+id)){toast('该对象已有分对象人设（可在列表里直接改）',false);return}
+ prSave(cur.concat([{key:t+':'+id,persona:persona}]),'已为该对象设置专属人设（即时生效）')}
+async function prUpdate(key,persona){
+ const cur=(await api('/api/persona-routes').catch(()=>({routes:[]}))).routes||[];
+ prSave(cur.map(x=>x.key===key?{key:key,persona:persona}:x),'该对象的人设已更新（即时生效）')}
+async function prDel(key){
+ if(!await dlgConfirm({title:'移除分对象人设',body:'移除后，该对象将回落使用全局激活人设。',okText:'移除'}))return;
+ const cur=(await api('/api/persona-routes').catch(()=>({routes:[]}))).routes||[];
+ prSave(cur.filter(x=>x.key!==key),'已移除（该对象回落全局激活人设）')}
 let _pSelPrev='';
 async function saveGlobal(){const r=await saveKV('/api/personas/global',{text:$('#gedit').value},'全局设定已保存（即时生效）');if(r.ok!==false)dirtyOff('bsaveg')}
 async function switchPersona(){if(!await dirtyGuard())return;const n=$('#psel').value;await api('/api/personas/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n})});toast('已切换到「'+n+'」（即时生效）');load()}
@@ -2788,6 +2836,13 @@ class UiHandler(BaseHTTPRequestHandler):
                              "updated": int(m.get("updated") or 0)})
             rows.sort(key=lambda x: (-x["updated"], x["qq"]))
             return self._reply(200, {"ok": True, "members": rows})
+        if u.path == "/api/persona-routes":
+            d = load_json_const(PERSONA_ROUTES_PATH, {})
+            routes = (d.get("routes") or []) if isinstance(d, dict) else []
+            return self._reply(200, {"ok": True,
+                                     "routes": [r for r in routes if isinstance(r, dict)],
+                                     "active": str(load_json_const(
+                                         PERSONA_COLLECTION_PATH, {}).get("_active", ""))})
         if u.path == "/api/bili/status":
             try:
                 import qq_bilibili as _qb
@@ -3608,6 +3663,38 @@ class UiHandler(BaseHTTPRequestHandler):
             data[name] = text
             write_const(PERSONA_COLLECTION_PATH, json.dumps(data, ensure_ascii=False, indent=2))
             return self._reply(200, {"ok": True})
+        if u.path == "/api/persona-routes/save":
+            routes = body.get("routes")
+            if not isinstance(routes, list) or len(routes) > 100:
+                return self._reply(400, {"ok": False, "error": "routes 应为 <=100 条的数组"})
+            coll = load_json_const(PERSONA_COLLECTION_PATH, {})
+            cleaned = []
+            seen = set()
+            for r in routes:
+                if not isinstance(r, dict):
+                    continue
+                key = str(r.get("key", "")).strip()
+                persona = str(r.get("persona", "")).strip()
+                if key not in ("group:", "private:"):
+                    m = re.match(r"^(group|private):(\d{5,12})$", key)
+                    if not m:
+                        return self._reply(400, {"ok": False,
+                                                 "error": "路由 key 非法: %s" % key[:40]})
+                if key.startswith("_") or persona.startswith("_"):
+                    return self._reply(400, {"ok": False, "error": "键/人设名非法"})
+                if persona not in coll:
+                    return self._reply(400, {"ok": False,
+                                             "error": "人设不存在: %s" % persona[:40]})
+                if key in seen:
+                    continue
+                seen.add(key)
+                cleaned.append({"key": key, "persona": persona})
+            try:
+                write_const(PERSONA_ROUTES_PATH, json.dumps(
+                    {"routes": cleaned}, ensure_ascii=False, indent=2))
+                return self._reply(200, {"ok": True, "count": len(cleaned)})
+            except OSError as e:
+                return self._reply(500, {"ok": False, "error": repr(e)})
         if u.path == "/api/personas/rename":
             import re as _re
             _bad_seg = _re.compile(r'[/:*?"<>|\x00]')
@@ -3659,6 +3746,18 @@ class UiHandler(BaseHTTPRequestHandler):
                         pass
                 write_const(STICKERS_PATH, json.dumps(new_st, ensure_ascii=False, indent=2))
                 moved.append("专属表情库")
+            # 分对象人设路由同步改名
+            rd = load_json_const(PERSONA_ROUTES_PATH, {})
+            rr = rd.get("routes") if isinstance(rd, dict) else []
+            hit = False
+            for r in (rr or []):
+                if isinstance(r, dict) and r.get("persona") == name:
+                    r["persona"] = new_name
+                    hit = True
+            if hit:
+                write_const(PERSONA_ROUTES_PATH, json.dumps(
+                    {"routes": rr}, ensure_ascii=False, indent=2))
+                moved.append("分对象人设路由")
             return self._reply(200, {"ok": True, "renamed": new_name,
                                      "moved": moved})
         if u.path == "/api/personas/switch":
@@ -3680,6 +3779,17 @@ class UiHandler(BaseHTTPRequestHandler):
                 return self._reply(400, {"ok": False, "error": "该人设正在使用，请先切换到其他设"})
             del data[name]
             write_const(PERSONA_COLLECTION_PATH, json.dumps(data, ensure_ascii=False, indent=2))
+            # 分对象人设清理：删掉指向该人设的路由，防悬空（这些对象自动回落全局激活人设）
+            try:
+                rd = load_json_const(PERSONA_ROUTES_PATH, {})
+                routes = rd.get("routes") if isinstance(rd, dict) else []
+                kept = [r for r in (routes or [])
+                        if not (isinstance(r, dict) and r.get("persona") == name)]
+                if len(kept) != len(routes or []):
+                    write_const(PERSONA_ROUTES_PATH, json.dumps(
+                        {"routes": kept}, ensure_ascii=False, indent=2))
+            except OSError:
+                pass
             return self._reply(200, {"ok": True})
         if u.path == "/api/app-config":
             cfg_in = body
