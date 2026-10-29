@@ -156,14 +156,33 @@ def check(cfg=None):
     if not asset:
         return {"ok": False, "error": "该 Release 没有 Windows 安装包（*win-x64.zip）"}
     digest = str(asset.get("digest") or "")
+    cur_v = _ver_tuple(current_version())
+    # 聚合「当前版本之后」的全部更新日志：/releases/latest 只有一条，
+    # 0.1.5 的用户升级到 0.1.7 时应同时看到 0.1.6/0.1.7 的内容
+    pending = []
+    try:
+        st2, _h2, body2 = _https(API_HOST, "/repos/%s/releases?per_page=30" % repo,
+                                 token=_token(cfg))
+        if st2 == 200:
+            for rel in json.loads(body2.decode("utf-8")):
+                t = str(rel.get("tag_name") or "").lstrip("vV")
+                note = str(rel.get("body") or "").strip()
+                if t and note and _ver_tuple(t) > cur_v:
+                    pending.append({"ver": t, "notes": note[:900]})
+            pending.sort(key=lambda x: _ver_tuple(x["ver"]), reverse=True)
+    except Exception:
+        pass  # 列表拉取失败不影响主流程，退回单条 notes
+    if not pending:
+        pending = [{"ver": tag, "notes": str(data.get("body") or "")[:900]}]
     return {
         "ok": True, "repo": repo, "current": current_version(), "latest": tag,
-        "newer": _ver_tuple(tag) > _ver_tuple(current_version()),
+        "newer": _ver_tuple(tag) > cur_v,
         "name": asset.get("name"), "size": int(asset.get("size") or 0),
         "asset_api": asset.get("url") or "",
         "browser_url": asset.get("browser_download_url") or "",
         "sha256": digest[7:] if digest.startswith("sha256:") else "",
         "notes": str(data.get("body") or "")[:1500],
+        "pending": pending[:10],
         "published": str(data.get("published_at") or ""),
         "skip": bool(tag and tag == str(cfg.get("update_skip_version") or "")),
     }

@@ -45,6 +45,15 @@ MEMORY_STREAM_PATH = os.path.join(DATA_DIR, "memory_stream.jsonl")
 KEYS_PATH = os.path.join(DATA_DIR, "api_keys.json")
 STICKERS_PATH = os.path.join(DATA_DIR, "stickers.json")
 EVOLVED_PATH = os.path.join(DATA_DIR, "styles", "evolved.json")
+MEMBER_PROFILES_PATH = os.path.join(DATA_DIR, "member_profiles.json")
+
+
+def _mp_write(members):
+    d = load_json_const(MEMBER_PROFILES_PATH, {})
+    if not isinstance(d, dict):
+        d = {}
+    d["members"] = members
+    write_const(MEMBER_PROFILES_PATH, json.dumps(d, ensure_ascii=False, indent=2))
 STICKERS_ROOT = pathlib.Path(os.path.join(DATA_DIR, "stickers"))
 WS_TOKEN_PATH = os.path.join(DATA_DIR, "ws_token")
 UI_TOKEN_PATH = os.path.join(DATA_DIR, "ui_token")
@@ -1738,8 +1747,14 @@ async function upShow(info){
   +(info.newer?'<span style="color:var(--warn)">有新版本可用</span>'
     :('线上没有更新的版本（当前 '+esc(info.current||'')+'）'))
   +(info.size?' · 安装包 '+(info.size/1048576).toFixed(1)+'MB':'');
- if(nt)nt.textContent=info.notes?('更新内容：\n'+info.notes):'';
-}
+ if(!nt)return;
+ const pend=Array.isArray(info.pending)&&info.pending.length?info.pending
+  :(info.notes?[{ver:info.latest,notes:info.notes}]:[]);
+ nt.innerHTML=pend.length
+  ?('更新内容（你错过的全部版本）：'+pend.map(p=>
+     '<div style="margin-top:8px"><b>v'+esc(p.ver||'')+'</b>'+
+     '<div style="white-space:pre-wrap">'+esc(p.notes||'')+'</div></div>').join(''))
+  :'';}
 async function upCheck(){
  const st=document.getElementById('upstat');
  if(st)st.textContent='正在检查…';
@@ -1877,16 +1892,51 @@ async function setPrimary(id){
  const r=await saveKV('/api/keys/primary',{id},'主 Key 已切换（生图/搜索/未指定条目即用新主 Key）');
  if(r.ok!==false)load()}
 async function vMemory(){
- const d=await api('/api/memory');
+ const [d,mp]=await Promise.all([api('/api/memory'),api('/api/member-profiles').catch(()=>({members:[]}))]);
  const rows=(d.items||[]).map(r=>`<tr><td class="mono">${esc(r.time)}</td><td>${r.scope==='group'?'群':'人'}</td><td class="mono">${esc(String(r.id))}</td><td>${esc(r.text)}</td>
   <td><button class="act ghost" style="margin:0;padding:3px 10px;font-size:12px" onclick="editMemo(${r.idx})">编辑</button>
   <button class="act ghost danger" style="margin:0;padding:3px 10px;font-size:12px" onclick="delMemo(${r.idx})">删除</button></td></tr>`).join('');
+ const profs=(mp.members||[]).map(p=>`<tr><td>${esc(p.name||'<i>未命名</i>')}</td><td class="mono">${esc(p.qq)}</td><td>${esc(p.note)}</td>
+  <td class="k" style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc((p.groups||[]).join('、'))}">${esc((p.groups||[]).join('、'))||'—'}</td>
+  <td><button class="act ghost" style="margin:0;padding:3px 10px;font-size:12px" onclick="editProfile('${esc(p.qq)}')">编辑</button>
+  <button class="act ghost danger" style="margin:0;padding:3px 10px;font-size:12px" onclick="delProfile('${esc(p.qq)}')">删除</button></td></tr>`).join('');
  $('#view').innerHTML=head('长期记忆流水（自治大脑自动写入；改动即时生效，机器人下一轮对话即用新记忆）')+saveHint('每条记忆可单独编辑/删除（删除需确认）；也可手动新增一条（选择群或联系人）。'+`当前展示最近 100 条。`)+
  `<div class="card">
  <table class="memtbl"><tr><th>时间</th><th>类型</th><th>对象</th><th>内容</th><th>操作</th></tr>${rows||'<tr><td colspan=5 class="k">空</td></tr>'}</table>
  <div style="display:flex;gap:8px"><button class="act" onclick="addMemo()">手动新增一条记忆</button>
- <button class="act ghost danger" onclick="clearMem()">清空全部记忆流水</button></div></div>`;
+ <button class="act ghost danger" onclick="clearMem()">清空全部记忆流水</button></div></div>
+ <div class="card" style="margin-top:14px"><div class="k" style="margin-bottom:8px">群成员画像<span class="badge" style="background:var(--tint);color:var(--dim)">每日复盘自动更新</span></div>
+ <div class="k" style="margin-bottom:8px">机器人对每个熟人的长期了解（身份、兴趣、相处注意事项），聊天时自动带上「记得你」的感觉；也可手动编辑。</div>
+ <table class="memtbl"><tr><th>昵称</th><th>QQ</th><th>画像</th><th>常驻群</th><th>操作</th></tr>${profs||'<tr><td colspan=5 class="k">暂无画像（夜间复盘会自动为活跃成员生成）</td></tr>'}</table>
+ <div style="display:flex;gap:8px"><button class="act" onclick="editProfile('')">手动新增画像</button></div></div>`;
 }
+async function editProfile(qq){
+ let cur={name:'',note:''};
+ if(qq){const r=await api('/api/member-profiles').catch(()=>({members:[]}));cur=(r.members||[]).find(x=>x.qq===String(qq))||cur;}
+ const m=document.createElement('div');m.className='dlg-mask';
+ m.innerHTML='<div class="dlg" role="dialog"><h3>'+(qq?'编辑群成员画像':'新增群成员画像')+'</h3>'
+  +'<div class="dlg-body">画像会注入机器人的上下文：写身份特征、兴趣、称呼习惯、相处注意事项，第三人称，300 字以内。</div>'
+  +'<div style="display:flex;gap:8px;margin-top:12px;align-items:center">'
+  +'<input class="p-qq" value="'+esc(String(qq||''))+'" placeholder="QQ号" style="width:130px" '+(qq?'disabled':'')+'>'
+  +'<input class="p-name" value="'+esc(cur.name||'')+'" placeholder="昵称" style="width:150px">'
+  +'</div><textarea class="p-note" rows="4" style="width:100%;margin-top:10px;resize:vertical" maxlength="300" placeholder="如：大学生，常问编程问题，喜欢被叫明哥；给他讲东西要有耐心">'+esc(cur.note||'')+'</textarea>'
+  +'<div class="dlg-btns"><button class="act ghost">取消</button><button class="act">保存</button></div></div>';
+ document.body.appendChild(m);
+ const qi=m.querySelector('.p-qq'),ni=m.querySelector('.p-name'),ta=m.querySelector('.p-note');
+ const close=()=>m.remove();
+ m.querySelector('.dlg-btns .ghost').onclick=close;
+ m.querySelector('.dlg-btns .act:not(.ghost)').onclick=async()=>{
+  if(!/^\\d{5,12}$/.test(qi.value.trim())||!ta.value.trim()){toast('QQ 需为 5-12 位数字，画像不能为空',false);return}
+  close();
+  const r=await saveKV('/api/member-profiles/save',{qq:qi.value.trim(),name:ni.value.trim(),note:ta.value.trim()},'画像已保存（即时生效）');
+  if(r.ok!==false)load()};
+ m.onclick=e=>{if(e.target===m)close()};
+ m.onkeydown=e=>{if(e.key==='Escape')close()};
+ setTimeout(()=>{(qq?ta:qi).focus()},30)}
+async function delProfile(qq){
+ if(!await dlgConfirm({title:'删除画像',body:'删除这位成员的画像？机器人将不再记得对他的了解（夜间复盘如他继续活跃可能会重新生成）。',okText:'删除',danger:true}))return;
+ const r=await saveKV('/api/member-profiles/del',{qq:String(qq)},'画像已删除');
+ if(r.ok!==false)load()}
 async function editMemo(idx){
  const d=await api('/api/memory');
  const it=(d.items||[]).find(x=>x.idx===idx);if(!it)return;
@@ -2663,6 +2713,22 @@ class UiHandler(BaseHTTPRequestHandler):
             except OSError:
                 pass
             return self._reply(200, {"ok": True, "items": items[-100:]})
+        if u.path == "/api/member-profiles":
+            try:
+                d = load_json_const(MEMBER_PROFILES_PATH, {})
+            except Exception:
+                d = {}
+            members = d.get("members") if isinstance(d, dict) else {}
+            rows = []
+            for qq, m in (members or {}).items():
+                if not isinstance(m, dict):
+                    continue
+                rows.append({"qq": str(qq), "name": str(m.get("name") or ""),
+                             "note": str(m.get("note") or ""),
+                             "groups": [str(g) for g in (m.get("groups") or [])],
+                             "updated": int(m.get("updated") or 0)})
+            rows.sort(key=lambda x: (-x["updated"], x["qq"]))
+            return self._reply(200, {"ok": True, "members": rows})
         if u.path == "/api/stickers/thumb":
             try:
                 ctype, raw = _sticker_thumb_bytes(q.get("pool", "_global"),
@@ -4057,6 +4123,34 @@ class UiHandler(BaseHTTPRequestHandler):
         if u.path == "/api/memory/clear":
             write_const(MEMORY_STREAM_PATH, "")
             return self._reply(200, {"ok": True})
+        if u.path == "/api/member-profiles/save":
+            qq = str(body.get("qq", "")).strip()
+            name = str(body.get("name", "")).strip()[:40]
+            note = str(body.get("note", "")).strip()[:300]
+            if not qq.isdigit() or len(qq) < 5 or len(qq) > 12:
+                return self._reply(400, {"ok": False, "error": "QQ 号需为 5-12 位数字"})
+            try:
+                d = load_json_const(MEMBER_PROFILES_PATH, {})
+                members = d.get("members") if isinstance(d.get("members"), dict) else {}
+                old = members.get(qq) or {}
+                members[qq] = {"name": name or str(old.get("name") or ""),
+                               "note": note, "groups": old.get("groups") or [],
+                               "updated": int(time.time())}
+                _mp_write(members)
+                return self._reply(200, {"ok": True})
+            except OSError as e:
+                return self._reply(500, {"ok": False, "error": repr(e)})
+        if u.path == "/api/member-profiles/del":
+            qq = str(body.get("qq", "")).strip()
+            try:
+                d = load_json_const(MEMBER_PROFILES_PATH, {})
+                members = d.get("members") if isinstance(d.get("members"), dict) else {}
+                if qq in members:
+                    members.pop(qq)
+                    _mp_write(members)
+                return self._reply(200, {"ok": True})
+            except OSError as e:
+                return self._reply(500, {"ok": False, "error": repr(e)})
         if u.path in ("/api/memory/update", "/api/memory/delete",
                       "/api/memory/add"):
             def _lines():
