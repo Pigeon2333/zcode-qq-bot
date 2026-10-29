@@ -1591,6 +1591,22 @@ async function vSettings(){
   <label class="master"><input type="checkbox" ${rv.env_pulse_enabled?'checked':''} onchange="saveKVLoad('/api/reply-config',{env_pulse_enabled:this.checked},'电脑状态感知已'+(this.checked?'开启':'关闭'))">
    <span><b>电脑状态感知</b>（默认关闭）<div class="k" style="margin-top:3px">开启后主人的私聊里，机器人知道这台电脑的实况（开机时长/内存占用/磁盘余量），聊到电脑状态时能自然应答；数据只在本机读取、只出现在主人私聊，不进群聊。在意隐私保持关闭即可</div></span></label>
  </div>
+ <div class="card"><div class="k" style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">B 站刷视频<span class="badge" style="background:var(--tint);color:var(--dim)">默认关闭</span><span id="biliuid"></span></div>
+  <div id="bililogin"></div>
+  <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-top:8px">
+   <label><input type="checkbox" ${rv.bili_scroll_enabled?'checked':''} onchange="saveKVLoad('/api/reply-config',{bili_scroll_enabled:this.checked},'B 站刷视频已'+(this.checked?'开启':'关闭'))"> 主动刷视频（默认关闭）</label>
+   <label><input type="checkbox" ${rv.bili_share_enabled?'checked':''} onchange="saveKVLoad('/api/reply-config',{bili_share_enabled:this.checked},'B 站分享已'+(this.checked?'开启':'关闭'))"> 主动分享给主人（默认关闭）</label>
+  </div>
+  <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-top:8px">
+   <label>刷视频周期：每 <input type="number" min="30" max="1440" value="${rv.bili_scroll_window_min??180}" style="width:64px" onchange="saveKVLoad('/api/reply-config',{bili_scroll_window_min:Math.max(30,Math.min(1440,parseInt(this.value)||180))},'周期已更新')"> 分钟一个窗口</label>
+   <label>兴趣关键词（逗号分隔，空=内置池）<input value="${esc(rv.bili_scroll_keywords||'')}" style="width:200px" onchange="saveKVLoad('/api/reply-config',{bili_scroll_keywords:this.value},'关键词已更新')"></label>
+  </div>
+  <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-top:8px">
+   <label>主人的 B 站 UID（收站内私信用，可空）<input value="${esc(String(c.owner_bilibili_uid||''))}" style="width:140px" onchange="saveKVLoad('/api/app-config',{owner_bilibili_uid:this.value.trim()},'UID 已保存')"></label>
+   <button class="act" onclick="biliRun()">现在刷一轮</button>
+  </div>
+  <div class="k" style="margin-top:6px">机器人用自己的 B 站账号扫码登录后，会按周期以人设兴趣刷视频：看过的存为见闻（聊天里可能自然提起），真心觉得好的会私聊分享给你——刷视频与分享各自独立开关。B 站 Cookie 只存本机。</div>
+ </div>
  <div class="card"><div class="k">开机自启（登录 Windows 后自动打开控制台窗口${c.autostart_with_windows?'，已开启':'，未开启'}）</div>
   <div style="margin-top:8px"><label><input type="checkbox" id="sauto" ${c.autostart_with_windows||S_autostartRegistry()?'checked':''} onchange="saveAuto(this.checked)"> 开机自动启动本应用</label></div></div>
  <div class="card"><div class="k">启动行为</div>
@@ -1660,6 +1676,7 @@ async function vSettings(){
   <div style="margin-top:8px;display:flex;gap:8px">
    <button class="act danger" onclick="doUninstall()">卸载</button>
    <span class="k">点击后程序会自动退出并完成清理</span></div></div>`;
+ biliInit().catch(()=>{});
 }
 let _autoReg=null,_upTimer=null;
 async function blList(){const c=await api('/api/app-config').catch(()=>({}));return c.user_blacklist||[]}
@@ -1940,6 +1957,44 @@ async function delProfile(qq){
  if(!await dlgConfirm({title:'删除画像',body:'删除这位成员的画像？机器人将不再记得对他的了解（夜间复盘如他继续活跃可能会重新生成）。',okText:'删除',danger:true}))return;
  const r=await saveKV('/api/member-profiles/del',{qq:String(qq)},'画像已删除');
  if(r.ok!==false)load()}
+async function biliInit(){
+ try{
+  const s=await api('/api/bili/status');
+  const ub=document.getElementById('biliuid'),lb=document.getElementById('bililogin');
+  if(!lb)return;
+  ub.innerHTML=s.uid?'<span class="badge b-ok">B 站已登录 UID '+esc(String(s.uid))+'</span> <button class="act ghost" style="margin:0;padding:3px 10px;font-size:12px" onclick="biliLogout()">退出登录</button>':'<span class="badge" style="background:var(--tint);color:var(--dim)">未登录</span>';
+  lb.innerHTML=s.uid?'':'<button class="act" onclick="biliScan()">扫码登录 B 站</button>';
+ }catch(e){}}
+async function biliLogout(){
+ if(!await dlgConfirm({title:'退出 B 站',body:'清除本机保存的 B 站登录凭证？机器人将停止刷视频（开关保留）。',okText:'退出',danger:true}))return;
+ await api('/api/bili/logout',{method:'POST'});toast('已退出');load()}
+async function biliScan(){
+ const r=await api('/api/bili/login-start',{method:'POST'}).catch(e=>({ok:false,error:e}));
+ if(r.ok===false){toast(r.error||'发起登录失败',false);return}
+ const m=document.createElement('div');m.className='dlg-mask';
+ m.innerHTML='<div class="dlg" role="dialog"><h3>扫码登录 B 站</h3><div class="dlg-body">'
+  +(r.qr_png?'<img src="/api/bili-qr?t='+Date.now()+'" style="width:220px;height:220px">':'二维码生成失败，把下面的链接复制到手机 B 站 App 打开：')
+  +'<div class="k mono" style="word-break:break-all;margin-top:8px;font-size:12px">'+esc(r.url)+'</div>'
+  +'<div class="k" style="margin-top:8px">用<b>机器人自己的 B 站账号</b>的手机 App 扫码并确认。</div>'
+  +'<div id="bilirr" class="k" style="margin-top:6px">等待扫码…</div></div>'
+  +'<div class="dlg-btns"><button class="act ghost">关闭</button></div></div>';
+ document.body.appendChild(m);
+ const close=()=>{clearInterval(timer);m.remove()};
+ m.querySelector('.dlg-btns .ghost').onclick=close;
+ m.onclick=e=>{if(e.target===m)close()};
+ const timer=setInterval(async()=>{
+  try{
+   const p=await api('/api/bili/login-poll',{method:'POST',body:JSON.stringify({key:r.key})});
+   const el=m.querySelector('#bilirr');
+   if(p.state==='ok'){el.textContent='登录成功！UID '+p.uid;clearInterval(timer);setTimeout(()=>{close();load()},800)}
+   else if(p.state==='scanned')el.textContent='已扫码，请在手机上确认…';
+   else if(p.state==='expired'){el.textContent='二维码已过期，请关闭重试';clearInterval(timer)}
+  }catch(e){}
+ },2000)}
+async function biliRun(){
+ const r=await api('/api/bili/run',{method:'POST'}).catch(e=>({ok:false,error:e}));
+ if(r.ok===false){toast(r.error||'触发失败',false);return}
+ toast('已在后台刷一轮，稍后看运行日志 AGENT_BILI_*')}
 async function editMemo(idx){
  const d=await api('/api/memory');
  const it=(d.items||[]).find(x=>x.idx===idx);if(!it)return;
@@ -2732,6 +2787,49 @@ class UiHandler(BaseHTTPRequestHandler):
                              "updated": int(m.get("updated") or 0)})
             rows.sort(key=lambda x: (-x["updated"], x["qq"]))
             return self._reply(200, {"ok": True, "members": rows})
+        if u.path == "/api/bili/status":
+            try:
+                import qq_bilibili as _qb
+                return self._reply(200, {"ok": True,
+                                         "uid": _qb.logged_in_uid(),
+                                         "brief": _qb.brief_load()})
+            except Exception as e:
+                return self._reply(500, {"ok": False, "error": repr(e)})
+        if u.path == "/api/bili/login-start":
+            try:
+                import qq_bilibili as _qb
+                return self._reply(200, _qb.login_start())
+            except Exception as e:
+                return self._reply(500, {"ok": False, "error": repr(e)})
+        if u.path == "/api/bili/login-poll":
+            try:
+                import qq_bilibili as _qb
+                return self._reply(200, _qb.login_poll(str(body.get("key", ""))))
+            except Exception as e:
+                return self._reply(500, {"ok": False, "error": repr(e)})
+        if u.path == "/api/bili/logout":
+            try:
+                p = pathlib.Path(os.path.join(C.DATA_DIR, "bilibili_cookies.json"))
+                if p.exists():
+                    p.unlink()
+                return self._reply(200, {"ok": True})
+            except OSError as e:
+                return self._reply(500, {"ok": False, "error": repr(e)})
+        if u.path == "/api/bili/qr":
+            p = pathlib.Path(os.path.join(C.DATA_DIR, "bilibili_qr.png"))
+            if p.exists():
+                return self._reply_bytes("image/png", p.read_bytes())
+            return self._reply(404, {"ok": False, "error": "二维码不存在"})
+        if u.path == "/api/bili/run":
+            try:
+                conn = http.client.HTTPConnection("127.0.0.1", PORTS["agent"], timeout=8)
+                conn.request("POST", "/admin/bili-run", body=b"{}",
+                             headers={"Content-Type": "application/json"})
+                r = conn.getresponse().read().decode("utf-8", "replace")
+                conn.close()
+                return self._reply(200, json.loads(r))
+            except Exception as e:
+                return self._reply(500, {"ok": False, "error": repr(e)})
         if u.path == "/api/stickers/thumb":
             try:
                 ctype, raw = _sticker_thumb_bytes(q.get("pool", "_global"),
@@ -2888,6 +2986,10 @@ class UiHandler(BaseHTTPRequestHandler):
                                      "proactive_hourly_cap": data.get("proactive_hourly_cap", 2),
                                      "env_pulse_enabled": bool(data.get("env_pulse_enabled", False)),
                                      "member_profiles_enabled": bool(data.get("member_profiles_enabled", False)),
+                                     "bili_scroll_enabled": bool(data.get("bili_scroll_enabled", False)),
+                                     "bili_share_enabled": bool(data.get("bili_share_enabled", False)),
+                                     "bili_scroll_window_min": data.get("bili_scroll_window_min", 180),
+                                     "bili_scroll_keywords": str(data.get("bili_scroll_keywords", "")),
                                      "lean_ctx_enabled": data.get("lean_ctx_enabled", True),
                                      "wait_gate_enabled": data.get("wait_gate_enabled", True),
                                      "burst_merge_enabled": data.get("burst_merge_enabled", True),
@@ -3462,9 +3564,17 @@ class UiHandler(BaseHTTPRequestHandler):
                     data["proactive_hourly_cap"] = max(0, min(60, int(body["proactive_hourly_cap"])))
                 except (TypeError, ValueError):
                     return self._reply(400, {"ok": False, "error": "总量上限应为 0-60 整数（0=不限）"})
-            for _pk in ("env_pulse_enabled", "member_profiles_enabled"):
+            for _pk in ("env_pulse_enabled", "member_profiles_enabled",
+                        "bili_scroll_enabled", "bili_share_enabled"):
                 if _pk in body:
                     data[_pk] = bool(body[_pk])
+            if "bili_scroll_window_min" in body:
+                try:
+                    data["bili_scroll_window_min"] = max(30, min(1440, int(body["bili_scroll_window_min"])))
+                except (TypeError, ValueError):
+                    return self._reply(400, {"ok": False, "error": "周期应为 30-1440 分钟"})
+            if "bili_scroll_keywords" in body:
+                data["bili_scroll_keywords"] = str(body["bili_scroll_keywords"])[:120]
             for _pk in ("proactive_groups_probability", "proactive_private_probability"):
                 if _pk in body:
                     try:
@@ -3612,6 +3722,9 @@ class UiHandler(BaseHTTPRequestHandler):
                     str(x).strip()[:260] for x in dirs if str(x).strip()]
             if "timezone" in cfg_in:
                 cleaned["timezone"] = str(cfg_in["timezone"]).strip()[:50]
+            if "owner_bilibili_uid" in cfg_in:
+                uid = str(cfg_in["owner_bilibili_uid"]).strip()
+                cleaned["owner_bilibili_uid"] = uid if uid.isdigit() and len(uid) <= 12 else ""
             for k in ("review_time", "backup_time"):
                 if k in cfg_in:
                     v = str(cfg_in[k]).strip()
