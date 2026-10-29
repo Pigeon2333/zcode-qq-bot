@@ -2333,13 +2333,15 @@ def build_messages(daemon, msg, ctx_k=32):
     if routed and routed != _global_active:
         persona_block += ("\n（注意：你当前正在和一位单独设定过人设的对象交流，"
                           "以上人设只对这位对象生效；对其他人你仍是「%s」。"
-                          "记忆是共用的——事实都记得，但语气称呼只按当前人设来）"
+                          "记忆是共用的——事实都记得，但语气称呼只按当前人设来。"
+                          "最近对话里你自己说话的语气可能是旧人设留下的——不要模仿它，"
+                          "从这条回复起完全按上面的当前人设说话，和历史语气不同是正确的）"
                           % (_global_active or "默认人设"))
     global_block = ""
     if global_base:
         global_block = "\n\n## 全局通用设定（无论人设如何切换都遵守）\n%s" % global_base
     style = read_const(STYLE_PATH)
-    style_block = ("\n\n## 说话风格卡（严格模仿以下语言风格，但不改变你的身份）\n" + style) if style else ""
+    style_block = ("\n\n## 说话风格卡（通用的语言底子；若与当前人设的性格冲突，以人设为准）\n" + style) if style else ""
     ev = evolved_notes(active_name) if active_name else {"enabled": False, "notes": []}
     evolved_block = ""
     if ev["enabled"] and ev["notes"]:
@@ -2397,9 +2399,9 @@ def build_messages(daemon, msg, ctx_k=32):
     elif ctx_k >= 16:
         n_hist, c_hist, n_gmem, n_cmem = 10, 80, 5, 4
     elif ctx_k >= 8:
-        n_hist, c_hist, n_gmem, n_cmem = 8, 70, 4, 3
+        n_hist, c_hist, n_gmem, n_cmem = 10, 80, 4, 3
     else:
-        n_hist, c_hist, n_gmem, n_cmem = 6, 60, 3, 2
+        n_hist, c_hist, n_gmem, n_cmem = 8, 80, 3, 2
 
     g_mem = memory_snippets("group", msg["chat_id"])
     c_mem = memory_snippets("contact", msg["sender_id"])
@@ -2416,8 +2418,10 @@ def build_messages(daemon, msg, ctx_k=32):
     for h in history:
         name = "你" if h.get("is_bot") else str(h.get("sender_name", "?"))
         # 历史 带 QQ：模型标注 [记忆@QQ] 时需要知道每句话是谁说的
+        # 用户（非 bot）的话少截断——刚说过的事实被截丢会导致"刚说完就忘"
+        cap = (120 if not h.get("is_bot") else c_hist)
         hist_lines.append("%s(QQ:%s): %s" % (
-            name, h.get("sender_id", "?"), str(h.get("text", ""))[:c_hist]))
+            name, h.get("sender_id", "?"), str(h.get("text", ""))[:cap]))
     hist_block = "\n".join(hist_lines[-n_hist:]) if hist_lines else "（暂无）"
 
     rt = msg.get("reply_to") or None
@@ -2575,6 +2579,11 @@ def build_messages(daemon, msg, ctx_k=32):
         + "\n%s%s%s%s%s%s%s\n\n"
         "## 硬性规则\n"
         "- 输出是QQ聊天文本：禁止Markdown（# * ` [链接]()），口语化\n"
+        "- 像真人发QQ消息那样打字：一次一两句话，短句为主。绝对禁止输出带空行分段的"
+        "「小作文」（一段、空一行、一段那种格式）——真人打字不会这样；想表达多层意思，"
+        "拆成几条短消息用 [[SPLIT]] 分隔（最多3条），每条单独发；单条消息内部也不要空行\n"
+        "- 回应前先扫一眼最近对话：对方刚刚说过的事（说过不困/不想睡、刚吃过饭、心情如何等）"
+        "直接接着聊，绝对不要反过来再问一遍——刚说完就忘是最破坏真人感的失格行为\n"
         "- 绝对禁止任何脏话、粗口、侮辱性词汇（\"我操/卧槽/他妈的\"等，任何语境、"
         "任何情绪下都不行）：你的角色再惊讶再生气也不说脏话，用\"哎呀/天哪/好家伙\"表达\n"
         "- 遵守人设的语气与长度习惯；高冷人设就要少说话\n"
@@ -2744,6 +2753,8 @@ def parse_reply(text):
     text = STICKER_RE.sub("", text)
     text = _STICKER_LEAK_RE.sub("", text)  # 未解析变体兜底剥离，绝不泄漏给用户
     parts = [p.strip() for p in SPLIT_RE.split(text) if p.strip()]
+    # 拟人打字习惯兜底：模型偶尔仍输出空行分段的"小作文"——压成单换行
+    parts = [re.sub(r"\n\s*\n+", "\n", p) for p in parts]
     return parts[:4], sticker_ids[:2], memo, draw, sendgrp
 
 
