@@ -1009,6 +1009,10 @@ async function vGroups(){
  _gmModes=gm.modes||{};_gmGlobal=c;rvState=rv;
  const gn=(gnr&&gnr.names)||{};
  const gname=x=>gn[String(x)]||'';
+ const _ovs=Object.entries(_gmModes||{}).filter(([k,v])=>v&&
+  ('proactive' in v||'proactive_probability' in v||'proactive_min_interval_sec' in v));
+ const _ovLine=_ovs.length?`<div class="k" style="margin-top:6px">⚠ 以下群的分群主动设置优先于全局：${
+  _ovs.map(([k,v])=>esc(gname(k)||k)+(v.proactive===false?'（主动已停用）':'')).join('、')}。全局调了没反应时先看这里。</div>`:'';
  const on=g.enabled!==false, allOn=!!g.allow_all, m=c.reply_mode||'standard';
  const rows=(g.groups||[]).map((x,i)=>{
   const ov=_gmModes[x]||{};
@@ -1023,9 +1027,9 @@ async function vGroups(){
    params=`<div class="gm-sub">插话概率 <input type="number" min="0" max="100" style="width:60px" value="${Math.round((ov.chat_probability??_gmGlobal.chat_probability??0.5)*100)}" onchange="saveGmFieldFor('${esc(x)}','chat_probability',this)">%
    　最小间隔 <input type="number" min="0" max="3600" style="width:68px" value="${ov.chat_min_interval_sec??_gmGlobal.chat_min_interval_sec??45}" onchange="saveGmFieldFor('${esc(x)}','chat_min_interval_sec',this)"> 秒（仅该群生效）</div>`;
   }
-  if(ov.proactive===true){
+  if(ov.proactive===true||'proactive_probability' in ov||'proactive_min_interval_sec' in ov){
    params+=`<div class="gm-sub">该群主动：概率 <input type="number" min="0" max="100" style="width:56px" value="${Math.round((ov.proactive_probability??rv.proactive_groups_probability??0.1)*100)}" onchange="saveGmProNum('${esc(x)}','proactive_probability',(parseInt(this.value)||0)/100)">%
-   　频率 每 <input type="number" min="5" max="1440" style="width:60px" value="${Math.round((ov.proactive_min_interval_sec??rv.proactive_groups_min_interval_sec??1800)/60)}" onchange="saveGmProNum('${esc(x)}','proactive_min_interval_sec',(parseInt(this.value)||30)*60)"> 分钟（仅该群；未修改时跟随全局）</div>`;
+   　周期 每 <input type="number" min="5" max="1440" style="width:60px" value="${Math.round((ov.proactive_min_interval_sec??rv.proactive_groups_min_interval_sec??1800)/60)}" onchange="saveGmProNum('${esc(x)}','proactive_min_interval_sec',(parseInt(this.value)||30)*60)"> 分钟（仅该群；未修改时跟随全局）</div>`;
   }
   const nameLine=(x)=>'<div class="gm-sub k" style="margin-top:2px;opacity:.85;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(gname(x))+'">🏷 '+esc(gname(x)||'群名未获取（机器人需在该群内）')+'</div>';
   return `<div class="gm-wrap"><div class="row"><span class="no">${i+1}.</span>
@@ -1067,6 +1071,8 @@ async function vGroups(){
   <label class="master"><input type="checkbox" ${rv.proactive_groups_enabled?'checked':''} onchange="savePro('proactive_groups_enabled',this.checked)">
    <span><b>允许机器人主动在群里发消息</b><div class="k" style="margin-top:3px">开启后机器人会不定期根据最近对话、当前时间、记忆主动开个话头：只选最近 6 小时内有活动的白名单群；安静模式/暂停/群暂停回应/限额停响应时都不发；发送前过复读与脏话守卫</div></span></label>
   ${proCard('groups')}
+  <div style="margin-top:8px"><label>总量上限：所有群+私聊合计每小时最多 <input type="number" min="0" max="60" value="${rv.proactive_hourly_cap??2}" style="width:52px" onchange="saveProNum('hourly_cap',(isNaN(parseInt(this.value))?2:parseInt(this.value)),'总量上限')"> 条（0=不限；各群各自计时容易叠加，这个上限封住整体频率）</label></div>
+  ${_ovLine}
   <div class="k" style="margin-top:6px">例：30 分钟 + 10% ≈ 平均每 5 小时主动说一句。私聊的设置在「私聊消息」页，互不影响。</div></div>
  <div class="card">
   <label class="master" style="margin-bottom:8px"><input type="checkbox" id="allowall" ${allOn?'checked':''} onchange="saveGroups(true)">
@@ -1806,11 +1812,11 @@ function proCard(kind){
  const prob=Math.round((rvState['proactive_'+kind+'_probability']??0.1)*100);
  const sOn=!!(rvState['proactive_'+kind+'_silent_start']||rvState['proactive_'+kind+'_silent_end']);
  return `<div style="display:flex;gap:14px;margin-top:10px;flex-wrap:wrap;align-items:center">
-  <label>频率：每 <input type="number" min="5" max="1440" value="${iv}" style="width:60px" onchange="saveProNum('${kind}_min_interval_sec',(parseInt(this.value)||30)*60,'分钟')"> 分钟评估一次（5–1440 分钟）</label>
-  <label>命中概率 <input type="range" min="0" max="100" value="${prob}" style="width:150px" oninput="this.nextElementSibling.textContent=this.value+'%'" onchange="saveProNum('${kind}_probability',(parseInt(this.value)||0)/100,'概率')"> <b>${prob}%</b></label>
+  <label>周期：每 <input type="number" min="5" max="1440" value="${iv}" style="width:60px" onchange="saveProNum('${kind}_min_interval_sec',(parseInt(this.value)||30)*60,'分钟')"> 分钟一个窗口（5–1440 分钟）</label>
+  <label>命中概率（每窗口掷一次）<input type="range" min="0" max="100" value="${prob}" style="width:150px" oninput="this.nextElementSibling.textContent=this.value+'%'" onchange="saveProNum('${kind}_probability',(parseInt(this.value)||0)/100,'概率')"> <b>${prob}%</b></label>
   <label><input type="checkbox" ${sOn?'checked':''} onchange="toggleProSilent('${kind}',this.checked)"> 禁用时段</label>
   ${sOn?`<label><input type="time" value="${esc(rvState['proactive_'+kind+'_silent_start']||'22:00')}" onchange="saveProTime('${kind}_silent_start',this.value)"> – <input type="time" value="${esc(rvState['proactive_'+kind+'_silent_end']||'08:00')}" onchange="saveProTime('${kind}_silent_end',this.value)">（此段内不主动发消息，支持跨午夜）</label>`:''}
- </div>`}
+ </div><div class="k" style="margin-top:4px">每个窗口只掷一次骰子：命中就发，未中也算这个窗口已过、下个窗口再掷。平均节奏 ≈ 周期 ÷ 概率（如 60 分钟 50% ≈ 平均 2 小时一条）。</div>`}
 let rvState={}
 async function saveProNum(field,val,what){await saveKVLoad('/api/reply-config',{['proactive_'+field]:val},'主动'+what+'已更新（已生效）')}
 async function saveProTime(field,val){if(!val)return;const r=await saveKV('/api/reply-config',{['proactive_'+field]:val},'禁用时段已更新（已生效）');if(r.ok!==false)load()}
@@ -2810,6 +2816,7 @@ class UiHandler(BaseHTTPRequestHandler):
                                                                                     data.get("proactive_min_interval_sec", 1800)),
                                      "proactive_groups_silent_start": data.get("proactive_groups_silent_start", "22:00"),
                                      "proactive_groups_silent_end": data.get("proactive_groups_silent_end", "08:00"),
+                                     "proactive_hourly_cap": data.get("proactive_hourly_cap", 2),
                                      "lean_ctx_enabled": data.get("lean_ctx_enabled", True),
                                      "wait_gate_enabled": data.get("wait_gate_enabled", True),
                                      "burst_merge_enabled": data.get("burst_merge_enabled", True),
@@ -3379,6 +3386,11 @@ class UiHandler(BaseHTTPRequestHandler):
                     pass
             if "proactive_private_enabled" in body:
                 data["proactive_private_enabled"] = bool(body["proactive_private_enabled"])
+            if "proactive_hourly_cap" in body:
+                try:
+                    data["proactive_hourly_cap"] = max(0, min(60, int(body["proactive_hourly_cap"])))
+                except (TypeError, ValueError):
+                    return self._reply(400, {"ok": False, "error": "总量上限应为 0-60 整数（0=不限）"})
             for _pk in ("proactive_groups_probability", "proactive_private_probability"):
                 if _pk in body:
                     try:

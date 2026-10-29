@@ -2339,6 +2339,7 @@ PRIVATE_CFG_PATH = os.path.join(DATA_DIR, "private_config.json")
 _PROACTIVE_STATE_PATH = os.path.join(DATA_DIR, "proactive_state.json")
 _proactive_state = {"groups": {"last_attempt": 0.0, "last_sent": 0.0},
                     "private": {"last_attempt": 0.0, "last_sent": 0.0}}
+_proactive_send_times = []  # 机器人级主动消息发送时刻（每小时总量上限用，内存即可）
 
 
 def _proactive_state_load():
@@ -2529,10 +2530,32 @@ def _proactive_pick(cfg, kind, pool, now):
                                           {"last_sent": 0.0})
         if now - gst["last_sent"] < iv:
             continue
-        if prob <= 0 or secrets.randbelow(10000) >= int(prob * 10000):
+        # 每窗口一掷：间隔到期后本窗口只掷一次骰子；未中也将 last_sent 前移
+        # （本窗口记为已消费），下个完整窗口才有机会 → 期望间隔 = 间隔 ÷ 概率，
+        # 「60 分钟 50%」真正约等于平均 2 小时一条，而不是到点准发。
+        if prob <= 0:
+            continue
+        if secrets.randbelow(10000) >= int(prob * 10000):
+            gst["last_sent"] = now
+            _proactive_state_save()
             continue
         return chat_type, chat_id
     return None
+
+
+def _proactive_cap_left(cfg, now):
+    """机器人级每小时主动消息余量（proactive_hourly_cap，所有群+私聊合计；
+    0=不限）。多目标各自独立计时会造成整体观感 = 单群频率 × 目标数，
+    总量上限把这层叠加感封顶。"""
+    try:
+        cap = int(cfg.get("proactive_hourly_cap", 2))
+    except (TypeError, ValueError):
+        cap = 2
+    if cap <= 0:
+        return 1  # 不限
+    while _proactive_send_times and now - _proactive_send_times[0] >= 3600:
+        _proactive_send_times.pop(0)
+    return max(0, cap - len(_proactive_send_times))
 
 
 def _proactive_tick(daemon):
@@ -2547,6 +2570,8 @@ def _proactive_tick(daemon):
     st = daemon.status() or {}
     if st.get("quiet_until", 0) > now:
         return  # 安静模式：不主动打扰
+    if _proactive_cap_left(cfg, now) <= 0:
+        return  # 每小时总量已用完
     targets = _proactive_targets(daemon, cfg)
     picked = None
     for kind in kinds:
@@ -2575,6 +2600,7 @@ def _proactive_tick(daemon):
             return
         # 主动消息只发文字：表情图在无人互动时突兀，标记已由 parse 兜底剥离
         daemon.send(chat_type, chat_id, texts[:2])
+        _proactive_send_times.append(time.time())
         out("AGENT_PROACTIVE_OK chat=%s/%s text:%d" % (chat_type, chat_id, len(texts)))
     except Exception as e:
         out("AGENT_PROACTIVE_FAIL chat=%s/%s %r" % (chat_type, chat_id, e))
