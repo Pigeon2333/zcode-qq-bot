@@ -650,6 +650,12 @@ def load_persona_collection():
     return {"active": active, "global": global_base, "persona": persona}, active
 
 
+# 插件宿主（插件化第一阶段）：加载/启停/钩子见 qq_plugins.py
+import qq_plugins as _qp
+
+PLUGIN_HOST = _qp.PluginHost(log_fn=out)
+
+
 PERSONA_ROUTES_PATH = os.path.join(DATA_DIR, "persona_routes.json")
 
 
@@ -2055,130 +2061,6 @@ def _hot_brief_line():
             "不确定的细节不要编）\n- %s" % (d.get("date"), text[:_HOT_BRIEF_MAX]))
 
 
-# ---------------- B 站刷视频（qq_bilibili 模块；双开关默认关） ----------------
-
-_BILI_STATE = {"last_window": 0.0}
-_BILI_KEYWORDS = ("科技", "数码", "游戏", "美食", "音乐", "动画", "知识",
-                  "日常", "萌宠", "旅行")
-_qb = None
-
-
-def _bilibili_mod():
-    global _qb
-    if _qb is None:
-        import qq_bilibili as _m
-        _qb = _m
-    return _qb
-
-
-def _bili_cfg():
-    cfg = _reply_cfg()
-    return bool(cfg.get("bili_scroll_enabled")), bool(cfg.get("bili_share_enabled"))
-
-
-def _bili_persona_digest():
-    """兴趣判定用人设摘要：当前人设 + 全局前 400 字。"""
-    try:
-        pc, active = load_persona_collection()
-        return ((pc.get("persona") or "") + "\n" + (pc.get("global") or ""))[:400]
-    except Exception:
-        return ""
-
-
-def _bili_pick_handler(persona_digest, items):
-    """LLM 兴趣判定回调（qq_bilibili.pick_and_feel 调回）：返回 {"picks":[{idx,feeling}]}。"""
-    listing = "\n".join("%d. 《%s》 UP:%s 简介:%s 时长:%s" % (
-        i, it.get("title", ""), it.get("author", ""), it.get("desc", "")[:60],
-        it.get("length", "")) for i, it in enumerate(items))
-    prompt = (
-        "你是 B 站资深用户，正按自己的兴趣刷视频。你的人设与性格：\n%s\n\n"
-        "候选视频：\n%s\n\n"
-        "从这些视频里挑 0-2 个你（以人设的身份和喜好）真心感兴趣的，"
-        "并为每个写一句不超过 40 字的、符合人设口吻的观后感想（像发弹幕/跟朋友安利，"
-        "不要书面腔；没感觉就不硬挑）。输出纯 JSON："
-        "{\"picks\":[{\"idx\":序号,\"feeling\":\"感想\"}]}，没有就 {\"picks\":[]}。"
-        % (persona_digest, listing))
-    _m, text = call_glm_with_fallback(
-        [{"role": "system", "content": "只输出符合要求的 JSON。"},
-         {"role": "user", "content": prompt}], "")
-    mm = re.search(r"\{.*\}", text, re.S)
-    if not mm:
-        return {"picks": []}
-    got = json.loads(mm.group(0))
-    return got if isinstance(got, dict) else {"picks": []}
-
-
-def _bili_share(daemon, picked, keywords):
-    if not _bili_cfg()[1]:  # 分享开关默认关；gate 放这里让所有调用路径（含手动刷）都受控
-        return
-    qb = _bilibili_mod()
-    owner = owner_qq()
-    try:
-        cfg = C.load_app_config()
-        uid = str(cfg.get("owner_bilibili_uid") or "").strip()
-    except Exception:
-        uid = ""
-    for it, feeling in picked:
-        text = ("刚刷到一个视频觉得你会喜欢：%s《%s》 %s%s"
-                % (it.get("author", ""), it.get("title", ""), it.get("link", ""),
-                   ("\n我的观后感：" + feeling) if feeling else ""))[:480]
-        if uid:
-            ok, msg = qb.send_insite_dm(uid, text)
-            out("AGENT_BILI_DM ok=%s %s" % (ok, msg))
-        if owner:
-            try:
-                daemon.send("private", owner, [text])
-                out("AGENT_BILI_QQ_SHARE chat=private/%s" % owner)
-            except Exception as e:
-                out("AGENT_BILI_QQ_FAIL %r" % e)
-
-
-def _bili_scroll_tick(daemon):
-    """B 站刷视频节拍（主循环调用，与主动消息同风格：窗口制）。
-    总开关 bili_scroll_enabled（默认关）→ 分享开关 bili_share_enabled（默认关）。"""
-    scroll_on, share_on = _bili_cfg()
-    if not scroll_on:
-        return
-    cfg = load_json_const(REPLY_CONFIG_PATH, {})
-    try:
-        window = max(30, int(cfg.get("bili_scroll_window_min", 180))) * 60
-    except (TypeError, ValueError):
-        window = 180 * 60
-    now = time.time()
-    if now - _BILI_STATE["last_window"] < window:
-        return
-    _BILI_STATE["last_window"] = now
-    qb = _bilibili_mod()
-    if not qb.logged_in_uid():
-        out("AGENT_BILI_SKIP 未登录 B 站（扫码后才会刷）")
-        return
-    # 关键词：设置里可配（bili_scroll_keywords 逗号分隔），空则用内置兴趣池
-    kws = [k.strip() for k in str(cfg.get("bili_scroll_keywords") or "").split(",")
-           if k.strip()] or list(_BILI_KEYWORDS)
-    import random as _r
-    _r.shuffle(kws)
-    items = qb.search_videos(kws[:3])
-    if not items:
-        out("AGENT_BILI_FAIL 搜索无结果 kws=%s" % ",".join(kws[:3]))
-        return
-    picked = qb.pick_and_feel(_bili_persona_digest(), items)
-    qb.brief_append(picked if picked else items[:2])
-    out("AGENT_BILI_SCROLL items=%d picked=%d" % (len(items), len(picked)))
-    if picked and share_on:
-        _bili_share(daemon, picked, kws)
-
-
-def _bili_line():
-    """聊天注入：最近刷到的 B 站见闻（总开关开着才可能有记录）。"""
-    scroll_on, _share = _bili_cfg()
-    if not scroll_on:
-        return ""
-    try:
-        return _bilibili_mod().brief_line()
-    except Exception:
-        return ""
-
-
 def _hot_brief_refresh():
     """复盘时抓一次今日热点（search_web 已含失败静默），写 hot_brief.json。"""
     try:
@@ -2562,7 +2444,7 @@ def build_messages(daemon, msg, ctx_k=32):
     except Exception:
         pass
     try:
-        _aware += _bili_line()
+        _aware += PLUGIN_HOST.inject_all(msg["chat_type"], msg["chat_id"])
     except Exception:
         pass
     try:
@@ -4332,11 +4214,13 @@ class AdminHandler(BaseHTTPRequestHandler):
             out("AGENT_PIN_SET %s" % ck)
             return self._reply(200, {"ok": True, "pinned": ck})
         if urllib.parse.urlsplit(self.path).path == "/admin/bili-run":
-            scroll_on, share_on = _bili_cfg()
-            if not scroll_on:
+            if "bili_scroll" not in PLUGIN_HOST.hooks:
                 return self._reply(200, {"ok": False,
-                                         "error": "B 站刷视频未开启（设置→主人专属）"})
-            threading.Thread(target=_bili_scroll_tick, args=(daemon,), daemon=True).start()
+                                         "error": "B 站刷视频插件未启用（插件页开启后可用）"})
+            fn = PLUGIN_HOST.hooks["bili_scroll"].get("tick")
+            if not callable(fn):
+                return self._reply(200, {"ok": False, "error": "插件未注册节拍"})
+            threading.Thread(target=fn, args=(daemon,), daemon=True).start()
             return self._reply(200, {"ok": True, "note": "已在后台跑一轮"})
         if urllib.parse.urlsplit(self.path).path == "/admin/shutdown":
             self._reply(200, {"ok": True, "bye": True})
@@ -4571,9 +4455,9 @@ def main():
     start_admin_server(args.admin_port)
     _proactive_state_load()
     try:
-        _bilibili_mod().set_pick_handler(_bili_pick_handler)
+        PLUGIN_HOST.load_all()
     except Exception as e:
-        out("AGENT_BILI_INIT_FAIL %r" % e)
+        out("PLUGIN_INIT_FAIL %r" % e)
     threading.Thread(target=lambda: (time.sleep(15), describe_all_stickers()), daemon=True).start()
     threading.Thread(target=_daily_review_loop, args=(daemon,), daemon=True).start()
     out("AGENT_READY chain=%s daemon=127.0.0.1:%d admin=127.0.0.1:%d"
@@ -4594,10 +4478,7 @@ def main():
                         process(daemon, msg)
                 _proactive_tick(daemon)
                 _cron_tick(daemon)
-                try:
-                    _bili_scroll_tick(daemon)
-                except Exception as _be:
-                    out("AGENT_BILI_TICK_FAIL %r" % _be)
+                PLUGIN_HOST.run_ticks(daemon)
                 global _last_zcode_return
                 now_ts = time.time()
                 if now_ts - _last_zcode_return > 60:

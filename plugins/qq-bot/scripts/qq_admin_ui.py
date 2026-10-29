@@ -311,7 +311,12 @@ textarea{width:100%;min-height:260px;background:var(--input);color:var(--fg);bor
 textarea:focus,input:focus,select:focus{outline:2px solid var(--line2);border-color:var(--fg-strong)}
 input,select{background:var(--input);color:var(--fg);border:1px solid var(--line2);border-radius:7px;padding:6px 10px;font-family:inherit;font-size:13.5px}
 input:focus{background:var(--input-focused)}
-input[type=checkbox],input[type=radio]{accent-color:var(--btn);width:15px;height:15px;vertical-align:-2px}
+/* checkbox 自绘（appearance:none）：彻底统一尺寸与视觉，杜绝不同勾选状态下原生控件渲染大小不一 */
+input[type=checkbox]{appearance:none;-webkit-appearance:none;width:16px;height:16px;border:1.5px solid #cbd5e1;border-radius:4px;background:var(--input);vertical-align:-3px;cursor:pointer;position:relative;flex:none;margin:0}
+input[type=checkbox]:checked{background:var(--btn);border-color:var(--btn)}
+input[type=checkbox]:checked::after{content:"";position:absolute;left:4.5px;top:1px;width:4px;height:8px;border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg)}
+input[type=checkbox]:disabled{opacity:.5;cursor:not-allowed}
+input[type=radio]{accent-color:var(--btn);width:15px;height:15px;vertical-align:-2px}
 input[type=range]{accent-color:var(--btn);padding:0;border:0;background:none}
 button.act{background:var(--btn);color:var(--btn-fg);border:0;padding:8px 18px;border-radius:7px;cursor:pointer;margin-top:8px;font-family:inherit;font-size:13.5px;transition:background .15s}
 button.act:hover{background:var(--btn-hover)}
@@ -349,7 +354,7 @@ table.memtbl td:nth-child(5){white-space:nowrap}
 .rm b{font-size:13.5px}
 .rm.on b{color:var(--fg-strong)}
 .master{display:flex;align-items:flex-start;gap:10px}
-.master input[type=checkbox]{width:17px;height:17px;margin-top:2px}
+.master input[type=checkbox]{margin-top:2px}
 /* 未保存修改提示：输入框蓝色描边；保存按钮无修改时置灰 */
 input.dirty,textarea.dirty{border-color:var(--acc)!important;box-shadow:0 0 0 1px var(--acc)}
 button.act:disabled{opacity:.45;cursor:default}
@@ -400,6 +405,7 @@ select.mini,input.mini{padding:4px 8px;font-size:12.5px}
   <button data-t="stickers">表情包</button>
  <button data-t="devctrl">设备操控</button>
   <button data-t="zcode">ZCode 联动</button>
+  <button data-t="plugins">插件</button>
   <button data-t="settings">设置</button>
   <button data-t="about">关于</button>
  </nav>
@@ -416,7 +422,7 @@ select.mini,input.mini{padding:4px 8px;font-size:12.5px}
 <script>
 const $=s=>document.querySelector(s);
 let TAB='status';
-const TITLES={status:'状态',runlog:'运行日志',models:'模型管理',groups:'群消息',private:'私聊消息',persona:'人设',style:'风格卡',memory:'记忆',stickers:'表情包',devctrl:'设备操控',zcode:'ZCode 联动',settings:'设置',about:'关于'};
+const TITLES={status:'状态',runlog:'运行日志',models:'模型管理',groups:'群消息',private:'私聊消息',persona:'人设',style:'风格卡',memory:'记忆',stickers:'表情包',devctrl:'设备操控',zcode:'ZCode 联动',plugins:'插件',settings:'设置',about:'关于'};
 function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 function head(sub){return '<h2>'+TITLES[TAB]+'</h2>'+(sub?'<div class="sub">'+sub+'</div>':'')}
 function goTab(t){const b=document.querySelector('#nav button[data-t="'+t+'"]');if(b)b.click()}
@@ -485,7 +491,7 @@ function dirtyOn(el,btnId){el.classList.add('dirty');const b=document.getElement
 function dirtyOff(btnId){const b=document.getElementById(btnId);if(b)b.disabled=true;document.querySelectorAll('textarea.dirty,input.dirty').forEach(x=>x.classList.remove('dirty'))}
 async function dirtyGuard(){const d=document.querySelector('textarea.dirty,input.dirty');if(!d)return true;
  return await dlgConfirm({title:'有未保存的修改',body:'当前有未保存的修改（蓝色边框标记），离开将丢失。确定离开？',okText:'放弃修改',danger:true})}
-async function load(){try{if(TAB==='status')await vStatus();else if(TAB==='runlog')await vRunlog();else if(TAB==='models')await vModels();else if(TAB==='groups')await vGroups();else if(TAB==='private')await vPrivate();else if(TAB==='persona')await vPersonas();else if(TAB==='style')await vFile('style');else if(TAB==='memory')await vMemory();else if(TAB==='stickers')await vStickers();else if(TAB==='devctrl')await vDevCtrl();else if(TAB==='zcode')await vZcode();else if(TAB==='settings')await vSettings();else if(TAB==='about')await vAbout();}catch(e){$('#view').innerHTML='<div class="card">加载失败: '+esc(e)+'</div>'}}
+async function load(){try{if(TAB==='status')await vStatus();else if(TAB==='runlog')await vRunlog();else if(TAB==='models')await vModels();else if(TAB==='groups')await vGroups();else if(TAB==='private')await vPrivate();else if(TAB==='persona')await vPersonas();else if(TAB==='style')await vFile('style');else if(TAB==='memory')await vMemory();else if(TAB==='stickers')await vStickers();else if(TAB==='devctrl')await vDevCtrl();else if(TAB==='zcode')await vZcode();else if(TAB==='plugins')await vPlugins();else if(TAB==='settings')await vSettings();else if(TAB==='about')await vAbout();}catch(e){$('#view').innerHTML='<div class="card">加载失败: '+esc(e)+'</div>'}}
 document.querySelectorAll('#nav button').forEach(b=>b.onclick=async()=>{if(!await dirtyGuard())return;document.querySelectorAll('#nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');TAB=b.dataset.t;if(TAB!=='runlog'&&_runlogTimer){clearInterval(_runlogTimer);_runlogTimer=null}if(TAB!=='devctrl'&&_devCodeTimer){clearInterval(_devCodeTimer);_devCodeTimer=null}if(TAB!=='status'&&_ncTokTimer){clearInterval(_ncTokTimer);_ncTokTimer=null}skeleton();load()});
 const _urlTab=new URLSearchParams(location.search).get('tab');
 if(_urlTab&&TITLES[_urlTab]){TAB=_urlTab;document.querySelectorAll('#nav button').forEach(x=>x.classList.toggle('on',x.dataset.t===_urlTab));}
@@ -2040,6 +2046,28 @@ async function biliScan(){
    else if(p.state==='expired'){el.textContent='二维码已过期，请关闭重试';clearInterval(timer)}
   }catch(e){}
  },2000)}
+async function vPlugins(){
+ const r=await api('/api/plugins').catch(()=>({plugins:[]}));
+ const rows=(r.plugins||[]).map(p=>{
+  const on=!!p.enabled;
+  const st='<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" '+(on?'checked':'')+' onchange="plToggle(\''+esc(p.name)+'\',this.checked)"> '+(on?'已启用':'已停用')+'</label>';
+  const settings=(p.settings||[]).map(s=>{
+   const v=p.values&&p.values[s.key]!==undefined?p.values[s.key]:s.default;
+   if(s.type==='toggle')return '<label style="display:flex;gap:6px;align-items:center;margin-top:4px"><input type="checkbox" '+(v?'checked':'')+' onchange="plSet(\''+esc(p.name)+'\',\''+esc(s.key)+'\',this.checked)"> '+esc(s.label||s.key)+'</label>';
+   if(s.type==='number')return '<label style="display:flex;gap:6px;align-items:center;margin-top:4px">'+esc(s.label||s.key)+' <input type="number" value="'+esc(String(v??''))+'" style="width:90px" onchange="plSet(\''+esc(p.name)+'\',\''+esc(s.key)+'\',parseInt(this.value)||0)"></label>';
+   return '<label style="display:block;margin-top:4px">'+esc(s.label||s.key)+'<input value="'+esc(String(v??''))+'" style="width:100%;margin-top:2px" onchange="plSet(\''+esc(p.name)+'\',\''+esc(s.key)+'\',this.value)"></label>';
+  }).join('');
+  return '<div class="card" style="margin-bottom:12px"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b style="font-size:14px">'+esc(p.title||p.name)+'</b>'+(p.builtin?'<span class="badge" style="background:var(--tint);color:var(--dim)">内置</span>':'<span class="badge" style="background:var(--tint);color:var(--dim)">自定义</span>')+'<span style="margin-left:auto">'+st+'</span></div>'+
+   '<div class="k" style="margin-top:6px">'+esc(p.description||'')+'</div>'+(settings?'<div style="margin-top:8px">'+settings+'</div>':'')+'</div>';
+ }).join('');
+ $('#view').innerHTML=head('插件（可按需启停的功能模块）')+saveHint('启停与设置即时生效；默认关闭的功能不会消耗任何资源。')+
+ ((r.plugins||[]).length?'<div style="margin-top:4px">'+rows+'</div>':'<div class="card">暂无插件</div>');
+}
+async function plToggle(name,on){
+ const r=await saveKV('/api/plugins/toggle',{name:name,enabled:on},'插件已'+(on?'启用':'停用')+'（即时生效）');
+ if(r.ok!==false)load()}
+async function plSet(name,key,value){
+ await saveKV('/api/plugins/setting',{name:name,key:key,value:value},'插件设置已更新（即时生效）')}
 async function biliRun(){
  const r=await api('/api/bili/run',{method:'POST'}).catch(e=>({ok:false,error:e}));
  if(r.ok===false){toast(r.error||'触发失败',false);return}
@@ -2836,6 +2864,28 @@ class UiHandler(BaseHTTPRequestHandler):
                              "updated": int(m.get("updated") or 0)})
             rows.sort(key=lambda x: (-x["updated"], x["qq"]))
             return self._reply(200, {"ok": True, "members": rows})
+        if u.path == "/api/plugins":
+            import qq_plugins as _qp
+            host = _qp.PluginHost()
+            out = []
+            for name, (mf, pdir, builtin) in sorted(host.scan().items()):
+                mf = dict(mf) if isinstance(mf, dict) else {}
+                st = host._state()
+                en_map = st.get("enabled") if isinstance(st.get("enabled"), dict) else {}
+                set_map = (st.get("settings") or {}).get(name) if isinstance(st.get("settings"), dict) else {}
+                defaults = {s.get("key"): s.get("default")
+                            for s in (mf.get("settings") or []) if isinstance(s, dict)}
+                values = dict(defaults)
+                if isinstance(set_map, dict):
+                    values.update(set_map)
+                out.append({"name": name, "title": str(mf.get("title") or name),
+                            "description": str(mf.get("description") or ""),
+                            "builtin": builtin,
+                            "default_enabled": bool(mf.get("default_enabled", False)),
+                            "enabled": host.enabled(name, bool(mf.get("default_enabled", False))),
+                            "settings": mf.get("settings") or [],
+                            "values": values})
+            return self._reply(200, {"ok": True, "plugins": out})
         if u.path == "/api/persona-routes":
             d = load_json_const(PERSONA_ROUTES_PATH, {})
             routes = (d.get("routes") or []) if isinstance(d, dict) else []
@@ -4355,6 +4405,34 @@ class UiHandler(BaseHTTPRequestHandler):
         if u.path == "/api/memory/clear":
             write_const(MEMORY_STREAM_PATH, "")
             return self._reply(200, {"ok": True})
+        if u.path in ("/api/plugins/toggle", "/api/plugins/setting"):
+            import qq_plugins as _qp
+            name = str(body.get("name", "")).strip()
+            if not name or name not in _qp.PluginHost().scan():
+                return self._reply(400, {"ok": False, "error": "插件不存在"})
+            st = _qp.PluginHost()._state()
+            data = dict(st) if isinstance(st, dict) else {}
+            if u.path == "/api/plugins/toggle":
+                en = data.setdefault("enabled", {})
+                if not isinstance(en, dict):
+                    en = {}
+                    data["enabled"] = en
+                en[name] = bool(body.get("enabled"))
+            else:
+                sets = data.setdefault("settings", {})
+                if not isinstance(sets, dict):
+                    sets = {}
+                    data["settings"] = sets
+                vals = sets.setdefault(name, {})
+                if not isinstance(vals, dict):
+                    vals = {}
+                    sets[name] = vals
+                vals[str(body.get("key", ""))[:40]] = body.get("value")
+            try:
+                write_const(_qp.STATE_PATH, json.dumps(data, ensure_ascii=False, indent=2))
+                return self._reply(200, {"ok": True})
+            except OSError as e:
+                return self._reply(500, {"ok": False, "error": repr(e)})
         if u.path == "/api/member-profiles/save":
             qq = str(body.get("qq", "")).strip()
             name = str(body.get("name", "")).strip()[:40]
