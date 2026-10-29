@@ -983,7 +983,7 @@ async function editModel(i){
   +row('API Key','<select id="em_key" class="mini" style="width:100%">'+keyOpts+'</select>','该条目调用时使用的智谱账号')
   +row('上下文档位（千 token）','<input id="em_ctx" type="number" min="4" max="128" value="'+(e.ctx||'')+'" placeholder="按模型默认（flash 系 128）" style="width:100%">','控制注入的对话历史与记忆规模；人设/风格/安全规则永不裁剪')
   +row('思考模式','<select id="em_th" class="mini" style="width:100%">'+thOpts+'</select>')
-  +row('最大输出（tokens）','<input id="em_maxout" type="number" min="256" max="32768" step="256" value="'+(e.maxout||'')+'" placeholder="默认（按思考档 600–4096）" style="width:100%">','单次回复的输出上限；开思考时会自动放大以留出思考空间')
+  +row('最大输出（tokens）','<input id="em_maxout" type="number" min="600" max="32768" step="256" value="'+(e.maxout||'')+'" placeholder="默认（按思考档 600–4096）" style="width:100%">','单次回复的输出上限（建议 600 以上；设太小会截断回复、丢失回复末尾的记忆标记）')
   +'<div class="dlg-btns"><button class="act ghost">取消</button><button class="act">'+(creating?'添加':'保存')+'</button></div></div>';
  document.body.appendChild(m);
  const close=()=>m.remove();
