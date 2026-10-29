@@ -1588,6 +1588,8 @@ async function vSettings(){
    <span><b>AI 生图</b><div class="k" style="margin-top:3px">主人发「画：描述」或自然说法（帮我画一张/给我画个/来一张…，私聊或群里@）→ CogView-3-flash 免费生成并发图</div></span></label>
   <label class="master"><input type="checkbox" ${rv.daily_review_enabled!==false?'checked':''} onchange="saveFeature('daily_review_enabled',this.checked)">
    <span><b>夜间自动复盘</b><div class="k" style="margin-top:3px">每日 03:30 自动统计当日表现、提炼风格观察、日报发主人私聊</div></span></label>
+  <label class="master"><input type="checkbox" ${rv.env_pulse_enabled?'checked':''} onchange="saveKVLoad('/api/reply-config',{env_pulse_enabled:this.checked},'电脑状态感知已'+(this.checked?'开启':'关闭'))">
+   <span><b>电脑状态感知</b>（默认关闭）<div class="k" style="margin-top:3px">开启后主人的私聊里，机器人知道这台电脑的实况（开机时长/内存占用/磁盘余量），聊到电脑状态时能自然应答；数据只在本机读取、只出现在主人私聊，不进群聊。在意隐私保持关闭即可</div></span></label>
  </div>
  <div class="card"><div class="k">开机自启（登录 Windows 后自动打开控制台窗口${c.autostart_with_windows?'，已开启':'，未开启'}）</div>
   <div style="margin-top:8px"><label><input type="checkbox" id="sauto" ${c.autostart_with_windows||S_autostartRegistry()?'checked':''} onchange="saveAuto(this.checked)"> 开机自动启动本应用</label></div></div>
@@ -1905,8 +1907,9 @@ async function vMemory(){
  <table class="memtbl"><tr><th>时间</th><th>类型</th><th>对象</th><th>内容</th><th>操作</th></tr>${rows||'<tr><td colspan=5 class="k">空</td></tr>'}</table>
  <div style="display:flex;gap:8px"><button class="act" onclick="addMemo()">手动新增一条记忆</button>
  <button class="act ghost danger" onclick="clearMem()">清空全部记忆流水</button></div></div>
- <div class="card" style="margin-top:14px"><div class="k" style="margin-bottom:8px">群成员画像<span class="badge" style="background:var(--tint);color:var(--dim)">每日复盘自动更新</span></div>
- <div class="k" style="margin-bottom:8px">机器人对每个熟人的长期了解（身份、兴趣、相处注意事项），聊天时自动带上「记得你」的感觉；也可手动编辑。</div>
+ <div class="card" style="margin-top:14px"><div class="k" style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">群成员画像<span class="badge" style="background:var(--tint);color:var(--dim)">每日复盘自动更新</span>
+  <label style="margin-left:auto;display:flex;gap:6px;align-items:center"><input type="checkbox" ${(rvState.member_profiles_enabled)?'checked':''} onchange="saveKVLoad('/api/reply-config',{member_profiles_enabled:this.checked},'群成员画像已'+(this.checked?'开启':'关闭'))"> 启用（默认关闭）</label></div>
+ <div class="k" style="margin-bottom:8px">机器人对每个熟人的长期了解（身份、兴趣、相处注意事项），聊天时自动带上「记得你」的感觉；涉及对群友信息的积累，默认关闭，开启后也会只存在本机、记忆页可随时查看/编辑/删除。</div>
  <table class="memtbl"><tr><th>昵称</th><th>QQ</th><th>画像</th><th>常驻群</th><th>操作</th></tr>${profs||'<tr><td colspan=5 class="k">暂无画像（夜间复盘会自动为活跃成员生成）</td></tr>'}</table>
  <div style="display:flex;gap:8px"><button class="act" onclick="editProfile('')">手动新增画像</button></div></div>`;
 }
@@ -2883,6 +2886,8 @@ class UiHandler(BaseHTTPRequestHandler):
                                      "proactive_groups_silent_start": data.get("proactive_groups_silent_start", "22:00"),
                                      "proactive_groups_silent_end": data.get("proactive_groups_silent_end", "08:00"),
                                      "proactive_hourly_cap": data.get("proactive_hourly_cap", 2),
+                                     "env_pulse_enabled": bool(data.get("env_pulse_enabled", False)),
+                                     "member_profiles_enabled": bool(data.get("member_profiles_enabled", False)),
                                      "lean_ctx_enabled": data.get("lean_ctx_enabled", True),
                                      "wait_gate_enabled": data.get("wait_gate_enabled", True),
                                      "burst_merge_enabled": data.get("burst_merge_enabled", True),
@@ -3457,6 +3462,9 @@ class UiHandler(BaseHTTPRequestHandler):
                     data["proactive_hourly_cap"] = max(0, min(60, int(body["proactive_hourly_cap"])))
                 except (TypeError, ValueError):
                     return self._reply(400, {"ok": False, "error": "总量上限应为 0-60 整数（0=不限）"})
+            for _pk in ("env_pulse_enabled", "member_profiles_enabled"):
+                if _pk in body:
+                    data[_pk] = bool(body[_pk])
             for _pk in ("proactive_groups_probability", "proactive_private_probability"):
                 if _pk in body:
                     try:

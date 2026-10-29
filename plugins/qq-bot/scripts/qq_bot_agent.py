@@ -1952,9 +1952,19 @@ def _self_state_line(chat_type, chat_id):
             "按人设口吻如实转述，不要说\"配置/设置/系统\"这类词）\n" + body)
 
 
+def _reply_cfg():
+    try:
+        return load_json_const(REPLY_CONFIG_PATH, {})
+    except Exception:
+        return {}
+
+
 def _env_pulse_line(chat_type, chat_id):
-    """电脑环境脉搏（仅主人私聊）：开机时长/内存/磁盘，聊到电脑状态时可自然引用。"""
+    """电脑环境脉搏（仅主人私聊，且需 env_pulse_enabled 显式开启——
+    隐私铁律：涉及用户设备/第三方信息的功能一律提供开关且默认关闭）。"""
     if not _is_owner_chat(chat_type, chat_id):
+        return ""
+    if not _reply_cfg().get("env_pulse_enabled"):
         return ""
     now = time.time()
     if now - _ENV_PULSE_CACHE["ts"] < 300 and _ENV_PULSE_CACHE["text"]:
@@ -2018,7 +2028,10 @@ def _hot_brief_refresh():
 
 def _member_profile_block(chat_type, chat_id, sender_id, sender_name):
     """群成员画像注入：发言者的画像一行 + 本群其他已画像成员（最多 3 个），
-    让机器人对熟人表现得出「记得你」。私聊只看发言者本人。"""
+    让机器人对熟人表现得出「记得你」。私聊只看发言者本人。
+    需 member_profiles_enabled 显式开启（涉及对第三方的信息积累，默认关闭）。"""
+    if not _reply_cfg().get("member_profiles_enabled"):
+        return ""
     try:
         members = _member_profiles_load()
     except Exception:
@@ -2060,7 +2073,10 @@ def _member_profile_block(chat_type, chat_id, sender_id, sender_name):
 
 def _member_profiles_review(daemon):
     """复盘时增量更新群成员画像（每天一次、一次 LLM 调用、失败静默）：
-    从各白名单群最近历史取活跃成员 → 结合已有画像让模型增量提炼 → 合并落盘。"""
+    从各白名单群最近历史取活跃成员 → 结合已有画像让模型增量提炼 → 合并落盘。
+    需 member_profiles_enabled（不开就不收集，已有画像也不再更新）。"""
+    if not _reply_cfg().get("member_profiles_enabled"):
+        return
     try:
         members = _member_profiles_load()
         wl = load_json_const(GROUP_WL_PATH, {})
