@@ -740,8 +740,11 @@ def is_owner_qq_set():
 
 _SEARCH_STRONG = ("搜一下", "搜索", "搜下", "帮我搜", "查一下", "帮我查", "查查")
 _SEARCH_WEAK = ("最新", "新闻", "天气", "汇率", "股价", "价格", "多少钱", "发布了",
-                "新版本", "近期", "最近有", "今天有", "现在有")
-_SEARCH_Q = ("?", "？", "吗", "呢", "什么", "怎么", "几", "多少")
+                "新版本", "近期", "最近有", "今天有", "现在有",
+                "热搜", "热点", "大瓜", "吃瓜", "上映", "发售", "开售", "开票",
+                "销量", "比分", "赛果", "谁赢了", "听说", "看到没", "看到了吗",
+                "出了没", "有没有新")
+_SEARCH_Q = ("?", "？", "吗", "呢", "什么", "怎么", "几", "多少", "没", "啥")
 
 
 def needs_search(text):
@@ -1891,6 +1894,238 @@ def _interrupt_gate(daemon, msg, persona_name):
     return "Y" not in ans
 
 
+# ---------------- 环境感知（自我状态/天气/热点/电脑脉搏/群成员画像） ----------------
+
+MEMBER_PROFILES_PATH = os.path.join(DATA_DIR, "member_profiles.json")
+HOT_BRIEF_PATH = os.path.join(DATA_DIR, "hot_brief.json")
+_HOT_BRIEF_MAX = 400
+_ENV_PULSE_CACHE = {"ts": 0.0, "text": "", "line": ""}
+
+
+def _member_profiles_load():
+    try:
+        d = json.loads(read_const(MEMBER_PROFILES_PATH, "{}"))
+    except ValueError:
+        d = {}
+    return d.get("members") if isinstance(d, dict) and isinstance(d.get("members"), dict) else {}
+
+
+def _member_profiles_save(members):
+    write_const(MEMBER_PROFILES_PATH,
+                json.dumps({"members": members}, ensure_ascii=False, indent=2))
+
+
+def _is_owner_chat(chat_type, chat_id):
+    try:
+        return chat_type == "private" and \
+            str(chat_id) == str(owner_qq() or "")
+    except Exception:
+        return False
+
+
+def _self_state_line(chat_type, chat_id):
+    """自我状态卡：机器人知道自己的作息设定，被问「几点下班/休息/怎么不理人」
+    时按人设如实回答，而不是一脸茫然或编造。没有特殊作息时只在主人私聊给交代。"""
+    try:
+        cfg = C.load_app_config()
+    except Exception:
+        return ""
+    parts = []
+    if cfg.get("sched_pause_enabled"):
+        s, e = str(cfg.get("sched_pause_start") or ""), str(cfg.get("sched_pause_end") or "")
+        if s and e:
+            parts.append("每天 %s 到 %s 是你给自己定的休息/睡觉时间，这段时间你不回复任何消息"
+                         "（相当于你的下班时间）" % (s, e))
+    if not parts:
+        if not _is_owner_chat(chat_type, chat_id):
+            return ""
+        body = "- 你没有设置固定休息时段，目前全天在线；被问作息时按人设自然说，不要编造具体时段"
+    else:
+        body = "- " + "；".join(parts)
+        if _is_owner_chat(chat_type, chat_id):
+            try:
+                if RT.snapshot().get("paused"):
+                    body += "；当前还处于「暂停回应」状态，主人可在控制台恢复"
+            except Exception:
+                pass
+    return ("\n\n## 你的当前状态（真实情况；被问作息/下班/休息/在不在/怎么不理人时"
+            "按人设口吻如实转述，不要说\"配置/设置/系统\"这类词）\n" + body)
+
+
+def _env_pulse_line(chat_type, chat_id):
+    """电脑环境脉搏（仅主人私聊）：开机时长/内存/磁盘，聊到电脑状态时可自然引用。"""
+    if not _is_owner_chat(chat_type, chat_id):
+        return ""
+    now = time.time()
+    if now - _ENV_PULSE_CACHE["ts"] < 300 and _ENV_PULSE_CACHE["text"]:
+        return _ENV_PULSE_CACHE["line"]
+    try:
+        import ctypes
+        ms = ctypes.c_uint64(ctypes.windll.kernel32.GetTickCount64()).value
+
+        class _MEM(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_uint64), ("ullAvailPhys", ctypes.c_uint64),
+                        ("ullTotalPageFile", ctypes.c_uint64), ("ullAvailPageFile", ctypes.c_uint64),
+                        ("ullTotalVirtual", ctypes.c_uint64), ("ullAvailVirtual", ctypes.c_uint64),
+                        ("ullAvailExtendedVirtual", ctypes.c_uint64)]
+        mem = _MEM()
+        mem.dwLength = ctypes.sizeof(_MEM)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(mem))
+        import shutil
+        du = shutil.disk_usage(os.path.expanduser("~"))
+        days = ms / 86400000.0
+        boot = ("已连续开机 %.1f 天" % days) if days >= 1 else ("已开机 %d 小时" % max(1, int(ms // 3600000)))
+        text = "%s，内存占用 %d%%，C 盘剩余 %.0fGB（共 %.0fGB）" % (
+            boot, int(mem.dwMemoryLoad), du.free / 2 ** 30, du.total / 2 ** 30)
+        line = ("\n\n## 主人的电脑环境（真实数据；主人聊到电脑状态时可自然引用，"
+                "其他话题不必提）\n- " + text)
+        _ENV_PULSE_CACHE.update(ts=now, text=text, line=line)
+        return line
+    except Exception:
+        return ""
+
+
+def _hot_brief_line():
+    """今日热点速览（复盘时刷新，date==today 才注入）→ 聊到新闻/热搜时有背景知识。"""
+    try:
+        d = json.loads(read_const(HOT_BRIEF_PATH, "{}"))
+    except ValueError:
+        return ""
+    if not isinstance(d, dict) or str(d.get("date") or "") != time.strftime("%Y-%m-%d"):
+        return ""
+    text = str(d.get("text") or "").strip()
+    if not text:
+        return ""
+    return ("\n\n## 今日热点速览（今天 %s 的新闻/热搜摘要，聊到相关话题时可自然引用，"
+            "不确定的细节不要编）\n- %s" % (d.get("date"), text[:_HOT_BRIEF_MAX]))
+
+
+def _hot_brief_refresh():
+    """复盘时抓一次今日热点（search_web 已含失败静默），写 hot_brief.json。"""
+    try:
+        res, _backend = search_web("今日热点新闻 头条")
+        text = str(res or "").strip()
+        if text:
+            write_const(HOT_BRIEF_PATH, json.dumps(
+                {"date": time.strftime("%Y-%m-%d"),
+                 "text": text[:_HOT_BRIEF_MAX + 200], "ts": time.time()},
+                ensure_ascii=False))
+            out("AGENT_HOT_BRIEF ok %d chars" % len(text))
+    except Exception as e:
+        out("AGENT_HOT_BRIEF_FAIL %r" % e)
+
+
+def _member_profile_block(chat_type, chat_id, sender_id, sender_name):
+    """群成员画像注入：发言者的画像一行 + 本群其他已画像成员（最多 3 个），
+    让机器人对熟人表现得出「记得你」。私聊只看发言者本人。"""
+    try:
+        members = _member_profiles_load()
+    except Exception:
+        return ""
+    if not members:
+        return ""
+    rows = []
+
+    def _row(qq):
+        m = members.get(str(qq)) or {}
+        note = str(m.get("note") or "").strip()
+        if not note:
+            return ""
+        name = str(m.get("name") or "").strip()
+        return "- %s(QQ:%s)：%s" % (name or "（昵称未知）", qq, note[:150])
+
+    mine = _row(sender_id)
+    others = []
+    if chat_type == "group":
+        for qq, m in members.items():
+            if str(qq) == str(sender_id):
+                continue
+            if chat_id and chat_id not in [str(g) for g in (m.get("groups") or [])]:
+                continue
+            r = _row(qq)
+            if r:
+                others.append(r)
+            if len(others) >= 3:
+                break
+    if not mine and not others:
+        return ""
+    block = "\n\n## 群成员画像（你对这些人的长期了解，交流时可自然体现）"
+    if mine:
+        block += "\n### 发言者\n" + mine
+    if others:
+        block += "\n### 本群其他人\n" + "\n".join(others)
+    return block
+
+
+def _member_profiles_review(daemon):
+    """复盘时增量更新群成员画像（每天一次、一次 LLM 调用、失败静默）：
+    从各白名单群最近历史取活跃成员 → 结合已有画像让模型增量提炼 → 合并落盘。"""
+    try:
+        members = _member_profiles_load()
+        wl = load_json_const(GROUP_WL_PATH, {})
+        gids = [str(g) for g in (wl.get("groups") or [])][:4] if isinstance(wl, dict) else []
+        today = {}
+        for gid in gids:
+            try:
+                hist = daemon.history("group", gid, limit=40) or []
+            except Exception:
+                continue
+            for h in hist:
+                qq = str(h.get("sender_id") or "")
+                if not qq or h.get("is_bot") or len(qq) < 5:
+                    continue
+                ent = today.setdefault(qq, {"name": str(h.get("sender_name") or ""),
+                                            "groups": set(), "lines": []})
+                ent["groups"].add(gid)
+                if len(ent["lines"]) < 4:
+                    t = str(h.get("text") or "").strip()
+                    if t:
+                        ent["lines"].append(t[:60])
+        if not today:
+            return
+        sample = []
+        for qq, ent in sorted(today.items(), key=lambda kv: -len(kv[1]["groups"]))[:8]:
+            cur = (members.get(qq) or {}).get("note", "")
+            sample.append("QQ:%s 昵称:%s 已有画像:%s\n今天说过: %s"
+                          % (qq, ent["name"], cur or "（无）",
+                             " / ".join(ent["lines"]) or "（无文字）"))
+        prompt = (
+            "你是群聊观察助手。下面是今天活跃的群成员及其发言摘要。"
+            "请为每个人写/更新一条长期画像（第三人称，不超过60字：身份特征、兴趣、"
+            "和机器人相处注意事项等），只依据给出的事实，不要编造。"
+            "输出纯 JSON 对象：{\"QQ号\": {\"name\": \"昵称\", \"note\": \"画像\"}}，"
+            "只输出 JSON。\n\n" + "\n\n".join(sample))
+        _m, text = call_glm_with_fallback(
+            [{"role": "system", "content": "只输出符合要求的 JSON。"},
+             {"role": "user", "content": prompt}], "")
+        mm = re.search(r"\{.*\}", text, re.S)
+        if not mm:
+            return
+        got = json.loads(mm.group(0))
+        changed = 0
+        for qq, info in got.items():
+            qq = str(qq)
+            if not qq.isdigit() or not isinstance(info, dict):
+                continue
+            note = str(info.get("note") or "").strip()[:150]
+            if not note:
+                continue
+            old = members.get(qq) or {}
+            members[qq] = {"name": str(info.get("name") or old.get("name") or ""),
+                           "note": note,
+                           "groups": sorted(set(
+                               [str(g) for g in (old.get("groups") or [])] +
+                               [str(g) for g in (today.get(qq) or {}).get("groups", ())])),
+                           "updated": int(time.time())}
+            changed += 1
+        if changed:
+            _member_profiles_save(members)
+            out("AGENT_PROFILES +%d (total %d)" % (changed, len(members)))
+    except Exception as e:
+        out("AGENT_PROFILES_FAIL %r" % e)
+
+
 def build_messages(daemon, msg, ctx_k=32):
     """按上下文档位（ctx_k=千 token 预算）装配消息：
     ≥16k 全量 / 8-16k 标准 / <8k 精简（历史更短、记忆更少、安全段压缩）。"""
@@ -2105,9 +2340,37 @@ def build_messages(daemon, msg, ctx_k=32):
                   "请注意区分上午/下午/凌晨，不要搞错时间。"
                   % (_tinfo["iso"], _tinfo["weekday"], _tinfo["clock12"],
                      _tinfo["clock24"], _tinfo["tz"]))
+    # 环境感知块（各自内部判定适用范围，不适用时返回空串=零 token 成本）
+    _aware = ""
+    try:
+        _aware += _self_state_line(msg["chat_type"], msg["chat_id"])
+    except Exception:
+        pass
+    try:
+        _wl = _weather_line()
+        if _wl:
+            _aware += ("\n\n## 当前天气（所在地实况，可自然引用，不必每次都提）\n- " + _wl)
+    except Exception:
+        pass
+    try:
+        _aware += _hot_brief_line()
+    except Exception:
+        pass
+    try:
+        _aware += _env_pulse_line(msg["chat_type"], msg["chat_id"])
+    except Exception:
+        pass
+    try:
+        _aware += _member_profile_block(msg["chat_type"], msg["chat_id"],
+                                        msg.get("sender_id"), msg.get("sender_name"))
+    except Exception:
+        pass
+    if _aware:
+        _aware = "\n" + _aware.strip("\n") + "\n"
     system = (
         head_line + "\n" + _time_line + "\n"
         + (naming_lines() + "\n" if naming_lines() else "")
+        + _aware
         + "\n%s%s%s%s%s%s%s\n\n"
         "## 硬性规则\n"
         "- 输出是QQ聊天文本：禁止Markdown（# * ` [链接]()），口语化\n"
@@ -3893,7 +4156,9 @@ def _review_window_lines():
 
 
 def _daily_review_once(daemon):
-    """复盘上次以来的运行表现 → GLM 提炼风格观察 → 写入自进化 → 日报发主人。"""
+    """复盘上次以来的运行表现 → GLM 提炼风格观察 → 写入自进化 → 日报发主人。
+    顺带：刷新今日热点简报（C2）+ 增量更新群成员画像（E）。"""
+    _hot_brief_refresh()
     import io
     lines, end_pos = _review_window_lines()
     if end_pos:
@@ -3916,6 +4181,14 @@ def _daily_review_once(daemon):
         "你是机器人运营复盘助手。自上次复盘以来的运行数据：回复 %d 次、主动沉默 %d 次、错误 %d 次。"
         % (done, skip, err))
     prompt += "\n当前人设名：%s。已有风格观察：\n%s\n" % (active, recent)
+    try:
+        _hbd = json.loads(read_const(HOT_BRIEF_PATH, "{}"))
+        if isinstance(_hbd, dict) and str(_hbd.get("date") or "") == time.strftime("%Y-%m-%d") \
+                and _hbd.get("text"):
+            prompt += ("\n今日热点背景（日报里可自然带一句群聊氛围与热点的关联，不硬塞）：\n%s\n"
+                       % str(_hbd["text"])[:200])
+    except Exception:
+        pass
     prompt += ("请基于以上数据写一段给主人的简短日报（不超过150字，口语化），"
                "并单独提炼 1-2 条新的风格观察（每条不超过40字，格式纯 JSON 数组）。"
                "输出格式：第一行日报文字，然后一行 [观察1,观察2]（没有就 []）。")
@@ -3964,6 +4237,7 @@ def _daily_review_once(daemon):
             out("AGENT_ZCODE_REPORT_FAIL %r" % e)
     out("AGENT_REVIEW_DONE done=%d skip=%d err=%d notes=%d"
         % (done, skip, err, len(notes)))
+    _member_profiles_review(daemon)
 
 
 def _backup_data():
