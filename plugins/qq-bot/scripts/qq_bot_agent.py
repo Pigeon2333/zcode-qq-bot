@@ -2061,6 +2061,118 @@ def _hot_brief_line():
             "不确定的细节不要编）\n- %s" % (d.get("date"), text[:_HOT_BRIEF_MAX]))
 
 
+# ---------------- 追聊（对话中的主动追问，像真人一样"晾我我就来找你"） ----------------
+
+_NUDGE_STATE = {}          # chat_key -> {"strikes": n, "last_ts": ts}
+_NUDGE_LAST_RUN = 0.0      # 巡检限频（20s 一次即可，主循环 ~2.5s 一轮）
+
+
+def _nudge_cfg():
+    cfg = load_json_const(REPLY_CONFIG_PATH, {})
+    try:
+        dmin = max(30, int(cfg.get("nudge_delay_min_sec", 150)))
+    except (TypeError, ValueError):
+        dmin = 150
+    try:
+        dmax = max(dmin, int(cfg.get("nudge_delay_max_sec", 300)))
+    except (TypeError, ValueError):
+        dmax = 300
+    try:
+        strikes = max(1, int(cfg.get("nudge_max_strikes", 2)))
+    except (TypeError, ValueError):
+        strikes = 2
+    return (bool(cfg.get("nudge_enabled", True)), dmin, dmax, strikes)
+
+
+def _nudge_compose(daemon, chat_type, chat_id):
+    """生成一句追问：人设全栈（按会话路由）+ 最近对话 → 一句话。"""
+    hist = daemon.history(chat_type, chat_id, limit=8)
+    lines = []
+    for h in hist:
+        who = "你" if h.get("is_bot") else str(h.get("sender_name", "?"))
+        lines.append("%s: %s" % (who, str(h.get("text", ""))[:80]))
+    sys_p = (_persona_stack_text((chat_type, chat_id)) +
+             "\n\n## 场景\n对方几分钟没有回你消息了（上面是你=「你」和对方的最近对话）。"
+             "用一句话自然地追问或关心：可以调侃对方跑路了、问在不在想什么、"
+             "或顺着刚才没聊完的话头轻轻拉回来——符合人设口吻，不要重复你刚说过的内容，"
+             "不要长篇大论，只输出这一句话本身。")
+    _m, text = call_glm_with_fallback(
+        [{"role": "system", "content": sys_p},
+         {"role": "user", "content": "对方沉默了，追一句。"}], "")
+    texts, _st, _memo, _draw, _sg = parse_reply(text)
+    return (texts or [""])[0][:200]
+
+
+def _nudge_tick(daemon):
+    """追聊节拍：每 20s 巡检一次。触发条件（全部满足）：
+    ① 会话最近 1 小时有往来 ② 最后一条是机器人说的（对方没接）
+    ③ 本轮对话是双向的（bot 发言之前对方说过话）④ 沉默时长进入随机窗口
+    ⑤ 该轮追问次数未达上限。对方一回复即重置。安静模式/禁用时段尊重。"""
+    global _NUDGE_LAST_RUN
+    now = time.time()
+    if now - _NUDGE_LAST_RUN < 20:
+        return
+    _NUDGE_LAST_RUN = now
+    enabled, dmin, dmax, max_strikes = _nudge_cfg()
+    if not enabled:
+        return
+    st = daemon.status() or {}
+    if st.get("quiet_until", 0) > now:
+        return
+    cfg = load_json_const(REPLY_CONFIG_PATH, {})
+    lt = time.localtime()
+    if _in_silent_window(cfg, "private", lt) or _in_silent_window(cfg, "groups", lt):
+        return
+    try:
+        chats = daemon.recent_chats(within=3600) or []
+    except Exception:
+        return
+    for ct, cid in [(_c["chat_type"], _c["chat_id"]) for _c in chats][:12]:
+        key = "%s:%s" % (ct, cid)
+        hist = daemon.history(ct, cid, limit=8)
+        if len(hist) < 2:
+            continue
+        last = hist[0]
+        if not last.get("is_bot"):
+            # 对方刚说话（或最后是对方）：重置该会话追问状态
+            if _NUDGE_STATE.get(key, {}).get("strikes"):
+                _NUDGE_STATE[key] = {"strikes": 0, "last_ts": 0.0}
+            continue
+        bot_ts = float(last.get("ts") or 0)
+        if bot_ts <= 0:
+            continue
+        gap = now - bot_ts
+        s = _NUDGE_STATE.setdefault(key, {"strikes": 0, "last_ts": 0.0})
+        if s["strikes"] >= max_strikes:
+            continue
+        if s["last_ts"] >= bot_ts:
+            continue  # 这条 bot 消息发出后已经追过
+        if gap < dmin:
+            continue
+        if s["strikes"] == 0 and gap > dmax + 60:
+            continue  # 错过第一追的窗口太久（超过 1 分钟+上限），不再补追
+        # 本轮必须双向（bot 发言之前对方说过话）
+        if not any(not h.get("is_bot") for h in hist[1:]):
+            continue
+        # 追！（每次巡检最多追 1 个会话）
+        try:
+            text = _nudge_compose(daemon, ct, cid)
+        except Exception as e:
+            out("AGENT_NUDGE_FAIL %s/%s %r" % (ct, cid, e))
+            text = ""
+        if text:
+            try:
+                daemon.send(ct, cid, [text])
+                s["strikes"] += 1
+                s["last_ts"] = now
+                out("AGENT_NUDGE_OK chat=%s/%s strikes=%d" % (ct, cid, s["strikes"]))
+            except Exception as e:
+                out("AGENT_NUDGE_SEND_FAIL %r" % e)
+        else:
+            s["last_ts"] = now  # 生成失败也标记，避免反复重试同一轮
+        return  # 每次巡检只追一个会话
+
+
 def _hot_brief_refresh():
     """复盘时抓一次今日热点（search_web 已含失败静默），写 hot_brief.json。"""
     try:
@@ -4479,6 +4591,10 @@ def main():
                 _proactive_tick(daemon)
                 _cron_tick(daemon)
                 PLUGIN_HOST.run_ticks(daemon)
+                try:
+                    _nudge_tick(daemon)
+                except Exception as _ne:
+                    out("AGENT_NUDGE_TICK_FAIL %r" % _ne)
                 global _last_zcode_return
                 now_ts = time.time()
                 if now_ts - _last_zcode_return > 60:

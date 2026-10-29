@@ -1081,6 +1081,8 @@ async function vGroups(){
     <span><b>感兴趣才回</b><div class="k" style="margin-top:2px">AI 按人设判断这条消息值不值得接话，不感兴趣就静默；关闭则纯随机</div></span></label></div>
    <div style="margin-top:8px"><label class="master"><input type="checkbox" id="anti" ${c.chat_anti_interrupt!==false?'checked':''} onchange="saveCk('chat_anti_interrupt',this.checked,'防插嘴')">
     <span><b>防插嘴</b><div class="k" style="margin-top:2px">结合上下文判断：与自己无关的话题、他人之间正在讨论的对话、无人叫你时保持沉默；开启时覆盖上一项，判定更严格</div></span></label></div>
+   <div style="margin-top:8px"><label class="master"><input type="checkbox" ${rv.nudge_enabled!==false?'checked':''} onchange="saveKVLoad('/api/reply-config',{nudge_enabled:this.checked},'主动追问已'+(this.checked?'开启':'关闭'))">
+    <span><b>聊到一半的主动追问</b><div class="k" style="margin-top:2px">和对方聊着天、对方忽然不说话了——沉默一会儿后机器人会像真人那样主动追问一句（"睡着啦？""怎么不说话了"）。每轮对话最多追问 <input type="number" min="1" max="5" value="${rv.nudge_max_strikes??2}" style="width:44px" onchange="saveKVLoad('/api/reply-config',{nudge_max_strikes:Math.max(1,Math.min(5,parseInt(this.value)||2))},'追问次数已更新')"> 次；对方回复即重新计时。沉默 <input type="number" min="30" max="1800" value="${rv.nudge_delay_min_sec??150}" style="width:60px" onchange="saveKVLoad('/api/reply-config',{nudge_delay_min_sec:Math.max(30,Math.min(1800,parseInt(this.value)||150))},'追问延迟已更新')"> 秒后开始（实际会在一个小区间内随机，更自然）。禁用时段/安静模式时不追</div></span></label></div>
   </div>`:''}
  </div>
  <div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">主动发消息<span class="badge" style="background:var(--tint);color:var(--dim)">全局通用默认</span>（每个群可在下方白名单行内单独覆盖）</div>
@@ -3090,6 +3092,10 @@ class UiHandler(BaseHTTPRequestHandler):
                                      "proactive_groups_silent_start": data.get("proactive_groups_silent_start", "22:00"),
                                      "proactive_groups_silent_end": data.get("proactive_groups_silent_end", "08:00"),
                                      "proactive_hourly_cap": data.get("proactive_hourly_cap", 2),
+                                     "nudge_enabled": bool(data.get("nudge_enabled", True)),
+                                     "nudge_delay_min_sec": data.get("nudge_delay_min_sec", 150),
+                                     "nudge_delay_max_sec": data.get("nudge_delay_max_sec", 300),
+                                     "nudge_max_strikes": data.get("nudge_max_strikes", 2),
                                      "env_pulse_enabled": bool(data.get("env_pulse_enabled", False)),
                                      "member_profiles_enabled": bool(data.get("member_profiles_enabled", False)),
                                      "bili_scroll_enabled": bool(data.get("bili_scroll_enabled", False)),
@@ -3665,13 +3671,25 @@ class UiHandler(BaseHTTPRequestHandler):
                     pass
             if "proactive_private_enabled" in body:
                 data["proactive_private_enabled"] = bool(body["proactive_private_enabled"])
+            for _nk in ("nudge_delay_min_sec", "nudge_delay_max_sec"):
+                if _nk in body:
+                    try:
+                        data[_nk] = max(30, min(1800, int(body[_nk])))
+                    except (TypeError, ValueError):
+                        return self._reply(400, {"ok": False, "error": _nk + " 应为 30-1800 秒"})
+            if "nudge_max_strikes" in body:
+                try:
+                    data["nudge_max_strikes"] = max(1, min(5, int(body["nudge_max_strikes"])))
+                except (TypeError, ValueError):
+                    return self._reply(400, {"ok": False, "error": "追问次数应为 1-5"})
             if "proactive_hourly_cap" in body:
                 try:
                     data["proactive_hourly_cap"] = max(0, min(60, int(body["proactive_hourly_cap"])))
                 except (TypeError, ValueError):
                     return self._reply(400, {"ok": False, "error": "总量上限应为 0-60 整数（0=不限）"})
             for _pk in ("env_pulse_enabled", "member_profiles_enabled",
-                        "bili_scroll_enabled", "bili_share_enabled"):
+                        "bili_scroll_enabled", "bili_share_enabled",
+                        "nudge_enabled"):
                 if _pk in body:
                     data[_pk] = bool(body[_pk])
             if "bili_scroll_window_min" in body:

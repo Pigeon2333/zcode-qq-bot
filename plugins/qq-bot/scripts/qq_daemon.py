@@ -1135,12 +1135,20 @@ class Daemon:
         reply_to = str(reply_message_id).strip() if reply_message_id else ""
         n = 0
         for i, t in enumerate(texts[:8]):
+            t = str(t)
+            if i == 0:
+                delay = 0
+            else:
+                # 拟人打字节奏：条间延迟 = 基础随机 + 本条字数因子
+                # （打长一点的消息本来就要多打一会儿），上限 6s
+                delay = (rand_int(lo, max(hi, lo)) + min(len(t), 200) * 15) / 1000.0
+                delay = min(delay, 6.0)
             self.send_queue.append({
                 "chat_type": chat_type, "chat_id": chat_id, "kind": "text",
-                "text": str(t),
+                "text": t,
                 # 引用仅挂在第一条消息上（多条连发只引用一次，符合真人习惯）
                 "reply_to": reply_to if (i == 0 and reply_to) else "",
-                "delay": 0 if i == 0 else rand_int(lo, max(hi, lo)) / 1000.0,
+                "delay": delay,
             })
             n += 1
         threading.Thread(target=self._drain_send_queue, daemon=True).start()
