@@ -1911,7 +1911,8 @@ async function setPrimary(id){
  const r=await saveKV('/api/keys/primary',{id},'主 Key 已切换（生图/搜索/未指定条目即用新主 Key）');
  if(r.ok!==false)load()}
 async function vMemory(){
- const [d,mp]=await Promise.all([api('/api/memory'),api('/api/member-profiles').catch(()=>({members:[]}))]);
+ const [d,mp,rv]=await Promise.all([api('/api/memory'),api('/api/member-profiles').catch(()=>({members:[]})),api('/api/reply-config').catch(()=>({}))]);
+ rvState=rv;
  const rows=(d.items||[]).map(r=>`<tr><td class="mono">${esc(r.time)}</td><td>${r.scope==='group'?'群':'人'}</td><td class="mono">${esc(String(r.id))}</td><td>${esc(r.text)}</td>
   <td><button class="act ghost" style="margin:0;padding:3px 10px;font-size:12px" onclick="editMemo(${r.idx})">编辑</button>
   <button class="act ghost danger" style="margin:0;padding:3px 10px;font-size:12px" onclick="delMemo(${r.idx})">删除</button></td></tr>`).join('');
