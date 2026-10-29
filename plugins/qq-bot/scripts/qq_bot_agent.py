@@ -2526,10 +2526,11 @@ def _owner_groups_line(daemon):
 
 
 def parse_reply(text):
+    # 所有 return 必须同形（5 元组）：texts/stickers/memo/draw/sendgrp
     if "[SKIP]" in text.upper().replace(" ", ""):
-        return None, [], None, None
+        return None, [], None, None, None
     if "[WAIT]" in text.upper().replace(" ", "") and wait_gate_enabled():
-        return "WAIT", [], None, None
+        return "WAIT", [], None, None, None
     text = _WAIT_LEAK_RE.sub("", text)  # 等说完关闭/漏写时兜底剥离，绝不泄漏给用户
     # [画: 描述] 标记：模型自主补触发画图（系统没自动识别但主人明显想画时）
     dm = _DRAW_MARK_RE.search(text)
