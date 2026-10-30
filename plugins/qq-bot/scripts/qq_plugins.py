@@ -43,6 +43,7 @@ class PluginAPI:
     def __init__(self, host, name):
         self._host = host
         self.name = name
+        self._windows = {}
 
     def on_tick(self, fn):
         self._host.hooks.setdefault(self.name, {})["tick"] = fn
@@ -55,6 +56,23 @@ class PluginAPI:
 
     def log(self, msg):
         self._host.log("PLUGIN[%s] %s" % (self.name, msg))
+
+    def every(self, minutes, fn):
+        """窗口节流的 tick：minutes 分钟最多跑一次（挂到宿主的统一节拍上）。
+        用法：api.every(180, my_round) —— my_round(daemon) 每 3 小时至多执行一次。
+        agent 重启后首个 tick 立即执行一次（冷启动即跑），之后按窗口。"""
+        state = {"last": 0.0}
+
+        def _wrapped(daemon):
+            now = time.time()
+            if now - state["last"] < max(1, float(minutes)) * 60:
+                return
+            state["last"] = now
+            try:
+                fn(daemon)
+            except Exception as e:
+                self.log("EVERY_FAIL %r" % e)
+        return _wrapped
 
 
 class PluginHost:
@@ -179,15 +197,21 @@ class PluginHost:
             except Exception as e:
                 self.log("PLUGIN_TICK_FAIL %s %r" % (name, e))
 
-    def inject_all(self, chat_type, chat_id):
-        """汇总所有启用插件的上下文注入块。"""
+    def inject_all(self, chat_type, chat_id, sender_id=None, sender_name=None):
+        """汇总所有启用插件的上下文注入块。
+        sender_id/name 可选：有发言者上下文时传入（member_profiles 等插件用）；
+        不支持 kwarg 的旧式注入函数按 (ct, cid) 调用（兼容）。"""
         out = []
         for name in list(self.hooks.keys()):
             fn = self.hooks[name].get("inject")
             if not fn:
                 continue
             try:
-                s = str(fn(chat_type, chat_id) or "")
+                try:
+                    s = str(fn(chat_type, chat_id, sender_id=sender_id,
+                               sender_name=sender_name) or "")
+                except TypeError:
+                    s = str(fn(chat_type, chat_id) or "")
                 if s.strip():
                     out.append(s.strip())
             except Exception as e:

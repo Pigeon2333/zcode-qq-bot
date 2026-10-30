@@ -606,7 +606,7 @@ async function vStatus(){
   +'<div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="act" onclick="wizardSave()">保存</button>'
   +'<span class="k">保存后，若上面还有「!」项，先按提示补齐，再做第 2 步</span></div>'
   +'<div class="k" style="margin:12px 0 4px;font-weight:600">第 2 步 · 填 API Key（智谱 或 DeepSeek）</div>'
-  +'<div class="k">到「设置 → ③ 接口与模型消耗 → API Key」：粘贴 Key 点添加（智谱 Key 供应商留「智谱」，DeepSeek Key 选「DeepSeek」，模型链已预置两家默认模型）。智谱有免费额度够日常聊天；DeepSeek 便宜量足。</div>'
+  +'<div class="k">到「设置 → ③ 接口与模型消耗 → API Key」：粘贴 Key 点添加（智谱 Key 供应商留「智谱」，DeepSeek Key 选「DeepSeek」，模型链已预置两家默认模型）。智谱有免费额度够日常聊天；DeepSeek 便宜量足。也支持 Kimi / OpenAI / Grok / Gemini / 自定义（详见「设置 → ③ 接口与模型消耗」）。</div>'
   +'<div class="k" style="margin:12px 0 4px;font-weight:600">第 3 步 · 启动并扫码</div>'
   +'<div class="k">回本页点「启动机器人」→ 会自动弹出 NapCat 登录页 → 用<b>机器人那个 QQ 号</b>扫码。登录页若要求填「登录密钥 / Token」：回本页「NapCat 登录密钥」卡片点<b>「打开登录页（免密钥）」</b>直接进（密钥自动从 NapCat 配置读取，也能一键复制）。登录成功后，把机器人拉进群或私聊它，@它说句话试试。第一条回复到了，就全部完成了🎉</div>'
   +'<div class="k" style="margin-top:10px;border-top:1px solid var(--line);padding-top:8px">常见卡点：①登录页没弹出→看本页启动日志；②登录页要密钥→用「打开登录页（免密钥）」；③扫码后 WebUI 又要求登录→NapCat 换新密钥了，回「NapCat 登录密钥」卡片点「刷新」；④机器人不回→确认群里没被「暂停回应」、Key 有效。更多说明见 README（github.com/Pigeon2333/zcode-qq-bot）</div></div>'
@@ -614,7 +614,7 @@ async function vStatus(){
  const keyWarn=(String(c.bot_qq||'').trim()&&!hasKey)?
   '<div class="card" style="border:1px solid var(--warn)"><b>还差最后一步：AI 大脑还没有 API Key</b>'
   +'<div class="k" style="margin-top:4px">机器人现在能连上 QQ，但不会说话（agent 会一直在线等待，不会算启动失败）。'
-  +'填好后立即生效、无需重启：免费注册 <a href="https://open.bigmodel.cn" target="_blank">open.bigmodel.cn</a> → 创建 API Key → 到「设置 → ③ 接口与模型消耗 → API Key」粘贴（供应商选「智谱」），或用 DeepSeek Key（供应商选 DeepSeek）。</div>'
+  +'填好后立即生效、无需重启：免费注册 <a href="https://open.bigmodel.cn" target="_blank">open.bigmodel.cn</a> → 创建 API Key → 到「设置 → ③ 接口与模型消耗 → API Key」粘贴（供应商选「智谱」），或用 DeepSeek Key（供应商选 DeepSeek）；也支持 Kimi/OpenAI 等其他供应商。</div>'
   +'<div style="margin-top:8px"><button class="act" onclick="goTab(\'settings\')">去填 Key</button></div></div>':'';
  $('#view').innerHTML=head('组件运行状态与机器人开关')+
  `${wizard}${keyWarn}${upBanner}
@@ -864,7 +864,8 @@ async function vModels(){
     <span><b>自动思考</b><div class="k" style="margin-top:2px">按消息难度自动决定：简单寒暄不思考秒回；长文/推理/技术难题开最高思考；开启后忽略逐模型设置</div></span></label>
   </div>
   <div class="k" style="margin-top:6px">逐模型覆盖：点模型行「编辑」在弹窗中单独设置（默认=跟随上面的默认思考）。</div></div>
- <div class="card"><div class="k">模型降级链（自上而下尝试；429/失效自动冷却切下一个；点「编辑」修改模型名 / API Key / 上下文档位 / 思考模式；「立即使用」= 无视冷却强制切到该模型——自动切换切错了、或原模型已恢复但还在冷却时用，该模型再次失败或被移出链会自动解除锁定）</div>
+ <div class="card"><div class="k">模型降级链：从上往下逐个尝试，某个模型限流/失效会自动冷却并切到下一个。</div>
+ <div class="k" style="margin-top:4px">点「编辑」改模型名 / API Key / 上下文档位 / 思考模式。「立即使用」= 无视冷却强制切到该模型（自动切换切错了、或模型已恢复但还在冷却时用）；它再次失败或被移出链会自动解锁。</div>
  <div class="chain" style="margin-top:10px">${rows||'<i class="k">空</i>'}</div>
  <div style="margin-top:10px;display:flex;gap:8px"><button class="act" onclick="editModel(-1)">＋ 添加模型</button></div></div>
  <div class="card"><div class="k" style="display:flex;gap:10px;align-items:center;margin-bottom:8px">限额管理
@@ -982,14 +983,14 @@ function chainOf(entries){return entries.map(e=>(e.key||e.ctx||e.maxout)?{model:
 async function editModel(i){
  const creating=i<0;const e=creating?{model:'',key:'',ctx:'',think:'',maxout:''}:Object.assign({},window._mEntries[i]);
  const keysL=window._mKeys||[];
- const keyOpts='<option value=""'+(!e.key?' selected':'')+'>主 Key（智谱）</option>'
-  +keysL.map(k=>`<option value="${esc(k.id)}"${e.key===k.id?' selected':''}>${k.primary?'★ ':''}${esc(k.label||k.id)}（${esc(k.provider_label||'智谱')}）</option>`).join('');
+ const keyOpts='<option value=""'+(!e.key?' selected':'')+'>主 Key（未指定条目默认用）</option>'
+  +keysL.map(k=>`<option value="${esc(k.id)}"${e.key===k.id?' selected':''}>${k.primary?'★ ':''}${esc(k.label||k.id)}（${esc(k.provider_label||'未设置供应商')}）</option>`).join('');
  const thOpts=['','off','high','low'].map(v=>'<option value="'+v+'"'+((e.think||'')===v?' selected':'')+'>'+({'' :'跟随默认','off':'关闭思考','high':'思考·高','low':'思考·低'})[v]+'</option>').join('');
  const row=(label,inner,hint)=>'<div style="margin-top:10px"><div class="k" style="margin-bottom:4px">'+label+'</div>'+inner+(hint?'<div class="k" style="margin-top:3px">'+hint+'</div>':'')+'</div>';
  const m=document.createElement('div');m.className='dlg-mask';
  m.innerHTML='<div class="dlg" role="dialog" style="max-width:440px;max-height:86vh;overflow-y:auto"><h3>'+(creating?'添加模型':'编辑模型')+'</h3>'
   +row('模型名','<input id="em_model" value="'+esc(e.model)+'" placeholder="如 glm-5.3-flash" style="width:100%">')
-  +row('API Key','<select id="em_key" class="mini" style="width:100%">'+keyOpts+'</select>','该条目调用时使用的智谱账号')
+  +row('API Key','<select id="em_key" class="mini" style="width:100%">'+keyOpts+'</select>','该条目用哪个 Key 调用（模型名需与 Key 的供应商匹配；生图/联网固定用智谱 Key）')
   +row('上下文档位（千 token）','<input id="em_ctx" type="number" min="4" max="128" value="'+(e.ctx||'')+'" placeholder="按模型默认（flash 系 128）" style="width:100%">','控制注入的对话历史与记忆规模；人设/风格/安全规则永不裁剪')
   +row('思考模式','<select id="em_th" class="mini" style="width:100%">'+thOpts+'</select>')
   +row('最大输出（tokens）','<input id="em_maxout" type="number" min="600" max="32768" step="256" value="'+(e.maxout||'')+'" placeholder="默认（按思考档 600–4096）" style="width:100%">','单次回复的输出上限（建议 600 以上；设太小会截断回复、丢失回复末尾的记忆标记）')
@@ -1293,7 +1294,7 @@ async function personaMigrate(){
  if(!cmd){toast('生成失败',false);return}
  const m=document.createElement('div');m.className='dlg-mask';
  m.innerHTML='<div class="dlg" role="dialog" style="max-width:560px"><h3>一键迁移指令</h3>'
-  +'<div class="dlg-body">把下面这段发给另一边的 Agent（如 dsh 会话），它会把那边的人设/记忆写到本机数据目录，机器人重启即完成迁移：</div>'
+  +'<div class="dlg-body">把下面这段发给另一台电脑上正在运行的机器人控制台/Agent 会话，它会把那边的人设/记忆写到本机数据目录，机器人重启即完成迁移：</div>'
   +'<textarea id="migcmd" readonly style="width:100%;min-height:170px;margin-top:10px;font-family:monospace;font-size:12px">'+esc(cmd)+'</textarea>'
   +'<div class="dlg-btns"><button class="act ghost">关闭</button><button class="act">复制指令</button></div></div>';
  document.body.appendChild(m);
@@ -1567,10 +1568,10 @@ async function vSettings(){
   </div></div>
 
  <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">③ 接口与模型消耗</div>
- <div class="card"><div class="k">API Key（智谱开放平台获取；多个 Key 时选一个「主」——生图/联网搜索/模型链未指定 Key 的条目都用主 Key；模型链每行可在「模型管理」单独指定 Key）</div>
+ <div class="card"><div class="k">API Key（各供应商官网注册获取；支持智谱、DeepSeek、Kimi、OpenAI、Grok、Gemini、自定义。多个 Key 时选一个「主」——模型链未指定 Key 的条目都用主 Key，模型链每行可在「模型管理」单独指定。生图与联网搜索目前仅支持智谱 Key）</div>
   <div style="margin-top:10px">${keysL.map(k=>`<div class="row">
    <label style="margin:0;flex:none;white-space:nowrap"><input type="radio" name="primkey" ${k.primary?'checked':''} onchange="setPrimary('${esc(k.id)}')"> 主</label>
-   <span class="badge" style="flex:none;background:var(--tint);color:var(--dim)">${esc(k.provider_label||'智谱')}</span>
+   <span class="badge" style="flex:none;background:var(--tint);color:var(--dim)">${esc(k.provider_label||'未设置供应商')}</span>
    <input value="${esc(k.label||'')}" data-kid="${esc(k.id)}" style="flex:1" onchange="renameKey('${esc(k.id)}',this)">
    <span class="mono" style="flex:none;width:150px">${esc(k.mask||'')}${k.base_url?'<br><span class="k mono" style="font-size:11px">'+esc(k.base_url)+'</span>':''}</span>
    <select class="mini" style="flex:none;width:96px" title="该 Key 的供应商" onchange="setKeyProvider('${esc(k.id)}',this.value)">
@@ -1597,7 +1598,7 @@ async function vSettings(){
    <input id="nkbase" placeholder="Base URL，如 https://api.xxx.com/v1" style="flex:1;min-width:200px;display:none">
    <input id="nkval" type="password" placeholder="粘贴 API Key" style="flex:1;min-width:180px">
    <button class="act" onclick="addKey()">添加 Key</button></div>
-  <div class="k" style="margin-top:6px">预制供应商（OpenAI 兼容）：智谱、DeepSeek（deepseek-chat / deepseek-reasoner）、Kimi（moonshot-v1-8k…）、OpenAI（gpt-4o 等）、Grok（grok-2 等）、Gemini（gemini-2.0-flash 等）、自定义（填 Base URL，禁止内网地址）。智谱/DeepSeek/Kimi 国内直连；OpenAI/Grok/Gemini 需在下方配置 API 代理后使用。主 Key 与生图/联网搜索固定用智谱 Key；模型链每行可绑定任意 Key。Key 仅存本机数据目录，列表仅显示掩码。</div>
+  <div class="k" style="margin-top:6px">预制供应商（OpenAI 兼容）：智谱、DeepSeek（deepseek-chat / deepseek-reasoner）、Kimi（moonshot-v1-8k…）、OpenAI（gpt-4o 等）、Grok（grok-2 等）、Gemini（gemini-2.0-flash 等）、自定义（填 Base URL，禁止内网地址）。智谱/DeepSeek/Kimi 国内直连；OpenAI/Grok/Gemini 需在下方配置 API 代理后使用。主 Key = 未指定条目默认用的 Key，可为任意供应商；生图和联网搜索目前仅支持智谱 Key。Key 仅存本机数据目录，列表仅显示掩码。</div>
   <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
    <span class="k" style="flex:none">API 代理（可选）</span>
    <input id="apiproxy" value="${esc(String(c.api_proxy||''))}" style="width:240px" placeholder="http://127.0.0.1:7890（Clash 等本地代理）" onchange="saveKV('/api/app-config',{api_proxy:this.value.trim()},'API 代理已保存（即时生效；留空=直连）')">
@@ -1643,7 +1644,7 @@ async function vSettings(){
   <label class="master" style="margin-bottom:6px"><input type="checkbox" ${rv.remote_control_enabled!==false?'checked':''} onchange="saveFeature('remote_control_enabled',this.checked)">
    <span><b>私聊遥控</b><div class="k" style="margin-top:3px">主人私聊发指令管理机器人（状态/用量/人设/群管理/功能开关/暂停恢复），私聊机器人发「帮助」查看全部</div></span></label>
   <label class="master" style="margin-bottom:6px"><input type="checkbox" ${rv.draw_enabled!==false?'checked':''} onchange="saveFeature('draw_enabled',this.checked)">
-   <span><b>AI 生图</b><div class="k" style="margin-top:3px">主人发「画：描述」或自然说法（帮我画一张/给我画个/来一张…，私聊或群里@）→ CogView-3-flash 免费生成并发图</div></span></label>
+   <span><b>AI 生图</b><div class="k" style="margin-top:3px">主人发「画：描述」或自然说法（帮我画一张/给我画个/来一张…，私聊或群里@）→ 用智谱 Key 调 CogView 生成并发图（消耗该账号额度）</div></span></label>
   <label class="master"><input type="checkbox" ${rv.daily_review_enabled!==false?'checked':''} onchange="saveFeature('daily_review_enabled',this.checked)">
    <span><b>夜间自动复盘</b><div class="k" style="margin-top:3px">每日 03:30 自动统计当日表现、提炼风格观察、日报发主人私聊</div></span></label>
   <label class="master"><input type="checkbox" ${rv.env_pulse_enabled?'checked':''} onchange="saveKVLoad('/api/reply-config',{env_pulse_enabled:this.checked},'电脑状态感知已'+(this.checked?'开启':'关闭'))">
@@ -1796,7 +1797,7 @@ async function vAbout(){
    <div class="k">更新源就是你自己的 Release 仓库；私有仓库需要填一个只读 Token（fine-grained，Contents: Read），否则会 404。国内直连超过 30 秒仍很慢会自动换加速镜像，镜像内容必须通过 GitHub 的 SHA256 校验才会被采用。</div>
   </div></div>
  <div class="card"><div class="k">致谢</div>
-  <div class="k" style="margin-top:6px">基于智谱 GLM 系列模型与 NapCat（OneBot 11）构建；感谢所有测试群里陪她聊天、帮她变得更好的朋友们。</div></div>`;
+  <div class="k" style="margin-top:6px">支持智谱 GLM、DeepSeek、Kimi 等多家模型，通过 NapCat（OneBot 11）连接 QQ；感谢所有测试群里陪她聊天、帮她变得更好的朋友们。</div></div>`;
  if(vi.cached_update&&vi.cached_update.ok)upShow(vi.cached_update);
 }
 

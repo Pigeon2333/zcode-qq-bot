@@ -1,0 +1,9 @@
+{
+  "name": "member_profiles",
+  "title": "群成员画像",
+  "description": "机器人对每个常聊群友的长期了解（身份、兴趣、相处注意事项），聊天时自动带上「记得你」的感觉。涉及对第三方的信息收集，默认关闭；开启后数据只存本机，记忆页「群成员画像」卡可随时查看/编辑/删除。",
+  "default_enabled": false,
+  "settings": [
+    {"key": "inject_others", "type": "toggle", "label": "同时注入本群其他已画像成员（最多3人，更像记得大家）", "default": true}
+  ]
+}
