@@ -311,10 +311,12 @@ textarea{width:100%;min-height:260px;background:var(--input);color:var(--fg);bor
 textarea:focus,input:focus,select:focus{outline:2px solid var(--line2);border-color:var(--fg-strong)}
 input,select{background:var(--input);color:var(--fg);border:1px solid var(--line2);border-radius:7px;padding:6px 10px;font-family:inherit;font-size:13.5px}
 input:focus{background:var(--input-focused)}
-/* checkbox 自绘（appearance:none）：彻底统一尺寸与视觉，杜绝不同勾选状态下原生控件渲染大小不一 */
-input[type=checkbox]{appearance:none;-webkit-appearance:none;width:16px;height:16px;border:1.5px solid #cbd5e1;border-radius:4px;background:var(--input);vertical-align:-3px;cursor:pointer;position:relative;flex:none;margin:0}
+/* checkbox 自绘（appearance:none）：box-sizing:border-box 全局下显式 content-box +
+   清掉通用 input 的 padding 继承，保证任何上下文里都是精确正方形 */
+input[type=checkbox]{appearance:none;-webkit-appearance:none;box-sizing:content-box;width:16px;height:16px;padding:0;border:1.5px solid #cbd5e1;border-radius:4px;background:var(--input);vertical-align:-3px;cursor:pointer;position:relative;flex:none;margin:0;outline:none}
+input[type=checkbox]:hover{border-color:var(--btn)}
 input[type=checkbox]:checked{background:var(--btn);border-color:var(--btn)}
-input[type=checkbox]:checked::after{content:"";position:absolute;left:4.5px;top:1px;width:4px;height:8px;border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg)}
+input[type=checkbox]:checked::after{content:"";position:absolute;inset:0;margin:auto;width:4px;height:8px;border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg)}
 input[type=checkbox]:disabled{opacity:.5;cursor:not-allowed}
 input[type=radio]{accent-color:var(--btn);width:15px;height:15px;vertical-align:-2px}
 input[type=range]{accent-color:var(--btn);padding:0;border:0;background:none}
@@ -1647,22 +1649,6 @@ async function vSettings(){
   <label class="master"><input type="checkbox" ${rv.env_pulse_enabled?'checked':''} onchange="saveKVLoad('/api/reply-config',{env_pulse_enabled:this.checked},'电脑状态感知已'+(this.checked?'开启':'关闭'))">
    <span><b>电脑状态感知</b>（默认关闭）<div class="k" style="margin-top:3px">开启后主人的私聊里，机器人知道这台电脑的实况（开机时长/内存占用/磁盘余量），聊到电脑状态时能自然应答；数据只在本机读取、只出现在主人私聊，不进群聊。在意隐私保持关闭即可</div></span></label>
  </div>
- <div class="card"><div class="k" style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">B 站刷视频<span class="badge" style="background:var(--tint);color:var(--dim)">默认关闭</span><span id="biliuid"></span></div>
-  <div id="bililogin"></div>
-  <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-top:8px">
-   <label><input type="checkbox" ${rv.bili_scroll_enabled?'checked':''} onchange="saveKVLoad('/api/reply-config',{bili_scroll_enabled:this.checked},'B 站刷视频已'+(this.checked?'开启':'关闭'))"> 主动刷视频（默认关闭）</label>
-   <label><input type="checkbox" ${rv.bili_share_enabled?'checked':''} onchange="saveKVLoad('/api/reply-config',{bili_share_enabled:this.checked},'B 站分享已'+(this.checked?'开启':'关闭'))"> 主动分享给主人（默认关闭）</label>
-  </div>
-  <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-top:8px">
-   <label>刷视频周期：每 <input type="number" min="30" max="1440" value="${rv.bili_scroll_window_min??180}" style="width:64px" onchange="saveKVLoad('/api/reply-config',{bili_scroll_window_min:Math.max(30,Math.min(1440,parseInt(this.value)||180))},'周期已更新')"> 分钟一个窗口</label>
-   <label>兴趣关键词（逗号分隔，空=内置池）<input value="${esc(rv.bili_scroll_keywords||'')}" style="width:200px" onchange="saveKVLoad('/api/reply-config',{bili_scroll_keywords:this.value},'关键词已更新')"></label>
-  </div>
-  <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-top:8px">
-   <label>主人的 B 站 UID（收站内私信用，可空）<input value="${esc(String(c.owner_bilibili_uid||''))}" style="width:140px" onchange="saveKVLoad('/api/app-config',{owner_bilibili_uid:this.value.trim()},'UID 已保存')"></label>
-   <button class="act" onclick="biliRun()">现在刷一轮</button>
-  </div>
-  <div class="k" style="margin-top:6px">机器人用自己的 B 站账号扫码登录后，会按周期以人设兴趣刷视频：看过的存为见闻（聊天里可能自然提起），真心觉得好的会私聊分享给你——刷视频与分享各自独立开关。B 站 Cookie 只存本机。</div>
- </div>
  <div class="card"><div class="k">开机自启（登录 Windows 后自动打开控制台窗口${c.autostart_with_windows?'，已开启':'，未开启'}）</div>
   <div style="margin-top:8px"><label><input type="checkbox" id="sauto" ${c.autostart_with_windows||S_autostartRegistry()?'checked':''} onchange="saveAuto(this.checked)"> 开机自动启动本应用</label></div></div>
  <div class="card"><div class="k">启动行为</div>
@@ -1732,7 +1718,6 @@ async function vSettings(){
   <div style="margin-top:8px;display:flex;gap:8px">
    <button class="act danger" onclick="doUninstall()">卸载</button>
    <span class="k">点击后程序会自动退出并完成清理</span></div></div>`;
- biliInit().catch(()=>{});
 }
 let _autoReg=null,_upTimer=null;
 async function blList(){const c=await api('/api/app-config').catch(()=>({}));return c.user_blacklist||[]}
@@ -2053,18 +2038,59 @@ async function vPlugins(){
  const rows=(r.plugins||[]).map(p=>{
   const on=!!p.enabled;
   const st='<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" '+(on?'checked':'')+' onchange="plToggle(\''+esc(p.name)+'\',this.checked)"> '+(on?'已启用':'已停用')+'</label>';
+  const pageBtn=p.page?'<button class="act ghost" style="margin:0;padding:4px 12px;font-size:12px" onclick="plPage(\''+esc(p.name)+'\')">管理</button>':'';
+  const uninstall=p.builtin?'':'<button class="act ghost danger" style="margin:0;padding:4px 12px;font-size:12px" onclick="plUninstall(\''+esc(p.name)+'\')">卸载</button>';
   const settings=(p.settings||[]).map(s=>{
    const v=p.values&&p.values[s.key]!==undefined?p.values[s.key]:s.default;
    if(s.type==='toggle')return '<label style="display:flex;gap:6px;align-items:center;margin-top:4px"><input type="checkbox" '+(v?'checked':'')+' onchange="plSet(\''+esc(p.name)+'\',\''+esc(s.key)+'\',this.checked)"> '+esc(s.label||s.key)+'</label>';
    if(s.type==='number')return '<label style="display:flex;gap:6px;align-items:center;margin-top:4px">'+esc(s.label||s.key)+' <input type="number" value="'+esc(String(v??''))+'" style="width:90px" onchange="plSet(\''+esc(p.name)+'\',\''+esc(s.key)+'\',parseInt(this.value)||0)"></label>';
    return '<label style="display:block;margin-top:4px">'+esc(s.label||s.key)+'<input value="'+esc(String(v??''))+'" style="width:100%;margin-top:2px" onchange="plSet(\''+esc(p.name)+'\',\''+esc(s.key)+'\',this.value)"></label>';
   }).join('');
-  return '<div class="card" style="margin-bottom:12px"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b style="font-size:14px">'+esc(p.title||p.name)+'</b>'+(p.builtin?'<span class="badge" style="background:var(--tint);color:var(--dim)">内置</span>':'<span class="badge" style="background:var(--tint);color:var(--dim)">自定义</span>')+'<span style="margin-left:auto">'+st+'</span></div>'+
+  return '<div class="card" style="margin-bottom:12px"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b style="font-size:14px">'+esc(p.title||p.name)+'</b>'+(p.builtin?'<span class="badge" style="background:var(--tint);color:var(--dim)">内置</span>':'<span class="badge" style="background:var(--tint);color:var(--dim)">已安装</span>')+'<span style="margin-left:auto;display:flex;gap:6px;align-items:center">'+pageBtn+uninstall+st+'</span></div>'+
    '<div class="k" style="margin-top:6px">'+esc(p.description||'')+'</div>'+(settings?'<div style="margin-top:8px">'+settings+'</div>':'')+'</div>';
  }).join('');
  $('#view').innerHTML=head('插件（可按需启停的功能模块）')+saveHint('启停与设置即时生效；默认关闭的功能不会消耗任何资源。')+
+ '<div class="card" style="margin-bottom:14px"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b>安装新插件</b><span class="k">从 zip 安装（插件包 = 一个含 manifest.json 的文件夹打成的 zip）；安装同名插件 = 更新覆盖</span></div>'+
+  '<div style="display:flex;gap:8px;margin-top:8px;align-items:center"><button class="act" style="margin:0" onclick="plInstall()">选择 zip 安装 / 更新…</button><span id="plnote" class="k"></span></div></div>'+
  ((r.plugins||[]).length?'<div style="margin-top:4px">'+rows+'</div>':'<div class="card">暂无插件</div>');
 }
+async function plPage(name){
+ const r=await api('/api/plugins').catch(()=>({plugins:[]}));
+ const p=(r.plugins||[]).find(x=>x.name===name);
+ if(!p||!p.page){toast('该插件没有管理页',false);return}
+ let data={};
+ if(p.page.data){data=await api(p.page.data).catch(()=>({}))}
+ const fn=window[p.page.js];
+ $('#view').innerHTML=head('插件 · '+(p.title||name))+'<div style="margin-top:10px"><button class="act ghost" onclick="goTab(\'plugins\')">← 返回插件列表</button></div><div id="plpage" style="margin-top:12px"></div>';
+ if(typeof fn!=='function'){document.getElementById('plpage').innerHTML='<div class="card">插件管理页加载失败：缺少 '+esc(p.page.js)+'()</div>';return}
+ document.getElementById('plpage').innerHTML=fn(data,p);
+ if(typeof window[p.page.js+'Init']==='function'){try{window[p.page.js+'Init'](data,p)}catch(e){}}
+}
+async function plInstall(){
+ const r=await api('/api/plugins/install',{method:'POST'}).catch(e=>({ok:false,error:'请求失败'}));
+ if(r.ok===false){toast(r.error||'安装失败',false);return}
+ toast('已安装/更新「'+(r.title||r.name||'')+'」，请在列表中启用');load();
+ if(r.warning){const n=document.getElementById('plnote');if(n)n.textContent=r.warning}}
+async function plUninstall(name){
+ if(!await dlgConfirm({title:'卸载插件',body:'卸载「'+name+'」？其设置将一并删除（内置插件不可卸载，只能停用）。',okText:'卸载',danger:true}))return;
+ const r=await saveKV('/api/plugins/uninstall',{name:name},'插件已卸载');
+ if(r.ok!==false)load()}
+function biliPageHtml(d,p){
+ const uid=(d&&d.uid)||'';
+ const items=(d&&d.brief&&d.brief.items)||[];
+ const brief=items.slice(-6).reverse().map(it=>'<div class="k" style="margin:3px 0">📺 '+esc(String(it.title||'').slice(0,44))+(it.feeling?'<span class="k">（'+esc(String(it.feeling).slice(0,40))+'）</span>':'')+'</div>').join('');
+ return '<div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">B 站账号 '+(uid?'<span class="badge b-ok">已登录 UID '+esc(String(uid))+'</span> <button class="act ghost danger" style="margin:0;padding:4px 12px;font-size:12px" onclick="biliLogout()">退出登录</button>':'<span class="badge" style="background:var(--tint);color:var(--dim)">未登录</span> <button class="act" style="margin:0" onclick="biliScan()">扫码登录 B 站</button>')+'</div>'+
+  '<div class="k" style="margin-top:8px">用<b>机器人自己单独注册的 B 站账号</b>扫码（不要用你的大号）。Cookie 只存本机。</div></div>'+
+ '<div class="card"><div class="k">主人的 B 站 UID（机器人安利视频时发站内私信给你；可空只用 QQ 通知）</div>'+
+  '<div style="display:flex;gap:8px;margin-top:8px;align-items:center"><input id="pbiliuid" value="'+esc(String((d&&d.owner_uid)||''))+'" placeholder="你的 B 站 UID" style="width:160px"><button class="act" style="margin:0" onclick="pbUidSave()">保存</button></div>'+
+  '<div style="display:flex;gap:8px;margin-top:10px;align-items:center"><button class="act" style="margin:0" onclick="biliRun()">现在刷一轮</button><span class="k">后台执行，结果看运行日志 AGENT_BILI_*</span></div></div>'+
+ (brief?'<div class="card"><div class="k">最近刷到的见闻（会自然出现在她的聊天里）</div>'+brief+'</div>':'');
+}
+async function pbUidSave(){
+ const v=document.getElementById('pbiliuid').value.trim();
+ if(v&&!/^\d{1,12}$/.test(v)){toast('UID 应为数字',false);return}
+ const r=await saveKV('/api/app-config',{owner_bilibili_uid:v},'B 站 UID 已保存');
+ if(r.ok!==false)toast('已保存')}
 async function plToggle(name,on){
  const r=await saveKV('/api/plugins/toggle',{name:name,enabled:on},'插件已'+(on?'启用':'停用')+'（即时生效）');
  if(r.ok!==false)load()}
@@ -2886,7 +2912,8 @@ class UiHandler(BaseHTTPRequestHandler):
                             "default_enabled": bool(mf.get("default_enabled", False)),
                             "enabled": host.enabled(name, bool(mf.get("default_enabled", False))),
                             "settings": mf.get("settings") or [],
-                            "values": values})
+                            "values": values,
+                            "page": mf.get("page") or None})
             return self._reply(200, {"ok": True, "plugins": out})
         if u.path == "/api/persona-routes":
             d = load_json_const(PERSONA_ROUTES_PATH, {})
@@ -2898,8 +2925,10 @@ class UiHandler(BaseHTTPRequestHandler):
         if u.path == "/api/bili/status":
             try:
                 import qq_bilibili as _qb
+                cfg0 = C.load_app_config()
                 return self._reply(200, {"ok": True,
                                          "uid": _qb.logged_in_uid(),
+                                         "owner_uid": str(cfg0.get("owner_bilibili_uid") or ""),
                                          "brief": _qb.brief_load()})
             except Exception as e:
                 return self._reply(500, {"ok": False, "error": repr(e)})
@@ -4423,6 +4452,49 @@ class UiHandler(BaseHTTPRequestHandler):
         if u.path == "/api/memory/clear":
             write_const(MEMORY_STREAM_PATH, "")
             return self._reply(200, {"ok": True})
+        if u.path == "/api/plugins/install":
+            # 文件对话框选 zip → 安全解压校验 → 装到用户插件目录（同名=更新覆盖）
+            zipf = body.get("zip") if isinstance(body, dict) else None
+            if not zipf:
+                import threading as _th
+                boxz = {}
+
+                def _pick():
+                    try:
+                        import tkinter as tk
+                        from tkinter import filedialog
+                        root = tk.Tk()
+                        root.withdraw()
+                        root.attributes("-topmost", True)
+                        f = filedialog.askopenfilename(
+                            title="选择插件 zip 包",
+                            filetypes=[("zip 压缩包", "*.zip")])
+                        root.destroy()
+                        boxz["f"] = f or ""
+                    except Exception:
+                        boxz["f"] = ""
+                _t0 = _th.Thread(target=_pick, daemon=True)
+                _t0.start()
+                _t0.join(timeout=180)
+                zipf = boxz.get("f", "")
+                if not zipf:
+                    return self._reply(200, {"ok": False, "error": "未选择文件"})
+            try:
+                import qq_plugins as _qp
+                res = _qp.install_from_zip(zipf)
+                if res.get("ok"):
+                    return self._reply(200, res)
+                return self._reply(400, res)
+            except Exception as e:
+                return self._reply(500, {"ok": False, "error": repr(e)})
+        if u.path == "/api/plugins/uninstall":
+            name = str(body.get("name", "")).strip()
+            try:
+                import qq_plugins as _qp
+                res = _qp.uninstall(name)
+                return self._reply(200 if res.get("ok") else 400, res)
+            except Exception as e:
+                return self._reply(500, {"ok": False, "error": repr(e)})
         if u.path in ("/api/plugins/toggle", "/api/plugins/setting"):
             import qq_plugins as _qp
             name = str(body.get("name", "")).strip()

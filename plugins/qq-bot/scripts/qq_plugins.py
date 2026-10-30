@@ -215,4 +215,94 @@ def _read_json(path):
 
 
 def _safe_name(name):
-    return bool(re.fullmatch(r"[a-z0-9_]{2,32}", str(name))) if (re := __import__("re")) else False
+    import re as _re
+    return bool(_re.fullmatch(r"[a-z0-9_]{2,32}", str(name)))
+
+
+# ---------------- 安装 / 卸载 ----------------
+
+def install_from_zip(zip_path):
+    """从 zip 安装/更新一个用户插件。返回 {"ok":bool,...}。
+    安全约束：zip 内路径逐条校验（禁绝对路径/../、只允许安全文件名字符集），
+    必须恰好含一个 manifest.json（在根或单层子目录），name 合法且与目标目录一致。"""
+    zp = pathlib.Path(str(zip_path))
+    if not zp.is_file() or zp.suffix.lower() != ".zip":
+        return {"ok": False, "error": "不是 zip 文件"}
+    import re as _re
+    import shutil as _sh
+    import tempfile
+    import zipfile
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="plugin-ins-"))
+    try:
+        with zipfile.ZipFile(zp) as zf:
+            for info in zf.infolist():
+                n = info.filename.replace("\\", "/")
+                if not n or n.startswith("/") or ".." in n.split("/") \
+                        or ":" in n or not _re.fullmatch(
+                            r"[A-Za-z0-9_][A-Za-z0-9._\- /]*", n):
+                    return {"ok": False, "error": "包内路径非法: %s" % n[:60]}
+                target = (tmp / n).resolve()
+                if not str(target).startswith(str(tmp.resolve())):
+                    return {"ok": False, "error": "路径越界"}
+                zf.extract(info, tmp)
+        # 定位 manifest：根或单层子目录
+        base = tmp
+        mf_path = base / "manifest.json"
+        if not mf_path.is_file():
+            subs = [d for d in base.iterdir() if d.is_dir()]
+            if len(subs) == 1 and (subs[0] / "manifest.json").is_file():
+                base = subs[0]
+                mf_path = subs[0] / "manifest.json"
+            else:
+                return {"ok": False, "error": "包里找不到 manifest.json（应为一个插件文件夹打包）"}
+        mf = _read_json(mf_path)
+        if not isinstance(mf, dict) or not mf.get("name") or not _safe_name(mf["name"]):
+            return {"ok": False, "error": "manifest.name 非法（小写字母/数字/下划线，2-32 位）"}
+        # 内置同名保护：不允许用安装覆盖内置插件
+        if os.path.isdir(os.path.join(BUILTIN_DIR, str(mf["name"]))):
+            return {"ok": False,
+                    "error": "「%s」是内置插件，不能覆盖安装（内置插件随应用更新）" % mf["name"]}
+        dest = pathlib.Path(USER_DIR) / str(mf["name"])
+        updated = dest.is_dir()
+        if dest.exists():
+            _sh.rmtree(dest, ignore_errors=True)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        _sh.copytree(base, dest)
+        return {"ok": True, "name": mf["name"],
+                "title": str(mf.get("title") or mf["name"]),
+                "updated": updated,
+                "note": "已更新覆盖" if updated else "已安装（默认停用，请在列表中启用）"}
+    except zipfile.BadZipFile:
+        return {"ok": False, "error": "zip 包损坏"}
+    except OSError as e:
+        return {"ok": False, "error": repr(e)}
+    finally:
+        _sh.rmtree(tmp, ignore_errors=True)
+
+
+def uninstall(name):
+    """卸载用户级插件（内置不可卸载）；同时清掉它的启停与设置。"""
+    name = str(name or "")
+    if not _safe_name(name):
+        return {"ok": False, "error": "插件名非法"}
+    dest = pathlib.Path(USER_DIR) / name
+    if not dest.is_dir():
+        return {"ok": False, "error": "插件不存在或不是用户安装的（内置插件不可卸载）"}
+    import shutil as _sh
+    _sh.rmtree(dest, ignore_errors=True)
+    # 清状态
+    try:
+        st = _read_json(STATE_PATH) or {}
+        changed = False
+        if isinstance(st.get("enabled"), dict) and name in st["enabled"]:
+            st["enabled"].pop(name)
+            changed = True
+        if isinstance(st.get("settings"), dict) and name in st["settings"]:
+            st["settings"].pop(name)
+            changed = True
+        if changed:
+            pathlib.Path(STATE_PATH).write_text(
+                json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
+    except (OSError, ValueError):
+        pass
+    return {"ok": True, "name": name}

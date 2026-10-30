@@ -1,11 +1,15 @@
 {
   "name": "bili_scroll",
   "title": "B 站刷视频",
-  "description": "机器人用自己的 B 站账号（设置→主人专属 扫码登录）按周期以人设兴趣刷视频：看过的存为见闻（聊天时可能自然提起），真心觉得好的会私聊分享给主人（B 站站内私信 + QQ）。Cookie 只存本机。默认关闭。",
+  "description": "机器人用自己的 B 站账号扫码登录后，按周期以人设兴趣刷视频：看过的存为见闻（聊天时可能自然提起），真心觉得好的会私聊分享给主人（B 站站内私信 + QQ）。Cookie 只存本机，随时可退出。默认关闭。",
   "default_enabled": false,
   "settings": [
     {"key": "share_enabled", "type": "toggle", "label": "主动分享给主人（B 站私信 + QQ 私信）", "default": false},
     {"key": "window_min", "type": "number", "label": "刷视频周期（分钟，一个窗口评估一次）", "default": 180, "min": 30, "max": 1440},
     {"key": "keywords", "type": "text", "label": "兴趣关键词（逗号分隔，空=内置兴趣池）", "default": ""}
-  ]
+  ],
+  "page": {
+    "js": "biliPageHtml",
+    "data": "/api/bili/status"
+  }
 }
