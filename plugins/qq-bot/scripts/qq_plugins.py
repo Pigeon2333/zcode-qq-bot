@@ -385,6 +385,7 @@ def market_list(url=None):
                     continue
                 out.append({"name": str(it["name"]),
                             "version": str(it.get("version") or ""),
+                            "category": str(it.get("category") or "其他"),
                             "title": str(it.get("title") or it["name"]),
                             "description": str(it.get("description") or ""),
                             "zip": str(it["zip"]),

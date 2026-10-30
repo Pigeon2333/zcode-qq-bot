@@ -4,6 +4,14 @@
   "description": "每天刷一次当日头条/热搜，摘成一份速览注入机器人的上下文——白天聊到相关话题她自带背景知识。不确定的细节她会直说不知道，不会编。",
   "default_enabled": true,
   "settings": [
-    {"key": "refresh_hour", "type": "number", "label": "每天几点刷新（0-23，实际在夜间复盘时段执行）", "default": 3, "min": 0, "max": 23}
-  ]
+    {
+      "key": "refresh_hour",
+      "type": "number",
+      "label": "每天几点刷新（0-23，实际在夜间复盘时段执行）",
+      "default": 3,
+      "min": 0,
+      "max": 23
+    }
+  ],
+  "category": "感知"
 }

@@ -344,8 +344,16 @@ table.memtbl th:nth-child(1){width:112px}
 table.memtbl th:nth-child(2){width:52px}
 table.memtbl th:nth-child(3){width:112px}
 table.memtbl th:nth-child(5){width:144px}
-table.memtbl td:nth-child(4){word-break:break-all;white-space:pre-wrap}
+table.memtbl td:nth-child(4){word-break:break-word;white-space:pre-wrap}
 table.memtbl td:nth-child(5){white-space:nowrap}
+/* 画像表：列宽与流水表不同（昵称窄、画像正文宽），独立 class 防错配 */
+table.proftbl{table-layout:fixed}
+table.proftbl th:nth-child(1){width:110px}
+table.proftbl th:nth-child(2){width:112px}
+table.proftbl th:nth-child(4){width:110px}
+table.proftbl th:nth-child(5){width:144px}
+table.proftbl td:nth-child(3){word-break:break-word}
+table.proftbl td:nth-child(4),table.proftbl td:nth-child(5){white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #toast{position:fixed;right:20px;bottom:20px;background:var(--card);border:1px solid var(--ok);color:var(--fg);padding:11px 18px;border-radius:10px;display:none;box-shadow:var(--shadow);font-size:13.5px;z-index:99}
 .mono{font-family:Consolas,monospace;font-size:12px;color:var(--dim)}
 .tabular-nums{font-variant-numeric:tabular-nums}
@@ -1647,9 +1655,9 @@ async function vSettings(){
    <span><b>AI 生图</b><div class="k" style="margin-top:3px">主人发「画：描述」或自然说法（帮我画一张/给我画个/来一张…，私聊或群里@）→ 用智谱 Key 调 CogView 生成并发图（消耗该账号额度）</div></span></label>
   <label class="master"><input type="checkbox" ${rv.daily_review_enabled!==false?'checked':''} onchange="saveFeature('daily_review_enabled',this.checked)">
    <span><b>夜间自动复盘</b><div class="k" style="margin-top:3px">每日 03:30 自动统计当日表现、提炼风格观察、日报发主人私聊</div></span></label>
-  <label class="master"><input type="checkbox" ${rv.env_pulse_enabled?'checked':''} onchange="saveKVLoad('/api/reply-config',{env_pulse_enabled:this.checked},'电脑状态感知已'+(this.checked?'开启':'关闭'))">
-   <span><b>电脑状态感知</b>（默认关闭）<div class="k" style="margin-top:3px">开启后主人的私聊里，机器人知道这台电脑的实况（开机时长/内存占用/磁盘余量），聊到电脑状态时能自然应答；数据只在本机读取、只出现在主人私聊，不进群聊。在意隐私保持关闭即可</div></span></label>
  </div>
+ <div class="card"><div class="k">电脑状态感知</div>
+  <div class="k" style="margin-top:6px">已插件化：开关在「插件 → 电脑状态感知」（默认关闭；数据只进主人私聊）。</div></div>
  <div class="card"><div class="k">开机自启（登录 Windows 后自动打开控制台窗口${c.autostart_with_windows?'，已开启':'，未开启'}）</div>
   <div style="margin-top:8px"><label><input type="checkbox" id="sauto" ${c.autostart_with_windows||S_autostartRegistry()?'checked':''} onchange="saveAuto(this.checked)"> 开机自动启动本应用</label></div></div>
  <div class="card"><div class="k">启动行为</div>
@@ -1948,27 +1956,40 @@ async function renameKey(id,el){
 async function setPrimary(id){
  const r=await saveKV('/api/keys/primary',{id},'主 Key 已切换（生图/搜索/未指定条目即用新主 Key）');
  if(r.ok!==false)load()}
+let _memPage=0,_profPage=0;
+const _PAGE=20;
 async function vMemory(){
- const [d,mp,rv]=await Promise.all([api('/api/memory'),api('/api/member-profiles').catch(()=>({members:[]})),api('/api/reply-config').catch(()=>({}))]);
- rvState=rv;
- const rows=(d.items||[]).map(r=>`<tr><td class="mono">${esc(r.time)}</td><td>${r.scope==='group'?'群':'人'}</td><td class="mono">${esc(String(r.id))}</td><td>${esc(r.text)}</td>
+ const [d,mp]=await Promise.all([api('/api/memory'),api('/api/member-profiles').catch(()=>({members:[]}))]);
+ window._memData=d.items||[];window._profData=mp.members||[];
+ const total=window._memData.length;
+ const paged=window._memData.slice(_memPage*_PAGE,(_memPage+1)*_PAGE);
+ const rows=paged.map(r=>`<tr><td class="mono">${esc(r.time)}</td><td>${r.scope==='group'?'群':'人'}</td><td class="mono">${esc(String(r.id))}</td><td>${esc(r.text)}</td>
   <td><button class="act ghost" style="margin:0;padding:3px 10px;font-size:12px" onclick="editMemo(${r.idx})">编辑</button>
   <button class="act ghost danger" style="margin:0;padding:3px 10px;font-size:12px" onclick="delMemo(${r.idx})">删除</button></td></tr>`).join('');
- const profs=(mp.members||[]).map(p=>`<tr><td>${esc(p.name||'<i>未命名</i>')}</td><td class="mono">${esc(p.qq)}</td><td>${esc(p.note)}</td>
-  <td class="k" style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc((p.groups||[]).join('、'))}">${esc((p.groups||[]).join('、'))||'—'}</td>
+ const ptotal=window._profData.length;
+ const ppaged=window._profData.slice(_profPage*_PAGE,(_profPage+1)*_PAGE);
+ const profs=ppaged.map(p=>`<tr><td>${esc(p.name||'<i>未命名</i>')}</td><td class="mono">${esc(p.qq)}</td><td>${esc(p.note)}</td>
+  <td class="k" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc((p.groups||[]).join('、'))}">${esc((p.groups||[]).join('、'))||'—'}</td>
   <td><button class="act ghost" style="margin:0;padding:3px 10px;font-size:12px" onclick="editProfile('${esc(p.qq)}')">编辑</button>
   <button class="act ghost danger" style="margin:0;padding:3px 10px;font-size:12px" onclick="delProfile('${esc(p.qq)}')">删除</button></td></tr>`).join('');
- $('#view').innerHTML=head('长期记忆流水（自治大脑自动写入；改动即时生效，机器人下一轮对话即用新记忆）')+saveHint('每条记忆可单独编辑/删除（删除需确认）；也可手动新增一条（选择群或联系人）。'+`当前展示最近 100 条。`)+
+ const pgn=(cur,ttl,fn)=>'<div style="display:flex;gap:6px;align-items:center;margin-top:10px">'+
+  '<button class="act ghost" style="margin:0;padding:4px 12px;font-size:12px" '+(cur>0?'':'disabled ')+'onclick="'+fn+'(-1)">上一页</button>'+
+  '<span class="k">第 '+(ttl?cur+1:0)+' / '+Math.max(1,Math.ceil(ttl/_PAGE))+' 页 · 共 '+ttl+' 条</span>'+
+  '<button class="act ghost" style="margin:0;padding:4px 12px;font-size:12px" '+((cur+1)*_PAGE<ttl?'':'disabled ')+'onclick="'+fn+'(1)">下一页</button></div>';
+ $('#view').innerHTML=head('长期记忆流水（自治大脑自动写入；改动即时生效，机器人下一轮对话即用新记忆）')+saveHint('每条记忆可单独编辑/删除（删除需确认）；也可手动新增一条（选择群或联系人）。')+
  `<div class="card">
  <table class="memtbl"><tr><th>时间</th><th>类型</th><th>对象</th><th>内容</th><th>操作</th></tr>${rows||'<tr><td colspan=5 class="k">空</td></tr>'}</table>
- <div style="display:flex;gap:8px"><button class="act" onclick="addMemo()">手动新增一条记忆</button>
+ ${pgn(_memPage,total,'memPage')}
+ <div style="display:flex;gap:8px;margin-top:10px"><button class="act" onclick="addMemo()">手动新增一条记忆</button>
  <button class="act ghost danger" onclick="clearMem()">清空全部记忆流水</button></div></div>
- <div class="card" style="margin-top:14px"><div class="k" style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">群成员画像<span class="badge" style="background:var(--tint);color:var(--dim)">每日复盘自动更新</span>
-  <label style="margin-left:auto;display:flex;gap:6px;align-items:center"><input type="checkbox" ${(rvState.member_profiles_enabled)?'checked':''} onchange="saveKVLoad('/api/reply-config',{member_profiles_enabled:this.checked},'群成员画像已'+(this.checked?'开启':'关闭'))"> 启用（默认关闭）</label></div>
- <div class="k" style="margin-bottom:8px">机器人对每个熟人的长期了解（身份、兴趣、相处注意事项），聊天时自动带上「记得你」的感觉；涉及对群友信息的积累，默认关闭，开启后也会只存在本机、记忆页可随时查看/编辑/删除。</div>
- <table class="memtbl"><tr><th>昵称</th><th>QQ</th><th>画像</th><th>常驻群</th><th>操作</th></tr>${profs||'<tr><td colspan=5 class="k">暂无画像（夜间复盘会自动为活跃成员生成）</td></tr>'}</table>
+ <div class="card" style="margin-top:14px"><div class="k" style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">群成员画像<span class="badge" style="background:var(--tint);color:var(--dim)">每日复盘自动更新</span><span class="k">开关在「插件 → 群成员画像」</span></div>
+ <div class="k" style="margin-bottom:8px">机器人对每个熟人的长期了解（身份、兴趣、相处注意事项），聊天时自动带上「记得你」的感觉。数据只存本机，本页可随时查看/编辑/删除。</div>
+ <table class="proftbl"><tr><th>昵称</th><th>QQ</th><th>画像</th><th>常驻群</th><th>操作</th></tr>${profs||'<tr><td colspan=5 class="k">暂无画像（夜间复盘会自动为活跃成员生成）</td></tr>'}</table>
+ ${pgn(_profPage,ptotal,'profPage')}
  <div style="display:flex;gap:8px"><button class="act" onclick="editProfile('')">手动新增画像</button></div></div>`;
 }
+function memPage(d){_memPage=Math.max(0,_memPage+d);load()}
+function profPage(d){_profPage=Math.max(0,_profPage+d);load()}
 async function editProfile(qq){
  let cur={name:'',note:''};
  if(qq){const r=await api('/api/member-profiles').catch(()=>({members:[]}));cur=(r.members||[]).find(x=>x.qq===String(qq))||cur;}
@@ -2030,23 +2051,32 @@ async function biliScan(){
    else if(p.state==='expired'){el.textContent='二维码已过期，请关闭重试';clearInterval(timer)}
   }catch(e){}
  },2000)}
-let _plTab='mine';
+let _plTab='mine',_plCat='';
+function plCatBar(cats,cur,fn){
+ return '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px" id="plcats">'+
+  [''].concat(cats).map(c=>'<button class="act '+(c===cur?'':'ghost')+'" style="margin:0;padding:4px 14px;font-size:12.5px" onclick="'+fn+'(\''+esc(c)+'\')">'+(c||'全部')+'</button>').join('')+'</div>';
+}
 async function vPlugins(){
  if(_plTab==='market'){await vMarket();return}
  const r=await api('/api/plugins').catch(()=>({plugins:[]}));
- const rows=(r.plugins||[]).map(p=>{
+ const all=r.plugins||[];
+ const cats=[...new Set(all.map(p=>p.category||'其他'))].sort();
+ const shown=all.filter(p=>!_plCat||p.category===_plCat);
+ const rows=shown.map(p=>{
   const on=!!p.enabled;
   const st='<label style="display:flex;gap:6px;align-items:center;flex:none"><input type="checkbox" '+(on?'checked':'')+' onchange="plToggle(\''+esc(p.name)+'\',this.checked)"> '+(on?'已启用':'已停用')+'</label>';
   const setBtn=(p.page||p.settings&&p.settings.length)?'<button class="act" style="margin:0;padding:5px 16px;font-size:12.5px" onclick="plPage(\''+esc(p.name)+'\')">⚙ 设置</button>':'';
   const uninstall=p.builtin?'':'<button class="act ghost danger" style="margin:0;padding:5px 12px;font-size:12px" onclick="plUninstall(\''+esc(p.name)+'\')">卸载</button>';
-  return '<div class="card" style="margin-bottom:12px;cursor:pointer" onclick="if(!event.target.closest(\'button,label,input\'))plPage(\''+esc(p.name)+'\')"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b style="font-size:14px">'+esc(p.title||p.name)+'</b>'+(p.builtin?'<span class="badge" style="background:var(--tint);color:var(--dim)">内置</span>':'<span class="badge" style="background:var(--tint);color:var(--dim)">已安装</span>')+'<span style="margin-left:auto;display:flex;gap:8px;align-items:center">'+setBtn+uninstall+st+'</span></div>'+
+  return '<div class="card" style="margin-bottom:12px;cursor:pointer" onclick="if(!event.target.closest(\'button,label,input\'))plPage(\''+esc(p.name)+'\')"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b style="font-size:14px">'+esc(p.title||p.name)+'</b><span class="badge" style="background:var(--tint);color:var(--dim)">'+esc(p.category||'其他')+'</span>'+(p.builtin?'<span class="badge" style="background:var(--tint);color:var(--dim)">内置</span>':'<span class="badge" style="background:var(--tint);color:var(--dim)">已安装</span>')+'<span style="margin-left:auto;display:flex;gap:8px;align-items:center">'+setBtn+uninstall+st+'</span></div>'+
    '<div class="k" style="margin-top:6px">'+esc(p.description||'')+'</div>'+
    '<div class="k" style="margin-top:6px;opacity:.7">点「⚙ 设置」或本卡片进入该插件的专属设置页 →</div></div>';
  }).join('');
  $('#view').innerHTML=head('插件（可按需启停的功能模块）')+saveHint('启停即时生效；每个插件的全部设置在其专属设置页里（点卡片或 ⚙ 设置进入）。')+
  '<div style="display:flex;gap:8px;margin-bottom:14px"><button class="act" style="margin:0" onclick="plTab(\'mine\')">我的插件</button><button class="act ghost" style="margin:0" onclick="plTab(\'market\')">🌐 插件市场</button><span style="flex:1"></span><button class="act ghost" style="margin:0" onclick="plInstall()">从 zip 安装…</button></div>'+
- ((r.plugins||[]).length?'<div style="margin-top:4px">'+rows+'</div>':'<div class="card">暂无插件</div>');
+ (cats.length>1?plCatBar(cats,_plCat,'plCatSel'):'')+
+ (shown.length?'<div style="margin-top:4px">'+rows+'</div>':'<div class="card">该分类暂无插件</div>');
 }
+function plCatSel(c){_plCat=c;load()}
 function plTab(t){_plTab=t;load()}
 async function vMarket(){
  $('#view').innerHTML=head('插件市场')+'<div style="display:flex;gap:8px;margin-bottom:14px"><button class="act ghost" style="margin:0" onclick="plTab(\'mine\')">← 我的插件</button><button class="act" style="margin:0" onclick="plTab(\'mine\')">我的插件</button><button class="act" style="margin:0">🌐 插件市场</button></div><div id="mktbody" class="card">正在拉取市场清单…</div>';
@@ -2060,7 +2090,7 @@ async function vMarket(){
    (upd?'<button class="act" style="margin:0" onclick="mktInstall(\''+esc(p.name)+'\',true)">更新到 v'+esc(p.version)+'</button>':
    (has?'<span class="badge b-ok">已安装</span> <button class="act ghost" style="margin:0;padding:5px 12px;font-size:12px" onclick="mktInstall(\''+esc(p.name)+'\')">重装</button>':
    '<button class="act" style="margin:0" onclick="mktInstall(\''+esc(p.name)+'\')">安装</button>'));
-  return '<div class="card" style="margin-bottom:12px"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b style="font-size:14px">'+esc(p.title||p.name)+'</b>'+(p.version?'<span class="badge" style="background:var(--tint);color:var(--dim)">v'+esc(p.version)+'</span>':'')+(p.size?'<span class="k">'+(p.size/1024).toFixed(0)+'KB</span>':'')+'<span style="margin-left:auto">'+btn+'</span></div>'+
+  return '<div class="card" style="margin-bottom:12px"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b style="font-size:14px">'+esc(p.title||p.name)+'</b><span class="badge" style="background:var(--tint);color:var(--dim)">'+esc(p.category||'其他')+'</span>'+(p.version?'<span class="badge" style="background:var(--tint);color:var(--dim)">v'+esc(p.version)+'</span>':'')+(p.size?'<span class="k">'+(p.size/1024).toFixed(0)+'KB</span>':'')+'<span style="margin-left:auto">'+btn+'</span></div>'+
    '<div class="k" style="margin-top:6px">'+esc(p.description||'')+'</div></div>';
  }).join('');
  el.outerHTML=(r.plugins||[]).length?rows:'<div class="card">市场暂无插件</div>';
@@ -2954,6 +2984,7 @@ class UiHandler(BaseHTTPRequestHandler):
                 if isinstance(set_map, dict):
                     values.update(set_map)
                 out.append({"name": name, "title": str(mf.get("title") or name),
+                            "category": str(mf.get("category") or "其他"),
                             "description": str(mf.get("description") or ""),
                             "builtin": builtin,
                             "default_enabled": bool(mf.get("default_enabled", False)),
