@@ -744,9 +744,15 @@ class Daemon:
         out("AGENT_EVENT " + json.dumps(item, ensure_ascii=False))
 
     def _mem_push(self, item, message_id, is_bot, text=None, n_images=0):
+        # 同一 message_id 只入历史一次：机器人自发消息会经历「发送成功入史」
+        # 和 NapCat message_sent 回显入史两条路径，不去重会把"你"的话记两遍，
+        # 模型容易把其中一条误读成对方说的（复读/自己接自己话的根因）。
+        mid = str(message_id or "")
+        if mid and mid in self.msg_id_index:
+            return
         rec = {
             "ts": item.get("ts") or now_ts(),
-            "message_id": str(message_id or ""),
+            "message_id": mid,
             "sender_id": item.get("sender_id"),
             "sender_name": ("BOT" if is_bot else item.get("sender_name")),
             "is_bot": is_bot,

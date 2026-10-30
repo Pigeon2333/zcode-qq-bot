@@ -2756,6 +2756,31 @@ def _norm_dup(s):
     return re.sub(r"\s+", "", str(s or ""))
 
 
+_STOPWORDS = set("了吗呢吧呀哦啊哈嗯嘿呢嘛啦咯咯的了是我你他她它们这个那个什么怎么"
+                 "要不要没有有点挺蛮好很挺再又就都还也和跟被把让想去说的"
+                 "一二三四五六七八九十现在刚才然后所以但是因为如果".split()) | \
+    {"我们", "你们", "他们", "可以", "一下", "有点", "感觉", "今天", "明天",
+     "还是", "或者", "东西", "时候", "什么", "怎么", "可能"}
+
+_TOPIC_KW_RE = re.compile(r"[\u4e00-\u9fff]{2,4}|[a-zA-Z]{3,}")
+
+
+def _content_keywords(text):
+    """内容关键词（用于主题复读判定）：中文段切成 2/3 字滑窗 n-gram（去停用词），
+    英文取 3+ 字母词。n-gram 天然对齐，不受贪婪切词错位影响。"""
+    text = str(text or "")
+    out = set()
+    for run in re.findall(r"[\u4e00-\u9fff]+", text):
+        for n in (2, 3):
+            for i in range(len(run) - n + 1):
+                g = run[i:i + n]
+                if g not in _STOPWORDS:
+                    out.add(g)
+    for w in re.findall(r"[a-zA-Z]{3,}", text):
+        out.add(w.lower())
+    return set(list(out)[:48])
+
+
 _ECHO_LINE_RE = re.compile(r"^([^:：\n]{1,20})[:：]\s*(.*)$", re.M)
 # 强脏话（「我操」排除 我操作/我操控 等正常词）；人设（妈妈系等）绝不骂脏话
 _PROFANITY_RE = re.compile(r"我操(?!作|控|盘|心)|卧槽|操你|草你|他妈的|傻逼|傻b|nmsl", re.I)
@@ -2795,6 +2820,18 @@ def _dedup_reply(daemon, msg, texts):
             dup = any(len(n) >= 24 and (n in r or r in n)
                       or len(n2) >= 24 and (n2 in r or r in n2)
                       for r in recent)
+            if not dup:
+                # 主题复读：与最近的 bot 发言内容词高度重叠（换了措辞又说同一件事，
+                # 如"想吃热乎的/牛肉面"换壳重说）——两个 2+ 字关键词同时命中即判重
+                kw = _content_keywords(s)
+                if kw and recent:
+                    for r in recent:
+                        rk = _content_keywords(r)
+                        if rk and len(kw & rk) >= 2:
+                            dup = True
+                            out("AGENT_TOPIC_DUP msg_id=%s overlap=%s" % (
+                                msg["id"], ",".join(sorted(kw & rk))[:40]))
+                            break
             if dup:
                 dropped += 1
             else:
