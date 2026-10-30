@@ -667,19 +667,32 @@ def persona_routes_load():
             and r.get("key") and r.get("persona")]
 
 
-def persona_for(chat_type, chat_id):
-    """当前会话应使用的人设名：私聊按对方 QQ、群按群号精确匹配；
-    没有匹配返回 ""（调用方回落全局激活人设=现有行为）。路由结果即全部
-    人设层（正文/自进化/语气）的唯一事实来源，中途不再改变——防串的根本。"""
+def persona_for(chat_type, chat_id, sender_id=None):
+    """当前会话应使用的人设名。优先级：
+    ① 群聊：群专属路由（group:<gid>）→ ② 群聊回退：发言人的私聊专属路由
+    （private:<sender_qq>——他在私聊是"老婆人设"，群里对他说话也用，像真人
+    对不同人换面）；③ 私聊：对方专属路由 → ④ 全局激活（返回 ""，调用方回落）。
+    返回 (人设名, 路由来源) —— 来源 in ("group","sender","private","")。"""
     try:
-        key = "%s:%s" % ("private" if chat_type == "private" else "group",
-                         str(chat_id).strip())
-        for r in persona_routes_load():
-            if str(r.get("key")) == key:
-                return str(r.get("persona") or "").strip()
+        routes = persona_routes_load()
+        if chat_type == "group":
+            gkey = "group:%s" % str(chat_id).strip()
+            for r in routes:
+                if str(r.get("key")) == gkey:
+                    return str(r.get("persona") or "").strip(), "group"
+            if sender_id:
+                pkey = "private:%s" % str(sender_id).strip()
+                for r in routes:
+                    if str(r.get("key")) == pkey:
+                        return str(r.get("persona") or "").strip(), "sender"
+        else:
+            pkey = "private:%s" % str(chat_id).strip()
+            for r in routes:
+                if str(r.get("key")) == pkey:
+                    return str(r.get("persona") or "").strip(), "private"
     except Exception:
         pass
-    return ""
+    return "", ""
 
 
 def chat_interesting_enabled():
@@ -998,7 +1011,7 @@ OWNER_HELP = (
     "会转交沙箱任务执行器处理，结果自动发回来。")
 
 
-_QUIET_WORDS_RE = re.compile(r"(安静|歇一会|歇一会儿|歇会儿|闭嘴|别说了|别说话|沉默|少说话)")
+_QUIET_WORDS_RE = re.compile(r"(安静点|安静一会|你安静|歇一会|歇一会儿|歇会儿|闭嘴|别说了|别说话|沉默吧|少说话)")
 
 
 def _zcode_on(key):
@@ -2039,12 +2052,14 @@ def build_messages(daemon, msg, ctx_k=32):
     ≥16k 全量 / 8-16k 标准 / <8k 精简（历史更短、记忆更少、安全段压缩）。"""
     """返回 (messages, active_persona_name)。"""
     pc, _global_active = load_persona_collection()
-    # 分对象人设：私聊按对方 QQ、群按群号路由；无匹配回落全局激活人设（原有行为）。
+    # 分对象人设路由：私聊按对方 QQ；群按群号；群无专属时回退发言人的私聊路由。
     # 路由只在这里决定一次，正文/自进化/语气全部跟随此结果——防人设串味的根本。
     coll_raw = load_json_const(PERSONA_COLLECTION_PATH, {})
     if not isinstance(coll_raw, dict):
         coll_raw = {}
-    active_name = persona_for(msg.get("chat_type"), msg.get("chat_id")) or _global_active
+    routed, route_src = persona_for(msg.get("chat_type"), msg.get("chat_id"),
+                                    msg.get("sender_id"))
+    active_name = routed or _global_active
     persona = str(coll_raw.get(active_name, "")).strip() if active_name else ""
     global_base = pc.get("global", "")
     if not persona:
@@ -2053,14 +2068,21 @@ def build_messages(daemon, msg, ctx_k=32):
     persona_block = persona
     if active_name:
         persona_block = "【当前人设：%s】\n%s" % (active_name, persona)
-    routed = persona_for(msg.get("chat_type"), msg.get("chat_id"))
     if routed and routed != _global_active:
-        persona_block += ("\n（注意：你当前正在和一位单独设定过人设的对象交流，"
-                          "以上人设只对这位对象生效；对其他人你仍是「%s」。"
-                          "记忆是共用的——事实都记得，但语气称呼只按当前人设来。"
-                          "最近对话里你自己说话的语气可能是旧人设留下的——不要模仿它，"
-                          "从这条回复起完全按上面的当前人设说话，和历史语气不同是正确的）"
-                          % (_global_active or "默认人设"))
+        if route_src == "sender":
+            persona_block += ("\n（注意：这是群聊场合，但当前发言人（%s）对你设了专属人设，"
+                              "你在群里回应他时也用这个人设——像熟人对不同人自然换面；"
+                              "注意这是公开场合，亲密称呼和私密话题收着点，分寸由人设自然把握。"
+                              "对群里其他人你仍是「%s」。记忆共用——事实都记得，语气按当前人设）"
+                              % (str(msg.get("sender_name") or "这位群友"),
+                                 _global_active or "默认人设"))
+        else:
+            persona_block += ("\n（注意：你当前正在和一位单独设定过人设的对象交流，"
+                              "以上人设只对这位对象生效；对其他人你仍是「%s」。"
+                              "记忆是共用的——事实都记得，但语气称呼只按当前人设来。"
+                              "最近对话里你自己说话的语气可能是旧人设留下的——不要模仿它，"
+                              "从这条回复起完全按上面的当前人设说话，和历史语气不同是正确的）"
+                              % (_global_active or "默认人设"))
     global_block = ""
     if global_base:
         global_block = "\n\n## 全局通用设定（无论人设如何切换都遵守）\n%s" % global_base
@@ -2513,7 +2535,7 @@ def _dedup_reply(daemon, msg, texts):
     全部被剔时返回空列表（调用方静默跳过）。"""
     history = daemon.history(msg["chat_type"], msg["chat_id"], limit=12)
     recent = [_norm_dup(h.get("text")) for h in history if h.get("is_bot")]
-    recent = [t for t in recent if len(t) >= 24][-4:]
+    recent = [t for t in recent if len(t) >= 12][-4:]
     speakers = {str(h.get("sender_name", "")).strip() for h in history
                 if str(h.get("sender_name", "")).strip()} | {"你"}
     fresh, dropped = [], 0
@@ -2544,9 +2566,12 @@ def _dedup_reply(daemon, msg, texts):
                 # 如"想吃热乎的/牛肉面"换壳重说）——两个 2+ 字关键词同时命中即判重
                 kw = _content_keywords(s)
                 if kw and recent:
+                    # 阈值随长度自适应：至少 2 个且占回复关键词 1/3 以上——
+                    # 正常话题延续（聊同一件事的新内容）重叠词占比低，只有换壳复读才高
+                    need = max(2, (len(kw) + 2) // 3)
                     for r in recent:
                         rk = _content_keywords(r)
-                        if rk and len(kw & rk) >= 2:
+                        if rk and len(kw & rk) >= need:
                             dup = True
                             out("AGENT_TOPIC_DUP msg_id=%s overlap=%s" % (
                                 msg["id"], ",".join(sorted(kw & rk))[:40]))
@@ -2671,7 +2696,7 @@ def _proactive_compose(daemon, chat_type, chat_id):
     """构造一次主动发消息的 LLM 调用；模型认为不合适可输出 [SKIP]。"""
     data, _g = load_persona_collection()
     # 主动消息也按目标对象路由人设（主动私聊你时用对你的人设，主动进群用该群人设）
-    persona_name = persona_for(chat_type, chat_id) or data["active"]
+    persona_name = persona_for(chat_type, chat_id)[0] or data["active"]
     global_base = data["global"]
     coll_raw = load_json_const(PERSONA_COLLECTION_PATH, {})
     persona = str(coll_raw.get(persona_name, "")).strip() if persona_name else ""
@@ -3168,7 +3193,7 @@ def _persona_stack_text(route=None):
     route=(chat_type, chat_id) 时按分对象人设路由；不传=全局激活人设（原有行为）。"""
     pc, active_name = load_persona_collection()
     if route:
-        active_name = persona_for(route[0], route[1]) or active_name
+        active_name = persona_for(route[0], route[1])[0] or active_name
     persona = str(pc.get(active_name, "")).strip() if active_name else \
         (pc.get("persona", "") or "你是QQ机器人「智谱娘」。")
     parts = ["【当前人设：%s】\n%s" % (active_name or "智谱娘", persona)]
@@ -3954,7 +3979,8 @@ def process(daemon, msg):
         out("AGENT_SKIP msg_id=%s chat=%s/%s (chat_random 不感兴趣)"
             % (msg["id"], msg["chat_type"], msg["chat_id"]))
         return
-    # 复读守卫：剔除与最近发言重复的段落，全重复则静默跳过
+    # 复读守卫：剔除与最近发言重复的段落；全重复时带"别复读"指令重试一次——
+    # 主题守卫（n-gram 重叠）对正常话题延续有误杀，宁可重试也不能无视对方（不回最伤真人感）
     try:
         texts, dropped = _dedup_reply(daemon, msg, texts)
         if dropped:
@@ -3962,9 +3988,28 @@ def process(daemon, msg):
                 % (msg["id"], dropped, dropped + len(texts),
                    msg["chat_type"], msg["chat_id"]))
         if not texts and not stickers:
+            recent_raw = [str(h.get("text", ""))[:60] for h in
+                          daemon.history(msg["chat_type"], msg["chat_id"], limit=8)
+                          if h.get("is_bot")]
+            retry_msgs = messages + [
+                {"role": "user", "content":
+                 "（系统提示：你刚才已经说过类似的话了——%s 。换一个完全不同的说法或新内容重新回应这条消息，"
+                 "不要重复刚才表达过的意思）" % (" / ".join(recent_raw[-3:]) or "内容重复")}]
+            try:
+                _m2, reply2 = call_glm_with_fallback(retry_msgs, "")
+                texts2, _st2, _memo2, _draw2, _sg2 = parse_reply(reply2)
+                if texts2:
+                    texts2, dropped2 = _dedup_reply(daemon, msg, texts2)
+                    if texts2:
+                        texts = texts2
+                        out("AGENT_DUP_RETRY_OK msg_id=%s chat=%s/%s"
+                            % (msg["id"], msg["chat_type"], msg["chat_id"]))
+            except Exception as e:
+                out("AGENT_DUP_RETRY_FAIL %r" % e)
+        if not texts and not stickers:
             daemon.ack([msg["id"]])
             RT.count_processed()
-            out("AGENT_DUP_SKIP msg_id=%s chat=%s/%s (回复与近期发言重复，避免复读)"
+            out("AGENT_DUP_SKIP msg_id=%s chat=%s/%s (重试后仍重复，跳过)"
                 % (msg["id"], msg["chat_type"], msg["chat_id"]))
             return
     except Exception as e:
