@@ -1,0 +1,9 @@
+{
+  "name": "weather",
+  "title": "所在地天气感知",
+  "description": "机器人在设置里填了城市后，知道当地的实时天气——聊天里可以自然聊起「今天降温了记得加衣服」，主动找你说话时也能拿天气当话头。免费公开服务（Open-Meteo），不用填 Key。城市在 设置 → ⑥自动化与维护 → 所在地天气 里填，留空 = 不感知。",
+  "default_enabled": true,
+  "settings": [
+    {"key": "city", "type": "text", "label": "城市名（如：上海 / 北京市；留空 = 不感知）", "default": ""}
+  ]
+}

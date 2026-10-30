@@ -330,3 +330,97 @@ def uninstall(name):
     except (OSError, ValueError):
         pass
     return {"ok": True, "name": name}
+
+
+# ---------------- 插件市场 ----------------
+
+# 官方市场清单：公开仓库里的 market.json（含插件 zip 直链）。
+# zip 同 release 资产走 github.com 域（本机直连验证过），镜像兜底 gh-proxy。
+DEFAULT_MARKET_URL = ("https://github.com/Pigeon2333/zcode-qq-bot-release/"
+                      "releases/download/plugins/market.json")
+_MARKET_MIRRORS = ("https://gh-proxy.com/" + DEFAULT_MARKET_URL,)
+
+
+def _http_get(url, timeout=20, _hops=0):
+    """https GET 白名单域（github.com / gh-proxy / raw / release-assets）；
+    自动跟随白名单内的 302（release 资产都会 302 到 release-assets 域）。"""
+    import http.client
+    import urllib.parse
+    u = urllib.parse.urlsplit(url)
+    host = u.hostname or ""
+    if host not in ("github.com", "raw.githubusercontent.com",
+                    "objects.githubusercontent.com", "release-assets.githubusercontent.com",
+                    "gh-proxy.com", "ghfast.top"):
+        raise ValueError("market host not allowed: %s" % host)
+    conn = http.client.HTTPSConnection(host, timeout=timeout)
+    conn.request("GET", u.path + ("?" + u.query if u.query else ""),
+                 headers={"User-Agent": "ZCodeQQBot/1.0"})
+    r = conn.getresponse()
+    if r.status in (301, 302, 303, 307) and _hops < 3:
+        loc = r.getheader("Location") or ""
+        r.read()
+        conn.close()
+        if loc:
+            return _http_get(loc, timeout, _hops + 1)
+    data = r.read()
+    conn.close()
+    if r.status != 200:
+        raise RuntimeError("HTTP %s" % r.status)
+    return data
+
+
+def market_list(url=None):
+    """拉市场清单：[{"name","version","title","description","zip","size"}]。"""
+    u = url or DEFAULT_MARKET_URL
+    last_err = None
+    for cand in (u,) + tuple(m for m in _MARKET_MIRRORS if m != u):
+        try:
+            data = _http_get(cand)
+            d = json.loads(data.decode("utf-8", "replace"))
+            items = d.get("plugins") if isinstance(d, dict) else d
+            out = []
+            for it in (items or []):
+                if not isinstance(it, dict) or not it.get("name") \
+                        or not it.get("zip") or not _safe_name(str(it["name"])):
+                    continue
+                out.append({"name": str(it["name"]),
+                            "version": str(it.get("version") or ""),
+                            "title": str(it.get("title") or it["name"]),
+                            "description": str(it.get("description") or ""),
+                            "zip": str(it["zip"]),
+                            "size": int(it.get("size") or 0)})
+            return {"ok": True, "plugins": out}
+        except Exception as e:
+            last_err = e
+    return {"ok": False, "error": "市场清单拉取失败：%s" % last_err}
+
+
+def market_install(name, url=None):
+    """从市场下载并安装/更新一个插件（sha256 可选校验）。"""
+    ml = market_list(url)
+    if not ml.get("ok"):
+        return ml
+    item = next((p for p in ml["plugins"] if p["name"] == str(name)), None)
+    if not item:
+        return {"ok": False, "error": "市场里没有这个插件"}
+    last_err = None
+    for cand in (item["zip"],) + tuple(m for m in _MARKET_MIRRORS
+                                       if m != item["zip"]):
+        fd = None
+        try:
+            data = _http_get(cand, timeout=60)
+            import os as _os
+            import tempfile as _tf
+            fd, tmpname = _tf.mkstemp(suffix=".zip")
+            _os.close(fd)  # Windows：先关句柄再交给 zip 读，否则 WinError 32
+            pathlib.Path(tmpname).write_bytes(data)
+            try:
+                res = install_from_zip(tmpname)
+                if res.get("ok"):
+                    res["market_version"] = item["version"]
+                return res
+            finally:
+                pathlib.Path(tmpname).unlink(missing_ok=True)
+        except Exception as e:
+            last_err = e
+    return {"ok": False, "error": "下载失败：%s" % last_err}

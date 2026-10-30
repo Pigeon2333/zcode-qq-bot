@@ -1108,107 +1108,6 @@ def _zcode_context_line(chat_type=None, chat_id=None):
             % "、".join(n for n, _t in projs))
 
 
-# ---------------- 所在地天气感知（主动消息素材，免费公开服务，无 Key） ----------------
-
-_WEATHER_HOSTS = {"api.open-meteo.com", "geocoding-api.open-meteo.com", "wttr.in"}
-_WEATHER_CACHE = {"city": "", "geo": None, "geo_ts": 0.0,
-                  "text": "", "text_ts": 0.0}
-_WMO_ZH = {
-    0: "晴", 1: "大部晴", 2: "局部多云", 3: "阴", 45: "雾", 48: "冻雾",
-    51: "毛毛雨", 53: "毛毛雨", 55: "毛毛雨", 56: "冻毛毛雨", 57: "冻毛毛雨",
-    61: "小雨", 63: "中雨", 65: "大雨", 66: "冻雨", 67: "冻雨",
-    71: "小雪", 73: "中雪", 75: "大雪", 77: "雪粒",
-    80: "阵雨", 81: "阵雨", 82: "强阵雨", 85: "阵雪", 86: "阵雪",
-    95: "雷雨", 96: "雷雨伴冰雹", 99: "雷雨伴冰雹",
-}
-
-
-def _weather_city():
-    try:
-        city = str(C.load_app_config().get("weather_city") or "").strip()
-    except Exception:
-        return ""
-    return re.sub(r"[\r\n\t]", "", city)[:30]
-
-
-def _https_json(host, path, timeout=8):
-    """GET https 白名单主机并解析 JSON（天气专用小工具，失败抛异常）。"""
-    if host not in _WEATHER_HOSTS:
-        raise ValueError("host not allowed")
-    conn = http.client.HTTPSConnection(host, timeout=timeout)
-    try:
-        conn.request("GET", path, headers={"User-Agent": "ZCodeQQBot/1.0"})
-        return json.loads(conn.getresponse().read().decode("utf-8"))
-    finally:
-        conn.close()
-
-
-def _weather_line():
-    """所在地当前天气一行中文摘要（1 小时缓存；拉不到返回空串，绝不影响主流程）。
-
-    主路径 Open-Meteo（geocoding + current，WMO 代码自映射中文）；
-    兜底 wttr.in（j1，描述为英文，交给模型自行理解）。
-    """
-    city = _weather_city()
-    if not city:
-        return ""
-    now = time.time()
-    if (_WEATHER_CACHE["text"] and _WEATHER_CACHE["city"] == city
-            and now - _WEATHER_CACHE["text_ts"] < 3600):
-        return _WEATHER_CACHE["text"]
-    try:
-        geo = _WEATHER_CACHE["geo"]
-        if _WEATHER_CACHE["city"] != city or now - _WEATHER_CACHE["geo_ts"] > 86400:
-            g = _https_json("geocoding-api.open-meteo.com",
-                            "/v1/search?name=%s&count=1&language=zh"
-                            % urllib.parse.quote(city, safe=""))
-            hits = g.get("results") or []
-            if not hits:
-                raise LookupError("no geo result")
-            geo = (hits[0]["latitude"], hits[0]["longitude"])
-            _WEATHER_CACHE["geo"] = geo
-            _WEATHER_CACHE["geo_ts"] = now
-            _WEATHER_CACHE["city"] = city
-        w = _https_json("api.open-meteo.com",
-                        "/v1/forecast?latitude=%s&longitude=%s"
-                        "&current_weather=true&timezone=auto" % geo)
-        cur = w.get("current_weather") or {}
-        code = int(cur.get("weathercode") or 0)
-        desc = _WMO_ZH.get(code, "天气代码%s" % code)
-        temp = cur.get("temperature")
-        wind = cur.get("windspeed")
-        text = "%s %s°C，风 %skm/h" % (
-            desc, ("%.0f" % temp) if isinstance(temp, (int, float)) else "?",
-            ("%.0f" % wind) if isinstance(wind, (int, float)) else "?")
-    except Exception as e:
-        out("AGENT_WEATHER_OM_FAIL %r" % e)
-        try:  # 兜底：wttr.in（描述为英文）
-            j = _https_json("wttr.in", "/%s?format=j1"
-                            % urllib.parse.quote(city, safe=""))
-            cur = (j.get("current_condition") or [{}])[0]
-            text = "%s %s°C（体感 %s°C）" % (
-                str(((cur.get("weatherDesc") or [{}])[0]).get("value") or "?"),
-                cur.get("temp_C", "?"), cur.get("FeelsLikeC", "?"))
-        except Exception as e2:
-            out("AGENT_WEATHER_FAIL %r" % e2)
-            return ""
-    _WEATHER_CACHE["text"] = text
-    _WEATHER_CACHE["text_ts"] = time.time()
-    _WEATHER_CACHE["city"] = city
-    return text
-
-
-def _weather_context_line():
-    """主动消息注入的天气素材行（AI 自行决定是否提及，不强制）。"""
-    t = _weather_line()
-    if not t:
-        return ""
-    return ("（你所在地【%s】现在的天气：%s——只是素材，想聊可以自然带一句"
-            "（冷热/下雨收伞/这种天适合干嘛），不想提就当没看见；"
-            "千万别每次主动说话都扯天气，那样很死板。）"
-            % (_weather_city(), t))
-
-
 def _zcode_handoff(task_text, msg):
     """把任务写入 ZCode 收件箱（Markdown），返回给主人的回复文本。"""
     if not C.zcode_installed():
@@ -1946,6 +1845,34 @@ def _interrupt_gate(daemon, msg, persona_name):
 
 # ---------------- 环境感知（自我状态/天气；热点/电脑/画像已插件化） ----------------
 
+
+_WEATHER_BRIDGE = {"mod": None}
+
+
+def _weather_proactive_bridge():
+    """主动消息的天气素材行 → weather 插件 context_line()（未启用返回空）。"""
+    try:
+        if "weather" not in PLUGIN_HOST.hooks:
+            return ""
+        if _WEATHER_BRIDGE["mod"] is None:
+            import importlib.util
+            src = None
+            for base in (os.path.join(os.path.dirname(os.path.abspath(__file__)), "plugins"),
+                         os.path.join(DATA_DIR, "plugins")):
+                cand = os.path.join(base, "weather", "plugin.py")
+                if os.path.isfile(cand):
+                    src = cand
+                    break
+            if not src:
+                return ""
+            spec = importlib.util.spec_from_file_location("qqplugin_weather_bridge", src)
+            m = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(m)
+            _WEATHER_BRIDGE["mod"] = m
+        return _WEATHER_BRIDGE["mod"].context_line()
+    except Exception:
+        return ""
+
 HOT_BRIEF_PATH = os.path.join(DATA_DIR, "hot_brief.json")  # hot_brief 插件写，复盘读取
 
 
@@ -2344,11 +2271,6 @@ def build_messages(daemon, msg, ctx_k=32):
         _aware += _self_state_line(msg["chat_type"], msg["chat_id"])
     except Exception:
         pass
-    try:
-        _wl = _weather_line()
-        if _wl:
-            _aware += ("\n\n## 当前天气（所在地实况，可自然引用，不必每次都提）\n- " + _wl)
-    except Exception:
         pass
     try:
         _aware += PLUGIN_HOST.inject_all(msg["chat_type"], msg["chat_id"],
@@ -2794,7 +2716,7 @@ def _proactive_compose(daemon, chat_type, chat_id):
     content = ("【%s | 最近对话】\n%s\n%s\n%s\n\n【现在】请你主动发一条消息。"
                % (label, hist_block,
                   _zcode_context_line(chat_type, chat_id),
-                  _weather_context_line()))
+                  _weather_proactive_bridge()))
     return [{"role": "system", "content": system},
             {"role": "user", "content": content}], persona_name
 

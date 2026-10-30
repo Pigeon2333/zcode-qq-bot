@@ -1676,12 +1676,8 @@ async function vSettings(){
   <button class="act ghost" style="margin:0" onclick="backupNow()">立即备份</button>
   <button class="act" style="margin:0" onclick="restorePicker()">从备份恢复…</button></div>
   <div class="k" style="margin-top:4px">备份范围：人设合集、风格卡、自进化观察、长期记忆、回复/分群/私聊/白名单配置、模型链、表情包索引（含视觉描述缓存）、设备操控流程、定时任务、主动消息状态、用量流水、本页应用设置。密钥类文件（API Key/token）出于安全不备份，恢复后如缺失需重新填写。超过保留天数或保留份数的旧备份自动清理（最旧的先清）</div></div></div>
- <div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">所在地天气感知<span class="badge" style="background:var(--tint);color:var(--dim)">主动消息素材 · AI 自行取舍</span></div>
-  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-   <span class="k" style="flex:none">所在地</span>
-   <input value="${esc(String(c.weather_city||''))}" placeholder="城市名，如 上海 / 成都（留空=不感知）" style="width:260px" onchange="saveKVLoad('/api/app-config',{weather_city:this.value.trim()},'所在地已保存（下次主动消息起生效）')">
-  </div>
-  <div class="k" style="margin-top:6px">开启后机器人每小时自动获取当地实况天气（免费公开服务，无需 Key），作为主动搭话的素材之一——要不要提由她自己判断，不会每条都带，不会像天气预报播报。留空关闭。</div></div>
+ <div class="card"><div class="k" style="margin-bottom:8px">所在地天气感知</div>
+  <div class="k">已插件化：城市与开关在「插件 → 所在地天气感知 → ⚙ 设置」里配置（留空 = 不感知）。之前在这里填过的城市会自动沿用。</div></div>
  <div class="card"><div class="k" style="margin-bottom:8px">QQ 在线状态</div>
   <label class="master"><input type="checkbox" ${c.qq_status_auto?'checked':''} onchange="saveKVLoad('/api/app-config',{qq_status_auto:this.checked?1:0},'QQ 在线状态自动设置已'+(this.checked?'开启':'关闭'))">
    <span><b>自动设置在线状态</b><div class="k" style="margin-top:3px">机器人上线登录成功后自动把 QQ 状态设为「在线」；手动停止机器人（状态页停止/全部停止）前自动设为「离开」，让群里的人一眼看出机器人是否在岗。依赖 NapCat 扩展能力，若你的 NapCat 版本不支持会记录失败到运行日志、不影响其他功能</div></span></label>
@@ -2034,7 +2030,9 @@ async function biliScan(){
    else if(p.state==='expired'){el.textContent='二维码已过期，请关闭重试';clearInterval(timer)}
   }catch(e){}
  },2000)}
+let _plTab='mine';
 async function vPlugins(){
+ if(_plTab==='market'){await vMarket();return}
  const r=await api('/api/plugins').catch(()=>({plugins:[]}));
  const rows=(r.plugins||[]).map(p=>{
   const on=!!p.enabled;
@@ -2046,9 +2044,33 @@ async function vPlugins(){
    '<div class="k" style="margin-top:6px;opacity:.7">点「⚙ 设置」或本卡片进入该插件的专属设置页 →</div></div>';
  }).join('');
  $('#view').innerHTML=head('插件（可按需启停的功能模块）')+saveHint('启停即时生效；每个插件的全部设置在其专属设置页里（点卡片或 ⚙ 设置进入）。')+
- '<div class="card" style="margin-bottom:14px"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b>安装新插件</b><span class="k">从 zip 安装（插件包 = 一个含 manifest.json 的文件夹打成的 zip）；安装同名插件 = 更新覆盖</span></div>'+
-  '<div style="display:flex;gap:8px;margin-top:8px;align-items:center"><button class="act" style="margin:0" onclick="plInstall()">选择 zip 安装 / 更新…</button><span id="plnote" class="k"></span></div></div>'+
+ '<div style="display:flex;gap:8px;margin-bottom:14px"><button class="act" style="margin:0" onclick="plTab(\'mine\')">我的插件</button><button class="act ghost" style="margin:0" onclick="plTab(\'market\')">🌐 插件市场</button><span style="flex:1"></span><button class="act ghost" style="margin:0" onclick="plInstall()">从 zip 安装…</button></div>'+
  ((r.plugins||[]).length?'<div style="margin-top:4px">'+rows+'</div>':'<div class="card">暂无插件</div>');
+}
+function plTab(t){_plTab=t;load()}
+async function vMarket(){
+ $('#view').innerHTML=head('插件市场')+'<div style="display:flex;gap:8px;margin-bottom:14px"><button class="act ghost" style="margin:0" onclick="plTab(\'mine\')">← 我的插件</button><button class="act" style="margin:0" onclick="plTab(\'mine\')">我的插件</button><button class="act" style="margin:0">🌐 插件市场</button></div><div id="mktbody" class="card">正在拉取市场清单…</div>';
+ const r=await api('/api/plugins/market').catch(e=>({ok:false,error:'请求失败'}));
+ const el=document.getElementById('mktbody');
+ if(!el)return;
+ if(r.ok===false){el.innerHTML='市场拉取失败：'+esc(r.error||'')+'<div style="margin-top:8px"><button class="act" onclick="load()">重试</button></div>';return}
+ const rows=(r.plugins||[]).map(p=>{
+  const has=!!p.installed, upd=has&&!p.builtin&&p.local_version&&p.version&&p.local_version!==p.version;
+  const btn=p.builtin?'<span class="badge" style="background:var(--tint);color:var(--dim)">内置，无需安装</span>':
+   (upd?'<button class="act" style="margin:0" onclick="mktInstall(\''+esc(p.name)+'\',true)">更新到 v'+esc(p.version)+'</button>':
+   (has?'<span class="badge b-ok">已安装</span> <button class="act ghost" style="margin:0;padding:5px 12px;font-size:12px" onclick="mktInstall(\''+esc(p.name)+'\')">重装</button>':
+   '<button class="act" style="margin:0" onclick="mktInstall(\''+esc(p.name)+'\')">安装</button>'));
+  return '<div class="card" style="margin-bottom:12px"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b style="font-size:14px">'+esc(p.title||p.name)+'</b>'+(p.version?'<span class="badge" style="background:var(--tint);color:var(--dim)">v'+esc(p.version)+'</span>':'')+(p.size?'<span class="k">'+(p.size/1024).toFixed(0)+'KB</span>':'')+'<span style="margin-left:auto">'+btn+'</span></div>'+
+   '<div class="k" style="margin-top:6px">'+esc(p.description||'')+'</div></div>';
+ }).join('');
+ el.outerHTML=(r.plugins||[]).length?rows:'<div class="card">市场暂无插件</div>';
+}
+async function mktInstall(name,updating){
+ toast((updating?'正在更新':'正在安装')+' '+name+'…');
+ const r=await api('/api/plugins/market-install',{method:'POST',body:JSON.stringify({name:name})}).catch(e=>({ok:false,error:'请求失败'}));
+ if(r.ok===false){toast('失败：'+(r.error||''),false);return}
+ toast((r.updated?'已更新':(updating?'已更新':'已安装'))+'「'+(r.title||name)+'」'+(r.updated?'':'（默认停用，可在我的插件里启用）'));
+ load();
 }
 async function plPage(name){
  const r=await api('/api/plugins').catch(()=>({plugins:[]}));
@@ -2900,6 +2922,23 @@ class UiHandler(BaseHTTPRequestHandler):
                              "updated": int(m.get("updated") or 0)})
             rows.sort(key=lambda x: (-x["updated"], x["qq"]))
             return self._reply(200, {"ok": True, "members": rows})
+        if u.path == "/api/plugins/market":
+            try:
+                import qq_plugins as _qp
+                ml = _qp.market_list()
+                if not ml.get("ok"):
+                    return self._reply(200, ml)
+                host = _qp.PluginHost()
+                local = host.scan()  # {name: (manifest, dir, builtin)}
+                for it in ml["plugins"]:
+                    loc = local.get(it["name"])
+                    it["installed"] = bool(loc)
+                    it["builtin"] = bool(loc and loc[2])
+                    if loc:
+                        it["local_version"] = str((loc[0] or {}).get("version") or "")
+                return self._reply(200, ml)
+            except Exception as e:
+                return self._reply(500, {"ok": False, "error": repr(e)})
         if u.path == "/api/plugins":
             import qq_plugins as _qp
             host = _qp.PluginHost()
@@ -4430,6 +4469,16 @@ class UiHandler(BaseHTTPRequestHandler):
         if u.path == "/api/memory/clear":
             write_const(MEMORY_STREAM_PATH, "")
             return self._reply(200, {"ok": True})
+        if u.path == "/api/plugins/market-install":
+            name = str(body.get("name", "")).strip()
+            if not name:
+                return self._reply(400, {"ok": False, "error": "缺少插件名"})
+            try:
+                import qq_plugins as _qp
+                res = _qp.market_install(name)
+                return self._reply(200 if res.get("ok") else 400, res)
+            except Exception as e:
+                return self._reply(500, {"ok": False, "error": repr(e)})
         if u.path == "/api/plugins/install":
             # 文件对话框选 zip → 安全解压校验 → 装到用户插件目录（同名=更新覆盖）
             zipf = body.get("zip") if isinstance(body, dict) else None
