@@ -2037,19 +2037,14 @@ async function vPlugins(){
  const r=await api('/api/plugins').catch(()=>({plugins:[]}));
  const rows=(r.plugins||[]).map(p=>{
   const on=!!p.enabled;
-  const st='<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" '+(on?'checked':'')+' onchange="plToggle(\''+esc(p.name)+'\',this.checked)"> '+(on?'已启用':'已停用')+'</label>';
-  const pageBtn=p.page?'<button class="act ghost" style="margin:0;padding:4px 12px;font-size:12px" onclick="plPage(\''+esc(p.name)+'\')">管理</button>':'';
-  const uninstall=p.builtin?'':'<button class="act ghost danger" style="margin:0;padding:4px 12px;font-size:12px" onclick="plUninstall(\''+esc(p.name)+'\')">卸载</button>';
-  const settings=(p.settings||[]).map(s=>{
-   const v=p.values&&p.values[s.key]!==undefined?p.values[s.key]:s.default;
-   if(s.type==='toggle')return '<label style="display:flex;gap:6px;align-items:center;margin-top:4px"><input type="checkbox" '+(v?'checked':'')+' onchange="plSet(\''+esc(p.name)+'\',\''+esc(s.key)+'\',this.checked)"> '+esc(s.label||s.key)+'</label>';
-   if(s.type==='number')return '<label style="display:flex;gap:6px;align-items:center;margin-top:4px">'+esc(s.label||s.key)+' <input type="number" value="'+esc(String(v??''))+'" style="width:90px" onchange="plSet(\''+esc(p.name)+'\',\''+esc(s.key)+'\',parseInt(this.value)||0)"></label>';
-   return '<label style="display:block;margin-top:4px">'+esc(s.label||s.key)+'<input value="'+esc(String(v??''))+'" style="width:100%;margin-top:2px" onchange="plSet(\''+esc(p.name)+'\',\''+esc(s.key)+'\',this.value)"></label>';
-  }).join('');
-  return '<div class="card" style="margin-bottom:12px"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b style="font-size:14px">'+esc(p.title||p.name)+'</b>'+(p.builtin?'<span class="badge" style="background:var(--tint);color:var(--dim)">内置</span>':'<span class="badge" style="background:var(--tint);color:var(--dim)">已安装</span>')+'<span style="margin-left:auto;display:flex;gap:6px;align-items:center">'+pageBtn+uninstall+st+'</span></div>'+
-   '<div class="k" style="margin-top:6px">'+esc(p.description||'')+'</div>'+(settings?'<div style="margin-top:8px">'+settings+'</div>':'')+'</div>';
+  const st='<label style="display:flex;gap:6px;align-items:center;flex:none"><input type="checkbox" '+(on?'checked':'')+' onchange="plToggle(\''+esc(p.name)+'\',this.checked)"> '+(on?'已启用':'已停用')+'</label>';
+  const setBtn=(p.page||p.settings&&p.settings.length)?'<button class="act" style="margin:0;padding:5px 16px;font-size:12.5px" onclick="plPage(\''+esc(p.name)+'\')">⚙ 设置</button>':'';
+  const uninstall=p.builtin?'':'<button class="act ghost danger" style="margin:0;padding:5px 12px;font-size:12px" onclick="plUninstall(\''+esc(p.name)+'\')">卸载</button>';
+  return '<div class="card" style="margin-bottom:12px;cursor:pointer" onclick="if(!event.target.closest(\'button,label,input\'))plPage(\''+esc(p.name)+'\')"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b style="font-size:14px">'+esc(p.title||p.name)+'</b>'+(p.builtin?'<span class="badge" style="background:var(--tint);color:var(--dim)">内置</span>':'<span class="badge" style="background:var(--tint);color:var(--dim)">已安装</span>')+'<span style="margin-left:auto;display:flex;gap:8px;align-items:center">'+setBtn+uninstall+st+'</span></div>'+
+   '<div class="k" style="margin-top:6px">'+esc(p.description||'')+'</div>'+
+   '<div class="k" style="margin-top:6px;opacity:.7">点「⚙ 设置」或本卡片进入该插件的专属设置页 →</div></div>';
  }).join('');
- $('#view').innerHTML=head('插件（可按需启停的功能模块）')+saveHint('启停与设置即时生效；默认关闭的功能不会消耗任何资源。')+
+ $('#view').innerHTML=head('插件（可按需启停的功能模块）')+saveHint('启停即时生效；每个插件的全部设置在其专属设置页里（点卡片或 ⚙ 设置进入）。')+
  '<div class="card" style="margin-bottom:14px"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b>安装新插件</b><span class="k">从 zip 安装（插件包 = 一个含 manifest.json 的文件夹打成的 zip）；安装同名插件 = 更新覆盖</span></div>'+
   '<div style="display:flex;gap:8px;margin-top:8px;align-items:center"><button class="act" style="margin:0" onclick="plInstall()">选择 zip 安装 / 更新…</button><span id="plnote" class="k"></span></div></div>'+
  ((r.plugins||[]).length?'<div style="margin-top:4px">'+rows+'</div>':'<div class="card">暂无插件</div>');
@@ -2057,14 +2052,26 @@ async function vPlugins(){
 async function plPage(name){
  const r=await api('/api/plugins').catch(()=>({plugins:[]}));
  const p=(r.plugins||[]).find(x=>x.name===name);
- if(!p||!p.page){toast('该插件没有管理页',false);return}
+ if(!p){toast('插件不存在',false);return}
  let data={};
- if(p.page.data){data=await api(p.page.data).catch(()=>({}))}
- const fn=window[p.page.js];
+ if(p.page&&p.page.data){data=await api(p.page.data).catch(()=>({}))}
+ const fn=p.page?window[p.page.js]:null;
  $('#view').innerHTML=head('插件 · '+(p.title||name))+'<div style="margin-top:10px"><button class="act ghost" onclick="goTab(\'plugins\')">← 返回插件列表</button></div><div id="plpage" style="margin-top:12px"></div>';
- if(typeof fn!=='function'){document.getElementById('plpage').innerHTML='<div class="card">插件管理页加载失败：缺少 '+esc(p.page.js)+'()</div>';return}
- document.getElementById('plpage').innerHTML=fn(data,p);
- if(typeof window[p.page.js+'Init']==='function'){try{window[p.page.js+'Init'](data,p)}catch(e){}}
+ // 专属页结构：①插件自带 page（登录等专属界面）②声明式 settings 卡（任何插件都有）
+ let inner='';
+ if(typeof fn==='function'){inner+=fn(data,p)}
+ else if(p.page){inner+='<div class="card">插件设置页加载失败：缺少 '+esc(p.page.js)+'()</div>'}
+ if(p.settings&&p.settings.length){
+  const rowsS=(p.settings||[]).map(s=>{
+   const v=p.values&&p.values[s.key]!==undefined?p.values[s.key]:s.default;
+   if(s.type==='toggle')return '<div class="card" style="margin-top:10px"><label class="master"><input type="checkbox" '+(v?'checked':'')+' onchange="plSet(\''+esc(p.name)+'\',\''+esc(s.key)+'\',this.checked)"><span><b>'+esc(s.label||s.key)+'</b></span></label></div>';
+   if(s.type==='number')return '<div class="card" style="margin-top:10px"><div class="k">'+esc(s.label||s.key)+'</div><div style="margin-top:6px"><input type="number" value="'+esc(String(v??''))+'" style="width:110px" onchange="plSet(\''+esc(p.name)+'\',\''+esc(s.key)+'\',parseInt(this.value)||0)"></div></div>';
+   return '<div class="card" style="margin-top:10px"><div class="k">'+esc(s.label||s.key)+'</div><input value="'+esc(String(v??''))+'" style="width:100%;margin-top:6px" onchange="plSet(\''+esc(p.name)+'\',\''+esc(s.key)+'\',this.value)"></div>';
+  }).join('');
+  inner+='<div class="card" style="margin-top:12px"><div class="k" style="font-weight:600">插件设置</div></div>'+rowsS;
+ }
+ document.getElementById('plpage').innerHTML=inner||'<div class="card">该插件没有可配置项</div>';
+ if(typeof fn==='function'&&typeof window[p.page.js+'Init']==='function'){try{window[p.page.js+'Init'](data,p)}catch(e){}}
 }
 async function plInstall(){
  const r=await api('/api/plugins/install',{method:'POST'}).catch(e=>({ok:false,error:'请求失败'}));
@@ -2932,41 +2939,11 @@ class UiHandler(BaseHTTPRequestHandler):
                                          "brief": _qb.brief_load()})
             except Exception as e:
                 return self._reply(500, {"ok": False, "error": repr(e)})
-        if u.path == "/api/bili/login-start":
-            try:
-                import qq_bilibili as _qb
-                return self._reply(200, _qb.login_start())
-            except Exception as e:
-                return self._reply(500, {"ok": False, "error": repr(e)})
-        if u.path == "/api/bili/login-poll":
-            try:
-                import qq_bilibili as _qb
-                return self._reply(200, _qb.login_poll(str(body.get("key", ""))))
-            except Exception as e:
-                return self._reply(500, {"ok": False, "error": repr(e)})
-        if u.path == "/api/bili/logout":
-            try:
-                p = pathlib.Path(os.path.join(C.DATA_DIR, "bilibili_cookies.json"))
-                if p.exists():
-                    p.unlink()
-                return self._reply(200, {"ok": True})
-            except OSError as e:
-                return self._reply(500, {"ok": False, "error": repr(e)})
         if u.path == "/api/bili/qr":
             p = pathlib.Path(os.path.join(C.DATA_DIR, "bilibili_qr.png"))
             if p.exists():
                 return self._reply_bytes("image/png", p.read_bytes())
             return self._reply(404, {"ok": False, "error": "二维码不存在"})
-        if u.path == "/api/bili/run":
-            try:
-                conn = http.client.HTTPConnection("127.0.0.1", PORTS["agent"], timeout=8)
-                conn.request("POST", "/admin/bili-run", body=b"{}",
-                             headers={"Content-Type": "application/json"})
-                r = conn.getresponse().read().decode("utf-8", "replace")
-                conn.close()
-                return self._reply(200, json.loads(r))
-            except Exception as e:
-                return self._reply(500, {"ok": False, "error": repr(e)})
         if u.path == "/api/stickers/thumb":
             try:
                 ctype, raw = _sticker_thumb_bytes(q.get("pool", "_global"),
@@ -4493,6 +4470,36 @@ class UiHandler(BaseHTTPRequestHandler):
                 import qq_plugins as _qp
                 res = _qp.uninstall(name)
                 return self._reply(200 if res.get("ok") else 400, res)
+            except Exception as e:
+                return self._reply(500, {"ok": False, "error": repr(e)})
+        if u.path == "/api/bili/login-start":
+            try:
+                import qq_bilibili as _qb
+                return self._reply(200, _qb.login_start())
+            except Exception as e:
+                return self._reply(500, {"ok": False, "error": repr(e)})
+        if u.path == "/api/bili/login-poll":
+            try:
+                import qq_bilibili as _qb
+                return self._reply(200, _qb.login_poll(str(body.get("key", ""))))
+            except Exception as e:
+                return self._reply(500, {"ok": False, "error": repr(e)})
+        if u.path == "/api/bili/logout":
+            try:
+                p = pathlib.Path(os.path.join(C.DATA_DIR, "bilibili_cookies.json"))
+                if p.exists():
+                    p.unlink()
+                return self._reply(200, {"ok": True})
+            except OSError as e:
+                return self._reply(500, {"ok": False, "error": repr(e)})
+        if u.path == "/api/bili/run":
+            try:
+                conn = http.client.HTTPConnection("127.0.0.1", PORTS["agent"], timeout=8)
+                conn.request("POST", "/admin/bili-run", body=b"{}",
+                             headers={"Content-Type": "application/json"})
+                r = conn.getresponse().read().decode("utf-8", "replace")
+                conn.close()
+                return self._reply(200, json.loads(r))
             except Exception as e:
                 return self._reply(500, {"ok": False, "error": repr(e)})
         if u.path in ("/api/plugins/toggle", "/api/plugins/setting"):
