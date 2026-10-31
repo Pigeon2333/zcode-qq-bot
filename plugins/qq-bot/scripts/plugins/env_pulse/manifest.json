@@ -1,8 +1,16 @@
 {
   "name": "env_pulse",
   "title": "电脑状态感知",
-  "description": "在主人的私聊里，机器人知道这台电脑的实况（开机时长/内存占用/磁盘余量），聊到电脑状态时能自然应答。数据只在本机读取、只出现在主人私聊，不进群聊。默认关闭。",
+  "description": "在主人的私聊里，机器人知道这台电脑的实况（可逐项选择：开机时长/CPU/内存/磁盘/电池/网络/前台窗口），聊到电脑状态时能自然应答。数据只在本机读取、只出现在主人私聊，不进群聊。默认关闭。",
   "default_enabled": false,
-  "settings": [],
-  "category": "感知"
+  "category": "感知",
+  "settings": [
+    {"key": "item_uptime", "type": "toggle", "label": "开机时长", "default": true},
+    {"key": "item_cpu", "type": "toggle", "label": "CPU 占用率", "default": true},
+    {"key": "item_memory", "type": "toggle", "label": "内存占用", "default": true},
+    {"key": "item_disk", "type": "toggle", "label": "各硬盘剩余空间", "default": true},
+    {"key": "item_battery", "type": "toggle", "label": "电池/供电状态（笔记本）", "default": true},
+    {"key": "item_network", "type": "toggle", "label": "本机局域网 IP", "default": true},
+    {"key": "item_active_window", "type": "toggle", "label": "当前前台窗口标题（更敏感，默认关）", "default": false}
+  ]
 }
