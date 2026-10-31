@@ -86,6 +86,35 @@ _boot_lock = threading.Lock()
 _boot_state = {"running": False, "done": False, "failed": False,
                "started_at": 0.0, "final": "", "steps": []}
 
+def _boot_state_persist():
+    """把最近一次启动任务结果写盘——UI 重启后状态页仍能看到失败原因。"""
+    try:
+        with _boot_lock:
+            data = {"failed": _boot_state["failed"], "final": _boot_state["final"],
+                    "done": _boot_state["done"], "running": False,
+                    "steps": _boot_state["steps"][-40:], "ts": time.time()}
+        write_const(os.path.join(DATA_DIR, "boot_state.json"),
+                    json.dumps(data, ensure_ascii=False))
+    except Exception:
+        pass
+
+
+def _boot_state_load():
+    """UI 刚启动、内存态为空时，从盘上恢复最近一次启动结果。"""
+    try:
+        d = json.loads(read_const(os.path.join(DATA_DIR, "boot_state.json"), "{}"))
+        if isinstance(d, dict) and d.get("final"):
+            with _boot_lock:
+                if not _boot_state["steps"] and not _boot_state["running"]:
+                    _boot_state.update({"steps": d.get("steps") or [],
+                                        "failed": bool(d.get("failed")),
+                                        "done": bool(d.get("done")),
+                                        "final": str(d.get("final"))[:200],
+                                        "running": False})
+    except Exception:
+        pass
+
+
 # NapCat 活性看门狗（UI 进程内运行：能调 power_off/on 做整机恢复而不自杀）
 _wd_lock = threading.Lock()
 _wd_state = {"events": [], "strikes": 0, "last_check": 0.0, "busy": False,
@@ -540,7 +569,7 @@ function bootCardHtml(b){
  const badge=b.running?'<span class="badge" style="background:var(--tint);color:var(--fg-strong)">进行中</span>'
   :(b.failed?'<span class="badge b-bad">有失败项</span>':'<span class="badge b-ok">已完成</span>');
  return '<div class="card" id="bootcard"><div class="k" style="display:flex;gap:10px;align-items:center;margin-bottom:6px">'
-  +'启动任务 '+badge+(b.final?'<span class="k">'+esc(b.final)+'</span>':'')
+  +'启动任务 '+badge+(b.final?'<span class="k"'+(b.failed?' style="color:var(--err)"':'')+'>'+esc(b.final)+'</span>':'')
   +(b.running?'':' <button class="act ghost" style="margin:0;padding:3px 10px;font-size:12px" onclick="$(\'#bootcard\').remove()">收起</button>')
   +'</div>'+(rows||'<div class="k">等待第一步…</div>')+'</div>';
 }
@@ -2424,6 +2453,7 @@ def collect_runlog(src="all", tail=250):
         items += _parse_napcat_lines(_tail_lines(
             str(S.napcat_console_log()), tail))
     if src in ("all", "boot"):
+        _boot_state_load()
         with _boot_lock:
             steps = list(_boot_state["steps"])
             meta = {"running": _boot_state["running"], "failed": _boot_state["failed"],
@@ -2772,6 +2802,7 @@ class UiHandler(BaseHTTPRequestHandler):
             r = proxy_get("127.0.0.1", PORTS["agent"], "/admin/status")
             return self._reply(200, r if r.get("ok") else {"ok": False})
         if u.path == "/api/power/status":
+            _boot_state_load()
             with _boot_lock:
                 snap = {"running": _boot_state["running"], "done": _boot_state["done"],
                         "failed": _boot_state["failed"], "final": _boot_state["final"],
@@ -4206,12 +4237,27 @@ class UiHandler(BaseHTTPRequestHandler):
                         hard_fail = [s for s in _boot_state["steps"]
                                      if s.get("ok") is False and not s.get("progress")]
                         _boot_state["failed"] = bool(hard_fail)
-                        _boot_state["final"] = ("存在失败项" if hard_fail else "启动完成")
+                        if hard_fail:
+                            # 结论直接携带失败原因（取前两条，去重），不再只说「存在失败项」
+                            seen, msgs = set(), []
+                            for s in hard_fail:
+                                m = str(s.get("message") or "").strip()
+                                if m and m not in seen:
+                                    seen.add(m)
+                                    msgs.append(m)
+                            summary = "；".join(m[:90] for m in msgs[:2])
+                            if len(msgs) > 2:
+                                summary += "（共 %d 项，详见下方日志）" % len(msgs)
+                            _boot_state["final"] = "启动失败：" + summary
+                        else:
+                            _boot_state["final"] = "启动完成"
+                        _boot_state_persist()
                 except Exception as e:
                     with _boot_lock:
                         _boot_state["done"] = True
                         _boot_state["failed"] = True
                         _boot_state["final"] = "启动异常：%r" % e
+                        _boot_state_persist()
                 finally:
                     with _boot_lock:
                         _boot_state["running"] = False

@@ -540,8 +540,13 @@ def power_on(cfg, on_note=None):
     ok, msg = start_napcat(cfg, on_progress=lambda m: _emit(
         {"component": "napcat", "ok": None, "message": m, "progress": True}))
     _emit({"component": "napcat", "ok": ok, "message": msg})
-    _emit({"component": "daemon", "ok": True, "message": ensure_daemon(cfg)})
-    _emit({"component": "agent", "ok": True, "message": ensure_agent(cfg)})
+
+    def _ok_note(m):
+        # ensure_* 失败时返回文案含「失败/未启动」——据此标红，不再一律打绿勾
+        return ("失败" not in str(m)) and ("未启动" not in str(m))
+    dmsg, amsg = ensure_daemon(cfg), ensure_agent(cfg)
+    _emit({"component": "daemon", "ok": _ok_note(dmsg), "message": dmsg})
+    _emit({"component": "agent", "ok": _ok_note(amsg), "message": amsg})
     return notes
 
 
