@@ -24,7 +24,7 @@ DATA_DIR = os.environ.get("QQBOT_DATA_DIR") or os.path.join(
     os.path.expanduser("~"), ".zcode-qq-bot")
 DATA_ROOT = pathlib.Path(DATA_DIR)
 
-APP_VERSION = "0.1.13"         # 发布版本号（更新检查与本页展示用；发版时同步改）
+APP_VERSION = "0.1.14"         # 发布版本号（更新检查与本页展示用；发版时同步改）
 # 更新默认指向公开的"发布仓库"（只放安装包，匿名可读）；主仓库私有
 DEFAULT_UPDATE_REPO = "Pigeon2333/zcode-qq-bot-release"
 
