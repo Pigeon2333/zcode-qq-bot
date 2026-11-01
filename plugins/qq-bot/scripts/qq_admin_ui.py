@@ -1809,7 +1809,10 @@ async function vAbout(){
    <div><span class="k">GitHub 主页</span><br><a href="https://github.com/Pigeon2333" target="_blank">github.com/Pigeon2333</a></div>
   </div></div>
  <div class="card"><div class="k" style="margin-bottom:8px">贡献者</div>
-  <div class="k">暂无——欢迎通过 Pull Request 参与，你的名字会出现在这里。</div></div>
+  <div class="kv">
+   <div><a href="https://github.com/3sss123" target="_blank"><b>3sss123</b></a></div>
+  </div>
+  <div class="k" style="margin-top:6px">也欢迎你通过 Pull Request 参与，你的名字会出现在这里。</div></div>
  <div class="card"><div class="k" style="margin-bottom:8px">更新</div>
   <div class="k">当前版本 <b>${esc(vi.version||'—')}</b> · 更新源 <span class="mono">${esc(vi.repo||'')}</span>${vi.frozen?'':' · <span style="color:var(--warn)">源码模式不支持自动安装（请 git pull）</span>'}</div>
   <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
