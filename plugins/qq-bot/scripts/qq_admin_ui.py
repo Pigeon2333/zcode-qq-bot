@@ -82,7 +82,10 @@ DEFAULT_AGENT_PORT = 39764
 PORTS = {"daemon": DEFAULT_DAEMON_PORT, "agent": DEFAULT_AGENT_PORT}
 
 # 最近一次「启动机器人」任务的实时状态（内存态，UI 进程内）
-_boot_lock = threading.Lock()
+# 必须 RLock：启动 worker 在 with _boot_lock 块内调 _boot_state_persist()
+# （persist 自己也要拿锁）——普通 Lock 不可重入 → 启动一结束就自死锁且
+# 永久持锁，power/status、runlog 全挂（0.1.15 状态页打不开的根因）
+_boot_lock = threading.RLock()
 _boot_state = {"running": False, "done": False, "failed": False,
                "started_at": 0.0, "final": "", "steps": []}
 
