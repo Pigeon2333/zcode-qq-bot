@@ -477,14 +477,20 @@ def extract_message_info(segments, self_id):
         elif t == "image":
             info["image_urls"].append(str(d.get("url") or ""))
         elif t == "forward":
-            # 合并转发：NapCat 提供 content 列表或 id；提取每条文本
+            # 合并转发：NapCat 提供 content 列表或 id；提取每条文本。
+            # 只有 id 时（最常见的卡片形态）记入 forward_ids，
+            # 由 _fetch_forward_content 调 get_forward_msg 拉取。
             fc = d.get("content")
             if isinstance(fc, list):
+                got = False
                 for fs in fc:
                     if isinstance(fs, dict):
                         ft = str(fs.get("text") or "").strip()
                         if ft:
                             texts.append("[转发] " + ft[:60])
+                            got = True
+                if got:
+                    info["forward_inline"] = True  # 已有内联正文，无需再拉
             fid = str(d.get("id") or "")
             if fid:
                 info.setdefault("forward_ids", []).append(fid)
@@ -702,6 +708,98 @@ class Daemon:
             sender_name = chat_name
 
         info = extract_message_info(segments_of(ev.get("message")), self_id)
+        if info.get("forward_ids") and not info.get("forward_inline"):
+            # 合并转发只带卡片 id：去拉取内部消息。get_forward_msg 要等 WS
+            # 回包，而回包处理就跑在当前这条 WS 事件线程上——同步等会死锁到
+            # 超时，必须换线程拉，拉完再入库（该消息会晚几秒到达大脑）。
+            threading.Thread(
+                target=self._ingest_with_forward, daemon=True,
+                args=(ev, chat_type, chat_id, chat_name, user_id,
+                      sender_name, info)).start()
+            return
+        self._ingest_message(ev, chat_type, chat_id, chat_name, user_id,
+                             sender_name, info)
+
+    def _ingest_with_forward(self, ev, chat_type, chat_id, chat_name,
+                             user_id, sender_name, info):
+        """合并转发消息的入库路径（在工作线程里跑）：先拉内容再走常规入库。"""
+        try:
+            self._enrich_forward(info)
+        except Exception as e:
+            out("AGENT_LOG {\"msg\": \"forward_fetch_fail\", \"detail\": %s}"
+                % json.dumps(repr(e)))
+        self._ingest_message(ev, chat_type, chat_id, chat_name, user_id,
+                             sender_name, info)
+
+    def _enrich_forward(self, info):
+        """把合并转发的内部消息展平进 info：文本进 text（人名标注），
+        内部图片 URL 进 image_urls（沿用既有识图通道）。拉不到至少留个卡片标记，
+        让模型知道"这里有个打不开的转发"而不是什么都看不到。"""
+        lines, imgs = [], []
+        for fid in (info.get("forward_ids") or [])[:2]:
+            try:
+                ls, im = self._fetch_forward_content(fid)
+                lines.extend(ls)
+                imgs.extend(im)
+            except Exception:
+                pass
+        prefix = info["text"] + "\n" if info["text"] else ""
+        if lines:
+            info["text"] = (prefix + "[合并转发记录，%d条]\n%s"
+                            % (len(lines), "\n".join(lines)))[:1200]
+            info["image_urls"].extend(imgs)
+        else:
+            info["text"] = prefix + "[合并转发消息（内容拉取失败，只有卡片）]"
+
+    def _fetch_forward_content(self, fid):
+        """get_forward_msg 拉取合并转发内容：返回 (行列表, 图片URL列表)。
+        NapCat 各版本返回形态不一（list / dict.message / dict.content），
+        逐一兼容；嵌套合并转发只标记不再展开；每条限 120 字、最多 30 条。"""
+        data = self._call_action("get_forward_msg", {"id": str(fid)},
+                                 timeout=8)
+        subs = data if isinstance(data, list) else (
+            data.get("message") or data.get("content")
+            if isinstance(data, dict) else None)
+        lines, imgs = [], []
+        if not isinstance(subs, list):
+            return lines, imgs
+        for sm in subs[:30]:
+            if not isinstance(sm, dict):
+                continue
+            sender = sm.get("sender") or {}
+            name = str(sender.get("card") or sender.get("nickname")
+                       or sender.get("user_id") or "?")
+            segs = sm.get("message")
+            if segs is None:
+                segs = sm.get("content")
+            if isinstance(segs, str):
+                segs = [{"type": "text", "data": {"text": segs}}]
+            parts = []
+            for seg in (segs or []):
+                if not isinstance(seg, dict):
+                    continue
+                t = str(seg.get("type") or "")
+                d = seg.get("data") or {}
+                if t == "text":
+                    parts.append(str(d.get("text") or "").strip())
+                elif t == "image":
+                    u = str(d.get("url") or "")
+                    if u:
+                        imgs.append(u)
+                    parts.append("[图片]")
+                elif t == "forward":
+                    parts.append("[嵌套合并转发]")
+                elif t == "record":
+                    parts.append("[语音]")
+                elif t == "face":
+                    parts.append("[表情]")
+            txt = " ".join(p for p in parts if p)[:120]
+            if txt:
+                lines.append("%s: %s" % (name, txt))
+        return lines, imgs
+
+    def _ingest_message(self, ev, chat_type, chat_id, chat_name,
+                        user_id, sender_name, info):
         triggered, reason = self._decide_trigger(chat_type, info, chat_id)
 
         with self.lock:

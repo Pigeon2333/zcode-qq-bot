@@ -11,6 +11,8 @@ rem   1. PyInstaller 打包时 python 环境里必须真的装有 pywebview；�
 rem      产出一个缺 webview 的 exe，windowed 模式无 stdout，表现为双击无反应。
 rem   2. 源码 import 的是 webview（发行包名是 pywebview），collect 的包名必须写 webview。
 rem   3. 打包后执行 --self-test，确认 frozen 环境里 webview 真能导入。
+rem   4. 组件缺失一律报错终止（不再 WARN+跳过）：宁可打不出包，
+rem      也不能产出"能发布但缺功能/起不来"的残缺版本。
 
 cd /d "%~dp0.."
 if not defined QQBOT_DIST_ROOT set "QQBOT_DIST_ROOT=D:\ZCode\workspaces\qq-bot-dist"
@@ -22,7 +24,7 @@ if errorlevel 1 goto :nopython
 python -c "import PyInstaller, webview, PIL" 2>nul
 if errorlevel 1 goto :nodeps
 python -c "import pystray" >nul 2>&1
-if errorlevel 1 echo [WARN] 未安装 pystray：托盘功能将不可用（关闭窗口会直接退出应用）。安装：python -m pip install pystray
+if errorlevel 1 goto :nopystray
 
 rem 用户级 site-packages 也要让 PyInstaller 看见（pip install --user 很常见）
 for /f "delims=" %%i in ('python -c "import site; print(site.getusersitepackages())"') do set "PYTHONPATH=%%i;%PYTHONPATH%"
@@ -47,7 +49,7 @@ if errorlevel 1 goto :buildfail
 echo [3/4] 校验产物...
 if not exist "%DIST%\ZCodeQQBot.exe" goto :verifyfail
 if not exist "%DIST%\_internal\webview" goto :nowebview
-if not exist "%DIST%\_internal\pythonnet\runtime\Python.Runtime.dll" echo [WARN] 未找到 pythonnet 运行时 DLL，pywebview 可能无法启动
+if not exist "%DIST%\_internal\pythonnet\runtime\Python.Runtime.dll" goto :nopythonnet
 if exist "%QQBOT_DIST_ROOT%\build\ZCodeQQBot\warn-ZCodeQQBot.txt" (
   findstr /C:"missing module named webview" "%QQBOT_DIST_ROOT%\build\ZCodeQQBot\warn-ZCodeQQBot.txt" >nul 2>&1
   if not errorlevel 1 goto :nowebview
@@ -70,6 +72,18 @@ goto :fail
 echo [ERROR] 打包依赖不完整。请先执行：
 echo         python -m pip install pyinstaller pywebview pystray pillow
 echo   注意：必须在运行本脚本的同一个 python 环境里安装。
+goto :fail
+
+:nopystray
+echo [ERROR] 未安装 pystray：托盘是发布版的核心交互（最小化到托盘、重新打开窗口），
+echo   缺了它打出的包"关闭窗口即退出"，属于残缺发布版——本脚本不再 WARN 跳过。
+echo   请在同一环境执行：python -m pip install pystray 后重新打包。
+goto :fail
+
+:nopythonnet
+echo [ERROR] 产物缺少 pythonnet 运行时 DLL（Python.Runtime.dll），
+echo   pywebview 的 WinForms 后端起不来，打出的包大概率"双击无反应"。
+echo   请在同一环境执行：python -m pip install pywebview（会带 pythonnet）后重新打包。
 goto :fail
 
 :buildfail
