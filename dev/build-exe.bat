@@ -34,6 +34,7 @@ python -m PyInstaller --noconfirm --clean --onedir --windowed ^
   --name "ZCodeQQBot" ^
   --icon "%CD%\plugins\qq-bot\assets\app.ico" ^
   --add-data "%CD%\plugins\qq-bot\assets;assets" ^
+  --add-data "%CD%\plugins\qq-bot\scripts\plugins;plugins" ^
   --distpath "%QQBOT_DIST_ROOT%" ^
   --workpath "%QQBOT_DIST_ROOT%\build" ^
   --specpath "%QQBOT_DIST_ROOT%" ^
@@ -49,6 +50,7 @@ if errorlevel 1 goto :buildfail
 echo [3/4] 校验产物...
 if not exist "%DIST%\ZCodeQQBot.exe" goto :verifyfail
 if not exist "%DIST%\_internal\webview" goto :nowebview
+if not exist "%DIST%\_internal\plugins" goto :noplugins
 if not exist "%DIST%\_internal\pythonnet\runtime\Python.Runtime.dll" goto :nopythonnet
 if exist "%QQBOT_DIST_ROOT%\build\ZCodeQQBot\warn-ZCodeQQBot.txt" (
   findstr /C:"missing module named webview" "%QQBOT_DIST_ROOT%\build\ZCodeQQBot\warn-ZCodeQQBot.txt" >nul 2>&1
@@ -84,6 +86,12 @@ goto :fail
 echo [ERROR] 产物缺少 pythonnet 运行时 DLL（Python.Runtime.dll），
 echo   pywebview 的 WinForms 后端起不来，打出的包大概率"双击无反应"。
 echo   请在同一环境执行：python -m pip install pywebview（会带 pythonnet）后重新打包。
+goto :fail
+
+:noplugins
+echo [ERROR] 产物的 _internal 里没有内置插件目录（bili_scroll/weather 等），
+echo   打出的包会"有界面但感知/娱乐插件全丢"。本脚本已带 --add-data 打包
+echo   scripts\plugins；若仍缺失，检查仓库路径是否完整后重新打包。
 goto :fail
 
 :buildfail
