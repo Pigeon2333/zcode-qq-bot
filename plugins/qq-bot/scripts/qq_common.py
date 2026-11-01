@@ -25,8 +25,8 @@ DATA_DIR = os.environ.get("QQBOT_DATA_DIR") or os.path.join(
 DATA_ROOT = pathlib.Path(DATA_DIR)
 
 APP_VERSION = "0.1.14"         # 发布版本号（更新检查与本页展示用；发版时同步改）
-# 更新默认指向公开的"发布仓库"（只放安装包，匿名可读）；主仓库私有
-DEFAULT_UPDATE_REPO = "Pigeon2333/zcode-qq-bot-release"
+# 更新默认指向主仓库（已开源，release 资产匿名可读；旧发布仓库已归档）
+DEFAULT_UPDATE_REPO = "Pigeon2333/zcode-qq-bot"
 
 APP_CONFIG_PATH = DATA_ROOT / "app_config.json"
 
@@ -178,6 +178,9 @@ def detect_qqnt_dir():
     return ""
 
 
+_LEGACY_UPDATE_REPO = "Pigeon2333/zcode-qq-bot-release"  # 已归档的旧发布仓库
+
+
 def load_app_config():
     """读 app_config.json；不存在或格式异常时返回默认值（不回写，写由显式保存触发）。"""
     cfg = dict(DEFAULT_CONFIG)
@@ -189,6 +192,10 @@ def load_app_config():
         for k in DEFAULT_CONFIG:
             if k in data:
                 cfg[k] = data[k]
+    # 一次性迁移：旧发布仓库已归档，指向它的更新源改回主仓库
+    # （用户手动改成其它 fork/镜像的不受影响）
+    if cfg.get("update_repo") == _LEGACY_UPDATE_REPO:
+        cfg["update_repo"] = DEFAULT_UPDATE_REPO
     return cfg
 
 

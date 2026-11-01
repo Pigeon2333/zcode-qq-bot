@@ -2111,7 +2111,7 @@ async function vPlugins(){
 function plCatSel(c){_plCat=c;load()}
 function plTab(t){_plTab=t;load()}
 async function vMarket(){
- $('#view').innerHTML=head('插件市场')+'<div style="display:flex;gap:8px;margin-bottom:14px"><button class="act ghost" style="margin:0" onclick="plTab(\'mine\')">← 我的插件</button><button class="act" style="margin:0" onclick="plTab(\'mine\')">我的插件</button><button class="act" style="margin:0">🌐 插件市场</button></div><div id="mktbody" class="card">正在拉取市场清单…</div>';
+ $('#view').innerHTML=head('插件市场')+'<div style="display:flex;gap:8px;margin-bottom:14px"><button class="act ghost" style="margin:0" onclick="plTab(\'mine\')">← 我的插件</button><button class="act" style="margin:0">🌐 插件市场</button></div><div id="mktbody" class="card">正在拉取市场清单…</div>';
  const r=await api('/api/plugins/market').catch(e=>({ok:false,error:'请求失败'}));
  const el=document.getElementById('mktbody');
  if(!el)return;

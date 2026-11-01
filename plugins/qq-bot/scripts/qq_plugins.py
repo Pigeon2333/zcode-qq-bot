@@ -345,9 +345,9 @@ def uninstall(name):
 
 # ---------------- 插件市场 ----------------
 
-# 官方市场清单：公开仓库里的 market.json（含插件 zip 直链）。
+# 官方市场清单：主仓库（已开源）release 资产里的 market.json。
 # zip 同 release 资产走 github.com 域（本机直连验证过），镜像兜底 gh-proxy。
-DEFAULT_MARKET_URL = ("https://github.com/Pigeon2333/zcode-qq-bot-release/"
+DEFAULT_MARKET_URL = ("https://github.com/Pigeon2333/zcode-qq-bot/"
                       "releases/download/plugins/market.json")
 _MARKET_MIRRORS = ("https://gh-proxy.com/" + DEFAULT_MARKET_URL,)
 
