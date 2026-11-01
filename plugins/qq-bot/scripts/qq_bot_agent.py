@@ -2018,7 +2018,21 @@ def _nudge_cfg():
         strikes = max(1, int(cfg.get("nudge_max_strikes", 2)))
     except (TypeError, ValueError):
         strikes = 2
-    return (bool(cfg.get("nudge_enabled", True)), dmin, dmax, strikes)
+    return (bool(cfg.get("nudge_enabled", True)), dmin, dmax, strikes,
+            bool(cfg.get("nudge_group_enabled", False)))
+
+
+def _nudge_group_allowed(cid):
+    """群聊追问门控：与主动发消息同一标准——群白名单启用且在列（或 allow_all）、
+    该群未暂停回应、分群没单独关主动。不在名单里的群绝不因追问主动开口。"""
+    wl = load_json_const(GROUP_WL_PATH, {})
+    if not (isinstance(wl, dict) and wl.get("enabled", True)):
+        return False
+    if not wl.get("allow_all") and str(cid) not in {
+            str(g) for g in wl.get("groups", [])}:
+        return False
+    ov = load_json_const(GROUP_MODES_AGENT_PATH, {}).get(str(cid)) or {}
+    return not (ov.get("paused") or ov.get("proactive") is False)
 
 
 def _nudge_compose(daemon, chat_type, chat_id):
@@ -2032,29 +2046,48 @@ def _nudge_compose(daemon, chat_type, chat_id):
         who = "你" if h.get("is_bot") else str(h.get("sender_name", "?"))
         lines.append("%s: %s" % (who, str(h.get("text", ""))[:80]))
     recent = lines[-6:]
-    my_last = next((l.split(": ", 1)[-1] for l in reversed(recent)
-                    if l.startswith("你: ")), "")
-    their_last = next((l.split(": ", 1)[-1] for l in reversed(recent)
-                       if not l.startswith("你: ")), "")
-    sys_p = (_persona_stack_text((chat_type, chat_id)) +
-             "\n\n## 场景\n你刚说完一句话，对方几分钟没回（最近对话如下，末尾最新）：\n"
-             + "\n".join(recent) +
-             "\n\n你说的最后一句是：「%s」\n对方说的最后一句是：「%s」\n\n"
-             "先判断对话停在哪一种：\n"
-             "A 对方向你提了问题/请求，你答完了等对方反应\n"
-             "B 你向对方抛了问题或邀约，对方没接\n"
-             "C 话题自然聊完，双方都没欠话\n"
-             "D 对方话说到一半突然消失\n\n"
-             "按对应方式追一句（只输出这句话本身，用人设的口吻、词汇和称呼）：\n"
-             "A → 不催，多数情况安静等着；真要开口也只是人设式的一句轻关心，别提'没回我'\n"
-             "B → 围绕你抛的那个具体问题轻轻催一下，让对方好接话\n"
-             "C → 随口起个新话头或一句日常想念，像熟人之间没事找话，禁止'在吗/在忙什么'式查岗\n"
-             "D → 关心对方刚才说的一半（具体引用内容），问后面怎么样了\n\n"
-             "禁止：通用套话（在吗/在忙吗/怎么不理我/要生气了）、查岗腔、"
-             "重复你刚说过的内容、长篇大论、跳出人设的语气。宁可非常简短。")
+    if chat_type == "group":
+        # 群聊语境：多对多，"没人接话"≠"对方没回你"，冷场是常态——
+        # 判定必须远比私聊保守，多数情况选择不开口（输出 [不发]）
+        sys_p = (_persona_stack_text((chat_type, chat_id)) +
+                 "\n\n## 场景\n这是群聊。你刚在群里说完话，之后没人接"
+                 "（最近记录如下，末尾最新，说话人已标注）：\n"
+                 + "\n".join(recent) +
+                 "\n\n群里冷场很正常，大多数时候不该开口。只有当你刚说的那句"
+                 "明显是问某个人、接某个人的话、或抛出的具体问题/邀约没人接，"
+                 "才轻轻再点一下那件具体的事，让被问的人好接。\n"
+                 "禁止：@人、查岗腔（怎么没人理我/都睡了？）、自言自语找补、"
+                 "硬起新话题、长篇大论。群里的分寸由人设把握，宁可不说。\n"
+                 "多数情况请只输出：[不发]\n"
+                 "要发言时只输出这一句话本身（人设的口吻、词汇和称呼）。")
+        user_p = "群里没人接话，按上面的判断决定追不追。"
+    else:
+        my_last = next((l.split(": ", 1)[-1] for l in reversed(recent)
+                        if l.startswith("你: ")), "")
+        their_last = next((l.split(": ", 1)[-1] for l in reversed(recent)
+                           if not l.startswith("你: ")), "")
+        sys_p = (_persona_stack_text((chat_type, chat_id)) +
+                 "\n\n## 场景\n你刚说完一句话，对方几分钟没回（最近对话如下，末尾最新）：\n"
+                 + "\n".join(recent) +
+                 "\n\n你说的最后一句是：「%s」\n对方说的最后一句是：「%s」\n\n"
+                 "先判断对话停在哪一种：\n"
+                 "A 对方向你提了问题/请求，你答完了等对方反应\n"
+                 "B 你向对方抛了问题或邀约，对方没接\n"
+                 "C 话题自然聊完，双方都没欠话\n"
+                 "D 对方话说到一半突然消失\n\n"
+                 "按对应方式追一句（只输出这句话本身，用人设的口吻、词汇和称呼）：\n"
+                 "A → 不催，多数情况安静等着；真要开口也只是人设式的一句轻关心，别提'没回我'\n"
+                 "B → 围绕你抛的那个具体问题轻轻催一下，让对方好接话\n"
+                 "C → 随口起个新话头或一句日常想念，像熟人之间没事找话，禁止'在吗/在忙什么'式查岗\n"
+                 "D → 关心对方刚才说的一半（具体引用内容），问后面怎么样了\n\n"
+                 "禁止：通用套话（在吗/在忙吗/怎么不理我/要生气了）、查岗腔、"
+                 "重复你刚说过的内容、长篇大论、跳出人设的语气。宁可非常简短。")
+        user_p = "对方沉默了，按上面的判断追一句。"
     _m, text = call_glm_with_fallback(
         [{"role": "system", "content": sys_p},
-         {"role": "user", "content": "对方沉默了，按上面的判断追一句。"}], "")
+         {"role": "user", "content": user_p}], "")
+    if "[不发]" in str(text):
+        return ""  # 群聊判定不开口（tick 会标记本轮已处理，不反复重试）
     texts, _st, _memo, _draw, _sg = parse_reply(text)
     return (texts or [""])[0][:200]
 
@@ -2069,7 +2102,7 @@ def _nudge_tick(daemon):
     if now - _NUDGE_LAST_RUN < 20:
         return
     _NUDGE_LAST_RUN = now
-    enabled, dmin, dmax, max_strikes = _nudge_cfg()
+    enabled, dmin, dmax, max_strikes, group_enabled = _nudge_cfg()
     if not enabled:
         return
     st = daemon.status() or {}
@@ -2085,6 +2118,14 @@ def _nudge_tick(daemon):
         return
     for ct, cid in [(_c["chat_type"], _c["chat_id"]) for _c in chats][:12]:
         key = "%s:%s" % (ct, cid)
+        # 群聊追问：独立开关（默认关）+ 与主动发消息同一门控（白名单/未暂停/
+        # 分群未关主动）+ 每轮最多 1 次（群里连续追问比私聊更显打扰）
+        if ct == "group":
+            if not group_enabled or not _nudge_group_allowed(cid):
+                continue
+            strikes_cap = 1
+        else:
+            strikes_cap = max_strikes
         hist = daemon.history(ct, cid, limit=8)
         if len(hist) < 2:
             continue
@@ -2101,7 +2142,7 @@ def _nudge_tick(daemon):
             continue
         gap = now - bot_ts
         s = _NUDGE_STATE.setdefault(key, {"strikes": 0, "last_ts": 0.0})
-        if s["strikes"] >= max_strikes:
+        if s["strikes"] >= strikes_cap:
             continue
         if s["last_ts"] >= bot_ts:
             continue  # 这条 bot 消息发出后已经追过
@@ -2109,8 +2150,9 @@ def _nudge_tick(daemon):
             continue
         if s["strikes"] == 0 and gap > dmax + 60:
             continue  # 错过第一追的窗口太久（超过 1 分钟+上限），不再补追
-        # 本轮必须双向（bot 发言之前对方说过话）
-        if not any(not h.get("is_bot") for h in hist[1:]):
+        # 本轮必须双向（bot 最后一条发言之前对方说过话）。排除最后那条 bot 消息
+        # 本身（hist[:-1]，旧代码误写 hist[1:] 排除最旧一条——两句对话被漏追）
+        if not any(not h.get("is_bot") for h in hist[:-1]):
             continue
         # 追！（每次巡检最多追 1 个会话）
         try:

@@ -1123,16 +1123,16 @@ async function vGroups(){
    <div class="k" style="margin-top:10px">两次主动搭话最小间隔（秒）：<input id="mintv" type="number" min="0" max="3600" value="${c.chat_min_interval_sec??45}" class="mini" style="width:90px" onchange="saveIntv()"></div>
    <div style="margin-top:10px"><label class="master"><input type="checkbox" id="intr" ${c.chat_interesting?'checked':''} onchange="saveCk('chat_interesting',this.checked,'感兴趣判定')">
     <span><b>感兴趣才回</b><div class="k" style="margin-top:2px">AI 按人设判断这条消息值不值得接话，不感兴趣就静默；关闭则纯随机</div></span></label></div>
-   <div style="margin-top:8px"><label class="master"><input type="checkbox" id="anti" ${c.chat_anti_interrupt!==false?'checked':''} onchange="saveCk('chat_anti_interrupt',this.checked,'防插嘴')">
+  <div style="margin-top:8px"><label class="master"><input type="checkbox" id="anti" ${c.chat_anti_interrupt!==false?'checked':''} onchange="saveCk('chat_anti_interrupt',this.checked,'防插嘴')">
     <span><b>防插嘴</b><div class="k" style="margin-top:2px">结合上下文判断：与自己无关的话题、他人之间正在讨论的对话、无人叫你时保持沉默；开启时覆盖上一项，判定更严格</div></span></label></div>
-   <div style="margin-top:8px"><label class="master"><input type="checkbox" ${rv.nudge_enabled!==false?'checked':''} onchange="saveKVLoad('/api/reply-config',{nudge_enabled:this.checked},'主动追问已'+(this.checked?'开启':'关闭'))">
-    <span><b>聊到一半的主动追问</b><div class="k" style="margin-top:2px">和对方聊着天、对方忽然不说话了——沉默一会儿后机器人会像真人那样主动追问一句（"睡着啦？""怎么不说话了"）。每轮对话最多追问 <input type="number" min="1" max="5" value="${rv.nudge_max_strikes??2}" style="width:44px" onchange="saveKVLoad('/api/reply-config',{nudge_max_strikes:Math.max(1,Math.min(5,parseInt(this.value)||2))},'追问次数已更新')"> 次；对方回复即重新计时。沉默 <input type="number" min="30" max="1800" value="${rv.nudge_delay_min_sec??150}" style="width:60px" onchange="saveKVLoad('/api/reply-config',{nudge_delay_min_sec:Math.max(30,Math.min(1800,parseInt(this.value)||150))},'追问延迟已更新')"> 秒后开始（实际会在一个小区间内随机，更自然）。禁用时段/安静模式时不追</div></span></label></div>
   </div>`:''}
  </div>
  <div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">主动发消息<span class="badge" style="background:var(--tint);color:var(--dim)">全局通用默认</span>（每个群可在下方白名单行内单独覆盖）</div>
   <label class="master"><input type="checkbox" ${rv.proactive_groups_enabled?'checked':''} onchange="savePro('proactive_groups_enabled',this.checked)">
    <span><b>允许机器人主动在群里发消息</b><div class="k" style="margin-top:3px">开启后机器人会不定期根据最近对话、当前时间、记忆主动开个话头：只选最近 6 小时内有活动的白名单群；安静模式/暂停/群暂停回应/限额停响应时都不发；发送前过复读与脏话守卫</div></span></label>
   ${proCard('groups')}
+  <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)"><label class="master"><input type="checkbox" ${rv.nudge_group_enabled?'checked':''} onchange="saveKVLoad('/api/reply-config',{nudge_group_enabled:this.checked},'群聊追问已'+(this.checked?'开启':'关闭'))">
+   <span><b>群聊冷场追问</b><div class="k" style="margin-top:3px">机器人在群里说话没人接时，也像真人那样轻轻追一句。默认关——群里冷场很正常，追多了容易尬也容易被当刷屏。开启后也只选允许主动发消息的群（白名单内、未暂停、该群没单独关主动），每轮最多追一次，判定比私聊保守得多（多数情况选择不说话）。沉默窗口沿用私聊追问的设置</div></span></label></div>
   <div style="margin-top:8px"><label>总量上限：所有群+私聊合计每小时最多 <input type="number" min="0" max="60" value="${rv.proactive_hourly_cap??2}" style="width:52px" onchange="saveProNum('hourly_cap',(isNaN(parseInt(this.value))?2:parseInt(this.value)),'总量上限')"> 条（0=不限；各群各自计时容易叠加，这个上限封住整体频率）</label></div>
   ${_ovLine}
   <div class="k" style="margin-top:6px">例：30 分钟 + 10% ≈ 平均每 5 小时主动说一句。私聊的设置在「私聊消息」页，互不影响。</div></div>
@@ -1169,6 +1169,8 @@ async function vPrivate(){
   <label class="master"><input type="checkbox" ${rv.proactive_private_enabled?'checked':''} onchange="savePro('proactive_private_enabled',this.checked)">
    <span><b>允许机器人主动私聊</b><div class="k" style="margin-top:3px">只发给私信白名单内、最近 6 小时聊过的人（与「回应私信」开关互不影响，回复所有人的私信开启时也不会主动打扰陌生人）；安静模式/暂停/限额时都不发</div></span></label>
   ${proCard('private')}
+  <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)"><label class="master"><input type="checkbox" ${rv.nudge_enabled!==false?'checked':''} onchange="saveKVLoad('/api/reply-config',{nudge_enabled:this.checked},'主动追问已'+(this.checked?'开启':'关闭'))">
+   <span><b>聊到一半的主动追问</b><div class="k" style="margin-top:2px">和对方私聊着、对方忽然不说话了——沉默一会儿后机器人会像真人那样主动追问一句（具体说什么由人设和当时的对话决定）。每轮最多追问 <input type="number" min="1" max="5" value="${rv.nudge_max_strikes??2}" style="width:44px" onchange="saveKVLoad('/api/reply-config',{nudge_max_strikes:Math.max(1,Math.min(5,parseInt(this.value)||2))},'追问次数已更新')"> 次；对方回复即重新计时。沉默 <input type="number" min="30" max="1800" value="${rv.nudge_delay_min_sec??150}" style="width:60px" onchange="saveKVLoad('/api/reply-config',{nudge_delay_min_sec:Math.max(30,Math.min(1800,parseInt(this.value)||150))},'追问延迟已更新')"> 秒后开始（实际会在一个小区间内随机，更自然）。安静模式/禁用时段时不追</div></span></label></div>
  </div> <div class="card">
   <label class="master" style="margin-bottom:8px"><input type="checkbox" id="penabled" ${on?'checked':''} onchange="savePrivate()">
    <span><b>回应私信</b><div class="k" style="margin-top:3px">默认关闭；开启后机器人会回复私聊消息</div></span></label>
@@ -3210,6 +3212,7 @@ class UiHandler(BaseHTTPRequestHandler):
                                      "proactive_groups_silent_end": data.get("proactive_groups_silent_end", "08:00"),
                                      "proactive_hourly_cap": data.get("proactive_hourly_cap", 2),
                                      "nudge_enabled": bool(data.get("nudge_enabled", True)),
+                                     "nudge_group_enabled": bool(data.get("nudge_group_enabled", False)),
                                      "nudge_delay_min_sec": data.get("nudge_delay_min_sec", 150),
                                      "nudge_delay_max_sec": data.get("nudge_delay_max_sec", 300),
                                      "nudge_max_strikes": data.get("nudge_max_strikes", 2),
@@ -3812,7 +3815,7 @@ class UiHandler(BaseHTTPRequestHandler):
                     return self._reply(400, {"ok": False, "error": "总量上限应为 0-60 整数（0=不限）"})
             for _pk in ("env_pulse_enabled", "member_profiles_enabled",
                         "bili_scroll_enabled", "bili_share_enabled",
-                        "nudge_enabled"):
+                        "nudge_enabled", "nudge_group_enabled"):
                 if _pk in body:
                     data[_pk] = bool(body[_pk])
             if "bili_scroll_window_min" in body:
