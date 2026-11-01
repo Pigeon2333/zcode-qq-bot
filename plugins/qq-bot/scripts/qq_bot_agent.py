@@ -48,11 +48,78 @@ WORKER_PATH = os.path.join(SCRIPT_DIR, "qq_task_worker.py")
 
 def _worker_cmd(workdir):
     """任务沙盒 worker 启动命令：脚本模式 python qq_task_worker.py；
-    frozen（exe 发布版）主 exe 分身承载。"""
+    frozen（exe 发布版）主 exe 分身承载。--parent-pid 让 worker 在 agent
+    被强杀（升级/任务管理器）时也能自行退出，不留孤儿进程。"""
     if getattr(sys, "frozen", False):
         return [os.path.abspath(sys.executable), "--service", "worker",
-                "--workdir", workdir]
-    return [sys.executable, WORKER_PATH, "--workdir", workdir]
+                "--workdir", workdir, "--parent-pid", str(os.getpid())]
+    return [sys.executable, WORKER_PATH, "--workdir", workdir,
+            "--parent-pid", str(os.getpid())]
+
+
+# ---------------- 沙箱 worker 生命周期（退出不留孤儿） ----------------
+_worker_lock = threading.Lock()
+_worker_procs = set()
+
+
+def _register_worker(p):
+    with _worker_lock:
+        _worker_procs.add(p)
+
+
+def _unregister_worker(p):
+    with _worker_lock:
+        _worker_procs.discard(p)
+
+
+def _kill_tree(pid):
+    """结束进程树（worker 自己还会派生子进程）。"""
+    try:
+        subprocess.run(["taskkill", "/PID", str(int(pid)), "/T", "/F"],
+                       capture_output=True, timeout=10,
+                       creationflags=CREATE_NO_WINDOW)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def _kill_workers():
+    """退出前结束所有仍在执行的沙箱任务。"""
+    with _worker_lock:
+        procs = list(_worker_procs)
+    for p in procs:
+        try:
+            if p.poll() is None:
+                _kill_tree(p.pid)
+        except Exception:
+            pass
+
+
+def _run_worker(workdir, task_text, timeout=900):
+    """执行一次沙箱任务并返回 (returncode, stdout, stderr)。
+
+    用 Popen 而非 subprocess.run：进程在运行期间登记到 _worker_procs，
+    agent 收到退出指令时可以先终止它，避免「退出后 worker 还在写文件」。
+    管道统一 UTF-8（worker 侧也做了 stdout/stderr 重配置）。
+    """
+    proc = subprocess.Popen(
+        _worker_cmd(workdir),
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        cwd=SCRIPT_DIR, creationflags=CREATE_NO_WINDOW,
+        text=True, encoding="utf-8", errors="replace")
+    _register_worker(proc)
+    try:
+        try:
+            out, err = proc.communicate(str(task_text), timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_tree(proc.pid)
+            try:
+                out, err = proc.communicate(timeout=5)
+            except Exception:
+                out, err = "", "任务执行超时"
+            return -1, out or "", err or "任务执行超时"
+        return proc.returncode or 0, out or "", err or ""
+    finally:
+        _unregister_worker(proc)
 
 API_KEY_PATH = os.path.join(DATA_DIR, "zhipu_api_key")
 PERSONA_COLLECTION_PATH = os.path.join(DATA_DIR, "personas", "collection.json")
@@ -1534,15 +1601,12 @@ def bridge_task(daemon, msg):
 
     def _run():
         try:
-            p = subprocess.run(
-                _worker_cmd(workdir),
-                input=task_text, capture_output=True, timeout=900, shell=False,
-                cwd=SCRIPT_DIR)
-            result = (p.stdout or b"").decode("utf-8", "replace").strip()
-            if p.returncode == 0 and result:
+            rc, stdout, stderr = _run_worker(workdir, task_text)
+            result = (stdout or "").strip()
+            if rc == 0 and result:
                 head = "任务完成：\n" + result[:1800]
             else:
-                err = (p.stderr or b"").decode("utf-8", "replace").strip()[:300]
+                err = (stderr or "").strip()[:300]
                 head = "任务失败：%s" % (result[:400] or err or "执行器异常退出")
                 # 任务接力：失败任务落 PENDING.md，ZCode 技能可发现并接管
                 try:
@@ -1559,7 +1623,7 @@ def bridge_task(daemon, msg):
             daemon.send(msg["chat_type"], msg["chat_id"],
                               [x for x in head.split("\n") if x.strip()][:8])
             out("AGENT_TASK_DONE chat=%s/%s rc=%d" % (
-                msg["chat_type"], msg["chat_id"], p.returncode))
+                msg["chat_type"], msg["chat_id"], rc))
         except Exception as e:
             daemon.send(msg["chat_type"], msg["chat_id"],
                               ["任务执行异常：%r" % e][:1])
@@ -2938,18 +3002,16 @@ def _cron_run_task(daemon, fake_msg):
     workdir = os.path.join(_task_root(), "cron_" + time.strftime("%Y%m%d_%H%M%S"))
     os.makedirs(workdir, exist_ok=True)
     try:
-        p = subprocess.run(
-            _worker_cmd(workdir),
-            input=str(fake_msg.get("text") or ""), capture_output=True,
-            timeout=900, shell=False, cwd=SCRIPT_DIR)
-        result = (p.stdout or b"").decode("utf-8", "replace").strip()
-        if p.returncode == 0 and result:
+        rc, stdout, _stderr = _run_worker(
+            workdir, str(fake_msg.get("text") or ""))
+        result = (stdout or "").strip()
+        if rc == 0 and result:
             head = chr(0x23F0) + " 定时任务完成：\n" + result[:1500]
         else:
             head = "⏰ 定时任务失败：%s" % result[:300]
         daemon.send(fake_msg["chat_type"], fake_msg["chat_id"],
                     [x for x in head.split("\n") if x.strip()][:6])
-        out("AGENT_CRON_DONE rc=%d" % p.returncode)
+        out("AGENT_CRON_DONE rc=%d" % rc)
     except Exception as e:
         out("AGENT_CRON_FAIL %r" % e)
     finally:
@@ -4138,8 +4200,15 @@ class AdminHandler(BaseHTTPRequestHandler):
         if urllib.parse.urlsplit(self.path).path == "/admin/shutdown":
             self._reply(200, {"ok": True, "bye": True})
             out("AGENT_SHUTDOWN requested")
-            threading.Thread(
-                target=lambda: (time.sleep(0.5), os._exit(0)), daemon=True).start()
+
+            def _bye():
+                time.sleep(0.3)
+                # 先结束仍在跑的沙箱任务，再退出——否则 worker（及其派生的
+                # python 子进程）会被孤儿化，继续写任务目录。
+                _kill_workers()
+                os._exit(0)
+
+            threading.Thread(target=_bye, daemon=True).start()
             return
         return self._reply(404, {"ok": False, "error": "not found"})
 

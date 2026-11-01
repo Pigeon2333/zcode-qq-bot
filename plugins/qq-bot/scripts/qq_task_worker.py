@@ -26,6 +26,7 @@ import pathlib
 import shlex
 import subprocess
 import sys
+import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
@@ -141,11 +142,52 @@ def extract_fence(text):
     return None
 
 
+def _watch_parent(ppid):
+    """父进程（agent）退出/被强杀时立即退出，避免 worker 成为孤儿继续写文件。
+
+    用进程句柄 WaitForSingleObject 而不是轮询 PID：即时、且不存在 PID 复用误判。
+    非 Windows 或没传 --parent-pid（手工调试）时不启用。
+    """
+    if os.name != "nt" or not ppid:
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        h = k32.OpenProcess(0x00100000, False, int(ppid))  # SYNCHRONIZE
+        if not h:
+            os._exit(0)  # 父进程已经不在了
+        try:
+            k32.WaitForSingleObject(h, 0xFFFFFFFF)
+        finally:
+            k32.CloseHandle(h)
+    except Exception:
+        return
+    os._exit(0)
+
+
 def main():
+    # 输出统一 UTF-8：agent 侧按 UTF-8 解码，中文结果不会变乱码。
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            if _stream and hasattr(_stream, "reconfigure"):
+                _stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     ap = argparse.ArgumentParser()
     ap.add_argument("--workdir", required=True)
     ap.add_argument("--max-turns", type=int, default=15)
+    ap.add_argument("--parent-pid", type=int, default=0,
+                    help="父进程 PID；父进程退出时本进程自动退出（防孤儿）")
     args = ap.parse_args()
+
+    if args.parent_pid:
+        threading.Thread(target=_watch_parent, args=(args.parent_pid,),
+                         daemon=True).start()
 
     # 沙箱校验：workdir 必须位于任务根目录内
     root = task_root_dir()
@@ -156,7 +198,12 @@ def main():
     workdir = pathlib.Path(real)
     workdir.mkdir(parents=True, exist_ok=True)
 
-    task = sys.stdin.read(4000).strip()
+    # 任务文本由 agent 以 UTF-8 写入管道；显式按 UTF-8 解码，
+    # 避免 Windows 默认 cp936 把中文任务读成乱码。
+    try:
+        task = sys.stdin.buffer.read(4000).decode("utf-8", "replace").strip()
+    except (AttributeError, OSError, ValueError):
+        task = sys.stdin.read(4000).strip()
 
     model = "glm-5.3-flash"
     try:

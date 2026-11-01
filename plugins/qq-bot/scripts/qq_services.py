@@ -206,13 +206,164 @@ def wait_port(port, timeout_sec, step=1.5):
     return False
 
 
+def wait_port_closed(port, timeout_sec, step=0.25):
+    """等端口真正释放（TIME_WAIT 不监听，port_open 会立刻返回 False）。"""
+    deadline = time.time() + max(0.5, float(timeout_sec))
+    while time.time() < deadline:
+        if not port_open(port):
+            return True
+        time.sleep(step)
+    return not port_open(port)
+
+
+# ---------------- 进程清理（退出时兜底） ----------------
+#
+# 退出残留的根因不是「没发停止指令」，而是：
+#   1. 管理台进程从来不在停止范围内（power_off 只停 agent/daemon/NapCat）；
+#   2. 停止指令是「发完就返回」，没有等进程真的退出，失败也没有兜底；
+#   3. NapCat 只按 `QQ.exe + enable-logging` 匹配，漏掉引导进程/监听 6099 的那只 QQ。
+# 这里统一按「端口 → PID → 命令行指纹」做可验证的强杀，避免误杀无关进程。
+
+_PROC_MARKERS = {
+    "ui": ("qq_admin_ui.py", "--service ui"),
+    "daemon": ("qq_daemon.py", "--service daemon"),
+    "agent": ("qq_bot_agent.py", "--service agent"),
+}
+
+
+def _ps_lines(script, timeout=15):
+    """跑一段 PowerShell 并返回 stdout 行（失败返回空列表，绝不让退出流程崩）。"""
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True, text=True, timeout=timeout,
+            creationflags=CREATE_NO_WINDOW)
+        return (r.stdout or "").splitlines()
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+
+def pids_on_port(port):
+    """返回监听指定端口的 PID 列表（Get-NetTCPConnection 优先，netstat 兜底）。"""
+    port = int(port)
+    pids = []
+    for ln in _ps_lines(
+            "Get-NetTCPConnection -State Listen -LocalPort %d "
+            "-ErrorAction SilentlyContinue | "
+            "Select-Object -ExpandProperty OwningProcess" % port, timeout=12):
+        s = ln.strip()
+        if s.isdigit() and int(s) > 0 and int(s) not in pids:
+            pids.append(int(s))
+    if pids:
+        return pids
+    try:
+        r = subprocess.run(["netstat", "-ano", "-p", "tcp"],
+                           capture_output=True, text=True, timeout=12,
+                           creationflags=CREATE_NO_WINDOW)
+        for ln in (r.stdout or "").splitlines():
+            p = ln.split()
+            if len(p) >= 5 and p[0].upper() == "TCP" \
+                    and p[1].endswith(":%d" % port) \
+                    and p[3].upper() == "LISTENING" and p[4].isdigit():
+                pid = int(p[4])
+                if pid > 0 and pid not in pids:
+                    pids.append(pid)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return pids
+
+
+def _proc_cmdlines(pids):
+    """PID → 命令行；用于确认「这个端口上的进程确实是我们自己的组件」。"""
+    if not pids:
+        return {}
+    ids = ",".join(str(int(p)) for p in pids)
+    script = ("Get-CimInstance Win32_Process | Where-Object { "
+              "$_.ProcessId -in @(%s) } | ForEach-Object { "
+              "\"$($_.ProcessId)`t$($_.CommandLine)\" }" % ids)
+    rows = {}
+    for ln in _ps_lines(script, timeout=15):
+        pid_s, _, cmd = ln.partition("\t")
+        if pid_s.strip().isdigit():
+            rows[int(pid_s.strip())] = cmd.strip()
+    return rows
+
+
+def _kill_pid(pid, tree=False):
+    """结束单个进程；tree=True 时连子进程一起（worker 等）。返回是否成功。"""
+    args = ["taskkill", "/PID", str(int(pid))]
+    if tree:
+        args.append("/T")
+    args.append("/F")
+    try:
+        r = subprocess.run(args, capture_output=True, timeout=15,
+                           creationflags=CREATE_NO_WINDOW)
+        return r.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _force_stop_port(port, kind, timeout=6):
+    """端口仍被占用时的兜底：仅强杀命令行指纹匹配的本程序组件。"""
+    pids = pids_on_port(port)
+    if not pids:
+        return False
+    cmds = _proc_cmdlines(pids)
+    markers = tuple(m.lower() for m in _PROC_MARKERS.get(kind, ()))
+    killed = []
+    for pid in pids:
+        cmd = str(cmds.get(pid) or "").lower()
+        if cmd and any(m in cmd for m in markers):
+            # 管理台是 daemon/agent 的父进程：只杀它自己，不能带 /T，
+            # 否则「退出应用、机器人保持运行」会把机器人一起带走。
+            if _kill_pid(pid, tree=(kind != "ui")):
+                killed.append(pid)
+    if killed:
+        wait_port_closed(port, timeout)
+    return bool(killed) and not port_open(port)
+
+
+def stop_ui(cfg=None, timeout=8):
+    """停止管理台（控制台）进程。
+
+    优先请求 /api/shutdown 优雅退出；旧版本/无响应时按端口 + 命令行指纹强杀。
+    桌面应用退出时必须调用：控制台是独立子进程，不随窗口销毁而退出。
+    """
+    cfg = cfg or C.load_app_config()
+    port = int(cfg.get("ui_port") or 39765)
+    if not port_open(port):
+        return "管理台未在运行"
+    token = read_token_file("ui_token")
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        try:
+            conn.request("POST", "/api/shutdown",
+                         body=b"{}",
+                         headers={"Content-Type": "application/json",
+                                  "X-UI-Token": token})
+            conn.getresponse().read()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    if wait_port_closed(port, timeout):
+        return "管理台已停止"
+    if _force_stop_port(port, "ui"):
+        return "管理台未响应关闭指令，已强制结束"
+    return "管理台停止失败（端口 %d 仍被占用，可能是其他程序）" % port
+
+
 # ---------------- 组件启停 ----------------
 
-def ensure_ui(cfg):
+def ensure_ui(cfg, parent_pid=None):
     port = cfg["ui_port"]
     if port_open(port):
         return "管理台已在运行"
-    _spawn("qq_admin_ui.py", ["--port", str(port)], "ui.log")
+    args = ["--port", str(port)]
+    if parent_pid:
+        # 父进程（桌面窗口）异常消失时，控制台自愈退出，避免变成无主残留进程。
+        args += ["--parent-pid", str(int(parent_pid))]
+    _spawn("qq_admin_ui.py", args, "ui.log")
     return "管理台已启动" if wait_port(port, 12) else "管理台启动失败（看 logs/ui.log）"
 
 
@@ -248,9 +399,15 @@ def stop_agent(cfg):
         return "agent 未在运行"
     try:
         http_json(port, "POST", "/admin/shutdown", {})
+    except Exception:
+        # 半死进程可能返回非 JSON/超时：一律走后面的等待 + 强杀兜底
+        pass
+    # 停止指令只是「请求退出」，必须等端口释放；超时则按命令行指纹强杀。
+    if wait_port_closed(port, 8):
         return "agent 已停止"
-    except OSError:
-        return "agent 停止指令失败（进程可能已退出）"
+    if _force_stop_port(port, "agent"):
+        return "agent 未响应关闭指令，已强制结束"
+    return "agent 停止失败（端口 %d 仍被占用）" % port
 
 
 def stop_daemon(cfg):
@@ -260,32 +417,80 @@ def stop_daemon(cfg):
     token = read_token_file("token")
     try:
         conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=6)
-        conn.request("POST", "/shutdown", body=b"{}",
-                     headers={"Content-Type": "application/json",
-                              "X-QQBot-Token": token})
-        conn.getresponse().read()
-        conn.close()
+        try:
+            conn.request("POST", "/shutdown", body=b"{}",
+                         headers={"Content-Type": "application/json",
+                                  "X-QQBot-Token": token})
+            conn.getresponse().read()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    if wait_port_closed(port, 8):
         return "daemon 已停止"
-    except OSError:
-        return "daemon 停止指令失败"
+    if _force_stop_port(port, "daemon"):
+        return "daemon 未响应关闭指令，已强制结束"
+    return "daemon 停止失败（端口 %d 仍被占用）" % port
+
+
+def _napcat_processes():
+    """列出 NapCat 相关进程 [(pid, name, cmdline)]。
+
+    识别口径（任一命中）：
+      - 正在监听 NapCat WebUI 6099 的进程（最可靠，说明它就是注入后的 QQ）；
+      - QQ.exe 且命令行含 enable-logging（NapCat 注入启动特征）；
+      - NapCatWinBootMain.exe / NapCatWinBootHook.exe 引导进程；
+      - cmd.exe 且命令行含 launcher-user（批处理壳，避免 pause 卡住时残留）。
+    """
+    owners = pids_on_port(6099)
+    id_list = ",".join(str(p) for p in owners) or "0"
+    script = (
+        "Get-CimInstance Win32_Process | Where-Object { "
+        "($_.ProcessId -in @(%s)) -or "
+        "($_.Name -eq 'QQ.exe' -and $_.CommandLine -match 'enable-logging') -or "
+        "($_.Name -eq 'NapCatWinBootMain.exe') -or "
+        "($_.Name -eq 'NapCatWinBootHook.exe') -or "
+        "($_.Name -eq 'cmd.exe' -and $_.CommandLine -match 'launcher-user') "
+        "} | ForEach-Object { "
+        "\"$($_.ProcessId)`t$($_.Name)`t$($_.CommandLine)\" }" % id_list)
+    rows = []
+    for ln in _ps_lines(script, timeout=20):
+        parts = ln.split("\t", 2)
+        if len(parts) < 2 or not parts[0].strip().isdigit():
+            continue
+        pid, name = int(parts[0].strip()), parts[1].strip()
+        cmd = parts[2].strip() if len(parts) > 2 else ""
+        low = name.lower()
+        # 二次校验：只接受明确属于 NapCat/QQ 的镜像名
+        if low not in ("qq.exe", "napcatwinbootmain.exe",
+                       "napcatwinboothook.exe", "cmd.exe"):
+            continue
+        if low == "cmd.exe" and "launcher-user" not in cmd.lower():
+            continue
+        if low == "qq.exe" and pid not in owners \
+                and "enable-logging" not in cmd.lower():
+            continue
+        rows.append((pid, name, cmd))
+    return rows
 
 
 def stop_napcat():
-    """尽力终止 NapCat 注入的 QQ 进程（权限不足时部分进程可能残留）。"""
-    killed = 0
-    try:
-        out = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "Get-CimInstance Win32_Process -Filter \"Name='QQ.exe'\" | "
-             "Where-Object { $_.CommandLine -like '*enable-logging*' } | "
-             "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; "
-             "$_.ProcessId }"],
-            capture_output=True, text=True, timeout=30,
-            creationflags=CREATE_NO_WINDOW)
-        killed = len([ln for ln in out.stdout.splitlines() if ln.strip().isdigit()])
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return "NapCat 已停止（%d 进程）" % killed if killed else "NapCat 无运行进程或已停止"
+    """尽力终止 NapCat 注入的 QQ 进程（含引导进程/批处理壳/6099 监听者）。"""
+    rows = _napcat_processes()
+    if not rows:
+        return "NapCat 无运行进程或已停止"
+    killed = []
+    for pid, _name, _cmd in rows:
+        if _kill_pid(pid, tree=True):
+            killed.append(pid)
+    if killed:
+        time.sleep(1.2)
+    left = _napcat_processes()
+    if left:
+        return ("NapCat 已停止 %d 个进程，仍有 %d 个残留（pid: %s）"
+                % (len(killed), len(left),
+                   ",".join(str(p) for p, _n, _c in left[:6])))
+    return "NapCat 已停止（%d 个进程）" % len(killed)
 
 
 # ---------------- NapCat ----------------
@@ -550,12 +755,22 @@ def power_on(cfg, on_note=None):
     return notes
 
 
-def power_off(cfg, include_napcat=True):
-    """停止组件（管理台保持运行）。"""
-    notes = [{"component": "agent", "message": stop_agent(cfg)},
-             {"component": "daemon", "message": stop_daemon(cfg)}]
+def power_off(cfg, include_napcat=True, include_ui=False):
+    """停止组件（管理台默认保持运行：它正是调用方）。
+    include_ui=True 时最后停管理台（供桌面应用真正退出时使用）。
+    每一步独立兜底：某一项停止异常不能阻断其余组件的停止。"""
+    def _note(component, fn, *args):
+        try:
+            return {"component": component, "message": fn(*args)}
+        except Exception as e:
+            return {"component": component, "message": "停止异常：%r" % e}
+
+    notes = [_note("agent", stop_agent, cfg),
+             _note("daemon", stop_daemon, cfg)]
     if include_napcat:
-        notes.append({"component": "napcat", "message": stop_napcat()})
+        notes.append(_note("napcat", stop_napcat))
+    if include_ui:
+        notes.append(_note("ui", stop_ui, cfg))
     return notes
 
 

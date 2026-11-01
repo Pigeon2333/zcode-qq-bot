@@ -3320,6 +3320,12 @@ class UiHandler(BaseHTTPRequestHandler):
         if not self._authed(u, q):
             return self._reply(401, {"ok": False, "error": "unauthorized"})
         body = self._body()
+        if u.path == "/api/shutdown":
+            # 桌面应用退出时用：先回执再退出本进程（daemon/agent 是独立进程，不受影响）
+            self._reply(200, {"ok": True, "bye": True})
+            threading.Thread(target=lambda: (time.sleep(0.2), os._exit(0)),
+                             daemon=True).start()
+            return
         if u.path == "/api/pick-dir":
             _title = str(body.get("title") or "选择目录")[:40]
             def _pick():
@@ -4758,6 +4764,33 @@ class UiHandler(BaseHTTPRequestHandler):
         return self._reply(404, {"ok": False, "error": "not found"})
 
 
+def _watch_parent(ppid):
+    """父进程（桌面窗口）消失时自动结束控制台，避免无窗口/无托盘的残留进程。
+
+    只对「由 qq_app 启动并传入 --parent-pid」生效；浏览器/命令行单独启动不受影响。
+    """
+    if os.name != "nt" or not ppid:
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        h = k32.OpenProcess(0x00100000, False, int(ppid))  # SYNCHRONIZE
+        if not h:
+            os._exit(0)  # 父进程已退出
+        try:
+            k32.WaitForSingleObject(h, 0xFFFFFFFF)
+        finally:
+            k32.CloseHandle(h)
+    except Exception:
+        return
+    os._exit(0)
+
+
 def main():
     if sys.stdout and hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -4765,6 +4798,8 @@ def main():
     ap.add_argument("--port", type=int, default=DEFAULT_UI_PORT)
     ap.add_argument("--daemon-port", type=int, default=DEFAULT_DAEMON_PORT)
     ap.add_argument("--agent-port", type=int, default=DEFAULT_AGENT_PORT)
+    ap.add_argument("--parent-pid", type=int, default=0,
+                    help="父进程 PID；父进程退出时本进程自动退出（桌面应用用）")
     args = ap.parse_args()
     PORTS["daemon"] = args.daemon_port
     PORTS["agent"] = args.agent_port
@@ -4793,6 +4828,9 @@ def main():
                          ensure_ascii=False), flush=True)
         sys.exit(1)
     ui_token()  # 启动即生成令牌文件（不等首个请求；配合 qq_app 的 ensure_ui_token）
+    if args.parent_pid:
+        threading.Thread(target=_watch_parent, args=(args.parent_pid,),
+                         daemon=True).start()
     threading.Thread(target=_watchdog_loop, daemon=True).start()
     threading.Thread(target=_auto_update_check, daemon=True).start()
     print(json.dumps({"admin_ui_ready": True, "url": "http://127.0.0.1:%d" % args.port,

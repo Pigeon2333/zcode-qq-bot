@@ -37,10 +37,16 @@ qq_task_worker.py(沙箱执行器)     qq_admin_ui.py(:39765 管理台)
 ## 运维：进程级操作（排障用）
 
 - 拉起：`python scripts/qq_app.py`（窗口）或分别 `ensure_ui/daemon/agent`（qq_services）
+- **退出清理**：桌面窗口退出时 `qq_app._finalize_exit()` 统一收尾——
+  `exit_app` 只停控制台（机器人组件保持运行），`exit_all` 先停控制台再停
+  agent/daemon/NapCat；停止函数会等端口真正释放，超时才按「端口→PID→命令行指纹」
+  强杀（不会误杀非本程序进程）。托盘不可用（缺 pystray/Pillow）时不会隐藏窗口，
+  直接按退出应用处理；控制台由 qq_app 启动时带 `--parent-pid`，窗口进程异常消失会自动退出。
 - 精准杀进程：按命令行匹配 `qq_daemon.py`/`qq_bot_agent.py`/`qq_admin_ui.py`
   （**勿用宽泛 taskkill 过滤，曾误杀**）；`/test/inject` 可注入消息做端到端测试
   （daemon 需 `X-QQBot-Token` 头；**含中文的 body 必须写 UTF-8 临时文件 + curl --data-binary**，
   直接 -d 会 GBK 乱码）
+- 沙箱 worker 由 agent 登记并在退出时结束；worker 自带父进程监视，agent 被强杀也会自行退出
 - 日志：`logs/daemon.log`（AGENT_EVENT/AGENT_LOG）、`logs/agent.log`
   （AGENT_DONE/SKIP/ERROR/TASK/DRAW/REVIEW 标记行）、UI 内存启动日志走 `/api/power/status`
 - 配置（白名单/回复模式/私聊/分群）按文件 mtime 秒级失效：改完即测，无需等待
@@ -89,6 +95,11 @@ qq_task_worker.py(沙箱执行器)     qq_admin_ui.py(:39765 管理台)
 
 PyInstaller 冻结（含 pywebview/pystray/PIL）+ 单实例锁 + 首次运行向导 +
 NapCat Shell 文件内嵌释放与 QQ 版本校验 + 日志轮转 + UI 鉴权。
+
+**打包注意**：用 `dev/build-exe.bat`（不要手敲 PyInstaller）。脚本会预检
+`pyinstaller/pywebview/pystray/pillow`、用 `--collect-all webview` 收集
+PyInstaller 实际要导入的包名 `webview`（发行包名才是 pywebview），并在产物上跑
+`ZCodeQQBot.exe --self-test`；缺 webview 会直接报错，不会再产出“双击没反应”的 exe。
 
 
 ## 任务接力（ZCode 接管失败任务）
