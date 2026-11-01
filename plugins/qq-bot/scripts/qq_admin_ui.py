@@ -762,22 +762,26 @@ async function napcatInstall(){
  if(r.ok)load()}
 let _ncdlTimer=null;
 async function napcatOnline(force){
- if(!force){
-  const pre=await api('/api/napcat-dl-start',{method:'POST'}).catch(()=>({ok:false,error:'请求失败'}));
-  if(pre.need_confirm){
-   if(!await dlgConfirm({title:'已安装 NapCat',body:pre.error+'<br><br>（不确定就点取消——已装好的不用动；想升级或修复安装才继续）',okText:'仍要重装',danger:true}))return;
-   force=true;
-  } else if(pre.ok===false){toast(pre.error||'启动下载失败',false);return}
+ // 单次调用：不再先探测再重发——旧版第一次调用就已启动下载，第二次
+ // 撞上"任务进行中"报错退出，页面永远不显示进度（用户实测复现）
+ let r=await api('/api/napcat-dl-start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({force:!!force})}).catch(()=>({ok:false,error:'请求失败'}));
+ if(r.need_confirm){
+  if(!await dlgConfirm({title:'已安装 NapCat',body:r.error+'<br><br>（不确定就点取消——已装好的不用动；想升级或修复安装才继续）',okText:'仍要重装',danger:true}))return;
+  // 确认后重发，让后续判断与轮询基于新响应（旧响应 ok:false 是"需确认"语义不是错误）
+  r=await api('/api/napcat-dl-start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({force:true})}).catch(()=>({ok:false,error:'请求失败'}));
  }
- const r=await api('/api/napcat-dl-start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({force:!!force})}).catch(()=>({ok:false,error:'请求失败'}));
  if(r.ok===false){toast(r.error||'启动下载失败',false);return}
- toast('已开始在线下载 NapCat Shell（自动装到 QQ 目录）');
+ toast(r.already?'下载已在进行中，显示当前进度':'已开始在线下载 NapCat Shell');
+ ncdlPoll()}
+function ncdlPoll(){
  if(_ncdlTimer)clearInterval(_ncdlTimer);
  _ncdlTimer=setInterval(async()=>{
   const st=await api('/api/napcat-dl-status').catch(()=>null);
   if(!st){return}
   const el=document.getElementById('ncdl-status');
-  if(el)el.textContent=st.running?('下载中 '+st.pct+'% · '+(st.status||'')):((st.error?'✗ '+st.error:('✓ '+(st.status||'完成'))));
+  if(el)el.textContent=st.running
+   ?('下载中 '+st.pct+'% · '+(st.status||'')+(st.elapsed?(' · '+st.elapsed+'s'):''))
+   :(st.error?('✗ '+st.error):('✓ '+(st.status||'完成')));
   if(!st.running){clearInterval(_ncdlTimer);_ncdlTimer=null;if(!st.error)load()}
  },1500)}
 async function powerOff(napcatToo){
@@ -1752,6 +1756,8 @@ async function vSettings(){
   <div style="margin-top:8px;display:flex;gap:8px">
    <button class="act danger" onclick="doUninstall()">卸载</button>
    <span class="k">点击后程序会自动退出并完成清理</span></div></div>`;
+ // 下载进行中：切走再切回设置页/重开管理台后，自动恢复进度轮询
+ api('/api/napcat-dl-status').then(st=>{if(st&&st.running)ncdlPoll()}).catch(()=>{});
 }
 let _autoReg=null,_upTimer=null;
 async function blList(){const c=await api('/api/app-config').catch(()=>({}));return c.user_blacklist||[]}

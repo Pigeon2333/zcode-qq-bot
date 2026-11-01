@@ -17,16 +17,20 @@ import re
 import socket
 import ssl
 import threading
+import time
 import urllib.parse
 
 import qq_common as C
 import qq_services as S
 
-_STATE = {"running": False, "pct": 0, "status": "", "error": ""}
+_STATE = {"running": False, "pct": 0, "status": "", "error": "", "started": 0.0}
 
 
 def status():
-    return dict(_STATE)
+    st = dict(_STATE)
+    if st.get("running") and st.get("started"):
+        st["elapsed"] = int(time.time() - st["started"])
+    return st
 
 
 def github_latest(timeout=15):
@@ -126,9 +130,11 @@ def start(cfg, force=False):
     """后台线程：下载最新 NapCat Shell → 走既有 install_napcat_zip 安装。
 
     已安装且未 force 时返回 need_confirm=True（由 UI 弹确认再带 force 重试），
-    防止手滑重复安装覆盖了正在用的 NapCat。"""
+    防止手滑重复安装覆盖了正在用的 NapCat。
+    已有任务在跑时返回 ok+already（UI 直接进入进度轮询，不算错误——
+    旧版返回 error 会让页面只弹一句"已有下载任务"却永远不显示进度）。"""
     if _STATE["running"]:
-        return {"ok": False, "error": "已有下载任务进行中"}
+        return {"ok": True, "already": True}
     import qq_services as _S
     installed = False
     try:
@@ -144,7 +150,8 @@ def start(cfg, force=False):
                           "且正在运行的 QQ 可能需要重启——确定要重装吗？")}
 
     def _run():
-        _STATE.update(running=True, pct=0, status="正在查询最新版本…", error="")
+        _STATE.update(running=True, pct=0, status="正在查询最新版本…", error="",
+                      started=time.time())
         try:
             ver, url = github_latest()
             if not ver:
@@ -154,9 +161,10 @@ def start(cfg, force=False):
             st = {"error": ""}
             ok = _download_public(url, "napcat-shell-%s.zip" % ver, st)
             if not ok and str(url).startswith("https://github.com/"):
-                for mirror in ("https://mirror.ghproxy.com/",
-                               "https://gh-proxy.com/",
-                               "https://ghfast.top/"):
+                # 镜像顺序：实测可用优先（ghproxy 已停服，放最后减少无效等待）
+                for mirror in ("https://gh-proxy.com/",
+                               "https://ghfast.top/",
+                               "https://mirror.ghproxy.com/"):
                     _STATE["status"] = "直连失败，改走镜像（%s）…" % mirror.split("/")[2]
                     ok = _download_public(mirror + url,
                                           "napcat-shell-%s.zip" % ver, st)
@@ -165,8 +173,10 @@ def start(cfg, force=False):
             if not ok:
                 _STATE.update(
                     running=False,
-                    error="%s——请改用本地 zip 安装（github.com/NapNeko/"
-                          "NapCat-Shell 手动下载）" % st.get("error", "下载失败"))
+                    error="%s——在线下载不通时改用手动方式：浏览器打开 "
+                          "github.com/NapNeko/NapCatQQ/releases 下载 "
+                          "NapCat.Shell.zip，再用「本地 zip 安装」按钮装"
+                          % st.get("error", "下载失败"))
                 return
             _STATE["status"] = "下载完成，正在安装…"
             ok2, msg = S.install_napcat_zip(cfg, st.get("_dest", ""))
