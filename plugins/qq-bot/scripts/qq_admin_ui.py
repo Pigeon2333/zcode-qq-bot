@@ -2076,7 +2076,7 @@ async function biliScan(){
  if(r.ok===false){toast(r.error||'发起登录失败',false);return}
  const m=document.createElement('div');m.className='dlg-mask';
  m.innerHTML='<div class="dlg" role="dialog"><h3>扫码登录 B 站</h3><div class="dlg-body">'
-  +(r.qr_png?'<img src="/api/bili-qr?t='+Date.now()+'" style="width:220px;height:220px">':'二维码生成失败，把下面的链接复制到手机 B 站 App 打开：')
+  +(r.qr_png?'<img src="/api/bili/qr?t='+Date.now()+'&tk='+encodeURIComponent(UI_TOKEN)+'" style="width:220px;height:220px">':'二维码生成失败，把下面的链接复制到手机 B 站 App 打开：')
   +'<div class="k mono" style="word-break:break-all;margin-top:8px;font-size:12px">'+esc(r.url)+'</div>'
   +'<div class="k" style="margin-top:8px">用<b>机器人自己的 B 站账号</b>的手机 App 扫码并确认。</div>'
   +'<div id="bilirr" class="k" style="margin-top:6px">等待扫码…</div></div>'
