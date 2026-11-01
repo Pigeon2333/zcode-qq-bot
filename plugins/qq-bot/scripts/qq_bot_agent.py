@@ -2022,20 +2022,39 @@ def _nudge_cfg():
 
 
 def _nudge_compose(daemon, chat_type, chat_id):
-    """生成一句追问：人设全栈（按会话路由）+ 最近对话 → 一句话。"""
+    """生成一句追问：人设全栈（按会话路由）+ 最近对话 → 一句话。
+    非预制模板——每次由模型依据人设、记忆风格和对话停在哪决定说什么；
+    提示词只给判断框架（对话停在哪→对应追法），禁止引导通用套话。"""
     hist = daemon.history(chat_type, chat_id, limit=8)
+    # 客户端返回最旧在前；取最新几条拼对话（末尾=最新）
     lines = []
     for h in hist:
         who = "你" if h.get("is_bot") else str(h.get("sender_name", "?"))
         lines.append("%s: %s" % (who, str(h.get("text", ""))[:80]))
+    recent = lines[-6:]
+    my_last = next((l.split(": ", 1)[-1] for l in reversed(recent)
+                    if l.startswith("你: ")), "")
+    their_last = next((l.split(": ", 1)[-1] for l in reversed(recent)
+                       if not l.startswith("你: ")), "")
     sys_p = (_persona_stack_text((chat_type, chat_id)) +
-             "\n\n## 场景\n对方几分钟没有回你消息了（上面是你=「你」和对方的最近对话）。"
-             "用一句话自然地追问或关心：可以调侃对方跑路了、问在不在想什么、"
-             "或顺着刚才没聊完的话头轻轻拉回来——符合人设口吻，不要重复你刚说过的内容，"
-             "不要长篇大论，只输出这一句话本身。")
+             "\n\n## 场景\n你刚说完一句话，对方几分钟没回（最近对话如下，末尾最新）：\n"
+             + "\n".join(recent) +
+             "\n\n你说的最后一句是：「%s」\n对方说的最后一句是：「%s」\n\n"
+             "先判断对话停在哪一种：\n"
+             "A 对方向你提了问题/请求，你答完了等对方反应\n"
+             "B 你向对方抛了问题或邀约，对方没接\n"
+             "C 话题自然聊完，双方都没欠话\n"
+             "D 对方话说到一半突然消失\n\n"
+             "按对应方式追一句（只输出这句话本身，用人设的口吻、词汇和称呼）：\n"
+             "A → 不催，多数情况安静等着；真要开口也只是人设式的一句轻关心，别提'没回我'\n"
+             "B → 围绕你抛的那个具体问题轻轻催一下，让对方好接话\n"
+             "C → 随口起个新话头或一句日常想念，像熟人之间没事找话，禁止'在吗/在忙什么'式查岗\n"
+             "D → 关心对方刚才说的一半（具体引用内容），问后面怎么样了\n\n"
+             "禁止：通用套话（在吗/在忙吗/怎么不理我/要生气了）、查岗腔、"
+             "重复你刚说过的内容、长篇大论、跳出人设的语气。宁可非常简短。")
     _m, text = call_glm_with_fallback(
         [{"role": "system", "content": sys_p},
-         {"role": "user", "content": "对方沉默了，追一句。"}], "")
+         {"role": "user", "content": "对方沉默了，按上面的判断追一句。"}], "")
     texts, _st, _memo, _draw, _sg = parse_reply(text)
     return (texts or [""])[0][:200]
 
@@ -3262,8 +3281,12 @@ def _persona_stack_text(route=None):
     pc, active_name = load_persona_collection()
     if route:
         active_name = persona_for(route[0], route[1])[0] or active_name
-    persona = str(pc.get(active_name, "")).strip() if active_name else \
-        (pc.get("persona", "") or "你是QQ机器人「智谱娘」。")
+    # 注意：load_persona_collection 只返回 {active,global,persona} 三键——
+    # 取指定人设的正文必须读原始合集（与 build_messages 同一坑：pc.get(人设名) 永远空，
+    # 曾致 nudge/devctrl 文案只挂人设名、没有人设正文 → 模型不知道人设怎么说话）
+    coll_raw = load_json_const(PERSONA_COLLECTION_PATH, {})
+    persona = str(coll_raw.get(active_name, "")).strip() if active_name else \
+        (pc.get("persona") or "你是QQ机器人「智谱娘」。")
     parts = ["【当前人设：%s】\n%s" % (active_name or "智谱娘", persona)]
     if pc.get("global"):
         parts.append("## 全局通用设定\n%s" % pc["global"])
