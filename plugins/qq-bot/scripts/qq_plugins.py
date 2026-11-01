@@ -151,7 +151,9 @@ class PluginHost:
         self.hooks = {}
         self.manifests = {}
         loaded, skipped = [], []
-        for name, (mf, pdir, builtin) in self.scan().items():
+        scanned = self.scan()
+        self._scan_sig = sorted(scanned.keys())  # 目录集合签名（装/卸载检测）
+        for name, (mf, pdir, builtin) in scanned.items():
             mf = dict(mf)
             mf.setdefault("title", name)
             mf.setdefault("description", "")
@@ -219,8 +221,17 @@ class PluginHost:
         return "\n".join(out)
 
     def load_all_if_changed(self):
+        """热加载触发：state 文件变化 OR 插件目录集合变化（新装/卸载插件文件
+        不写 state——之前是盲区：市场装完必须重启 agent 才生效）。"""
         mt = _state_mtime()
         if mt != self._state_mtime:
+            self.load_all()
+            return
+        try:
+            sig = sorted(self.scan().keys())
+        except Exception:
+            return
+        if sig != getattr(self, "_scan_sig", None):
             self.load_all()
 
 
