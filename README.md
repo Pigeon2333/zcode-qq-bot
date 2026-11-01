@@ -207,6 +207,9 @@ ZCode 插件（可选联动，机器人本体不依赖）以本地 marketplace �
 ### 日常启停
 - 控制台「状态」页：`启动机器人`（幂等，已运行会被拦截提示）/ `停止大脑与管道` / `全部停止（含 NapCat）`
 - 托盘图标可重开窗口；关闭行为可选托盘/退出应用/退出并停止
+  - **退出应用**：关闭窗口与控制台服务，机器人组件（daemon/agent/NapCat）继续运行
+  - **退出并停止**：先停控制台，再停 agent/daemon/NapCat，并等待端口释放后才退出，不留后台进程
+  - 托盘不可用（缺 pystray/Pillow）时不会把窗口藏起来，而是直接按「退出应用」处理
 - 开机自启 + 打开自动启动机器人均可在设置开启
 
 ### 日志与排障
@@ -235,6 +238,8 @@ ZCode 插件（可选联动，机器人本体不依赖）以本地 marketplace �
 - **只覆盖程序目录，绝不碰数据目录** `~/.zcode-qq-bot/`（人设、记忆、Key、白名单、日志全保留）
 - 安装需要你点一次确认；「启动时自动检查更新」只提示、不自动装
 - 源码模式（非 exe）不支持自动安装，请 `git pull`；打包用 `dev/build-exe.bat`（产物输出到仓库外目录）
+  - 打包前确认**当前 python 环境**装有 `pyinstaller pywebview pystray pillow`；脚本会预检依赖、打包后校验 `_internal` 里确实有 `webview`，并用 `--self-test` 验证 frozen 导入，缺依赖会直接报错而不是产出打不开的 exe
+  - 输出目录可用环境变量 `QQBOT_DIST_ROOT` 覆盖（默认 `D:\ZCode\workspaces\qq-bot-dist`）
 
 **私有仓库当更新源可以，但要带 Token**：GitHub 的 Release API 对私有仓库匿名请求一律 404（匿名下载链接也不可用）。做法是建一个 **fine-grained PAT**（只勾该仓库的 `Contents: Read`），填在「关于 → 私有库 Token」。注意这个 Token 会存在本机 `app_config.json` 里，拿到安装包的人都能读到——所以它只适合"自己人测试"的场景。给不特定用户分发时，更稳妥的组合是：**代码私有 + 另一个公开的 release 仓库**（或用公开仓库、把敏感内容留在数据目录）。
 

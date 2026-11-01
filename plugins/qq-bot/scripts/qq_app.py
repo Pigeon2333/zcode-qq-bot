@@ -15,28 +15,137 @@
 依赖：pywebview（窗口）、pystray+Pillow（托盘）
 """
 
+import atexit
 import os
 import sys
 import threading
-
-try:
-    import webview
-except ImportError:
-    print("缺少 pywebview：请先执行  pip install pywebview")
-    sys.exit(1)
+import time
 
 import qq_common as C
 import qq_services as S
 
 APP_NAME = "ZCode QQ机器人"
+
+
+def _fatal(title, message):
+    """启动期致命错误：windowed 模式没有 stdout，必须写日志 + 弹窗，
+    否则用户看到的现象就是「双击 exe 完全没反应」。"""
+    text = "%s\n\n%s" % (title, message)
+    try:
+        log_dir = os.path.join(C.DATA_DIR, "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        with open(os.path.join(log_dir, "app.log"), "a", encoding="utf-8") as f:
+            f.write("[%s] %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), text))
+    except OSError:
+        pass
+    try:
+        print(text, flush=True)
+    except Exception:
+        pass
+    if not os.environ.get("QQBOT_NO_DIALOG"):
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(None, text,
+                                             APP_NAME + " 启动失败", 0x10)
+        except Exception:
+            pass
+
+
+try:
+    import webview
+except Exception as e:
+    _fatal("缺少/无法加载 pywebview",
+           "打包版必须把 pywebview 一起打进去。\n"
+           "请先执行：pip install pywebview pystray pillow\n"
+           "然后重新运行 dev/build-exe.bat。\n\n详细错误：%r" % e)
+    sys.exit(1)
+
+
+def _asset_dir():
+    """打包后 assets 在 _internal/assets（PyInstaller 的 _MEIPASS），源码在插件根。"""
+    if getattr(sys, "frozen", False):
+        base = getattr(sys, "_MEIPASS", None) or os.path.dirname(
+            os.path.abspath(sys.executable))
+        return os.path.join(base, "assets")
+    return os.path.join(os.path.dirname(C.SCRIPTS_DIR), "assets")
+
+
+def _ensure_std_streams():
+    """windowed 模式 stdout/stderr 可能为 None：挂到 app.log，避免 print 直接炸。"""
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    try:
+        log_dir = os.path.join(C.DATA_DIR, "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        f = open(os.path.join(log_dir, "app.log"), "a", encoding="utf-8",
+                 buffering=1)
+    except OSError:
+        return
+    if sys.stdout is None:
+        sys.stdout = f
+    if sys.stderr is None:
+        sys.stderr = f
+
+
 # 图标唯一真源在插件仓库 assets/（与插件市场图标同图）；数据目录作回退
-_BUNDLED_ICON = os.path.join(os.path.dirname(C.SCRIPTS_DIR), "assets")
+_BUNDLED_ICON = _asset_dir()
 APP_ICON = os.path.join(_BUNDLED_ICON, "app.ico") if os.path.exists(
     os.path.join(_BUNDLED_ICON, "app.ico")) else os.path.join(
     C.DATA_DIR, "assets", "app.ico")
 APP_PNG = os.path.join(_BUNDLED_ICON, "icon.png") if os.path.exists(
     os.path.join(_BUNDLED_ICON, "icon.png")) else os.path.join(
     C.DATA_DIR, "assets", "app_icon.png")
+
+# 退出收尾状态（窗口关闭与托盘退出共用；幂等）
+_exit_state = {"action": None, "finalized": False}
+
+
+def _finalize_exit():
+    """桌面应用真正退出时的统一收尾，确保不留下本程序的服务进程。
+
+    - exit_all：停机器人（agent/daemon/NapCat）+ 停控制台；
+    - exit_app：只停控制台（它只服务于窗口），机器人组件保持运行。
+    控制台是独立子进程，不会随窗口销毁而退出——这是此前「退出后仍有残留」
+    的主要原因，必须在退出路径里显式停止并等端口释放。
+    """
+    if _exit_state["finalized"]:
+        return
+    _exit_state["finalized"] = True
+    action = _exit_state["action"] or "exit_app"
+    try:
+        cfg = C.load_app_config()
+    except Exception as e:
+        print("exit: 读取配置失败 %r" % e, flush=True)
+        return
+
+    def _stop_console():
+        try:
+            print("exit: %s" % S.stop_ui(cfg), flush=True)
+        except Exception as e:
+            print("exit: 停止控制台失败 %r" % e, flush=True)
+
+    if action == "exit_all":
+        # 先停控制台：它的看门狗/启动线程可能在机器人停止后又把组件拉起来。
+        _stop_console()
+        try:
+            for note in S.power_off(cfg, include_napcat=True):
+                print("exit_all: %s" % note, flush=True)
+            # 二次确认：覆盖「退出瞬间启动线程刚拉起组件」的极短竞态窗口
+            time.sleep(0.5)
+            for note in S.power_off(cfg, include_napcat=False):
+                print("exit_all(confirm): %s" % note, flush=True)
+        except Exception as e:
+            print("exit_all cleanup failed: %r" % e, flush=True)
+    else:
+        # exit_app：控制台只服务于窗口，随应用退出；机器人组件保持运行。
+        _stop_console()
+
+
+def _tray_exit(action):
+    """托盘菜单退出：先收尾，再硬退进程（避免 pystray 线程拖住解释器退出）。"""
+    _exit_state["action"] = action
+    _finalize_exit()
+    os._exit(0)
 
 
 def _confirm_exit_all():
@@ -173,6 +282,14 @@ def _run_service(args):
 
 
 def main():
+    # windowed 打包没有控制台：先把 stdout/stderr 挂到 app.log，后续 print 不会炸
+    _ensure_std_streams()
+    # 构建产物自检：只验证 frozen 环境里 webview 能导入，不启动窗口/服务。
+    # 打包脚本会以 QQBOT_NO_DIALOG=1 调用，失败时用退出码判断，不弹窗。
+    if "--self-test" in sys.argv[1:]:
+        print("self-test ok: webview=%s" % getattr(webview, "__file__", "?"),
+              flush=True)
+        sys.exit(0)
     # frozen 服务自举（打包后 spawn 的分身进程从这里进入对应组件）
     if getattr(sys, "frozen", False) and _run_service(sys.argv[1:]):
         return
@@ -184,10 +301,13 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8")
     os.makedirs(os.path.join(C.DATA_DIR, "logs"), exist_ok=True)
     cfg = C.load_app_config()
-    msg = S.ensure_ui(cfg)  # 管理台是窗口的内容源，必须先就绪
+    # 把自身 PID 传给控制台：窗口进程异常消失时控制台自动退出（防无主残留）
+    msg = S.ensure_ui(cfg, parent_pid=os.getpid())  # 管理台是窗口的内容源，必须先就绪
     print(msg, flush=True)
     # 先确保令牌存在再拼 URL：首次安装时 ui_token 尚未生成会导致窗口落锁
     ui_tk = S.ensure_ui_token()
+    # 任何正常退出路径（含未捕获异常）都走统一收尾
+    atexit.register(_finalize_exit)
 
     # 设置了「打开应用自动启动机器人」：开窗后异步拉起（不阻塞窗口）
     if cfg.get("auto_power_on"):
@@ -238,24 +358,26 @@ def main():
                      daemon=True).start()
 
     # 关闭行为处理：pywebview 6 用 closing 事件拦截
-    close_state = {"action": None}
-
     def on_closing():
         cfg_now = C.load_app_config()
         action = str(cfg_now.get("close_action", "tray"))
         if action == "tray":
-            _start_tray()
-            return False  # 返回 False 阻止默认关闭？pywebview closing 返回 True 才允许关闭
-        if action == "exit_all":
+            if _start_tray():
+                return False  # 隐藏到托盘，应用继续运行
+            # 托盘不可用（缺 pystray/Pillow 等）：绝不把窗口藏起来——那会变成
+            # 无窗口、无托盘、只能任务管理器结束的残留进程。退化为「退出应用」。
+            print("托盘不可用：直接退出应用（机器人保持运行）", flush=True)
+            action = "exit_app"
+        elif action == "exit_all":
             ans = _confirm_exit_all()
             if ans is None:
                 return False      # 取消：不关
             if ans is False:
-                return True       # 仅退应用
-            for note in S.power_off(cfg_now, include_napcat=True):
-                print("exit_all:", note, flush=True)
-            return True
-        return True  # exit_app
+                action = "exit_app"  # 仅退出应用，机器人保持
+        # 实际停谁由 _finalize_exit 在窗口关闭后执行：
+        # 避免在 closing 回调里同步停控制台（窗口内容源）造成卡死/半退出。
+        _exit_state["action"] = action
+        return True  # pywebview: 返回 True 允许关闭
 
     # pywebview: closing 回调返回 True 允许关闭，False 取消
     try:
@@ -269,16 +391,19 @@ def main():
     if os.path.isfile(APP_ICON):
         kwargs["icon"] = APP_ICON
     webview.start(**kwargs)
+    # 窗口已关闭：执行真正的进程收尾（幂等；托盘退出路径也会调用）
+    _finalize_exit()
+    # 兜底硬退：避免 pywebview/托盘残留的非守护线程把进程吊住
+    os._exit(0)
 
 
 _tray_started = {"flag": False}
 
 
 def _start_tray():
-    """启动系统托盘（幂等）：显示窗口 / 彻底退出（不动机器人）。"""
+    """启动系统托盘（幂等）。成功返回 True，失败返回 False（调用方不得隐藏窗口）。"""
     if _tray_started["flag"]:
-        return
-    _tray_started["flag"] = True
+        return True
     try:
         from PIL import Image
         import pystray
@@ -293,32 +418,27 @@ def _start_tray():
                 except Exception:
                     pass
 
-        def quit_app(icon=None, item=None):
-            # 菜单回调跑在 pystray 托盘消息线程里：串行 icon.stop()+destroy
-            # 要等消息循环清场才返回（体感 1-2 秒延迟）。直接硬退进程：
-            # 托盘图标随进程终止被系统回收，机器人组件是独立进程不受影响。
-            os._exit(0)
-
         tray = pystray.Icon(
             "ZCodeQQBot", img, APP_NAME,
             menu=Menu(
                 MenuItem("显示窗口", show_window, default=True),
-                MenuItem("退出应用（机器人保持运行）", quit_app),
+                MenuItem("退出应用（机器人保持运行）",
+                         lambda i, it: _tray_exit("exit_app")),
+                MenuItem("退出并停止机器人",
+                         lambda i, it: _tray_exit("exit_all")),
             ))
         threading.Thread(target=tray.run, daemon=True).start()
+        _tray_started["flag"] = True
+        # 只有托盘真正创建成功后才隐藏窗口
         for w in webview.windows:
             try:
                 w.hide()
             except Exception:
                 pass
+        return True
     except Exception as e:
         print("tray unavailable: %r" % e, flush=True)
-        # 托盘不可用时退化为直接隐藏（进程保留，可从任务管理器/再次双击找回）
-        for w in webview.windows:
-            try:
-                w.hide()
-            except Exception:
-                pass
+        return False
 
 
 if __name__ == "__main__":
