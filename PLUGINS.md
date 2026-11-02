@@ -100,7 +100,7 @@ python -m zipfile -c my_plugin.zip my_plugin
 
 ## 五、上架到插件市场
 
-市场清单与 zip 托管在本仓库 GitHub Release（tag：`plugins`）。流程：
+市场清单与 zip 托管在本仓库 GitHub Release（tag：`plugins`）。**清单文件名带版本**（market-v2.json、market-v3.json…）：release 资产的 CDN 缓存近乎永久，clobber 同名清单更新后用户拿到的仍是旧字节——**清单内容有变必须换新文件名**（zip 同理，已在条目规则里要求）。流程：
 
 1. **提 PR**：把你的插件目录加到 `plugins/qq-bot/scripts/plugins/` 下（作为内置插件候选），或在 PR 里附上 zip 与说明；建议在 PR 描述里带上期望的市场条目（维护者会写进市场清单）：
 

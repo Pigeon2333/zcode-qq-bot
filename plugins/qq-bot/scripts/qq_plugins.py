@@ -158,7 +158,8 @@ class PluginHost:
         self.manifests = {}
         loaded, skipped = [], []
         scanned = self.scan()
-        self._scan_sig = sorted(scanned.keys())  # 目录集合签名（装/卸载检测）
+        # 目录集合 + 关键文件 mtime 签名（装/卸载与代码更新都触发热重载）
+        self._scan_sig = self._sig_of(scanned)
         for name, (mf, pdir, builtin) in scanned.items():
             mf = dict(mf)
             mf.setdefault("title", name)
@@ -247,11 +248,26 @@ class PluginHost:
             self.load_all()
             return
         try:
-            sig = sorted(self.scan().keys())
+            sig = self._sig_of(self.scan())
         except Exception:
             return
         if sig != getattr(self, "_scan_sig", None):
             self.load_all()
+
+    def _sig_of(self, scanned):
+        """热加载签名：目录集合 + 每插件 plugin.py/manifest.json 的 mtime
+        （市场更新覆盖插件文件后自动热重载，无需重启组件）。"""
+        sig = []
+        for name, (_mf, pdir, _b) in scanned.items():
+            stamps = [name]
+            for fn in ("plugin.py", "manifest.json"):
+                p = os.path.join(pdir, fn)
+                try:
+                    stamps.append(os.path.getmtime(p))
+                except OSError:
+                    stamps.append(0)
+            sig.append(tuple(stamps))
+        return sorted(sig)
 
 
 def _state_mtime():
@@ -312,20 +328,24 @@ def install_from_zip(zip_path):
         mf = _read_json(mf_path)
         if not isinstance(mf, dict) or not mf.get("name") or not _safe_name(mf["name"]):
             return {"ok": False, "error": "manifest.name 非法（小写字母/数字/下划线，2-32 位）"}
-        # 内置同名保护：不允许用安装覆盖内置插件
-        if os.path.isdir(os.path.join(BUILTIN_DIR, str(mf["name"]))):
-            return {"ok": False,
-                    "error": "「%s」是内置插件，不能覆盖安装（内置插件随应用更新）" % mf["name"]}
+        # 与内置同名 = 插件级更新：装到用户目录覆盖内置（内置文件本体不动，
+        # 随应用发版仍是基线；用户目录优先级更高，卸载用户目录即回到内置版本）
+        builtin_same = os.path.isdir(os.path.join(BUILTIN_DIR, str(mf["name"])))
         dest = pathlib.Path(USER_DIR) / str(mf["name"])
         updated = dest.is_dir()
         if dest.exists():
             _sh.rmtree(dest, ignore_errors=True)
         dest.parent.mkdir(parents=True, exist_ok=True)
         _sh.copytree(base, dest)
+        note = ("已更新插件到 v%s" % str(mf.get("version") or "?")
+                if updated else
+                ("已安装 v%s（覆盖内置基线；卸载即回到内置版本）" % str(mf.get("version") or "?")
+                 if builtin_same else "已安装（默认停用，请在列表中启用）"))
         return {"ok": True, "name": mf["name"],
                 "title": str(mf.get("title") or mf["name"]),
-                "updated": updated,
-                "note": "已更新覆盖" if updated else "已安装（默认停用，请在列表中启用）"}
+                "version": str(mf.get("version") or ""),
+                "updated": updated, "overridden_builtin": builtin_same,
+                "note": note}
     except zipfile.BadZipFile:
         return {"ok": False, "error": "zip 包损坏"}
     except OSError as e:
@@ -366,8 +386,10 @@ def uninstall(name):
 
 # 官方市场清单：主仓库（已开源）release 资产里的 market.json。
 # zip 同 release 资产走 github.com 域（本机直连验证过），镜像兜底 gh-proxy。
+# 市场清单文件名带版本：release 资产 CDN 缓存≈永久，clobber 同名文件更新后
+# 用户拿到的仍是旧字节——清单内容有变必须换新文件名（market-v3、v4…）
 DEFAULT_MARKET_URL = ("https://github.com/Pigeon2333/zcode-qq-bot/"
-                      "releases/download/plugins/market.json")
+                      "releases/download/plugins/market-v2.json")
 _MARKET_MIRRORS = ("https://gh-proxy.com/" + DEFAULT_MARKET_URL,)
 
 

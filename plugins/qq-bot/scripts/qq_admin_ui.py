@@ -2110,16 +2110,23 @@ function plCatBar(cats,cur,fn){
 }
 async function vPlugins(){
  if(_plTab==='market'){await vMarket();return}
- const r=await api('/api/plugins').catch(()=>({plugins:[]}));
+ const [r,mk]=await Promise.all([
+  api('/api/plugins').catch(()=>({plugins:[]})),
+  api('/api/plugins/market').catch(()=>({ok:false}))]);
  const all=r.plugins||[];
+ const mkt={};((mk&&mk.plugins)||[]).forEach(p=>{mkt[p.name]=p});
+ window._mktMap=mkt;
  const cats=[...new Set(all.map(p=>p.category||'其他'))].sort();
  const shown=all.filter(p=>!_plCat||p.category===_plCat);
  const rows=shown.map(p=>{
   const on=!!p.enabled;
+  const m=mkt[p.name];
+  const hasUpd=m&&m.version&&p.version&&(m.version!==p.version);
   const st='<label style="display:flex;gap:6px;align-items:center;flex:none"><input type="checkbox" '+(on?'checked':'')+' onchange="plToggle(\''+esc(p.name)+'\',this.checked)"> '+(on?'已启用':'已停用')+'</label>';
   const setBtn=(p.page||p.settings&&p.settings.length)?'<button class="act" style="margin:0;padding:5px 16px;font-size:12.5px" onclick="plPage(\''+esc(p.name)+'\')">⚙ 设置</button>':'';
   const uninstall=p.builtin?'':'<button class="act ghost danger" style="margin:0;padding:5px 12px;font-size:12px" onclick="plUninstall(\''+esc(p.name)+'\')">卸载</button>';
-  return '<div class="card" style="margin-bottom:12px;cursor:pointer" onclick="if(!event.target.closest(\'button,label,input\'))plPage(\''+esc(p.name)+'\')"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b style="font-size:14px">'+esc(p.title||p.name)+'</b><span class="badge" style="background:var(--tint);color:var(--dim)">'+esc(p.category||'其他')+'</span>'+(p.builtin?'<span class="badge" style="background:var(--tint);color:var(--dim)">内置</span>':'<span class="badge" style="background:var(--tint);color:var(--dim)">已安装</span>')+'<span style="margin-left:auto;display:flex;gap:8px;align-items:center">'+setBtn+uninstall+st+'</span></div>'+
+  const updbtn=hasUpd?'<button class="act" style="margin:0;padding:5px 12px;font-size:12px" onclick="mktInstall(\''+esc(p.name)+'\',true)">⬆ 更新到 v'+esc(m.version)+'</button>':'';
+  return '<div class="card" style="margin-bottom:12px;cursor:pointer" onclick="if(!event.target.closest(\'button,label,input\'))plPage(\''+esc(p.name)+'\')"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b style="font-size:14px">'+esc(p.title||p.name)+'</b>'+(p.version?'<span class="badge" style="background:var(--tint);color:var(--dim)">v'+esc(p.version)+'</span>':'')+'<span class="badge" style="background:var(--tint);color:var(--dim)">'+esc(p.category||'其他')+'</span>'+(p.builtin?'<span class="badge" style="background:var(--tint);color:var(--dim)">内置</span>':'<span class="badge" style="background:var(--tint);color:var(--dim)">已安装</span>')+'<span style="margin-left:auto;display:flex;gap:8px;align-items:center">'+updbtn+setBtn+uninstall+st+'</span></div>'+
    '<div class="k" style="margin-top:6px">'+esc(p.description||'')+'</div>'+
    '<div class="k" style="margin-top:6px;opacity:.7">点「⚙ 设置」或本卡片进入该插件的专属设置页 →</div></div>';
  }).join('');
@@ -2137,7 +2144,7 @@ async function vMarket(){
  if(!el)return;
  if(r.ok===false){el.innerHTML='市场拉取失败：'+esc(r.error||'')+'<div style="margin-top:8px"><button class="act" onclick="load()">重试</button></div>';return}
  const rows=(r.plugins||[]).map(p=>{
-  const has=!!p.installed, upd=has&&!p.builtin&&p.local_version&&p.version&&p.local_version!==p.version;
+  const has=!!p.installed, upd=has&&p.local_version&&p.version&&p.local_version!==p.version;
   const btn=p.builtin?'<span class="badge" style="background:var(--tint);color:var(--dim)">内置，无需安装</span>':
    (upd?'<button class="act" style="margin:0" onclick="mktInstall(\''+esc(p.name)+'\',true)">更新到 v'+esc(p.version)+'</button>':
    (has?'<span class="badge b-ok">已安装</span> <button class="act ghost" style="margin:0;padding:5px 12px;font-size:12px" onclick="mktInstall(\''+esc(p.name)+'\')">重装</button>':
@@ -3075,6 +3082,7 @@ class UiHandler(BaseHTTPRequestHandler):
                 out.append({"name": name, "title": str(mf.get("title") or name),
                             "category": str(mf.get("category") or "其他"),
                             "description": str(mf.get("description") or ""),
+                            "version": str(mf.get("version") or ""),
                             "builtin": builtin,
                             "default_enabled": bool(mf.get("default_enabled", False)),
                             "enabled": host.enabled(name, bool(mf.get("default_enabled", False))),

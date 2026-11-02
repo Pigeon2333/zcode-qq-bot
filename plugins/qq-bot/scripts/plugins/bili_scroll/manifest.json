@@ -1,5 +1,6 @@
 {
   "name": "bili_scroll",
+  "version": "1.1.0",
   "title": "B 站刷视频",
   "description": "机器人用自己的 B 站账号扫码登录后，按周期以人设兴趣刷视频：看过的存为见闻（聊天时可能自然提起），真心觉得好的会主动分享（B 站私信 / QQ，目标在插件页配置，可含他人与群）。Cookie 只存本机，随时可退出。默认关闭。",
   "default_enabled": false,
