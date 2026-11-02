@@ -2181,14 +2181,41 @@ async function plUninstall(name){
 function biliPageHtml(d,p){
  const uid=(d&&d.uid)||'';
  const items=(d&&d.brief&&d.brief.items)||[];
+ const sh=(d&&d.share)||{};
  const brief=items.slice(-6).reverse().map(it=>'<div class="k" style="margin:3px 0">📺 '+esc(String(it.title||'').slice(0,44))+(it.feeling?'<span class="k">（'+esc(String(it.feeling).slice(0,40))+'）</span>':'')+'</div>').join('');
+ const shTg=(k,label,desc)=>'<div style="margin-top:8px"><label class="master"><input type="checkbox" '+(sh[k]?'checked':'')+' onchange="biliShareSet(\''+k+'\',this.checked)"><span><b>'+label+'</b><div class="k" style="margin-top:2px">'+desc+'</div></span></label></div>';
  return '<div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">B 站账号 '+(uid?'<span class="badge b-ok">已登录 UID '+esc(String(uid))+'</span> <button class="act ghost danger" style="margin:0;padding:4px 12px;font-size:12px" onclick="biliLogout()">退出登录</button>':'<span class="badge" style="background:var(--tint);color:var(--dim)">未登录</span> <button class="act" style="margin:0" onclick="biliScan()">扫码登录 B 站</button>')+'</div>'+
   '<div class="k" style="margin-top:8px">用<b>机器人自己单独注册的 B 站账号</b>扫码（不要用你的大号）。Cookie 只存本机。</div></div>'+
  '<div class="card"><div class="k">主人的 B 站 UID（机器人安利视频时发站内私信给你；可空只用 QQ 通知）</div>'+
   '<div style="display:flex;gap:8px;margin-top:8px;align-items:center"><input id="pbiliuid" value="'+esc(String((d&&d.owner_uid)||''))+'" placeholder="你的 B 站 UID" style="width:160px"><button class="act" style="margin:0" onclick="pbUidSave()">保存</button></div>'+
   '<div style="display:flex;gap:8px;margin-top:10px;align-items:center"><button class="act" style="margin:0" onclick="biliRun()">现在刷一轮</button><span class="k">后台执行，结果看运行日志 AGENT_BILI_*</span></div></div>'+
+ '<div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:4px">主动分享<span class="badge" style="background:var(--tint);color:var(--dim)">刷到真心觉得好的才发</span></div>'+
+  shTg('enabled','开启主动分享','总开关：挑到心仪视频才走下面的渠道（挑选由人设口味决定，与本开关无关）')+
+  shTg('bili_dm','B 站站内私信','开启后发给主人（主人的 UID 用上方卡片）；「主人之外」打开后按下方 UID 列表一起发')+
+  '<div style="margin-top:6px"><input id="pshbiliuids" value="'+esc(String(sh.bili_uids||''))+'" placeholder="其他 B 站 UID，逗号分隔（留空=只发主人）" style="width:100%" onchange="biliShareSave(\'share_bili_uids\',\'pshbiliuids\')"></div>'+
+  shTg('qq','QQ 分享','开启后发给主人 QQ；「主人之外」打开后按下方 QQ 号 / 群一起发')+
+  '<div style="margin-top:6px"><input id="pshqqu" value="'+esc(String(sh.qq_users||''))+'" placeholder="其他 QQ 号，逗号分隔（留空=只发主人）" style="width:100%" onchange="biliShareSave(\'share_qq_users\',\'pshqqu\')"></div>'+
+  '<div style="display:flex;gap:8px;margin-top:8px;align-items:center"><input id="pshqqg" value="'+esc(String(sh.qq_groups||''))+'" placeholder="分享到群：群号逗号分隔，默认留空" style="flex:1" onchange="biliShareSave(\'share_qq_groups\',\'pshqqg\')"><button class="act ghost" style="margin:0;flex:none" onclick="biliImportGroups()">从白名单群导入</button></div>'+
+  shTg('others','允许发给主人之外的人 / 群','默认关：只发主人。开启后，上方填的 UID / QQ 号 / 群才会生效——发群请确认该群允许机器人闲聊刷屏')+
+ '</div>'+
  (brief?'<div class="card"><div class="k">最近刷到的见闻（会自然出现在她的聊天里）</div>'+brief+'</div>':'');
 }
+async function biliShareSet(key,on){await plSet('bili_scroll',key,on)}
+async function biliShareSave(key,id){
+ const v=document.getElementById(id).value.trim();
+ if(v&&!v.split(/[,，]/).every(x=>/^\d{1,12}$/.test(x.trim()))){toast('只填数字，逗号分隔',false);load();return}
+ await plSet('bili_scroll',key,v)}
+async function biliImportGroups(){
+ const g=await api('/api/groups').catch(()=>null);
+ const ids=((g&&g.groups)||[]).map(String).filter(x=>/^\d+$/.test(x));
+ if(!ids.length){toast('白名单里没有群',false);return}
+ const el=document.getElementById('pshqqg');
+ const cur=el.value.split(/[,，]/).map(x=>x.trim()).filter(Boolean);
+ const merged=[...cur];
+ ids.forEach(x=>{if(!merged.includes(x))merged.push(x)});
+ el.value=merged.join(',');
+ await biliShareSave('share_qq_groups','pshqqg');
+ toast('已并入 '+ids.length+' 个白名单群（未去重前 '+cur.length+' 个）')}
 async function pbUidSave(){
  const v=document.getElementById('pbiliuid').value.trim();
  if(v&&!/^\d{1,12}$/.test(v)){toast('UID 应为数字',false);return}
@@ -3048,11 +3075,22 @@ class UiHandler(BaseHTTPRequestHandler):
         if u.path == "/api/bili/status":
             try:
                 import qq_bilibili as _qb
+                import qq_plugins as _qp
                 cfg0 = C.load_app_config()
+                ph = _qp.PluginHost()
+                def _ps(k, dv):
+                    return ph.setting("bili_scroll", k, dv)
                 return self._reply(200, {"ok": True,
                                          "uid": _qb.logged_in_uid(),
                                          "owner_uid": str(cfg0.get("owner_bilibili_uid") or ""),
-                                         "brief": _qb.brief_load()})
+                                         "brief": _qb.brief_load(),
+                                         "share": {"enabled": bool(_ps("share_enabled", False)),
+                                                   "bili_dm": bool(_ps("share_bili_dm", False)),
+                                                   "qq": bool(_ps("share_qq", False)),
+                                                   "others": bool(_ps("share_others", False)),
+                                                   "bili_uids": str(_ps("share_bili_uids", "") or ""),
+                                                   "qq_users": str(_ps("share_qq_users", "") or ""),
+                                                   "qq_groups": str(_ps("share_qq_groups", "") or "")}})
             except Exception as e:
                 return self._reply(500, {"ok": False, "error": repr(e)})
         if u.path == "/api/bili/qr":
