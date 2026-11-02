@@ -225,6 +225,65 @@ def _share_targets():
     return bili_uids, qq_users, qq_groups
 
 
+_BANNED_SHARE = ("刚刷到一个视频", "我的观后感", "观后感", "分享给你",
+                 "觉得挺不错", "给大家分享", "分享一个视频")
+_last_share_texts = []  # 最近几条分享原文（防连发同款开头）
+
+
+def _common_prefix_len(a, b):
+    n = 0
+    for x, y in zip(str(a), str(b)):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+def _compose_share_text(it, feeling, where):
+    """按人设口吻写分享消息：像熟人顺口聊起，不是发公告。
+    可以没有感想；禁模板腔；与最近几条开头雷同即重写；失败返回 ""。"""
+    try:
+        import qq_bot_agent as A
+        prompt = (
+            "你在刷B站，看到这个视频，想随手分享到%s：\n"
+            "标题：《%s》\nUP：%s\n简介：%s\n链接：%s\n%s\n\n"
+            "用人设的口吻写这条分享消息（人设与性格：\n%s\n）。\n"
+            "要求：\n"
+            "- 像跟熟人顺口聊起，不是发公告；一两句话，短比长好\n"
+            "- 禁止出现这些词及变体：「刚刷到一个视频」「分享给你」「观后感」"
+            "「觉得挺不错」「分享一个视频」——它们是模板腔\n"
+            "- 不要复述简介、不要「这个视频讲了…」式总结；挑一个具体的点、"
+            "一个疑问、或联想到的事，都行\n"
+            "- 也完全可以没有感想，就是单纯想让对方看看\n"
+            "- 链接原样保留在消息里\n"
+            "- 只输出这条消息本身"
+            % (where, str(it.get("title") or "?")[:60],
+               str(it.get("author") or "?")[:20],
+               str(it.get("desc") or "（无简介）").strip()[:60],
+               str(it.get("link") or ""),
+               ("（你刷到时的一点感受，可用可不用：%s）" % feeling) if feeling else "（你还没形成什么感受）",
+               _persona_digest()[:600] or "（按当前人设）"))
+        for attempt in range(2):
+            _m, text = A.call_glm_with_fallback(
+                [{"role": "system", "content": "只输出要发送的消息本身。"},
+                 {"role": "user", "content": prompt}], "")
+            t = str(text or "").strip().strip("\"“”「」").strip()
+            if not t:
+                continue
+            if any(b in t for b in _BANNED_SHARE):
+                if attempt == 0:
+                    prompt += "\n\n（重写：刚才那条是模板腔。直接像熟人说话，一句话就好，不许出现任何「分享/刷到/观后感」字样。）"
+                continue
+            if any(_common_prefix_len(t, prev) >= 8 for prev in _last_share_texts):
+                if attempt == 0:
+                    prompt += "\n\n（重写：开头和上一次分享雷同，换一个完全不同的切入角度和句式。）"
+                continue
+            return t
+    except Exception as e:
+        _api.log("SHARE_COMPOSE_FAIL %r" % e)
+    return ""
+
+
 def _share(daemon, picked):
     bili_uids, qq_users, qq_groups = _share_targets()
     if not (bili_uids or qq_users or qq_groups):
@@ -232,9 +291,16 @@ def _share(daemon, picked):
         return
     qb = _mod()
     for it, feeling in picked:
-        text = ("刚刷到一个视频，觉得挺不错分享给你：%s《%s》 %s%s" % (
-            it.get("author", ""), it.get("title", ""), it.get("link", ""),
-            ("\n我的观后感：" + feeling) if feeling else ""))[:480]
+        where = "群聊" if qq_groups else "私聊"
+        text = _compose_share_text(it, feeling, where)
+        if not text:
+            # 兜底：干净的最小分享（无观后感标签、无模板腔）
+            text = ("%s %s" % (str(it.get("title") or "")[:60],
+                               str(it.get("link") or ""))).strip()
+        if not text:
+            continue
+        _last_share_texts.append(text)
+        del _last_share_texts[:-3]
         for uid in bili_uids:
             try:
                 ok, msg = qb.send_insite_dm(uid, text)
