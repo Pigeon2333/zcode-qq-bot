@@ -4455,21 +4455,58 @@ def _backup_data():
         out("AGENT_BACKUP_FAIL %r" % e)
 
 
+def _logs_autoclean():
+    """日志自动清理：logs_autoclean_enabled 开启时，删除日志目录里修改时间
+    早于 logs_keep_days 天的 *.log / *.log.old（只动日志目录，不碰数据文件）。"""
+    cfg = C.load_app_config()
+    if not cfg.get("logs_autoclean_enabled"):
+        return
+    try:
+        days = max(1, min(365, int(cfg.get("logs_keep_days", 30))))
+    except (TypeError, ValueError):
+        days = 30
+    cutoff = time.time() - days * 86400
+    removed = 0
+    try:
+        for p in pathlib.Path(C.logs_dir()).iterdir():
+            name = str(p.name).lower()
+            if not p.is_file() or not (
+                    name.endswith(".log") or name.endswith(".log.old")):
+                continue
+            try:
+                if p.stat().st_mtime < cutoff:
+                    p.unlink()
+                    removed += 1
+            except OSError:
+                pass
+        if removed:
+            out("AGENT_LOGCLEAN removed=%d keep_days=%d" % (removed, days))
+    except OSError:
+        pass
+
+
 def _daily_review_loop(daemon):
     """定时循环：复盘与备份各自按配置时间触发（错过当天在窗口内补跑一次）。"""
-    state = {"review": "", "backup": ""}
+    state = {"review": "", "backup": "", "logclean": ""}
     import datetime as _dt
     def _due(kind):
         cfg = C.load_app_config()
-        tstr = str(cfg.get("%s_time" % ("review" if kind == "review" else "backup"),
-                           "03:30" if kind == "review" else "04:00")).strip()
+        # logclean 不单设时间：跟在备份时间之后半小时触发
+        _tkey = {"review": "review", "backup": "backup"}.get(kind, "backup")
+        _def = "03:30" if kind == "review" else (
+            "04:30" if kind == "logclean" else "04:00")
+        tstr = str(cfg.get("%s_time" % _tkey, _def)).strip()
         try:
             hh, mi = tstr.split(":")
             tgt = _dt.time(int(hh), int(mi))
+            if kind == "logclean":
+                tgt = (_dt.datetime.combine(_dt.date.today(), tgt)
+                       + _dt.timedelta(minutes=30)).time()
         except ValueError:
-            tgt = _dt.time(3, 30) if kind == "review" else _dt.time(4, 0)
+            tgt = _dt.time(3, 30) if kind == "review" else (
+                _dt.time(4, 30) if kind == "logclean" else _dt.time(4, 0))
         now = _dt.datetime.now()
-        key = now.strftime("%Y-%m-%d") + "|" + tstr
+        key = now.strftime("%Y-%m-%d") + "|" + kind
         if state[kind] == key:
             return False
         due_at = _dt.datetime.combine(now.date(), tgt)
@@ -4481,6 +4518,8 @@ def _daily_review_loop(daemon):
     while True:
         try:
             cfg = C.load_app_config()
+            if _due("logclean"):
+                _logs_autoclean()
             if _due("review") and feature_enabled("daily_review_enabled"):
                 _daily_review_once(daemon)
             if _due("backup") and cfg.get("backup_enabled", True):

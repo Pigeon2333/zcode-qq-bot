@@ -47,6 +47,8 @@ DEFAULT_CONFIG = {
     "backup_time": "04:00",    # 备份触发时间（HH:MM）
     "backup_dir": "",          # 备份目录（空=~/.zcode-qq-bot/backups）
     "logs_dir": "",            # 日志目录（空=~/.zcode-qq-bot/logs；改动重启各组件后生效）
+    "logs_autoclean_enabled": False,  # 日志自动清理（删 N 天前的 *.log）
+    "logs_keep_days": 30,      # 日志保留天数（1-365）
     "owner_bilibili_uid": "",  # 主人的 B 站 UID（B站插件站内私信分享目标；曾漏在白名单外导致存了读不到）
     "backup_keep_days": 30,    # 备份保留天数（超过自动清理）
     "backup_keep_copies": 30,  # 每个备份保留份数（超过自动清理最旧的）

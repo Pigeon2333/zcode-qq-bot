@@ -1615,7 +1615,12 @@ async function vSettings(){
   </div>
   <div style="margin-top:12px"><div class="k" style="margin-bottom:4px">日志目录（留空 = 默认 ~/.zcode-qq-bot/logs；存放 daemon/agent/管理台/NapCat 控制台与外壳日志）</div>
   <div style="display:flex;gap:8px"><input id="plogsdir" value="${esc(String(c.logs_dir||''))}" placeholder="如 D:\\ZCode\\qq-bot-logs" style="flex:1" onchange="saveKVLoad('/api/app-config',{logs_dir:this.value.trim()},'日志目录已保存（重启各组件后生效；旧目录文件不搬移）')"></div>
-  <div class="k" style="margin-top:4px">改动重启各组件后生效；运行日志页会从新目录读取</div></div></div>
+  <div style="margin-top:8px"><label class="master"><input type="checkbox" ${c.logs_autoclean_enabled?'checked':''} onchange="saveKVLoad('/api/app-config',{logs_autoclean_enabled:this.checked?1:0},'日志自动清理已'+(this.checked?'开启':'关闭'))">
+   <span><b>自动清理过期日志</b><div class="k" style="margin-top:3px">每天备份时间之后半小时检查一次，删除超过保留天数的日志文件（仅日志目录里的 .log/.log.old，不碰任何数据）</div></span></label>
+   <div class="${c.logs_autoclean_enabled?'':'dimmed'}" style="display:flex;gap:8px;align-items:center;margin-top:6px"><span class="k" style="flex:none">保留天数</span>
+    <input type="number" min="1" max="365" value="${c.logs_keep_days||30}" style="width:76px" onchange="saveKVLoad('/api/app-config',{logs_keep_days:Math.max(1,Math.min(365,parseInt(this.value)||30))},'日志保留天数已更新')"><span class="k">天（1–365；默认 30）</span></div>
+  </div>
+  <div class="k" style="margin-top:4px">日志目录改动重启各组件后生效；运行日志页会从新目录读取</div></div></div>
 
  <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">③ 接口与模型消耗</div>
  <div class="card"><div class="k">API Key（各供应商官网注册获取；支持智谱、DeepSeek、Kimi、OpenAI、Grok、Gemini、自定义。多个 Key 时选一个「主」——模型链未指定 Key 的条目都用主 Key，模型链每行可在「模型管理」单独指定。生图与联网搜索目前仅支持智谱 Key）</div>
@@ -4102,6 +4107,13 @@ class UiHandler(BaseHTTPRequestHandler):
                 cleaned["backup_dir"] = str(cfg_in["backup_dir"]).strip()[:260]
             if "logs_dir" in cfg_in:
                 cleaned["logs_dir"] = str(cfg_in["logs_dir"]).strip()[:260]
+            if "logs_autoclean_enabled" in cfg_in:
+                cleaned["logs_autoclean_enabled"] = bool(cfg_in["logs_autoclean_enabled"])
+            if "logs_keep_days" in cfg_in:
+                try:
+                    cleaned["logs_keep_days"] = max(1, min(365, int(cfg_in["logs_keep_days"])))
+                except (TypeError, ValueError):
+                    return self._reply(400, {"ok": False, "error": "日志保留天数应为 1-365 整数"})
             if "api_proxy" in cfg_in:
                 px = str(cfg_in["api_proxy"]).strip()[:120]
                 if px:
