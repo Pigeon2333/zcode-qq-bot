@@ -12,7 +12,11 @@ import time
 _BILI_STATE = {"last_window": 0.0}
 _KEYWORDS = ("科技", "数码", "游戏", "美食", "音乐", "动画", "知识",
              "日常", "萌宠", "旅行")
-_KW_CACHE = {"sig": "", "ts": 0.0, "kws": []}  # 人设兴趣词缓存（6h/人设变更失效）
+# 兴趣词+避雷词缓存（6h；人设或相关记忆变更即失效）
+_KW_CACHE = {"sig": "", "ts": 0.0, "kws": [], "avoid": []}
+_INTEREST_HINTS = ("视频", "喜欢", "爱看", "不爱看", "讨厌", "追", "番",
+                   "游戏", "剧", "安利", "up主", "主播", "音乐", "歌",
+                   "电影", "看", "兴趣", "爱好")
 _api = None
 _qb = None
 
@@ -44,59 +48,98 @@ def _persona_digest():
         return ""
 
 
-def _persona_keywords():
-    """按人设兴趣生成 B 站搜索词（LLM，缓存 6 小时且人设变更即失效）。
-    失败/无人设返回 []——调用方回落内置池。"""
+def _memory_digest():
+    """记忆里的兴趣素材：主人的全部近记忆 + 群记忆里带兴趣信号的
+    （"主人说喜欢什么视频"这类话聊过就会进记忆流水，这里取来用）。"""
+    import qq_bot_agent as A
+    owner = str(A.owner_qq() or "")
+    owner_lines, group_lines = [], []
+    try:
+        with open(A.MEMORY_STREAM_PATH, "r", encoding="utf-8") as f:
+            for ln in f:
+                try:
+                    rec = json.loads(ln)
+                except ValueError:
+                    continue
+                text = str(rec.get("text", ""))[:100]
+                if not text:
+                    continue
+                if rec.get("scope") == "contact" and str(rec.get("id")) == owner:
+                    owner_lines.append("主人：" + text)
+                elif rec.get("scope") == "group" and any(
+                        h in text for h in _INTEREST_HINTS):
+                    group_lines.append("群聊：" + text)
+    except Exception:
+        pass
+    return "\n".join(owner_lines[-30:] + group_lines[-20:])[:1000]
+
+
+def _interest_words():
+    """按人设 + 记忆生成 (搜索词, 避雷词)。
+    LLM、缓存 6 小时（人设或相关记忆一变即失效）。
+    失败/无人设无记忆返回 ([], [])——调用方回落内置池。"""
     digest = _persona_digest()
-    if not digest.strip():
-        return []
-    sig = hashlib.sha256(digest.encode("utf-8")).hexdigest()
+    memo = _memory_digest()
+    if not digest.strip() and not memo.strip():
+        return [], []
+    sig = hashlib.sha256((digest + "\x00" + memo).encode("utf-8")).hexdigest()
     now = time.time()
     if (_KW_CACHE["sig"] == sig and _KW_CACHE["kws"]
             and now - _KW_CACHE["ts"] < 6 * 3600):
-        return list(_KW_CACHE["kws"])
+        return list(_KW_CACHE["kws"]), list(_KW_CACHE["avoid"])
     try:
         import qq_bot_agent as A
         prompt = (
             "下面是一个聊天机器人的人设：\n%s\n\n"
-            "以这个人设本人的兴趣和口味，想 6 个适合在 B 站搜索的视频关键词。"
-            "要具体到能搜出东西（如'复古相机'、'星际争霸2'、'广式早茶'），"
-            "不要'视频''好看''有趣'这类泛词；口味单一就集中，别强行凑多样。"
-            "输出纯 JSON：{\"kws\":[\"词1\",\"词2\",...]}" % digest[:1200])
+            "以及机器人记得的事（含主人喜好、群里聊过的兴趣话题）：\n%s\n\n"
+            "综合人设本人的口味和大家（尤其主人）的兴趣，想 6 个适合在 B 站"
+            "搜索的视频关键词。要具体到能搜出东西（如'复古相机'、"
+            "'星际争霸2'、'广式早茶'），不要'视频''好看''有趣'这类泛词；"
+            "口味单一就集中，别强行凑多样。另外，如果记忆里有明确不喜欢/"
+            "反感的（不爱看某类、讨厌某 UP 等），列进 avoid 供挑选时排除。"
+            "输出纯 JSON：{\"kws\":[\"词1\",\"词2\",...],\"avoid\":[\"...\"]}"
+            % (digest[:1200], memo or "（暂无相关记忆）"))
         _m, text = A.call_glm_with_fallback(
             [{"role": "system", "content": "只输出符合要求的 JSON。"},
              {"role": "user", "content": prompt}], "")
         mm = re.search(r"\{.*\}", text, re.S)
         got = json.loads(mm.group(0)) if mm else {}
-        kws = []
+        kws, avoid = [], []
         for k in (got.get("kws") or [])[:8]:
             s = str(k).strip()
             if s and len(s) <= 12 and s not in kws:
                 kws.append(s)
+        for k in (got.get("avoid") or [])[:6]:
+            s = str(k).strip()
+            if s and len(s) <= 16 and s not in avoid:
+                avoid.append(s)
         if len(kws) >= 2:
-            _KW_CACHE.update(sig=sig, ts=now, kws=kws)
-            _api.log("persona_kws=%s" % ",".join(kws))
-            return kws
+            _KW_CACHE.update(sig=sig, ts=now, kws=kws, avoid=avoid)
+            _api.log("interest_kws=%s avoid=%s" % (",".join(kws), ",".join(avoid)))
+            return kws, avoid
     except Exception as e:
-        _api.log("PERSONA_KW_FAIL %r" % e)
-    return []
+        _api.log("INTEREST_KW_FAIL %r" % e)
+    return [], []
 
 
 def _pick(items):
-    """LLM 兴趣判定：返回 [(item, feeling)]。"""
+    """LLM 兴趣判定（人设口味 + 记忆里的避雷线）：返回 [(item, feeling)]。"""
     try:
         import qq_bot_agent as A
+        _, avoid = _interest_words()  # 缓存命中，不重复调 LLM
+        avoid_line = ("\n已知主人/大家明确不喜欢的（这类不要挑）：%s。"
+                      % "、".join(avoid)) if avoid else ""
         listing = "\n".join("%d. 《%s》 UP:%s 简介:%s 时长:%s" % (
             i, it.get("title", ""), it.get("author", ""), it.get("desc", "")[:60],
             it.get("length", "")) for i, it in enumerate(items))
         prompt = (
-            "你是 B 站资深用户，正按自己的兴趣刷视频。你的人设与性格：\n%s\n\n"
+            "你是 B 站资深用户，正按自己的兴趣刷视频。你的人设与性格：\n%s\n%s\n\n"
             "候选视频：\n%s\n\n"
             "从这些视频里挑 0-2 个你（以人设的身份和喜好）真心感兴趣的，"
             "并为每个写一句不超过 40 字的、符合人设口吻的观后感想（像发弹幕/跟朋友安利，"
             "不要书面腔；没感觉就不硬挑）。输出纯 JSON："
             "{\"picks\":[{\"idx\":序号,\"feeling\":\"感想\"}]}，没有就 {\"picks\":[]}。"
-            % (_persona_digest(), listing))
+            % (_persona_digest(), avoid_line, listing))
         _m, text = A.call_glm_with_fallback(
             [{"role": "system", "content": "只输出符合要求的 JSON。"},
              {"role": "user", "content": prompt}], "")
@@ -199,12 +242,12 @@ def tick(daemon):
     if now - _BILI_STATE["last_window"] < window:
         return
     _BILI_STATE["last_window"] = now
-    # 兴趣来源：用户关键词 + 人设生成的兴趣（叠加去重）；
-    # 两者都空（无人设/LLM 失败）才回落内置兴趣池
+    # 兴趣来源：用户关键词 + 按人设与记忆生成的兴趣（叠加去重）；
+    # 两者都空（无人设无记忆/LLM 失败）才回落内置兴趣池
     user_kws = [k.strip() for k in
                 str(_api.setting("keywords", "") or "").replace("，", ",").split(",")
                 if k.strip()]
-    persona_kws = _persona_keywords()
+    persona_kws, _avoid = _interest_words()
     kws = user_kws + [k for k in persona_kws if k not in user_kws]
     if not kws:
         kws = list(_KEYWORDS)
