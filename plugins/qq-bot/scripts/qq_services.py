@@ -102,7 +102,7 @@ def napcat_config_dir(cfg):
 
 def napcat_console_log():
     """NapCat 控制台输出落盘位置（启动时重定向；含 WebUi Token 与登录二维码）。"""
-    return C.DATA_ROOT / "logs" / "napcat_console.log"
+    return pathlib.Path(C.logs_dir()) / "napcat_console.log"
 
 
 def napcat_webui_token(cfg):
@@ -163,7 +163,7 @@ def _spawn(script, args, log_name):
     """以参数列表启动组件脚本，stdout/stderr 追加重定向到数据目录日志。
     frozen（exe 发布版）：组件由主 exe 分身承载（qq_app --service <名>）。
     日志超过 20MB 时先轮转到 .old（组件重启时生效）。"""
-    log_path = C.DATA_ROOT / "logs" / log_name
+    log_path = pathlib.Path(C.logs_dir()) / log_name
     log_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         if log_path.exists() and log_path.stat().st_size > 20 * 1024 * 1024:

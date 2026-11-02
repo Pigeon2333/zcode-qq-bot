@@ -691,7 +691,7 @@ async function vStatus(){
  <div class="k" style="margin-top:8px">手动暂停 = 立即停止一切回复与主动行为，零 token 消耗（不是安静模式那种只停主动插话、@仍回——是彻底停止；恢复后不补发暂停期间的消息）</div>
  <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--line)">
   <label style="display:inline-flex;align-items:center;gap:6px"><input type="checkbox" ${c.sched_pause_enabled?'checked':''} onchange="toggleSchedPause(this.checked)"> <b>定时暂停</b></label>
-  <span style="margin-left:10px">
+  <span style="margin-left:10px" class="${c.sched_pause_enabled?'':'dimmed'}">
    <input type="time" value="${esc(c.sched_pause_start||'23:00')}" onchange="saveSchedPause('sched_pause_start',this.value)"> –
    <input type="time" value="${esc(c.sched_pause_end||'07:00')}" onchange="saveSchedPause('sched_pause_end',this.value)">
   </span>
@@ -1177,10 +1177,11 @@ async function vPrivate(){
  </div> <div class="card">
   <label class="master" style="margin-bottom:8px"><input type="checkbox" id="penabled" ${on?'checked':''} onchange="savePrivate()">
    <span><b>回应私信</b><div class="k" style="margin-top:3px">默认关闭；开启后机器人会回复私聊消息</div></span></label>
+  <div class="${on?'':'dimmed'}">
   <label class="master"><input type="checkbox" id="pallowall" ${all?'checked':''} onchange="savePrivate()">
    <span>回复所有人的私信<div class="k" style="margin-top:3px">关闭后仅回复下方白名单中的 QQ 号</div></span></label>
- </div>
- <div class="card" style="${all?'opacity:.45':''}"><div class="k">私信白名单（仅回复列表内 QQ 号的私信，改动即时生效${all?'；当前被上面的"回复所有人"覆盖，列表保留不丢':''}）</div>
+ </div></div>
+ <div class="card ${((on&&!all)?'':'dimmed')}"><div class="k">私信白名单（仅回复列表内 QQ 号的私信，改动即时生效${all?'；当前被上面的"回复所有人"覆盖，列表保留不丢':''}）</div>
   <div class="chain" style="margin-top:10px">${rows||'<i class="k">空（未配置任何 QQ，将无人可私聊触发）</i>'}</div>
   <div style="margin-top:10px;display:flex;gap:8px"><input id="newpq" placeholder="QQ号，如 987654321" onkeydown="if(event.key==='Enter')addpq()"><button class="act" onclick="addpq()">添加</button></div></div>`;
 }
@@ -1583,13 +1584,13 @@ async function vSettings(){
   <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">
    <label class="master" style="margin-bottom:8px"><input type="checkbox" ${c.bot_name_enabled?'checked':''} onchange="saveKVLoad('/api/app-config',{bot_name_enabled:this.checked?1:0},this.checked?'已开启固定自称':'已关闭：跟随人设卡名字')">
     <span><b>固定自称</b><div class="k" style="margin-top:3px">开启后机器人一律用下面的名字自称，优先级最高（人设卡的名字仅作管理备注）；关闭则跟随当前人设卡</div></span></label>
-   <div style="display:flex;gap:8px;align-items:center"><span class="k" style="flex:none">如何称呼自己</span>
+   <div class="${c.bot_name_enabled?'':'dimmed'}" style="display:flex;gap:8px;align-items:center"><span class="k" style="flex:none">如何称呼自己</span>
     <input id="sbotname" value="${esc(String(c.bot_name_value||'智谱娘'))}" style="width:160px" onchange="saveKV('/api/app-config',{bot_name_value:this.value.trim()||'智谱娘'},'自称已保存（即时生效）')"></div>
   </div>
   <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
    <label class="master" style="margin-bottom:8px"><input type="checkbox" ${c.owner_name_enabled?'checked':''} onchange="saveKVLoad('/api/app-config',{owner_name_enabled:this.checked?1:0},this.checked?'已开启固定称呼':'已关闭：按人设/默认叫法')">
     <span><b>固定对你的称呼</b><div class="k" style="margin-top:3px">开启后机器人一律用下面的称呼叫你（所有场景，含设备操控话术）；关闭则按当前人设的叫法/消息昵称</div></span></label>
-   <div style="display:flex;gap:8px;align-items:center"><span class="k" style="flex:none">如何称呼你</span>
+   <div class="${c.owner_name_enabled?'':'dimmed'}" style="display:flex;gap:8px;align-items:center"><span class="k" style="flex:none">如何称呼你</span>
     <input id="sownername" value="${esc(String(c.owner_name_value||'主人'))}" style="width:160px" onchange="saveKV('/api/app-config',{owner_name_value:this.value.trim()||'主人'},'称呼已保存（即时生效）')"></div>
   </div></div>
  <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">② 运行环境</div>
@@ -1611,7 +1612,10 @@ async function vSettings(){
   </div>
   <div style="display:flex;gap:10px;margin-top:8px;flex-wrap:wrap;align-items:center">
    <label>时区 <input id="ptz" value="${esc(c.timezone||'Asia/Shanghai')}" style="width:180px" placeholder="如 Asia/Shanghai" onchange="saveEnv('ptz','timezone',0,'时区已保存（机器人感知的当前时间随此变化）')">（IANA 时区名，影响 AI 对时间的感知）</label>
-  </div></div>
+  </div>
+  <div style="margin-top:12px"><div class="k" style="margin-bottom:4px">日志目录（留空 = 默认 ~/.zcode-qq-bot/logs；存放 daemon/agent/管理台/NapCat 控制台与外壳日志）</div>
+  <div style="display:flex;gap:8px"><input id="plogsdir" value="${esc(String(c.logs_dir||''))}" placeholder="如 D:\\ZCode\\qq-bot-logs" style="flex:1" onchange="saveKVLoad('/api/app-config',{logs_dir:this.value.trim()},'日志目录已保存（重启各组件后生效；旧目录文件不搬移）')"></div>
+  <div class="k" style="margin-top:4px">改动重启各组件后生效；运行日志页会从新目录读取</div></div></div>
 
  <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">③ 接口与模型消耗</div>
  <div class="card"><div class="k">API Key（各供应商官网注册获取；支持智谱、DeepSeek、Kimi、OpenAI、Grok、Gemini、自定义。多个 Key 时选一个「主」——模型链未指定 Key 的条目都用主 Key，模型链每行可在「模型管理」单独指定。生图与联网搜索目前仅支持智谱 Key）</div>
@@ -2136,7 +2140,8 @@ async function vMarket(){
   return '<div class="card" style="margin-bottom:12px"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b style="font-size:14px">'+esc(p.title||p.name)+'</b><span class="badge" style="background:var(--tint);color:var(--dim)">'+esc(p.category||'其他')+'</span>'+(p.version?'<span class="badge" style="background:var(--tint);color:var(--dim)">v'+esc(p.version)+'</span>':'')+(p.size?'<span class="k">'+(p.size/1024).toFixed(0)+'KB</span>':'')+'<span style="margin-left:auto">'+btn+'</span></div>'+
    '<div class="k" style="margin-top:6px">'+esc(p.description||'')+'</div></div>';
  }).join('');
- el.outerHTML=(r.plugins||[]).length?rows:'<div class="card">市场暂无插件</div>';
+ el.outerHTML=((r.plugins||[]).length?rows:'<div class="card">市场暂无插件</div>')+
+ '<div class="card" style="margin-top:4px"><div class="k">把自己写的插件发上来？开发与上架流程见仓库 <b>PLUGINS.md</b>（github.com/Pigeon2333/zcode-qq-bot）</div></div>';
 }
 async function mktInstall(name,updating){
  toast((updating?'正在更新':'正在安装')+' '+name+'…');
@@ -2182,25 +2187,32 @@ function biliPageHtml(d,p){
  const uid=(d&&d.uid)||'';
  const items=(d&&d.brief&&d.brief.items)||[];
  const sh=(d&&d.share)||{};
+ const ownerUid=(d&&d.owner_uid)||'';
  const brief=items.slice(-6).reverse().map(it=>'<div class="k" style="margin:3px 0">📺 '+esc(String(it.title||'').slice(0,44))+(it.feeling?'<span class="k">（'+esc(String(it.feeling).slice(0,40))+'）</span>':'')+'</div>').join('');
- const shTg=(k,label,desc)=>'<div style="margin-top:8px"><label class="master"><input type="checkbox" '+(sh[k]?'checked':'')+' onchange="biliShareSet(\''+k+'\',this.checked)"><span><b>'+label+'</b><div class="k" style="margin-top:2px">'+desc+'</div></span></label></div>';
+ const tg=(k,label,desc)=>'<div style="margin:6px 0"><label class="master" style="margin:0"><input type="checkbox" '+(sh[k]?'checked':'')+' onchange="biliShareSet(\''+k+'\',this.checked)"><span><b>'+label+'</b><div class="k" style="margin-top:2px">'+desc+'</div></span></label></div>';
  return '<div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">B 站账号 '+(uid?'<span class="badge b-ok">已登录 UID '+esc(String(uid))+'</span> <button class="act ghost danger" style="margin:0;padding:4px 12px;font-size:12px" onclick="biliLogout()">退出登录</button>':'<span class="badge" style="background:var(--tint);color:var(--dim)">未登录</span> <button class="act" style="margin:0" onclick="biliScan()">扫码登录 B 站</button>')+'</div>'+
-  '<div class="k" style="margin-top:8px">用<b>机器人自己单独注册的 B 站账号</b>扫码（不要用你的大号）。Cookie 只存本机。</div></div>'+
- '<div class="card"><div class="k">主人的 B 站 UID（机器人安利视频时发站内私信给你；可空只用 QQ 通知）</div>'+
-  '<div style="display:flex;gap:8px;margin-top:8px;align-items:center"><input id="pbiliuid" value="'+esc(String((d&&d.owner_uid)||''))+'" placeholder="你的 B 站 UID" style="width:160px"><button class="act" style="margin:0" onclick="pbUidSave()">保存</button></div>'+
+  '<div class="k" style="margin-top:8px">用<b>机器人自己单独注册的 B 站账号</b>扫码（不要用你的大号）。Cookie 只存本机。</div>'+
   '<div style="display:flex;gap:8px;margin-top:10px;align-items:center"><button class="act" style="margin:0" onclick="biliRun()">现在刷一轮</button><span class="k">后台执行，结果看运行日志 AGENT_BILI_*</span></div></div>'+
  '<div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:4px">主动分享<span class="badge" style="background:var(--tint);color:var(--dim)">刷到真心觉得好的才发</span></div>'+
-  shTg('enabled','开启主动分享','总开关：挑到心仪视频才走下面的渠道（挑选由人设口味决定，与本开关无关）')+
-  shTg('bili_dm','B 站站内私信','开启后发给主人（主人的 UID 用上方卡片）；「主人之外」打开后按下方 UID 列表一起发')+
-  '<div style="margin-top:6px"><input id="pshbiliuids" value="'+esc(String(sh.bili_uids||''))+'" placeholder="其他 B 站 UID，逗号分隔（留空=只发主人）" style="width:100%" onchange="biliShareSave(\'share_bili_uids\',\'pshbiliuids\')"></div>'+
-  shTg('qq','QQ 分享','开启后发给主人 QQ；「主人之外」打开后按下方 QQ 号 / 群一起发')+
-  '<div style="margin-top:6px"><input id="pshqqu" value="'+esc(String(sh.qq_users||''))+'" placeholder="其他 QQ 号，逗号分隔（留空=只发主人）" style="width:100%" onchange="biliShareSave(\'share_qq_users\',\'pshqqu\')"></div>'+
-  '<div style="display:flex;gap:8px;margin-top:8px;align-items:center"><input id="pshqqg" value="'+esc(String(sh.qq_groups||''))+'" placeholder="分享到群：群号逗号分隔，默认留空" style="flex:1" onchange="biliShareSave(\'share_qq_groups\',\'pshqqg\')"><button class="act ghost" style="margin:0;flex:none" onclick="biliImportGroups()">从白名单群导入</button></div>'+
-  shTg('others','允许发给主人之外的人 / 群','默认关：只发主人。开启后，上方填的 UID / QQ 号 / 群才会生效——发群请确认该群允许机器人闲聊刷屏')+
+  tg('enabled','开启主动分享','总开关：关闭时下面全部渠道都不发（挑选与人设/记忆兴趣不受影响）')+
+  '<div class="'+(sh.enabled?'':'dimmed')+'">'+
+  '<div class="k" style="margin:10px 0 2px;font-weight:600">通过 B 站站内私信分享</div>'+
+   '<div class="'+(sh.bili_owner?'':'dimmed')+'">'+tg('bili_owner','主动给主人分享','开启后按下面的 UID 发站内私信')+
+    '<div style="display:flex;gap:8px;margin:4px 0 8px;align-items:center"><input id="pbiliuid" value="'+esc(String(ownerUid))+'" placeholder="主人的 B 站 UID" style="width:170px" onchange="pbUidSave()"><span class="k">不开启本项时这里变灰不可填</span></div></div>'+
+   '<div class="'+(sh.bili_others?'':'dimmed')+'">'+tg('bili_others','主动给其他人分享','开启后按下面填的 UID 一起发（想清楚再开：对方会收到机器人的安利）')+
+    '<div style="margin:4px 0 8px"><input id="pshbiliuids" value="'+esc(String(sh.bili_uids||''))+'" placeholder="其他 B 站 UID，逗号分隔" style="width:100%" onchange="biliShareSave(\'share_bili_uids\',\'pshbiliuids\')"></div></div>'+
+  '<div class="k" style="margin:10px 0 2px;font-weight:600">通过 QQ 私信分享</div>'+
+   '<div class="'+(sh.qq_owner?'':'dimmed')+'">'+tg('qq_owner','主动给主人分享','开启后发 QQ 私信给主人（用设置里的主人 QQ 号，无需填写）')+'</div>'+
+   '<div class="'+(sh.qq_others?'':'dimmed')+'">'+tg('qq_others','主动给其他人分享','开启后按下面填的 QQ 号一起发')+
+    '<div style="margin:4px 0 8px"><input id="pshqqu" value="'+esc(String(sh.qq_users||''))+'" placeholder="其他 QQ 号，逗号分隔" style="width:100%" onchange="biliShareSave(\'share_qq_users\',\'pshqqu\')"></div></div>'+
+  '<div class="k" style="margin:10px 0 2px;font-weight:600">主动分享到 QQ 群</div>'+
+   '<div class="'+(sh.qq_group?'':'dimmed')+'">'+tg('qq_group','主动发到群里','开启后按下面的群号发（发群请确认该群欢迎机器人闲聊）')+
+    '<div style="display:flex;gap:8px;margin:4px 0 8px;align-items:center"><input id="pshqqg" value="'+esc(String(sh.qq_groups||''))+'" placeholder="群号，逗号分隔，默认留空" style="flex:1" onchange="biliShareSave(\'share_qq_groups\',\'pshqqg\')"><button class="act ghost" style="margin:0;flex:none" onclick="biliImportGroups()">从白名单群导入</button></div></div>'+
+  '</div>'+
  '</div>'+
  (brief?'<div class="card"><div class="k">最近刷到的见闻（会自然出现在她的聊天里）</div>'+brief+'</div>':'');
 }
-async function biliShareSet(key,on){await plSet('bili_scroll',key,on)}
+async function biliShareSet(key,on){await plSet('bili_scroll',key,on);load()}
 async function biliShareSave(key,id){
  const v=document.getElementById(id).value.trim();
  if(v&&!v.split(/[,，]/).every(x=>/^\d{1,12}$/.test(x.trim()))){toast('只填数字，逗号分隔',false);load();return}
@@ -2215,7 +2227,7 @@ async function biliImportGroups(){
  ids.forEach(x=>{if(!merged.includes(x))merged.push(x)});
  el.value=merged.join(',');
  await biliShareSave('share_qq_groups','pshqqg');
- toast('已并入 '+ids.length+' 个白名单群（未去重前 '+cur.length+' 个）')}
+ toast('已并入白名单群，共 '+merged.length+' 个')}
 async function pbUidSave(){
  const v=document.getElementById('pbiliuid').value.trim();
  if(v&&!/^\d{1,12}$/.test(v)){toast('UID 应为数字',false);return}
@@ -2486,10 +2498,10 @@ def collect_runlog(src="all", tail=250):
     items = []
     if src in ("all", "daemon"):
         items += [_parse_daemon_line(ln) for ln in
-                  _tail_lines(os.path.join(C.DATA_DIR, "logs", "daemon.log"), tail)]
+                  _tail_lines(os.path.join(C.logs_dir(), "daemon.log"), tail)]
     if src in ("all", "agent"):
         items += _parse_agent_lines(
-            _tail_lines(os.path.join(C.DATA_DIR, "logs", "agent.log"), tail))
+            _tail_lines(os.path.join(C.logs_dir(), "agent.log"), tail))
     if src == "napcat":
         items += _parse_napcat_lines(_tail_lines(
             str(S.napcat_console_log()), tail))
@@ -3085,11 +3097,13 @@ class UiHandler(BaseHTTPRequestHandler):
                                          "owner_uid": str(cfg0.get("owner_bilibili_uid") or ""),
                                          "brief": _qb.brief_load(),
                                          "share": {"enabled": bool(_ps("share_enabled", False)),
-                                                   "bili_dm": bool(_ps("share_bili_dm", False)),
-                                                   "qq": bool(_ps("share_qq", False)),
-                                                   "others": bool(_ps("share_others", False)),
+                                                   "bili_owner": bool(_ps("share_bili_owner", _ps("share_bili_dm", False))),
+                                                   "bili_others": bool(_ps("share_bili_others", False)),
                                                    "bili_uids": str(_ps("share_bili_uids", "") or ""),
+                                                   "qq_owner": bool(_ps("share_qq_owner", _ps("share_qq", False))),
+                                                   "qq_others": bool(_ps("share_qq_others", False)),
                                                    "qq_users": str(_ps("share_qq_users", "") or ""),
+                                                   "qq_group": bool(_ps("share_qq_group", False)),
                                                    "qq_groups": str(_ps("share_qq_groups", "") or "")}})
             except Exception as e:
                 return self._reply(500, {"ok": False, "error": repr(e)})
@@ -3491,7 +3505,7 @@ class UiHandler(BaseHTTPRequestHandler):
             # 目录由前端先弹资源管理器目录选择框传入（未传则回落数据目录）
             import zipfile
             ddir = pathlib.Path(C.DATA_DIR)
-            logs_dir = ddir / "logs"
+            logs_dir = pathlib.Path(C.logs_dir())
             out_dir = pathlib.Path(str(body.get("dir") or "").strip() or str(ddir))
             if not out_dir.is_dir():
                 return self._reply(400, {"ok": False,
@@ -4086,6 +4100,8 @@ class UiHandler(BaseHTTPRequestHandler):
                     cleaned[k] = bool(cfg_in[k])
             if "backup_dir" in cfg_in:
                 cleaned["backup_dir"] = str(cfg_in["backup_dir"]).strip()[:260]
+            if "logs_dir" in cfg_in:
+                cleaned["logs_dir"] = str(cfg_in["logs_dir"]).strip()[:260]
             if "api_proxy" in cfg_in:
                 px = str(cfg_in["api_proxy"]).strip()[:120]
                 if px:

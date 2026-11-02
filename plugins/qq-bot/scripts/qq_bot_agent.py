@@ -1347,7 +1347,7 @@ def owner_command(msg, daemon=None):
 
 def _tail_log_lines(name, n):
     try:
-        with open(os.path.join(DATA_DIR, "logs", name), "r",
+        with open(os.path.join(C.logs_dir(), name), "r",
                   encoding="utf-8", errors="replace") as f:
             return [ln.rstrip("\n")[:150] for ln in f.readlines()[-n:] if ln.strip()]
     except OSError:
@@ -4186,6 +4186,9 @@ def process(daemon, msg):
 # 管理接口（127.0.0.1:39764）：状态查询 + 暂停开关
 # ---------------------------------------------------------------------------
 
+_ADMIN_DAEMON = {"d": None}  # main() 里注入（handler 是模块级类，拿不到局部 daemon）
+
+
 class AdminHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -4266,7 +4269,10 @@ class AdminHandler(BaseHTTPRequestHandler):
             fn = PLUGIN_HOST.hooks["bili_scroll"].get("tick")
             if not callable(fn):
                 return self._reply(200, {"ok": False, "error": "插件未注册节拍"})
-            threading.Thread(target=fn, args=(daemon,), daemon=True).start()
+            d = _ADMIN_DAEMON.get("d")
+            if d is None:
+                return self._reply(200, {"ok": False, "error": "daemon 未就绪，稍后再试"})
+            threading.Thread(target=fn, args=(d,), daemon=True).start()
             return self._reply(200, {"ok": True, "note": "已在后台跑一轮"})
         if urllib.parse.urlsplit(self.path).path == "/admin/shutdown":
             self._reply(200, {"ok": True, "bye": True})
@@ -4298,7 +4304,9 @@ class AdminServer(ThreadingHTTPServer):
         super().server_bind()
 
 
-def start_admin_server(port):
+def start_admin_server(port, daemon=None):
+    if daemon is not None:
+        _ADMIN_DAEMON["d"] = daemon
     srv = AdminServer((DAEMON_HOST, int(port)), AdminHandler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
@@ -4308,7 +4316,7 @@ def _review_window_lines():
     修复：此前固定取尾部 800 行且文案称「今天」，凌晨触发时口径混乱。"""
     import io
     mark = os.path.join(DATA_DIR, ".last_review_pos")
-    log_path = os.path.join(DATA_DIR, "logs", "agent.log")
+    log_path = os.path.join(C.logs_dir(), "agent.log")
     try:
         pos = int(read_const(mark).strip() or 0)
     except (OSError, ValueError):
@@ -4496,14 +4504,14 @@ def main():
         # 用户在心智里补好 Key 后无需重启组件（避免控制台误报 agent 启动失败）。
         # 判定用 any_key_usable：链上任一条目有 Key 即可（如只配 DeepSeek 主 Key）。
         out("AGENT_WAIT missing api key — 等待在控制台配置 API Key（进程保持在线）")
-        start_admin_server(args.admin_port)
+        start_admin_server(args.admin_port, daemon)
         while True:
             time.sleep(3)
             if any_key_usable():
                 out("AGENT_READY api key configured")
                 break
     RT.reload_chain()
-    start_admin_server(args.admin_port)
+    start_admin_server(args.admin_port, daemon)
     _proactive_state_load()
     try:
         PLUGIN_HOST.load_all()

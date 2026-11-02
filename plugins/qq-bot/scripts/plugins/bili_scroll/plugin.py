@@ -172,10 +172,18 @@ def _num_list(key, limit=10):
     return out[:limit]
 
 
+def _flag(key, old_key=None):
+    """读分享开关；新键未设置过时回落旧版键（升级迁移：share_bili_dm→
+    share_bili_owner、share_qq→share_qq_owner 等）。"""
+    v = _api.setting(key, None)
+    if v is None and old_key:
+        v = _api.setting(old_key, False)
+    return bool(v)
+
+
 def _share_targets():
     """解析分享目标：返回 (bili_uids, qq_users, qq_groups)。
-    主人默认收（B站=owner_bilibili_uid / QQ=主人QQ，配置了才发）；
-    列表里的其他人/群仅在 share_others 开启时计入。"""
+    结构与插件页一致：每个渠道「主人 / 其他人」各自开关，群独立开关。"""
     try:
         import qq_bot_agent as A
         cfg = A.C.load_app_config()
@@ -183,19 +191,19 @@ def _share_targets():
         owner_qq = str(A.owner_qq() or "").strip()
     except Exception:
         owner_uid = owner_qq = ""
-    others = bool(_api.setting("share_others", False))
-    bili_uids, qq_users, qq_groups = [], [], []
-    if _api.setting("share_bili_dm", False):
-        bili_uids = [owner_uid] if owner_uid else []
-        if others:
-            bili_uids += [u for u in _num_list("share_bili_uids")
-                          if u not in bili_uids]
-    if _api.setting("share_qq", False):
-        qq_users = [owner_qq] if owner_qq else []
-        if others:
-            qq_users += [u for u in _num_list("share_qq_users")
-                         if u not in qq_users]
-            qq_groups = _num_list("share_qq_groups")
+    bili_uids = []
+    if _flag("share_bili_owner", "share_bili_dm") and owner_uid:
+        bili_uids.append(owner_uid)
+    if _flag("share_bili_others"):
+        bili_uids += [u for u in _num_list("share_bili_uids")
+                      if u not in bili_uids]
+    qq_users = []
+    if _flag("share_qq_owner", "share_qq") and owner_qq:
+        qq_users.append(owner_qq)
+    if _flag("share_qq_others"):
+        qq_users += [u for u in _num_list("share_qq_users")
+                     if u not in qq_users]
+    qq_groups = _num_list("share_qq_groups") if _flag("share_qq_group") else []
     return bili_uids, qq_users, qq_groups
 
 

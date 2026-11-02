@@ -32,7 +32,7 @@ def _fatal(title, message):
     否则用户看到的现象就是「双击 exe 完全没反应」。"""
     text = "%s\n\n%s" % (title, message)
     try:
-        log_dir = os.path.join(C.DATA_DIR, "logs")
+        log_dir = C.logs_dir()
         os.makedirs(log_dir, exist_ok=True)
         with open(os.path.join(log_dir, "app.log"), "a", encoding="utf-8") as f:
             f.write("[%s] %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), text))
@@ -75,7 +75,7 @@ def _ensure_std_streams():
     if sys.stdout is not None and sys.stderr is not None:
         return
     try:
-        log_dir = os.path.join(C.DATA_DIR, "logs")
+        log_dir = C.logs_dir()
         os.makedirs(log_dir, exist_ok=True)
         f = open(os.path.join(log_dir, "app.log"), "a", encoding="utf-8",
                  buffering=1)
@@ -299,7 +299,7 @@ def main():
         return
     if sys.stdout and hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    os.makedirs(os.path.join(C.DATA_DIR, "logs"), exist_ok=True)
+    os.makedirs(C.logs_dir(), exist_ok=True)
     cfg = C.load_app_config()
     # 把自身 PID 传给控制台：窗口进程异常消失时控制台自动退出（防无主残留）
     msg = S.ensure_ui(cfg, parent_pid=os.getpid())  # 管理台是窗口的内容源，必须先就绪

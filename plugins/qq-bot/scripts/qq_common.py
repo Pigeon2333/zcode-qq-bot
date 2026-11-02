@@ -46,6 +46,8 @@ DEFAULT_CONFIG = {
     "backup_enabled": True,    # 每日数据快照开关
     "backup_time": "04:00",    # 备份触发时间（HH:MM）
     "backup_dir": "",          # 备份目录（空=~/.zcode-qq-bot/backups）
+    "logs_dir": "",            # 日志目录（空=~/.zcode-qq-bot/logs；改动重启各组件后生效）
+    "owner_bilibili_uid": "",  # 主人的 B 站 UID（B站插件站内私信分享目标；曾漏在白名单外导致存了读不到）
     "backup_keep_days": 30,    # 备份保留天数（超过自动清理）
     "backup_keep_copies": 30,  # 每个备份保留份数（超过自动清理最旧的）
     "timezone": "Asia/Shanghai",  # 机器人时区（IANA 名，影响 AI 感知的时间）
@@ -179,6 +181,16 @@ def detect_qqnt_dir():
 
 
 _LEGACY_UPDATE_REPO = "Pigeon2333/zcode-qq-bot-release"  # 已归档的旧发布仓库
+
+
+def logs_dir():
+    """日志目录（app_config.logs_dir 覆盖；默认 DATA_DIR/logs）。
+    返回 str；调用方按需 mkdir。改动后需重启各组件生效（重定向句柄在启动时打开）。"""
+    try:
+        p = str(load_app_config().get("logs_dir") or "").strip()
+    except Exception:
+        p = ""
+    return p or os.path.join(DATA_DIR, "logs")
 
 
 def load_app_config():
