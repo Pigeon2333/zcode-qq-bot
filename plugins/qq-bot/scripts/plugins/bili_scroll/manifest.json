@@ -17,6 +17,18 @@
       "type": "text",
       "label": "兴趣关键词（逗号分隔；无论是否填写，都会叠加按人设与记忆生成的兴趣一起检索；主人说过喜欢/不喜欢什么视频也会被记住并生效）",
       "default": ""
+    },
+    {
+      "key": "link_card_enabled",
+      "type": "toggle",
+      "label": "识别消息里的 B 站视频链接/BV 号，自动带视频信息（标题/UP/播放量等）进对话",
+      "default": true
+    },
+    {
+      "key": "hot_inject_enabled",
+      "type": "toggle",
+      "label": "聊到“B站热门/什么火”时自动带上当前热门榜单（只读公开数据）",
+      "default": false
     }
   ],
   "page": {

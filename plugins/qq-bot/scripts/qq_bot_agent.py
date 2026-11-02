@@ -2417,6 +2417,11 @@ def build_messages(daemon, msg, ctx_k=32):
     # 环境感知块（各自内部判定适用范围，不适用时返回空串=零 token 成本）
     _aware = ""
     try:
+        # 消息观察钩子：在注入前广播给插件（bili_scroll 借此预取视频卡片等）
+        PLUGIN_HOST.on_message_all(msg)
+    except Exception:
+        pass
+    try:
         _aware += _self_state_line(msg["chat_type"], msg["chat_id"])
     except Exception:
         pass

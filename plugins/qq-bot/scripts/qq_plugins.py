@@ -51,6 +51,12 @@ class PluginAPI:
     def inject_context(self, fn):
         self._host.hooks.setdefault(self.name, {})["inject"] = fn
 
+    def on_message(self, fn):
+        """注册消息观察器：fn(msg) 收到即将处理的消息 dict
+        （chat_type/chat_id/sender_id/sender_name/text 等字段）。
+        只读观察——不要在里面对该消息发回复；耗时拉取自行开线程。"""
+        self._host.hooks.setdefault(self.name, {})["on_message"] = fn
+
     def setting(self, key, default=None):
         return self._host.setting(self.name, key, default)
 
@@ -219,6 +225,19 @@ class PluginHost:
             except Exception as e:
                 self.log("PLUGIN_INJECT_FAIL %s %r" % (name, e))
         return "\n".join(out)
+
+    def on_message_all(self, msg):
+        """把即将处理的消息广播给所有声明了 on_message 的插件（只读观察）。
+        在 build_messages 前调用——插件可以借机预取资料（如视频卡片）供
+        自己的 inject_context 输出。单个插件异常不影响其他插件。"""
+        for name in list(self.hooks.keys()):
+            fn = self.hooks[name].get("on_message")
+            if not fn:
+                continue
+            try:
+                fn(msg)
+            except Exception as e:
+                self.log("PLUGIN_ONMSG_FAIL %s %r" % (name, e))
 
     def load_all_if_changed(self):
         """热加载触发：state 文件变化 OR 插件目录集合变化（新装/卸载插件文件

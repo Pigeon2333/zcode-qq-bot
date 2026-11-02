@@ -1,13 +1,18 @@
 # -*- coding: utf-8 -*-
 """B 站刷视频插件：按周期以人设兴趣搜近期视频，见闻注入聊天，好物主动分享。
 兴趣来源：用户关键词 + 按人设 LLM 生成的兴趣词（叠加）；都没有才回落内置池。
-分享目标：B 站站内私信 / QQ（主人默认收），可加开"主人之外"的 UID/QQ/群。"""
+分享目标：B 站站内私信 / QQ（主人默认收），可加开"主人之外"的 UID/QQ/群。
+链接感知（bilibili-mcp 只读能力移植）：消息里出现 BV/av 号或 b23.tv 短链时
+自动带视频卡片进上下文；聊到"B站什么火"可注入当前热门（独立开关，默认关）。"""
 
 import hashlib
+import http.client
 import json
 import random
 import re
+import threading
 import time
+import urllib.parse
 
 _BILI_STATE = {"last_window": 0.0}
 _KEYWORDS = ("科技", "数码", "游戏", "美食", "音乐", "动画", "知识",
@@ -17,6 +22,18 @@ _KW_CACHE = {"sig": "", "ts": 0.0, "kws": [], "avoid": []}
 _INTEREST_HINTS = ("视频", "喜欢", "爱看", "不爱看", "讨厌", "追", "番",
                    "游戏", "剧", "安利", "up主", "主播", "音乐", "歌",
                    "电影", "看", "兴趣", "爱好")
+
+# ---- 链接卡片 / 热门注入 ----
+_BV_RE = re.compile(r"(BV[1-9A-HJ-NP-Za-km-z]{10})")
+_AV_RE = re.compile(r"(?<![0-9A-Za-z])[Aa][Vv](\d{5,12})(?![0-9A-Za-z])")
+_B23_RE = re.compile(r"https?://b23\.tv/[0-9A-Za-z]+")
+_CARD_TTL = 3600          # 视频卡片缓存 1h
+_HOT_TTL = 600            # 热门列表缓存 10min
+_card_cache = {}          # vid -> {"ts":, "line":}
+_hot_cache = {"ts": 0.0, "lines": []}
+_last_seen = {}           # "ct:cid" -> {"ts":, "cards": [...], "hot": bool}
+_HOT_WORDS = ("热门", "热榜", "什么火", "排行", "榜单", "火视频")
+
 _api = None
 _qb = None
 
@@ -26,6 +43,7 @@ def register(api):
     _api = api
     api.on_tick(tick)
     api.inject_context(context_line)
+    api.on_message(on_message)
 
 
 def _mod():
@@ -274,4 +292,160 @@ def tick(daemon):
 
 def context_line(chat_type, chat_id):
     qb = _mod()
-    return qb.brief_line()
+    out = []
+    e = _last_seen.get("%s:%s" % (chat_type, chat_id))
+    if e and time.time() - e["ts"] < 300:
+        if e.get("cards"):
+            out.append("【消息里提到的B站视频】\n" + "\n".join(e["cards"]))
+        if e.get("hot") and _hot_cache.get("lines"):
+            out.append("【B站当前热门】\n" + "\n".join(_hot_cache["lines"]))
+    brief = qb.brief_line()
+    if brief:
+        out.append(brief)
+    return "\n".join(out)
+
+
+# ---------------- 链接卡片 / 热门（bilibili-mcp 只读能力移植） ----------------
+
+def _fmt_num(n):
+    try:
+        n = int(n or 0)
+    except (TypeError, ValueError):
+        return "?"
+    if n >= 100000000:
+        return "%.1f亿" % (n / 100000000)
+    if n >= 10000:
+        return "%.1f万" % (n / 10000)
+    return str(n)
+
+
+def _api_get(path):
+    """GET api.bilibili.com（带登录 Cookie 更稳；未登录也走公开接口）。"""
+    qb = _mod()
+    st, data, _ = qb._https_json(
+        "api.bilibili.com", path,
+        headers={"Referer": "https://www.bilibili.com/",
+                 "Cookie": (qb._cookie_header() if qb.cookies() else "")})
+    d = data if isinstance(data, dict) else {}
+    if st != 200 or d.get("code") != 0:
+        return None
+    return d.get("data")
+
+
+def _video_card(vid):
+    """vid=BVxxx 或 av 数字。返回一行卡片（缓存 1h）。"""
+    now = time.time()
+    hit = _card_cache.get(vid)
+    if hit and now - hit["ts"] < _CARD_TTL:
+        return hit["line"]
+    path = ("/x/web-interface/view?bvid=%s" % vid if vid.startswith("BV")
+            else "/x/web-interface/view?aid=%s" % vid)
+    d = _api_get(path)
+    if not isinstance(d, dict) or not d.get("bvid"):
+        return ""
+    stat = d.get("stat") or {}
+    desc = re.sub(r"\s+", " ", str(d.get("desc") or "")).strip()[:80]
+    line = ("《%s》UP:%s 播放%s 赞%s 投币%s 收藏%s 弹幕%s 时长%s%s"
+            % (str(d.get("title") or "?")[:60],
+               str((d.get("owner") or {}).get("name") or "?")[:20],
+               _fmt_num(stat.get("view")), _fmt_num(stat.get("like")),
+               _fmt_num(stat.get("coin")), _fmt_num(stat.get("favorite")),
+               _fmt_num(stat.get("danmaku")),
+               str(d.get("duration") or "?"),
+               ("｜简介:%s" % desc) if desc else ""))
+    _card_cache[vid] = {"ts": now, "line": line}
+    if len(_card_cache) > 50:
+        for k in list(_card_cache)[:20]:
+            _card_cache.pop(k, None)
+    return line
+
+
+def _resolve_b23(url):
+    """跟随 b23.tv 短链重定向（≤3 跳，只许 bilibili.com 域），返回最终 URL。"""
+    import ssl
+    cur = url
+    for _ in range(3):
+        u = urllib.parse.urlsplit(cur)
+        if not u.scheme.startswith("https") or not u.hostname:
+            return ""
+        if u.hostname != "b23.tv" and not u.hostname.endswith(".bilibili.com"):
+            return ""
+        try:
+            conn = http.client.HTTPSConnection(
+                u.hostname, u.port or 443, timeout=4,
+                context=ssl.create_default_context())
+            conn.request("GET", u.path or "/", headers={
+                "User-Agent": "Mozilla/5.0", "Range": "bytes=0-0"})
+            r = conn.getresponse()
+            loc = r.getheader("Location") or ""
+            r.read()
+            conn.close()
+            if not loc:
+                return cur
+            cur = loc if "://" in loc else "https://" + u.hostname + loc
+        except OSError:
+            return ""
+    return cur
+
+
+def _extract_vids(text):
+    """从消息文本提取视频 id：BV 号 / av 号 / b23.tv 短链（解析后再提）。"""
+    ids = list(_BV_RE.findall(text))
+    ids += ["av%s" % a for a in _AV_RE.findall(text)]
+    for u in list(_B23_RE.findall(text))[:2]:
+        final = _resolve_b23(u)
+        m = _BV_RE.search(final or "")
+        if m:
+            ids.append(m.group(1))
+            continue
+        m2 = _AV_RE.search(final or "")
+        if m2:
+            ids.append("av%s" % m2.group(1))
+    return list(dict.fromkeys(ids))
+
+
+def _hot_lines():
+    """B站当前热门（popular 接口，公开）。缓存 10 分钟。"""
+    now = time.time()
+    if now - _hot_cache["ts"] < _HOT_TTL and _hot_cache["lines"]:
+        return _hot_cache["lines"]
+    d = _api_get("/x/web-interface/popular?ps=10&pn=1")
+    lines = []
+    for it in (d or {}).get("list") or []:
+        st = it.get("stat") or {}
+        lines.append("《%s》UP:%s 播放%s 赞%s"
+                     % (str(it.get("title") or "?")[:50],
+                        str((it.get("owner") or {}).get("name") or "?")[:16],
+                        _fmt_num(st.get("view")), _fmt_num(st.get("like"))))
+    if lines:
+        _hot_cache.update(ts=now, lines=lines[:10])
+    return _hot_cache.get("lines") or []
+
+
+def on_message(msg):
+    """消息观察（PluginAPI.on_message）：识别 BV/av/短链→预取卡片；
+    'B站+热门/什么火'→刷新热门缓存。供 context_line 注入。"""
+    text = str(msg.get("text") or "")
+    if not text:
+        return
+    key = "%s:%s" % (msg.get("chat_type"), msg.get("chat_id"))
+    entry = {"ts": time.time(), "cards": [], "hot": False}
+    try:
+        if _api.setting("link_card_enabled", True):
+            for vid in _extract_vids(text)[:2]:
+                card = _video_card(vid)
+                if card:
+                    entry["cards"].append(card)
+            if entry["cards"]:
+                _api.log("card x%d" % len(entry["cards"]))
+        if (_api.setting("hot_inject_enabled", False)
+                and ("b站" in text.lower() or "bilibili" in text.lower())
+                and any(w in text for w in _HOT_WORDS)):
+            entry["hot"] = True
+            threading.Thread(target=_hot_lines, daemon=True).start()
+    except Exception as e:
+        _api.log("ONMSG_FAIL %r" % e)
+    _last_seen[key] = entry
+    if len(_last_seen) > 200:
+        for k in list(_last_seen)[:100]:
+            _last_seen.pop(k, None)
