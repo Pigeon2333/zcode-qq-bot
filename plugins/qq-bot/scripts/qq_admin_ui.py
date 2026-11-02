@@ -2202,22 +2202,22 @@ function biliPageHtml(d,p){
   tg('enabled','开启主动分享','总开关：关闭时下面全部渠道都不发（挑选与人设/记忆兴趣不受影响）')+
   '<div class="'+(sh.enabled?'':'dimmed')+'">'+
   '<div class="k" style="margin:10px 0 2px;font-weight:600">通过 B 站站内私信分享</div>'+
-   '<div class="'+(sh.bili_owner?'':'dimmed')+'">'+tg('bili_owner','主动给主人分享','开启后按下面的 UID 发站内私信')+
-    '<div style="display:flex;gap:8px;margin:4px 0 8px;align-items:center"><input id="pbiliuid" value="'+esc(String(ownerUid))+'" placeholder="主人的 B 站 UID" style="width:170px" onchange="pbUidSave()"><span class="k">不开启本项时这里变灰不可填</span></div></div>'+
-   '<div class="'+(sh.bili_others?'':'dimmed')+'">'+tg('bili_others','主动给其他人分享','开启后按下面填的 UID 一起发（想清楚再开：对方会收到机器人的安利）')+
-    '<div style="margin:4px 0 8px"><input id="pshbiliuids" value="'+esc(String(sh.bili_uids||''))+'" placeholder="其他 B 站 UID，逗号分隔" style="width:100%" onchange="biliShareSave(\'share_bili_uids\',\'pshbiliuids\')"></div></div>'+
+   tg('bili_owner','主动给主人分享','开启后按下面的 UID 发站内私信')+
+    '<div class="'+(sh.bili_owner?'':'dimmed')+'" style="display:flex;gap:8px;margin:4px 0 8px;align-items:center"><input id="pbiliuid" value="'+esc(String(ownerUid))+'" placeholder="主人的 B 站 UID" style="width:170px" onchange="pbUidSave()"></div>'+
+   tg('bili_others','主动给其他人分享','开启后按下面填的 UID 一起发（想清楚再开：对方会收到机器人的安利）')+
+    '<div class="'+(sh.bili_others?'':'dimmed')+'" style="margin:4px 0 8px"><input id="pshbiliuids" value="'+esc(String(sh.bili_uids||''))+'" placeholder="其他 B 站 UID，逗号分隔" style="width:100%" onchange="biliShareSave(\'share_bili_uids\',\'pshbiliuids\')"></div>'+
   '<div class="k" style="margin:10px 0 2px;font-weight:600">通过 QQ 私信分享</div>'+
-   '<div class="'+(sh.qq_owner?'':'dimmed')+'">'+tg('qq_owner','主动给主人分享','开启后发 QQ 私信给主人（用设置里的主人 QQ 号，无需填写）')+'</div>'+
-   '<div class="'+(sh.qq_others?'':'dimmed')+'">'+tg('qq_others','主动给其他人分享','开启后按下面填的 QQ 号一起发')+
-    '<div style="margin:4px 0 8px"><input id="pshqqu" value="'+esc(String(sh.qq_users||''))+'" placeholder="其他 QQ 号，逗号分隔" style="width:100%" onchange="biliShareSave(\'share_qq_users\',\'pshqqu\')"></div></div>'+
+   tg('qq_owner','主动给主人分享','开启后发 QQ 私信给主人（用设置里的主人 QQ 号，无需填写）')+
+   tg('qq_others','主动给其他人分享','开启后按下面填的 QQ 号一起发')+
+    '<div class="'+(sh.qq_others?'':'dimmed')+'" style="margin:4px 0 8px"><input id="pshqqu" value="'+esc(String(sh.qq_users||''))+'" placeholder="其他 QQ 号，逗号分隔" style="width:100%" onchange="biliShareSave(\'share_qq_users\',\'pshqqu\')"></div>'+
   '<div class="k" style="margin:10px 0 2px;font-weight:600">主动分享到 QQ 群</div>'+
-   '<div class="'+(sh.qq_group?'':'dimmed')+'">'+tg('qq_group','主动发到群里','开启后按下面的群号发（发群请确认该群欢迎机器人闲聊）')+
-    '<div style="display:flex;gap:8px;margin:4px 0 8px;align-items:center"><input id="pshqqg" value="'+esc(String(sh.qq_groups||''))+'" placeholder="群号，逗号分隔，默认留空" style="flex:1" onchange="biliShareSave(\'share_qq_groups\',\'pshqqg\')"><button class="act ghost" style="margin:0;flex:none" onclick="biliImportGroups()">从白名单群导入</button></div></div>'+
+   tg('qq_group','主动发到群里','开启后按下面的群号发（发群请确认该群欢迎机器人闲聊）')+
+    '<div class="'+(sh.qq_group?'':'dimmed')+'" style="display:flex;gap:8px;margin:4px 0 8px;align-items:center"><input id="pshqqg" value="'+esc(String(sh.qq_groups||''))+'" placeholder="群号，逗号分隔，默认留空" style="flex:1" onchange="biliShareSave(\'share_qq_groups\',\'pshqqg\')"><button class="act ghost" style="margin:0;flex:none" onclick="biliImportGroups()">从白名单群导入</button></div>'+
   '</div>'+
  '</div>'+
  (brief?'<div class="card"><div class="k">最近刷到的见闻（会自然出现在她的聊天里）</div>'+brief+'</div>':'');
 }
-async function biliShareSet(key,on){await plSet('bili_scroll',key,on);load()}
+async function biliShareSet(key,on){await plSet('bili_scroll',key,on);plPage('bili_scroll')}
 async function biliShareSave(key,id){
  const v=document.getElementById(id).value.trim();
  if(v&&!v.split(/[,，]/).every(x=>/^\d{1,12}$/.test(x.trim()))){toast('只填数字，逗号分隔',false);load();return}
