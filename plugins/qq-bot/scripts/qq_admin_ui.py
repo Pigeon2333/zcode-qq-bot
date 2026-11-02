@@ -2199,20 +2199,20 @@ function biliPageHtml(d,p){
   '<div class="k" style="margin-top:8px">用<b>机器人自己单独注册的 B 站账号</b>扫码（不要用你的大号）。Cookie 只存本机。</div>'+
   '<div style="display:flex;gap:8px;margin-top:10px;align-items:center"><button class="act" style="margin:0" onclick="biliRun()">现在刷一轮</button><span class="k">后台执行，结果看运行日志 AGENT_BILI_*</span></div></div>'+
  '<div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:4px">主动分享<span class="badge" style="background:var(--tint);color:var(--dim)">刷到真心觉得好的才发</span></div>'+
-  tg('enabled','开启主动分享','总开关：关闭时下面全部渠道都不发（挑选与人设/记忆兴趣不受影响）')+
-  '<div class="'+(sh.enabled?'':'dimmed')+'">'+
+  tg('share_enabled','开启主动分享','总开关：关闭时下面全部渠道都不发（挑选与人设/记忆兴趣不受影响）')+
+  '<div class="'+(sh.share_enabled?'':'dimmed')+'">'+
   '<div class="k" style="margin:10px 0 2px;font-weight:600">通过 B 站站内私信分享</div>'+
-   tg('bili_owner','主动给主人分享','开启后按下面的 UID 发站内私信')+
-    '<div class="'+(sh.bili_owner?'':'dimmed')+'" style="display:flex;gap:8px;margin:4px 0 8px;align-items:center"><input id="pbiliuid" value="'+esc(String(ownerUid))+'" placeholder="主人的 B 站 UID" style="width:170px" onchange="pbUidSave()"></div>'+
-   tg('bili_others','主动给其他人分享','开启后按下面填的 UID 一起发（想清楚再开：对方会收到机器人的安利）')+
-    '<div class="'+(sh.bili_others?'':'dimmed')+'" style="margin:4px 0 8px"><input id="pshbiliuids" value="'+esc(String(sh.bili_uids||''))+'" placeholder="其他 B 站 UID，逗号分隔" style="width:100%" onchange="biliShareSave(\'share_bili_uids\',\'pshbiliuids\')"></div>'+
+   tg('share_bili_owner','主动给主人分享','开启后按下面的 UID 发站内私信')+
+    '<div class="'+(sh.share_bili_owner?'':'dimmed')+'" style="display:flex;gap:8px;margin:4px 0 8px;align-items:center"><input id="pbiliuid" value="'+esc(String(ownerUid))+'" placeholder="主人的 B 站 UID" style="width:170px" onchange="pbUidSave()"></div>'+
+   tg('share_bili_others','主动给其他人分享','开启后按下面填的 UID 一起发（想清楚再开：对方会收到机器人的安利）')+
+    '<div class="'+(sh.share_bili_others?'':'dimmed')+'" style="margin:4px 0 8px"><input id="pshbiliuids" value="'+esc(String(sh.bili_uids||''))+'" placeholder="其他 B 站 UID，逗号分隔" style="width:100%" onchange="biliShareSave(\'share_bili_uids\',\'pshbiliuids\')"></div>'+
   '<div class="k" style="margin:10px 0 2px;font-weight:600">通过 QQ 私信分享</div>'+
-   tg('qq_owner','主动给主人分享','开启后发 QQ 私信给主人（用设置里的主人 QQ 号，无需填写）')+
-   tg('qq_others','主动给其他人分享','开启后按下面填的 QQ 号一起发')+
-    '<div class="'+(sh.qq_others?'':'dimmed')+'" style="margin:4px 0 8px"><input id="pshqqu" value="'+esc(String(sh.qq_users||''))+'" placeholder="其他 QQ 号，逗号分隔" style="width:100%" onchange="biliShareSave(\'share_qq_users\',\'pshqqu\')"></div>'+
+   tg('share_qq_owner','主动给主人分享','开启后发 QQ 私信给主人（用设置里的主人 QQ 号，无需填写）')+
+   tg('share_qq_others','主动给其他人分享','开启后按下面填的 QQ 号一起发')+
+    '<div class="'+(sh.share_qq_others?'':'dimmed')+'" style="margin:4px 0 8px"><input id="pshqqu" value="'+esc(String(sh.qq_users||''))+'" placeholder="其他 QQ 号，逗号分隔" style="width:100%" onchange="biliShareSave(\'share_qq_users\',\'pshqqu\')"></div>'+
   '<div class="k" style="margin:10px 0 2px;font-weight:600">主动分享到 QQ 群</div>'+
-   tg('qq_group','主动发到群里','开启后按下面的群号发（发群请确认该群欢迎机器人闲聊）')+
-    '<div class="'+(sh.qq_group?'':'dimmed')+'" style="display:flex;gap:8px;margin:4px 0 8px;align-items:center"><input id="pshqqg" value="'+esc(String(sh.qq_groups||''))+'" placeholder="群号，逗号分隔，默认留空" style="flex:1" onchange="biliShareSave(\'share_qq_groups\',\'pshqqg\')"><button class="act ghost" style="margin:0;flex:none" onclick="biliImportGroups()">从白名单群导入</button></div>'+
+   tg('share_qq_group','主动发到群里','开启后按下面的群号发（发群请确认该群欢迎机器人闲聊）')+
+    '<div class="'+(sh.share_qq_group?'':'dimmed')+'" style="display:flex;gap:8px;margin:4px 0 8px;align-items:center"><input id="pshqqg" value="'+esc(String(sh.qq_groups||''))+'" placeholder="群号，逗号分隔，默认留空" style="flex:1" onchange="biliShareSave(\'share_qq_groups\',\'pshqqg\')"><button class="act ghost" style="margin:0;flex:none" onclick="biliImportGroups()">从白名单群导入</button></div>'+
   '</div>'+
  '</div>'+
  (brief?'<div class="card"><div class="k">最近刷到的见闻（会自然出现在她的聊天里）</div>'+brief+'</div>':'');
@@ -3101,15 +3101,15 @@ class UiHandler(BaseHTTPRequestHandler):
                                          "uid": _qb.logged_in_uid(),
                                          "owner_uid": str(cfg0.get("owner_bilibili_uid") or ""),
                                          "brief": _qb.brief_load(),
-                                         "share": {"enabled": bool(_ps("share_enabled", False)),
-                                                   "bili_owner": bool(_ps("share_bili_owner", _ps("share_bili_dm", False))),
-                                                   "bili_others": bool(_ps("share_bili_others", False)),
-                                                   "bili_uids": str(_ps("share_bili_uids", "") or ""),
-                                                   "qq_owner": bool(_ps("share_qq_owner", _ps("share_qq", False))),
-                                                   "qq_others": bool(_ps("share_qq_others", False)),
-                                                   "qq_users": str(_ps("share_qq_users", "") or ""),
-                                                   "qq_group": bool(_ps("share_qq_group", False)),
-                                                   "qq_groups": str(_ps("share_qq_groups", "") or "")}})
+                                         "share": {"share_enabled": bool(_ps("share_enabled", False)),
+                                                   "share_bili_owner": bool(_ps("share_bili_owner", _ps("share_bili_dm", False))),
+                                                   "share_bili_others": bool(_ps("share_bili_others", False)),
+                                                   "share_bili_uids": str(_ps("share_bili_uids", "") or ""),
+                                                   "share_qq_owner": bool(_ps("share_qq_owner", _ps("share_qq", False))),
+                                                   "share_qq_others": bool(_ps("share_qq_others", False)),
+                                                   "share_qq_users": str(_ps("share_qq_users", "") or ""),
+                                                   "share_qq_group": bool(_ps("share_qq_group", False)),
+                                                   "share_qq_groups": str(_ps("share_qq_groups", "") or "")}})
             except Exception as e:
                 return self._reply(500, {"ok": False, "error": repr(e)})
         if u.path == "/api/bili/qr":
