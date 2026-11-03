@@ -4279,6 +4279,62 @@ class AdminHandler(BaseHTTPRequestHandler):
                 return self._reply(200, {"ok": False, "error": "daemon 未就绪，稍后再试"})
             threading.Thread(target=fn, args=(d,), daemon=True).start()
             return self._reply(200, {"ok": True, "note": "已在后台跑一轮"})
+        if urllib.parse.urlsplit(self.path).path == "/admin/chatimport-learn":
+            # 聊天记录学习：读隔离库采样 → LLM 消化 → 人设草稿 + 记忆候选。
+            # 只读原料、只产草稿；采纳与否由用户在插件页确认后另走保存接口。
+            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                body_l = json.loads(self.rfile.read(n).decode("utf-8")) if n else {}
+            except ValueError:
+                body_l = {}
+            import qq_chatimport as _CI
+            source = str(body_l.get("source") or "qq")
+            session = str(body_l.get("session") or "").strip()
+            if not session:
+                return self._reply(400, {"ok": False, "error": "缺少 session"})
+            lines, meta = _CI.load_sample(source, session)
+            if lines is None:
+                return self._reply(200, {"ok": False, "error": meta})
+            who = str(body_l.get("who") or "").strip()  # 要学习其说话风格的人
+            prompt = (
+                "下面是一份%s聊天记录的均匀采样（%s 条采样，时间范围 %s ~ %s，"
+                "说话人：%s）。%s\n\n请消化后输出纯 JSON（不要 markdown 代码块）：\n"
+                "{\"persona\":\"人设卡正文（用第二方/描述式写成一份可直接使用的"
+                "人设卡：称呼与关系、说话风格与口癖、高频话题、性格特点、"
+                "在意的事、梗与典故，600字内，条目用 - 分行）\",\n"
+                " \"persona_name\":\"给这个人设起个简短名字（如：小李·损友风）\",\n"
+                " \"memories\":[\"可写入长期记忆的独立事实，5-8条，每条一句，"
+                "含具体对象/时间/事件\"]}\n\n聊天记录采样：\n%s"
+                % (_CI.SOURCES.get(source, {}).get("label", "聊天"),
+                   len(lines), (meta.get("range") or ["?", "?"])[0],
+                   (meta.get("range") or ["?", "?"])[1],
+                   "、".join((meta.get("senders") or ["?"])[:6]) or "?",
+                   ("重点学习「%s」的说话风格，人设卡以 %s 为第一主体。"
+                    % (who, who)) if who else "学习整体对话氛围与主要说话人风格。",
+                   "\n".join(lines)))
+            try:
+                _m, text = call_glm_with_fallback(
+                    [{"role": "system",
+                      "content": "只输出符合要求的 JSON，不要代码块标记。"},
+                     {"role": "user", "content": prompt}], "")
+                mm = re.search(r"\{.*\}", str(text), re.S)
+                got = json.loads(mm.group(0)) if mm else {}
+                persona = str(got.get("persona") or "").strip()
+                if len(persona) < 50:
+                    return self._reply(200, {"ok": False,
+                                             "error": "学习结果太单薄，换更多记录试试"})
+                mems = [str(x).strip()[:200] for x in (got.get("memories") or [])
+                        if str(x).strip()][:8]
+                out("AGENT_CHATIMPORT_LEARN %s/%s lines=%d mem=%d"
+                    % (source, session, len(lines), len(mems)))
+                return self._reply(200, {
+                    "ok": True,
+                    "persona": persona[:4000],
+                    "persona_name": str(got.get("persona_name") or "")[:24],
+                    "memories": mems})
+            except Exception as e:
+                out("AGENT_CHATIMPORT_FAIL %r" % e)
+                return self._reply(200, {"ok": False, "error": "学习失败：%r" % e})
         if urllib.parse.urlsplit(self.path).path == "/admin/shutdown":
             self._reply(200, {"ok": True, "bye": True})
             out("AGENT_SHUTDOWN requested")

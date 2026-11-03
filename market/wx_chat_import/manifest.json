@@ -1,0 +1,13 @@
+{
+  "name": "wx_chat_import",
+  "version": "1.0.0",
+  "title": "微信聊天记录导入与学习",
+  "category": "记忆",
+  "default_enabled": false,
+  "description": "把微信聊天记录导出文件导入隔离库（不进记忆/上下文），再由机器人消化学习成人设草稿与候选记忆：覆盖人设有二次确认。导出可用 wechat-cli（skillhub：user_514405d2/wechat-cli）或任意「时间 发送人： 内容」格式文本。",
+  "page": {
+    "js": "wxChatImpPage",
+    "data": "/api/chatimport/status?source=wx"
+  },
+  "settings": []
+}

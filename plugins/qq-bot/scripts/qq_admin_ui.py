@@ -2276,6 +2276,80 @@ async function plToggle(name,on){
  if(r.ok!==false)load()}
 async function plSet(name,key,value){
  await saveKV('/api/plugins/setting',{name:name,key:key,value:value},'插件设置已更新（即时生效）')}
+// ---- 聊天记录导入与学习（QQ/微信共用页，source=qq|wx） ----
+function chatImpPage(d,p){
+ const src=d&&d.source||'qq', label=(d&&d.label)||'聊天', hint=(d&&d.hint)||'';
+ const ss=(d&&d.sessions)||[];
+ const rows=ss.map(s=>'<div class="card" style="margin-top:10px"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b>'+esc(s.name)+'</b><span class="badge" style="background:var(--tint);color:var(--dim)">'+s.count+' 条</span>'+(s.range&&s.range[0]?'<span class="k">'+esc(s.range[0])+' ~ '+esc(s.range[1])+'</span>':'')+'<span style="margin-left:auto;display:flex;gap:6px"><button class="act" style="margin:0;padding:4px 14px;font-size:12.5px" onclick="ciLearn(\''+src+'\',\''+esc(s.name)+'\')">✨ 学习成人设</button><button class="act ghost danger" style="margin:0;padding:4px 12px;font-size:12px" onclick="ciDelete(\''+src+'\',\''+esc(s.name)+'\')">删除</button></span></div>'+(s.senders&&s.senders.length?'<div class="k" style="margin-top:4px">说话人：'+esc(s.senders.join('、'))+'</div>':'')+'</div>').join('');
+ return '<div class="card"><div class="k"><b>① 准备'+label+'聊天记录文件</b></div><div class="k" style="margin-top:6px">'+esc(hint)+'。导入后存到独立隔离库（<span class="mono">~/.zcode-qq-bot/chat_import/</span>），<b>不进记忆、不进上下文</b>，只是学习原料。</div><div style="margin-top:10px"><button class="act" style="margin:0" onclick="ciPick(\''+src+'\')">选择文件并导入…</button></div></div>'
+ +(ss.length?'<div class="card"><div class="k"><b>② 隔离库中的会话</b>（点「学习成人设」让机器人消化记录）</div>'+rows+'</div>':'<div class="card" style="margin-top:10px"><div class="k">还没有导入任何会话。</div></div>');
+}
+function qqChatImpPage(d,p){return chatImpPage(Object.assign({},d,{source:'qq',label:'QQ',hint:'用 qq-cli 导出 md/json（或任何「时间 发送人： 内容」格式文本）'}),p)}
+function wxChatImpPage(d,p){return chatImpPage(Object.assign({},d,{source:'wx',label:'微信',hint:'用 wechat-cli 的 export_markdown.py 导出（或任何「时间 发送人： 内容」格式文本）'}),p)}
+async function ciPick(src){
+ toast('请选择导出文件…');
+ const r=await api('/api/chatimport/pick',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>({ok:false,error:'请求失败'}));
+ if(r.ok===false){toast(r.error||'解析失败',false);return}
+ const m=document.createElement('div');m.className='dlg-mask';
+ m.innerHTML='<div class="dlg" role="dialog"><h3>导入到隔离库</h3><div class="dlg-body">'
+ +'解析成功：<b>'+r.count+'</b> 条 · '+esc((r.range||[])[0]||'?')+' ~ '+esc((r.range||[])[1]||'?')+'<br>说话人：'+esc((r.senders||[]).join('、')||'?')+'<div class="k mono" style="margin-top:8px;font-size:12px">'+(r.preview||[]).map(x=>esc(x)).join('<br>')+'</div>'
+ +'<div style="margin-top:10px"><div class="k" style="margin-bottom:4px">会话名（用于隔离库展示）</div><input id="ci-name" value="'+esc((r.path||'').split(/[\\\\/]/).pop()||'').replace(/\\.[^.]+$/,'')+'" style="width:100%"></div>'
+ +'</div><div class="dlg-btns"><button class="act ghost">取消</button><button class="act">导入</button></div></div>';
+ document.body.appendChild(m);
+ const close=()=>m.remove();
+ m.querySelector('.dlg-btns .ghost').onclick=close;
+ m.onclick=e=>{if(e.target===m)close()};
+ m.querySelector('.dlg-btns .act').onclick=async()=>{
+  const name=document.getElementById('ci-name').value.trim()||'会话';
+  close();
+  const st=await api('/api/chatimport/store',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:src,session:name,path:r.path})}).catch(()=>({ok:false,error:'请求失败'}));
+  if(st.ok===false){toast(st.error||'导入失败',false);return}
+  toast('已导入「'+name+'」'+st.count+' 条到隔离库');load()};
+}
+async function ciDelete(src,name){
+ if(!await dlgConfirm({title:'删除会话',body:'删除隔离库中的「'+esc(name)+'」？学习原料将不可恢复（已保存的人设/记忆不受影响）。',okText:'删除',danger:true}))return;
+ const r=await api('/api/chatimport/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:src,session:name})}).catch(()=>({ok:false}));
+ if(r.ok!==false)load();else toast('删除失败',false);
+}
+async function ciLearn(src,name){
+ const who=await dlgPrompt({title:'学习「'+name+'」',body:'要让机器人重点学习谁的说话风格？<br>留空 = 学习整体氛围与主要说话人。',placeholder:'说话人名字（可留空）',okText:'开始学习'});
+ if(who===null)return;
+ toast('机器人正在消化记录（约 30-90 秒）…');
+ const r=await api('/api/chatimport/learn',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:src,session:name,who:who||''})}).catch(()=>({ok:false,error:'请求失败'}));
+ if(r.ok===false){toast(r.error||'学习失败',false);return}
+ const ps=await api('/api/personas').catch(()=>({personas:[]}));
+ const exist=(ps.personas||[]).map(x=>x.name);
+ const suggest=r.persona_name||'';
+ const m=document.createElement('div');m.className='dlg-mask';
+ m.innerHTML='<div class="dlg" role="dialog" style="max-width:640px"><h3>学习结果 → 人设草稿</h3><div class="dlg-body">'
+ +'<div class="k" style="margin-bottom:4px">人设名'+(exist.includes(suggest)?'（<b style="color:var(--err)">与现有人设重名，保存将覆盖</b>）':'')+'</div><input id="ci-pname" value="'+esc(suggest)+'" style="width:60%">'
+ +'<div class="k" style="margin:8px 0 4px">人设卡正文（可编辑）</div><textarea id="ci-ptext" rows="12" style="width:100%;resize:vertical;font-size:13px">'+esc(r.persona)+'</textarea>'
+ +'<div class="k" style="margin:8px 0 4px">候选记忆（勾选后写入长期记忆；需填关联对象）</div><div id="ci-mems" style="max-height:140px;overflow:auto">'+(r.memories||[]).map((x,i)=>'<label style="display:flex;gap:6px;align-items:flex-start;margin:3px 0"><input type="checkbox" checked data-i="'+i+'"> <span class="k">'+esc(x)+'</span></label>').join('')+'</div>'
+ +'<div style="display:flex;gap:8px;margin-top:8px;align-items:center"><span class="k" style="flex:none">记忆关联</span><input id="ci-mid" placeholder="QQ号/群号（不填则不写记忆）" style="flex:1"></div>'
+ +'</div><div class="dlg-btns"><button class="act ghost">取消</button><button class="act">保存人设</button></div></div>';
+ document.body.appendChild(m);
+ const close=()=>m.remove();
+ m.querySelector('.dlg-btns .ghost').onclick=close;
+ m.onclick=e=>{if(e.target===m)close()};
+ m.querySelector('.dlg-btns .act').onclick=async()=>{
+  const pname=document.getElementById('ci-pname').value.trim();
+  const ptext=document.getElementById('ci-ptext').value.trim();
+  if(!pname||ptext.length<20){toast('人设名与正文不能为空/过短',false);return}
+  if(exist.includes(pname)){
+   const old=(ps.personas||[]).find(x=>x.name===pname);
+   if(!await dlgConfirm({title:'覆盖人设「'+pname+'」',body:'已存在同名的人设卡（'+((old&&old.notes)||'')+'…）。<br><b>覆盖后旧内容将丢失，确定？</b>',okText:'覆盖保存',danger:true}))return;
+  }
+  const sv=await api('/api/personas/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:pname,text:ptext})}).catch(()=>({ok:false}));
+  if(sv.ok===false){toast('人设保存失败',false);return}
+  toast('人设「'+pname+'」已保存（人设页可启用）');
+  const mid=document.getElementById('ci-mid').value.trim();
+  const picked=[...document.querySelectorAll('#ci-mems input:checked')].map(cb=>(r.memories||[])[+cb.dataset.i]).filter(Boolean);
+  if(mid&&/^\d{5,12}$/.test(mid)&&picked.length){
+   for(const t of picked){await api('/api/memory/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scope:'contact',id:mid,text:t})}).catch(()=>{})}
+   toast('已写入 '+picked.length+' 条记忆');
+  }
+  close();load()};
+}
 async function biliRun(){
  const r=await api('/api/bili/run',{method:'POST'}).catch(e=>({ok:false,error:e}));
  if(r.ok===false){toast(r.error||'触发失败',false);return}
@@ -3153,6 +3227,14 @@ class UiHandler(BaseHTTPRequestHandler):
                                                    "share_qq_groups": str(_ps("share_qq_groups", "") or "")}})
             except Exception as e:
                 return self._reply(500, {"ok": False, "error": repr(e)})
+        if u.path == "/api/chatimport/status":
+            # 聊天记录隔离库状态（qq/wx 两源共用端点；会话仅存 DATA_DIR）
+            import qq_chatimport as _CI
+            src = q.get("source", "qq")
+            return self._reply(200, {"ok": True, "source": src,
+                                     "label": _CI.SOURCES.get(src, {}).get("label", ""),
+                                     "hint": _CI.SOURCES.get(src, {}).get("hint", ""),
+                                     "sessions": _CI.sessions(src)})
         if u.path == "/api/bili/qr":
             p = pathlib.Path(os.path.join(C.DATA_DIR, "bilibili_qr.png"))
             if p.exists():
@@ -4768,6 +4850,76 @@ class UiHandler(BaseHTTPRequestHandler):
                 import qq_plugins as _qp
                 res = _qp.uninstall(name)
                 return self._reply(200 if res.get("ok") else 400, res)
+            except Exception as e:
+                return self._reply(500, {"ok": False, "error": repr(e)})
+        if u.path == "/api/chatimport/pick":
+            # 文件对话框选导出文件 → 只解析预览（不落盘）
+            import threading as _th
+            import qq_chatimport as _CI
+            boxf = {}
+            def _pickf():
+                try:
+                    import tkinter as tk
+                    from tkinter import filedialog
+                    root = tk.Tk()
+                    root.withdraw()
+                    root.attributes("-topmost", True)
+                    f = filedialog.askopenfilename(
+                        title="选择聊天记录导出文件",
+                        filetypes=[("聊天记录", "*.md *.txt *.json"),
+                                   ("所有文件", "*.*")])
+                    root.destroy()
+                    boxf["f"] = f or ""
+                except Exception:
+                    boxf["f"] = ""
+            _t0 = _th.Thread(target=_pickf, daemon=True)
+            _t0.start()
+            _t0.join(timeout=180)
+            fpath = str(boxf.get("f") or "")
+            if not fpath:
+                return self._reply(200, {"ok": False, "error": "未选择文件"})
+            r = _CI.parse_file(fpath)
+            r["path"] = fpath
+            r["preview"] = [("%s %s: %s" % (time.strftime(
+                "%m-%d %H:%M", time.localtime(m.get("ts") or 0)) if m.get("ts") else "?",
+                m.get("sender", "?"), str(m.get("text", ""))[:60]))
+                for m in (r.get("messages") or [])[:5]]
+            r.pop("messages", None)
+            return self._reply(200, r)
+        if u.path == "/api/chatimport/store":
+            # 解析并落隔离库（DATA_DIR/chat_import/<source>/<会话>/）
+            import qq_chatimport as _CI
+            src = str(body.get("source") or "qq")
+            session = str(body.get("session") or "").strip()
+            fpath = str(body.get("path") or "")
+            if not session:
+                session = pathlib.Path(fpath).stem if fpath else ""
+            if not session:
+                return self._reply(400, {"ok": False, "error": "缺少会话名"})
+            r = _CI.store(src, session, fpath)
+            if r.get("ok"):
+                r["sessions"] = _CI.sessions(src)
+            return self._reply(200 if r.get("ok") else 400, r)
+        if u.path == "/api/chatimport/delete":
+            import qq_chatimport as _CI
+            r = _CI.delete(str(body.get("source") or "qq"),
+                           str(body.get("session") or ""))
+            if r.get("ok"):
+                r["sessions"] = _CI.sessions(str(body.get("source") or "qq"))
+            return self._reply(200 if r.get("ok") else 400, r)
+        if u.path == "/api/chatimport/learn":
+            # 代理 agent 学习（LLM 消化隔离库采样 → 人设草稿）
+            try:
+                conn = http.client.HTTPConnection(
+                    "127.0.0.1", PORTS["agent"], timeout=180)
+                conn.request("POST", "/admin/chatimport-learn",
+                             json.dumps({"source": str(body.get("source") or "qq"),
+                                         "session": str(body.get("session") or ""),
+                                         "who": str(body.get("who") or "")}).encode("utf-8"),
+                             {"Content-Type": "application/json"})
+                raw = conn.getresponse().read().decode("utf-8", "replace")
+                conn.close()
+                return self._reply(200, json.loads(raw))
             except Exception as e:
                 return self._reply(500, {"ok": False, "error": repr(e)})
         if u.path == "/api/bili/login-start":
