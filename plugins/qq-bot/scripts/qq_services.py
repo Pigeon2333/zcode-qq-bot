@@ -590,16 +590,19 @@ def install_napcat_zip(cfg, zip_path):
 _HOSTS_PATH = r"C:\Windows\System32\drivers\etc\hosts"
 _HOSTS_MARK_BEGIN = "# zcode-qq-bot: QQ 版本锁定开始（机器人兼容保护，关闭本设置或删此段恢复自动更新）"
 _HOSTS_MARK_END = "# zcode-qq-bot: QQ 版本锁定结束"
+# 旧版手工标记（历史上一次性救火用过；识别它以免误报"未锁定"）
+_HOSTS_LEGACY_MARK = "# zcode-qq-bot: block QQ auto-update (NapCat compat, remove after upstream fix)"
 _QQ_UPDATE_HOSTS = ("dldir1.qq.com", "dldir1v6.qq.com")
 
 
 def qq_update_block_active():
-    """hosts 屏蔽当前是否生效（读文件即可，无需权限）。"""
+    """hosts 屏蔽当前是否生效（新/旧任一格式；读文件即可，无需权限）。"""
     try:
         with open(_HOSTS_PATH, "r", encoding="utf-8", errors="replace") as f:
             text = f.read()
-        return (_HOSTS_MARK_BEGIN in text
-                and all(("127.0.0.1 " + h) in text for h in _QQ_UPDATE_HOSTS))
+        marked = (_HOSTS_MARK_BEGIN in text) or (_HOSTS_LEGACY_MARK in text)
+        return marked and all(("127.0.0.1 " + h) in text
+                              for h in _QQ_UPDATE_HOSTS)
     except OSError:
         return False
 
@@ -629,10 +632,20 @@ p = pathlib.Path(r'C:\\Windows\\System32\\drivers\\etc\\hosts')
 text = p.read_text(encoding='utf-8', errors='replace')
 BEGIN = '# zcode-qq-bot: QQ 版本锁定开始（机器人兼容保护，关闭本设置或删此段恢复自动更新）'
 END = '# zcode-qq-bot: QQ 版本锁定结束'
+LEGACY = '# zcode-qq-bot: block QQ auto-update (NapCat compat, remove after upstream fix)'
 i = text.find(BEGIN)
 if i >= 0:
     j = text.find(END)
     text = text[:i] + text[(j + len(END)) if j >= 0 else len(text):]
+# 清理旧版手工标记与散落的屏蔽行（切换为新格式，避免重复）
+kept = []
+for ln in text.split('\\n'):
+    if LEGACY in ln:
+        continue
+    if ln.strip().startswith('127.0.0.1') and 'dldir' in ln:
+        continue
+    kept.append(ln)
+text = '\\n'.join(kept)
 lines = [BEGIN, '127.0.0.1 dldir1.qq.com', '127.0.0.1 dldir1v6.qq.com', END]
 p.write_text(text.rstrip('\\n') + '\\n' + '\\n'.join(lines) + '\\n', encoding='utf-8')
 """
