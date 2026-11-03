@@ -570,9 +570,13 @@ def install_napcat_zip(cfg, zip_path):
                 target.write_bytes(srcf.read())
             installed.append(rel)
         zf.close()
-        return True, ("安装成功：%d 个文件（备份 %d 个旧文件 → %s）。"
+        # versions 布局适配（QQ 9.9.20+）：主程序在 versions\<v>\resources\app，
+        # hook 相对解析 loadNapCat.js 到该目录——把入口双摆一份进去
+        # （老式根目录布局 QQ 无 versions 目录则跳过，行为不变）
+        extra = _sync_napcat_into_versions(qqnt)
+        return True, ("安装成功：%d 个文件（备份 %d 个旧文件 → %s）。%s"
                       "若 QQ 更新后失效，请到 NapCat 官网下载对应新版本重装。"
-                      % (len(installed), len(backed), bdir))
+                      % (len(installed), len(backed), bdir, extra))
     except PermissionError:
         zf.close()
         return False, ("目标目录无写权限（Program Files 需要）："
@@ -580,6 +584,40 @@ def install_napcat_zip(cfg, zip_path):
     except OSError as e:
         zf.close()
         return False, "安装失败：%r（旧文件备份在 %s）" % (e, bdir)
+
+
+def _sync_napcat_into_versions(qqnt):
+    """QQ 9.9.20+ 的 versions 布局：hook 在 versions\\<ver>\\resources\\app 下
+    相对解析 loadNapCat.js——把 loadNapCat.js/napcat.mjs 双摆进当前版本目录。
+    返回提示串（""=无 versions 布局或失败静默）。QQ 官方更新装新版本目录后
+    需重跑一次安装（或等 NapCat 官方彻底适配 versions 布局后移除）。"""
+    import json as _json
+    import shutil as _sh
+    vdir = os.path.join(qqnt, "versions")
+    if not os.path.isdir(vdir):
+        return ""
+    try:
+        cfg = _json.loads(open(os.path.join(vdir, "config.json"),
+                                encoding="utf-8").read())
+        cur = str(cfg.get("curVersion") or "")
+    except (OSError, ValueError):
+        cur = ""
+    if not cur:
+        return ""
+    app = os.path.join(vdir, cur, "resources", "app")
+    if not os.path.isdir(app):
+        return ""
+    copied = 0
+    for f in ("loadNapCat.js", "napcat.mjs"):
+        src = os.path.join(qqnt, f)
+        if os.path.isfile(src):
+            try:
+                _sh.copy2(src, os.path.join(app, f))
+                copied += 1
+            except OSError:
+                pass
+    return ("（已同步 %d 个入口文件进 QQ %s 的 versions 目录）" % (copied, cur)
+            if copied else "")
 
 
 def napcat_ws_token_of(path, want_port=None):
