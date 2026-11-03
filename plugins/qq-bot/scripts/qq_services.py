@@ -789,14 +789,16 @@ def ensure_napcat_config(cfg):
         "timeout": {"baseTimeout": 10000, "uploadSpeedKBps": 256,
                     "downloadSpeedKBps": 256, "maxTimeout": 1800000}}
     try:
+        os.makedirs(config_dir, exist_ok=True)
         tmp = pathlib.Path(path + ".qqbot.tmp")
         tmp.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(str(tmp), path)
         return True, "NapCat 配置已生成"
-    except OSError:
-        return False, ("NapCat 配置写入失败（%s 目录需管理员权限）——请手动在 "
+    except OSError as e:
+        hint = "目录需管理员权限" if isinstance(e, PermissionError) else repr(e)[:80]
+        return False, ("NapCat 配置写入失败（%s：%s）——请手动在 "
                        "NapCat WebUI 建立正向 WS：端口 %d，token 见 ws_token 文件"
-                       % (config_dir, cfg["napcat_ws_port"]))
+                       % (config_dir, hint, cfg["napcat_ws_port"]))
 
 
 def start_napcat(cfg, wait_sec=150, on_progress=None):
@@ -836,10 +838,24 @@ def start_napcat(cfg, wait_sec=150, on_progress=None):
         # 控制台输出落盘：WebUi Token 与二维码都只在这里出现（无窗口启动看不到）
         logf = _napcat_log_handle()
         try:
-            subprocess.Popen(["cmd", "/c", launcher, qq], cwd=qqnt,
-                             stdin=subprocess.DEVNULL,
-                             stdout=logf, stderr=subprocess.STDOUT,
-                             creationflags=CREATE_NO_WINDOW)
+            runtime_mode = (
+                str(cfg.get("napcat_mode") or "") == "runtime"
+                or os.path.realpath(qqnt) == os.path.realpath(
+                    os.path.join(C.DATA_DIR, "napcat-runtime")))
+            if runtime_mode:
+                # 独立运行时：裸调 bootmain + QQ 号（OneKey 同款）。
+                # 不能用 launcher-user.bat——它从注册表解析 QQ 路径，
+                # 会拿到用户自己安装的 QQ.exe 而不是运行时里的这份。
+                bootmain = os.path.join(qqnt, "NapCatWinBootMain.exe")
+                subprocess.Popen([bootmain, qq], cwd=qqnt,
+                                 stdin=subprocess.DEVNULL,
+                                 stdout=logf, stderr=subprocess.STDOUT,
+                                 creationflags=CREATE_NO_WINDOW)
+            else:
+                subprocess.Popen(["cmd", "/c", launcher, qq], cwd=qqnt,
+                                 stdin=subprocess.DEVNULL,
+                                 stdout=logf, stderr=subprocess.STDOUT,
+                                 creationflags=CREATE_NO_WINDOW)
         finally:
             logf.close()
     deadline = time.time() + wait_sec
