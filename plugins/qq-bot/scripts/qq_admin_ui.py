@@ -81,6 +81,22 @@ DEFAULT_AGENT_PORT = 39764
 
 PORTS = {"daemon": DEFAULT_DAEMON_PORT, "agent": DEFAULT_AGENT_PORT}
 
+
+def _agent_port():
+    """agent 管理口实际端口：配置优先（自定义端口场景代理打错机的根因）。"""
+    try:
+        return int(C.load_app_config().get("agent_admin_port",
+                                           PORTS["agent"]))
+    except (TypeError, ValueError):
+        return PORTS["agent"]
+
+
+def _daemon_port():
+    try:
+        return int(C.load_app_config().get("daemon_port", PORTS["daemon"]))
+    except (TypeError, ValueError):
+        return PORTS["daemon"]
+
 # 最近一次「启动机器人」任务的实时状态（内存态，UI 进程内）
 # 必须 RLock：启动 worker 在 with _boot_lock 块内调 _boot_state_persist()
 # （persist 自己也要拿锁）——普通 Lock 不可重入 → 启动一结束就自死锁且
@@ -143,7 +159,7 @@ def _wd_notify_owner(cfg, text):
         return
     try:
         token = read_const(TOKEN_PATH)
-        conn = http.client.HTTPConnection("127.0.0.1", PORTS["daemon"], timeout=8)
+        conn = http.client.HTTPConnection("127.0.0.1", _daemon_port(), timeout=8)
         body = json.dumps({"chat_type": "private", "chat_id": owner,
                            "texts": [text]}, ensure_ascii=False).encode("utf-8")
         conn.request("POST", "/send", body, {"Content-Type": "application/json",
@@ -187,9 +203,9 @@ def _wd_recover(cfg, scope="components"):
             _wd_notify_owner(cfg, "看门狗：" + result)
         else:
             parts = []
-            if not S.port_open(PORTS["daemon"]):
+            if not S.port_open(_daemon_port()):
                 parts.append(S.ensure_daemon(cfg))
-            if not S.port_open(PORTS["agent"]):
+            if not S.port_open(_agent_port()):
                 parts.append(S.ensure_agent(cfg))
             result = "已补启组件（未动 QQ）：" + ("；".join(p for p in parts if p) or "无需补启")
             with _wd_lock:
@@ -213,7 +229,7 @@ def _wd_check_once():
     with _boot_lock:
         if _boot_state["running"]:
             return True, "boot-in-progress"
-    daemon_up = S.port_open(PORTS["daemon"])
+    daemon_up = S.port_open(_daemon_port())
     napcat_up = S.port_open(6099)
     if not daemon_up and not napcat_up:
         with _wd_lock:  # 用户主动停止的全部组件：不算故障
@@ -221,7 +237,7 @@ def _wd_check_once():
         return True, "all-stopped"
     healthy, detail, scope = True, "", "components"
     if daemon_up:
-        r = proxy_get("127.0.0.1", PORTS["daemon"], "/status",
+        r = proxy_get("127.0.0.1", _daemon_port(), "/status",
                       read_const(TOKEN_PATH), timeout=4)
         if not r.get("ok"):
             healthy, detail = False, "daemon /status 异常"
@@ -2961,10 +2977,10 @@ class UiHandler(BaseHTTPRequestHandler):
         if not self._authed(u, q):
             return self._reply(401, {"ok": False, "error": "unauthorized"})
         if u.path == "/api/daemon-status":
-            return self._reply(200, proxy_get("127.0.0.1", PORTS["daemon"], "/status",
+            return self._reply(200, proxy_get("127.0.0.1", _daemon_port(), "/status",
                                               read_const(TOKEN_PATH)))
         if u.path == "/api/agent-status":
-            r = proxy_get("127.0.0.1", PORTS["agent"], "/admin/status")
+            r = proxy_get("127.0.0.1", _agent_port(), "/admin/status")
             return self._reply(200, r if r.get("ok") else {"ok": False})
         if u.path == "/api/power/status":
             _boot_state_load()
@@ -3441,12 +3457,12 @@ class UiHandler(BaseHTTPRequestHandler):
                                      "cap": cap, "hours": hours,
                                      "hold": bool(enabled and cap > 0 and used >= cap)})
         if u.path == "/api/group-names":
-            r = proxy_get("127.0.0.1", PORTS["daemon"],
+            r = proxy_get("127.0.0.1", _daemon_port(),
                           "/group-list" + ("?refresh=1" if q.get("refresh") else ""),
                           read_const(TOKEN_PATH), timeout=15)
             return self._reply(200, r if isinstance(r, dict) else {"ok": False})
         if u.path == "/api/friend-names":
-            r = proxy_get("127.0.0.1", PORTS["daemon"],
+            r = proxy_get("127.0.0.1", _daemon_port(),
                           "/friend-list" + ("?refresh=1" if q.get("refresh") else ""),
                           read_const(TOKEN_PATH), timeout=15)
             return self._reply(200, r if isinstance(r, dict) else {"ok": False})
@@ -3502,7 +3518,7 @@ class UiHandler(BaseHTTPRequestHandler):
                                      "defaults": _A._DEFAULT_FLOW})
         if u.path == "/api/devctrl-code":
             # 码的唯一有效来源在 agent 进程：UI 只做代理，绝不本地生成。
-            r = proxy_get("127.0.0.1", PORTS["agent"], "/admin/devctrl-code")
+            r = proxy_get("127.0.0.1", _agent_port(), "/admin/devctrl-code")
             if not r.get("ok"):
                 return self._reply(200, {"ok": False, "code": "", "expires_in": 0,
                                          "error": r.get("error", "agent 未运行")})
@@ -3678,7 +3694,7 @@ class UiHandler(BaseHTTPRequestHandler):
             return self._reply(200, {"ok": True, "path": str(out)})
         if u.path == "/api/devctrl-code":
             # 刷新 = 让 agent 立刻作废旧码并换新（代理请求）
-            r = proxy_get("127.0.0.1", PORTS["agent"], "/admin/devctrl-code?refresh=1")
+            r = proxy_get("127.0.0.1", _agent_port(), "/admin/devctrl-code?refresh=1")
             if not r.get("ok"):
                 return self._reply(200, {"ok": False, "code": "", "expires_in": 0,
                                          "error": r.get("error", "agent 未运行")})
@@ -3690,7 +3706,7 @@ class UiHandler(BaseHTTPRequestHandler):
         if u.path == "/api/qq-status":
             # 代理 daemon 的 QQ 在线状态设置（set_online_status NapCat 动作）
             kind = "away" if str(body.get("kind")) == "away" else "online"
-            conn = http.client.HTTPConnection("127.0.0.1", PORTS["daemon"], timeout=12)
+            conn = http.client.HTTPConnection("127.0.0.1", _daemon_port(), timeout=12)
             try:
                 payload = json.dumps({"kind": kind}).encode("utf-8")
                 conn.request("POST", "/qq-status", body=payload, headers={
@@ -4640,7 +4656,7 @@ class UiHandler(BaseHTTPRequestHandler):
             cfg["paused"] = paused
             write_const(MODEL_CHAIN_PATH, json.dumps(cfg, ensure_ascii=False, indent=2))
             try:
-                conn = http.client.HTTPConnection("127.0.0.1", PORTS["agent"], timeout=5)
+                conn = http.client.HTTPConnection("127.0.0.1", _agent_port(), timeout=5)
                 payload = json.dumps({"paused": paused}).encode("utf-8")
                 conn.request("POST", "/admin/pause", body=payload,
                              headers={"Content-Type": "application/json"})
@@ -4656,7 +4672,7 @@ class UiHandler(BaseHTTPRequestHandler):
         if u.path == "/api/pin-model":
             # 转发 agent /admin/pin-model（立即使用/取消锁定），原样回传其响应
             try:
-                conn = http.client.HTTPConnection("127.0.0.1", PORTS["agent"], timeout=5)
+                conn = http.client.HTTPConnection("127.0.0.1", _agent_port(), timeout=5)
                 payload = json.dumps(body).encode("utf-8")
                 conn.request("POST", "/admin/pin-model", body=payload,
                              headers={"Content-Type": "application/json"})
@@ -4911,7 +4927,7 @@ class UiHandler(BaseHTTPRequestHandler):
             # 代理 agent 学习（LLM 消化隔离库采样 → 人设草稿）
             try:
                 conn = http.client.HTTPConnection(
-                    "127.0.0.1", PORTS["agent"], timeout=180)
+                    "127.0.0.1", _agent_port(), timeout=180)
                 conn.request("POST", "/admin/chatimport-learn",
                              json.dumps({"source": str(body.get("source") or "qq"),
                                          "session": str(body.get("session") or ""),
@@ -4944,7 +4960,7 @@ class UiHandler(BaseHTTPRequestHandler):
                 return self._reply(500, {"ok": False, "error": repr(e)})
         if u.path == "/api/bili/run":
             try:
-                conn = http.client.HTTPConnection("127.0.0.1", PORTS["agent"], timeout=8)
+                conn = http.client.HTTPConnection("127.0.0.1", _agent_port(), timeout=8)
                 conn.request("POST", "/admin/bili-run", body=b"{}",
                              headers={"Content-Type": "application/json"})
                 r = conn.getresponse().read().decode("utf-8", "replace")
