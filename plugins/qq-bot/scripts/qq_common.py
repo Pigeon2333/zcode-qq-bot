@@ -48,6 +48,7 @@ DEFAULT_CONFIG = {
     "backup_dir": "",          # 备份目录（空=~/.zcode-qq-bot/backups）
     "logs_dir": "",            # 日志目录（空=~/.zcode-qq-bot/logs；改动重启各组件后生效）
     "logs_autoclean_enabled": False,  # 日志自动清理（删 N 天前的 *.log）
+    "qq_version_lock": True,  # 锁定 QQ 版本（hosts 屏蔽自动更新，保护 NapCat 兼容）
     "logs_keep_days": 30,      # 日志保留天数（1-365）
     "owner_bilibili_uid": "",  # 主人的 B 站 UID（B站插件站内私信分享目标；曾漏在白名单外导致存了读不到）
     "backup_keep_days": 30,    # 备份保留天数（超过自动清理）
@@ -251,6 +252,23 @@ def qqnt_dir_resolved(cfg=None):
     if d and os.path.isfile(os.path.join(d, "QQ.exe")):
         return d
     return detect_qqnt_dir()
+
+
+def qq_current_version(qqnt=None):
+    """QQ 当前实际运行版本：versions 布局读 config.json 的 curVersion；
+    老式根目录布局返回 "legacy"。探测失败返回 ""。"""
+    qqnt = qqnt or qqnt_dir_resolved()
+    if not qqnt:
+        return ""
+    vcfg = os.path.join(qqnt, "versions", "config.json")
+    try:
+        with open(vcfg, "r", encoding="utf-8") as f:
+            cur = str(json.loads(f.read()).get("curVersion") or "")
+        return cur or "legacy"
+    except (OSError, ValueError):
+        # 无 versions 目录 = 老式根目录布局（QQ 程序直接在根目录）
+        return "legacy" if os.path.isfile(os.path.join(qqnt, "QQNT.dll")) or \
+            os.path.isdir(os.path.join(qqnt, "resources")) else ""
 
 
 # ---------------- 高峰降耗（econ）：daemon 与 agent 共用的生效判定 ----------------

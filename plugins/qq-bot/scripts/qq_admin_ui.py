@@ -595,13 +595,14 @@ function manageBootTimer(b){
  }else if(_bootTimer){clearInterval(_bootTimer);_bootTimer=null}
 }
 async function vStatus(){
- const [d,a,b,c,wd,vi]=await Promise.all([
+ const [d,a,b,c,wd,vi,qc]=await Promise.all([
   api('/api/daemon-status').catch(()=>({ok:false})),
   api('/api/agent-status').catch(()=>({ok:false})),
   api('/api/power/status').catch(()=>({})),
   api('/api/app-config').catch(()=>({})),
   api('/api/watchdog').catch(()=>({enabled:false})),
   api('/api/app-info').catch(()=>({})),
+  api('/api/qq-compat').catch(()=>({level:'ok'})),
  ]);
  manageBootTimer(b);
  const ws=d.ws_connected, login=d.login||{};
@@ -697,6 +698,8 @@ async function vStatus(){
   </span>
   <div class="k" style="margin-top:4px">时段内机器人完全停止一切活动（零消耗，同手动暂停），时段结束自动恢复。支持跨午夜（如 23:00–07:00）。恢复后不补发暂停期间消息。与安静模式/分群暂停/仅私聊模式不同：这是全局一刀切。</div>
  </div></div>
+ ${(qc.level==='danger')?'<div class="card" style="border:2px solid var(--err)"><div class="k" style="display:flex;gap:8px;align-items:flex-start;color:var(--err)"><b>⚠ QQ 与 NapCat 不兼容</b></div><div class="k" style="margin-top:6px">'+esc(qc.message||'')+'</div><div style="display:flex;gap:8px;margin-top:10px"><button class="act" onclick="napcatOnline()">一键重装 NapCat（自动适配新 QQ）…</button><button class="act ghost" onclick="goTab(\'settings\')">去锁定 QQ 版本</button></div></div>':''}
+ ${(qc.level==='warn')?'<div class="card" style="border:1px solid var(--warn)"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b>QQ 自动更新未屏蔽</b><span style="flex:1"></span><button class="act ghost" style="margin:0" onclick="goTab(\'settings\')">去开启「锁定 QQ 版本」</button></div><div class="k" style="margin-top:4px">QQ 一旦自动升级，NapCat 可能失效、机器人起不来。建议开启锁定（可随时关）。</div></div>':''}
  ${wdCard}
  <div class="card"><div class="k">收发统计</div><div class="kv" style="margin-top:8px">
   <div>收到 ${d.stats?.received??0}</div><div>触发 ${d.stats?.triggered??0}</div>
@@ -1602,6 +1605,8 @@ async function vSettings(){
    <button class="act ghost" style="margin:0" onclick="napcatInstall()">本地 zip 安装…</button>
    <span class="k">在线版自动从 NapCat 官方 GitHub 下载最新 Shell 并安装（国内自动走镜像）；本地版选自己下载的 zip（github.com/NapNeko/NapCatQQ/releases）。Program Files 目录需管理员权限运行本程序</span></div>
   <div id="ncdl-status" class="k" style="margin-top:6px"></div>
+  <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)"><label class="master"><input type="checkbox" id="sqqlock" ${c.qqnt_dir||c.detected_qqnt?'':'disabled'} onchange="qqLockToggle(this.checked)">
+   <span><b>锁定 QQ 版本（机器人兼容保护）</b><div class="k" style="margin-top:3px">QQ 自动更新可能让 NapCat 失效（机器人起不来/报「文件已损坏」）。开启后屏蔽 QQ 的更新下载源，把版本固定住；更新 NapCat 前建议保持开启。改动 hosts 需要管理员确认一次。<span id="qqlock-state" class="k"></span></div></span></label></div>
   <div class="k" style="margin-top:8px">扫码登录：密钥（登录页要填的 Token）与「打开登录页（免密钥）」按钮见「状态」页的 <b>NapCat 登录密钥</b> 卡片（密钥由程序自动从 NapCat 配置读取，不用手抄）。切换机器人账号在上方「① 身份与称呼 → 机器人 QQ 号」里改，改完自动走切换流程。</div></div>
   <div class="k" style="margin-top:12px">端口（一般无需改动；改动重启各组件后生效）</div>
   <div style="display:flex;gap:10px;margin-top:6px;flex-wrap:wrap;align-items:center">
@@ -1772,8 +1777,29 @@ async function vSettings(){
    <span class="k">点击后程序会自动退出并完成清理</span></div></div>`;
  // 下载进行中：切走再切回设置页/重开管理台后，自动恢复进度轮询
  api('/api/napcat-dl-status').then(st=>{if(st&&st.running)ncdlPoll()}).catch(()=>{});
+ // QQ 版本锁状态标注（hosts 实际生效态 vs 配置意图）
+ api('/api/qq-compat').then(q=>{
+  const el=document.getElementById('qqlock-state');
+  const box=document.getElementById('sqqlock');
+  if(box)box.checked=q.lock_active;
+  if(el)el.textContent=q.lock_active
+   ?'（已生效：QQ 更新源已屏蔽'+(q.qq_version&&q.qq_version!=='legacy'?'，当前 '+q.qq_version:'')+'）'
+   :(q.lock_wanted?'（⚠ 尚未生效：需要管理员权限，点一次开关并确认 UAC）':'（未开启）');
+ }).catch(()=>{});
 }
-let _autoReg=null,_upTimer=null;
+async function qqLockToggle(on){
+ if(!await dlgConfirm(on
+  ?{title:'锁定 QQ 版本',body:'将屏蔽 QQ 自动更新的下载源（改 hosts，可随时在本开关关闭恢复）。<br>QQ 版本固定后 NapCat 才不容易被更新破坏。现在继续？',okText:'锁定'}
+  :{title:'恢复 QQ 自动更新',body:'QQ 将恢复自动更新——新版 QQ 可能暂时不兼容 NapCat，机器人可能启动失败，需等 NapCat 更新后重装。确定？',okText:'恢复',danger:true}))return;
+ const r=await api('/api/qq-version-lock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enable:on})}).catch(()=>({ok:false,error:'请求失败'}));
+ if(r.need_admin){
+  if(!await dlgConfirm({title:'需要管理员权限',body:'修改 hosts 需要管理员确认。<br>点「继续」后屏幕会弹出 UAC 窗口（用户账户控制），请点「是」。',okText:'继续（弹 UAC）'}))return;
+  await api('/api/elevate-qq-lock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enable:on})}).catch(()=>{});
+  toast('已请求提权：请在弹出的 UAC 窗口点「是」，完成后刷新本页查看状态');
+  setTimeout(()=>load(),3500);return}
+ if(r.ok===false){toast(r.error||'操作失败',false);return}
+ toast(r.message||'已更新');load()}
+
 async function blList(){const c=await api('/api/app-config').catch(()=>({}));return c.user_blacklist||[]}
 async function blAdd(){
  const inp=document.getElementById('bladd');const v=String(inp.value||'').trim();
@@ -2937,6 +2963,13 @@ class UiHandler(BaseHTTPRequestHandler):
         if u.path == "/api/napcat-dl-status":
             import qq_napcat_dl as _ND
             return self._reply(200, {"ok": True, **_ND.status()})
+        if u.path == "/api/qq-compat":
+            lvl, msg = S.napcat_compat_check()
+            return self._reply(200, {"ok": True, "level": lvl, "message": msg,
+                                     "qq_version": C.qq_current_version(),
+                                     "lock_active": S.qq_update_block_active(),
+                                     "lock_wanted": bool(C.load_app_config().get(
+                                         "qq_version_lock", True))})
         if u.path == "/api/napcat-login-info":
             cfg = C.load_app_config()
             cfg_dir = S.napcat_config_dir(cfg)
@@ -4103,7 +4136,7 @@ class UiHandler(BaseHTTPRequestHandler):
                     v = str(cfg_in[k]).strip()
                     cleaned[k] = v if len(v) == 5 and v[2] == ":" and v[:2].isdigit() and v[3:].isdigit() else ""
             for k in ("backup_enabled", "sched_pause_enabled", "watchdog_enabled",
-                      "qq_status_auto", "zcode_bridge_enabled",
+                      "qq_version_lock", "qq_status_auto", "zcode_bridge_enabled",
                       "zcode_handoff_enabled", "zcode_return_enabled",
                       "zcode_notify_enabled", "zcode_reports_enabled",
                       "zcode_sticker_enabled", "zcode_watch_enabled",
@@ -4302,6 +4335,49 @@ class UiHandler(BaseHTTPRequestHandler):
             return self._reply(200, {"ok": True, "mode": mode,
                                      "app_dir": app_dir,
                                      "data_dir": C.DATA_DIR if mode == "wipe" else ""})
+        if u.path == "/api/elevate-qq-lock":
+            # 提权代理：写临时执行器 → Start-Process -Verb RunAs（用户 UAC 确认）
+            # → 以管理员重跑本端点完成 hosts 修改
+            enable = bool(body.get("enable"))
+            import tempfile as _tf
+            sf = pathlib.Path(_tf.gettempdir()) / "zcode_qqlock_elev.py"
+            sf.write_text(
+                "# -*- coding: utf-8 -*-\n"
+                "import http.client, json, pathlib\n"
+                "uit = pathlib.Path.home().joinpath('.zcode-qq-bot', 'ui_token')"
+                ".read_text(encoding='utf-8').strip()\n"
+                "port = %d\n"
+                "c = http.client.HTTPConnection('127.0.0.1', port, timeout=15)\n"
+                "c.request('POST', '/api/qq-version-lock', json.dumps("
+                "{'enable': %s}).encode(), {'Content-Type': 'application/json',"
+                " 'X-UI-Token': uit})\n"
+                "c.getresponse().read(); c.close()\n"
+                % (int(C.load_app_config().get("ui_port", DEFAULT_UI_PORT)),
+                   "true" if enable else "false"),
+                encoding="utf-8")
+            try:
+                import subprocess as _sp
+                _sp.run(["powershell", "-NoProfile", "-Command",
+                         "Start-Process -FilePath '%s' -Verb RunAs -WindowStyle Hidden"
+                         % str(sys.executable).replace("'", "''")],
+                        capture_output=True, timeout=10)
+                return self._reply(200, {"ok": True})
+            except Exception as e:
+                return self._reply(500, {"ok": False, "error": repr(e)[:120]})
+        if u.path == "/api/qq-version-lock":
+            enable = bool(body.get("enable"))
+            # 同步意图到配置（预检 warn 判定读它）
+            data = load_json_const(C.APP_CONFIG_PATH, {})
+            data["qq_version_lock"] = enable
+            write_const(C.APP_CONFIG_PATH, json.dumps(
+                data, ensure_ascii=False, indent=2))
+            ok, msg = S.set_qq_update_block(enable)
+            if msg == "NEED_ADMIN":
+                # 未提权：弹确认后由用户点 UAC，脚本自身以管理员重跑本端点
+                return self._reply(200, {"ok": False, "need_admin": True,
+                                         "target_state": enable})
+            return self._reply(200, {"ok": ok, "message": msg,
+                                     "lock_active": S.qq_update_block_active()})
         if u.path == "/api/power/on":
             with _boot_lock:
                 if _boot_state["running"]:

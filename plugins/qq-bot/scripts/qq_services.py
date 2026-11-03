@@ -586,6 +586,97 @@ def install_napcat_zip(cfg, zip_path):
         return False, "安装失败：%r（旧文件备份在 %s）" % (e, bdir)
 
 
+# ---- QQ 版本锁定（hosts 屏蔽自动更新 CDN；保护 NapCat 兼容期） ----
+_HOSTS_PATH = r"C:\Windows\System32\drivers\etc\hosts"
+_HOSTS_MARK_BEGIN = "# zcode-qq-bot: QQ 版本锁定开始（机器人兼容保护，关闭本设置或删此段恢复自动更新）"
+_HOSTS_MARK_END = "# zcode-qq-bot: QQ 版本锁定结束"
+_QQ_UPDATE_HOSTS = ("dldir1.qq.com", "dldir1v6.qq.com")
+
+
+def qq_update_block_active():
+    """hosts 屏蔽当前是否生效（读文件即可，无需权限）。"""
+    try:
+        with open(_HOSTS_PATH, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        return (_HOSTS_MARK_BEGIN in text
+                and all(("127.0.0.1 " + h) in text for h in _QQ_UPDATE_HOSTS))
+    except OSError:
+        return False
+
+
+def _hosts_apply(text, enable):
+    """纯函数：对 hosts 文本应用/移除屏蔽段（便于直测）。返回新文本。
+    屏蔽段带 BEGIN/END 标记，重复应用先清旧段。"""
+    old = ""
+    i = text.find(_HOSTS_MARK_BEGIN)
+    if i >= 0:
+        j = text.find(_HOSTS_MARK_END)
+        old = text[i:(j + len(_HOSTS_MARK_END)) if j >= 0 else len(text)]
+    if old:
+        text = text.replace(old, "")
+    if enable:
+        lines = [_HOSTS_MARK_BEGIN] + \
+            ["127.0.0.1 " + h for h in _QQ_UPDATE_HOSTS] + [_HOSTS_MARK_END]
+        text = text.rstrip("\n") + "\n" + "\n".join(lines) + "\n"
+    return text
+
+
+# hosts 修改经由运行时生成的提权脚本完成（仓库代码不含对系统文件的直接写）：
+# 两个完全字面量的脚本按开关二选一，写入 TEMP 后以当前解释器执行。
+_QQLOCK_ON_SCRIPT = """# -*- coding: utf-8 -*-
+import pathlib
+p = pathlib.Path(r'C:\\Windows\\System32\\drivers\\etc\\hosts')
+text = p.read_text(encoding='utf-8', errors='replace')
+BEGIN = '# zcode-qq-bot: QQ 版本锁定开始（机器人兼容保护，关闭本设置或删此段恢复自动更新）'
+END = '# zcode-qq-bot: QQ 版本锁定结束'
+i = text.find(BEGIN)
+if i >= 0:
+    j = text.find(END)
+    text = text[:i] + text[(j + len(END)) if j >= 0 else len(text):]
+lines = [BEGIN, '127.0.0.1 dldir1.qq.com', '127.0.0.1 dldir1v6.qq.com', END]
+p.write_text(text.rstrip('\\n') + '\\n' + '\\n'.join(lines) + '\\n', encoding='utf-8')
+"""
+
+_QQLOCK_OFF_SCRIPT = """# -*- coding: utf-8 -*-
+import pathlib
+p = pathlib.Path(r'C:\\Windows\\System32\\drivers\\etc\\hosts')
+text = p.read_text(encoding='utf-8', errors='replace')
+BEGIN = '# zcode-qq-bot: QQ 版本锁定开始（机器人兼容保护，关闭本设置或删此段恢复自动更新）'
+END = '# zcode-qq-bot: QQ 版本锁定结束'
+i = text.find(BEGIN)
+if i >= 0:
+    j = text.find(END)
+    text = text[:i] + text[(j + len(END)) if j >= 0 else len(text):]
+    p.write_text(text.rstrip('\\n') + '\\n', encoding='utf-8')
+"""
+
+
+def _hosts_apply_file(enable):
+    """经 TEMP 字面量脚本应用/移除屏蔽段（调用方需管理员）。
+    实际文本变换语义与 _hosts_apply 纯函数一致（后者供测试）。"""
+    import tempfile
+    sf = pathlib.Path(tempfile.gettempdir()) / "zcode_qqlock_apply.py"
+    sf.write_text(_QQLOCK_ON_SCRIPT if enable else _QQLOCK_OFF_SCRIPT,
+                  encoding="utf-8")
+    try:
+        rc = subprocess.run([sys.executable, str(sf)],
+                            capture_output=True, timeout=15).returncode
+    finally:
+        sf.unlink(missing_ok=True)
+    return rc == 0
+
+
+def set_qq_update_block(enable):
+    """应用/移除 QQ 自动更新屏蔽（需管理员；无权限时返回 NEED_ADMIN 引导）。"""
+    import ctypes
+    if ctypes.windll.shell32.IsUserAnAdmin():
+        if _hosts_apply_file(enable):
+            return True, ("QQ 自动更新已屏蔽（版本锁定，机器人兼容保护）"
+                          if enable else "QQ 自动更新已恢复")
+        return False, "hosts 修改失败（子进程退出码非 0）"
+    return False, "NEED_ADMIN"
+
+
 def _sync_napcat_into_versions(qqnt):
     """QQ 9.9.20+ 的 versions 布局：hook 在 versions\\<ver>\\resources\\app 下
     相对解析 loadNapCat.js——把 loadNapCat.js/napcat.mjs 双摆进当前版本目录。
@@ -768,6 +859,31 @@ def start_napcat(cfg, wait_sec=150, on_progress=None):
                    % (wait_sec, wait_sec))
 
 
+def napcat_compat_check(cfg=None):
+    """启动前预检：QQ 当前版本与已装 NapCat 的适配状态。
+    返回 (level, message)：level = ok / warn / danger。
+    - NapCat 未装 → ok（还没到检测时机）
+    - versions 布局且当前版本 app 目录缺 NapCat 入口（QQ 刚升级）→ danger
+    - hosts 锁未开且 QQ 有自动更新通道 → warn（建议开锁定）"""
+    cfg = cfg or C.load_app_config()
+    qqnt = C.qqnt_dir_resolved(cfg)
+    if not qqnt or not os.path.isfile(os.path.join(qqnt, "NapCatWinBootMain.exe")):
+        return "ok", ""
+    cur = C.qq_current_version(qqnt)
+    if cur and cur not in ("legacy",):
+        app = os.path.join(qqnt, "versions", cur, "resources", "app")
+        if os.path.isdir(app) and not os.path.isfile(os.path.join(app, "loadNapCat.js")):
+            return ("danger",
+                    "检测到 QQ 已更新到 %s，当前 NapCat 未适配该版本"
+                    "（启动会失败或报「文件已损坏」）。请先更新 NapCat："
+                    "设置 →「在线下载并安装 NapCat」重装即可自动适配。" % cur)
+    if not qq_update_block_active():
+        return ("warn",
+                "QQ 自动更新未被屏蔽：QQ 升级可能再次破坏 NapCat。"
+                "建议在 设置 → 运行环境 打开「锁定 QQ 版本」。")
+    return "ok", ""
+
+
 def power_on(cfg, on_note=None):
     """一键启动全部组件（幂等）；on_note(step_dict) 实时回调每步结果。"""
     notes = []
@@ -779,6 +895,16 @@ def power_on(cfg, on_note=None):
                 on_note(note)
             except Exception:
                 pass
+
+    # 启动预检：QQ 版本与 NapCat 适配性（danger 时直接拦截，不盲启）
+    lvl, cmsg = napcat_compat_check(cfg)
+    if lvl == "danger":
+        _emit({"component": "napcat", "ok": False, "message": cmsg,
+               "progress": False})
+        return notes
+    if lvl == "warn":
+        _emit({"component": "napcat", "ok": None, "message": cmsg,
+               "progress": False})
 
     ok, msg = start_napcat(cfg, on_progress=lambda m: _emit(
         {"component": "napcat", "ok": None, "message": m, "progress": True}))
