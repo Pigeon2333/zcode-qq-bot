@@ -843,14 +843,24 @@ def start_napcat(cfg, wait_sec=150, on_progress=None):
                 or os.path.realpath(qqnt) == os.path.realpath(
                     os.path.join(C.DATA_DIR, "napcat-runtime")))
             if runtime_mode:
-                # 独立运行时：显式传运行时自己的 QQ.exe + hook（实测裸调
-                # bootmain+QQ号会立即退出；显式四参才进入 Boot 流程）。
-                # 不能用 launcher-user.bat——它从注册表解析 QQ 路径，
-                # 会拿到用户自己安装的 QQ.exe 而不是运行时里的这份。
+                # 独立运行时：显式传运行时自己的 QQ.exe + hook，并带上
+                # launcher-user.bat 会设置的 NAPCAT_* 环境变量（hook 按
+                # NAPCAT_LOAD_PATH 解析入口；缺变量=注入成功核心不启动）。
+                # 不用 bat 本身——它从注册表解析 QQ 路径，会拿到用户
+                # 自己安装的 QQ.exe 而不是运行时里的这份。
                 bootmain = os.path.join(qqnt, "NapCatWinBootMain.exe")
                 hook = os.path.join(qqnt, "NapCatWinBootHook.dll")
                 rt_qq = os.path.join(qqnt, "QQ.exe")
+                env = dict(os.environ)
+                env.update({
+                    "NAPCAT_PATCH_PACKAGE": os.path.join(qqnt, "qqnt.json"),
+                    "NAPCAT_LOAD_PATH": os.path.join(qqnt, "loadNapCat.js"),
+                    "NAPCAT_INJECT_PATH": hook,
+                    "NAPCAT_LAUNCHER_PATH": bootmain,
+                    "NAPCAT_MAIN_PATH": os.path.join(qqnt, "napcat.mjs"),
+                })
                 subprocess.Popen([bootmain, rt_qq, hook, qq], cwd=qqnt,
+                                 env=env,
                                  stdin=subprocess.DEVNULL,
                                  stdout=logf, stderr=subprocess.STDOUT,
                                  creationflags=CREATE_NO_WINDOW)

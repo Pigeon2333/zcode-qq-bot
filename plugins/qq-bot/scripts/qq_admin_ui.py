@@ -1627,7 +1627,7 @@ async function vSettings(){
   <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">
    <div class="k" style="margin-bottom:6px"><b>NapCat 运行方式</b>（决定机器人寄生在哪份 QQ 上）</div>
    <label style="display:block;margin:6px 0"><input type="radio" name="ncmode" value="qqnt" ${c.napcat_mode!=='runtime'?'checked':''} onchange="ncModeSet('qqnt')"> <b>跟随你的 QQ 安装</b><span class="k">（现状）共用你电脑上的 QQ，受 QQ 自动更新影响，需要配合上面的版本锁定</span></label>
-   <label style="display:block;margin:6px 0"><input type="radio" name="ncmode" value="runtime" ${c.napcat_mode==='runtime'?'checked':''} onchange="ncModeSet('runtime')"> <b>独立运行时（推荐，一劳永逸）</b><span class="k">数据目录里自带一份受控版 QQ + NapCat（约 600MB），你的 QQ 随便升级/重装/卸载都不影响机器人</span></label>
+   <label style="display:block;margin:6px 0"><input type="radio" name="ncmode" value="runtime" ${c.napcat_mode==='runtime'?'checked':''} onchange="ncModeSet('runtime')"> <b>独立运行时（实验性）</b><span class="k">数据目录里自带一份受控版 QQ + NapCat（约 600MB），你的 QQ 随便升级/重装/卸载都不影响机器人。⚠ 已知问题：部分机器上便携 QQ 注入成功但 NapCat 核心不启动（与 NapCat 上游兼容问题同族），失败时切回上一项即可</span></label>
    <div id="rt-status" class="k" style="margin-top:8px"></div>
    <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
     <button class="act ghost" style="margin:0" id="rt-install-btn" onclick="rtInstall()">安装/修复独立运行时…</button>
