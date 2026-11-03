@@ -22,6 +22,7 @@ import re
 import socket
 import ssl
 import subprocess
+import sys
 import threading
 import time
 import urllib.parse
@@ -172,6 +173,87 @@ def _shell_latest():
     return None, ""
 
 
+def _find_7zr():
+    """定位 7zr.exe：冻结包 assets / 源码 assets / 数据目录 tools（依次）。"""
+    cands = []
+    try:
+        cands.append(os.path.join(getattr(sys, "_MEIPASS", ""),
+                                  "assets", "7zr.exe"))
+    except Exception:
+        pass
+    cands.append(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "..", "assets", "7zr.exe"))
+    cands.append(os.path.join(C.DATA_DIR, "tools", "7zr.exe"))
+    for c in cands:
+        if c and os.path.isfile(c):
+            return c
+    return ""
+
+
+def _extract_portable_qq(installer_path, rt_dir, state):
+    """从 QQ 安装包（7z SFX）纯解压出便携 QQ → rt_dir。免 UAC。
+    结构：exe = [7z 头(license 等小文件)] + 'P' + 标准 7z 载荷（完整 QQ）。
+    返回 (ok, err)。"""
+    z7 = _find_7zr()
+    if not z7:
+        return False, "未找到 7zr.exe（打包资产缺失）"
+    try:
+        data = open(str(installer_path), "rb").read()
+    except OSError as e:
+        return False, "读安装包失败：%r" % e
+    magic = b"P\x37\x7a\xbc\xaf\x27\x1c"  # 'P' + 7z 签名
+    k = data.rfind(magic)
+    if k < 0:
+        return False, "安装包结构变化（未找到载荷魔数）"
+    pathlib.Path(rt_dir).mkdir(parents=True, exist_ok=True)
+    # 工作目录放数据目录（载荷约 1.1GB，避免撑爆系统盘）
+    import tempfile
+    tmp_root = pathlib.Path(C.DATA_DIR) / "tools"
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="qq-portable-", dir=str(tmp_root)))
+    try:
+        (tmp / "payload.7z").write_bytes(data[k + 1:])
+        state["stage"] = "解压便携 QQ（约 1-3 分钟）…"
+        r = subprocess.run([z7, "x", "-y", "-o" + str(tmp / "px"),
+                            str(tmp / "payload.7z")],
+                           capture_output=True, timeout=900)
+        files_dir = tmp / "px" / "Files"
+        # 7zr 对"尾部冗余数据"返回 2（警告级）但解压完整——以 QQ.exe 在场为准
+        if not (files_dir / "QQ.exe").is_file():
+            return False, "解压失败或布局变化（rc=%s %s）" % (
+                r.returncode,
+                (r.stderr or r.stdout).decode("utf-8", "replace")[-120:])
+        # Files/ 即便携 QQ 根布局 → 移入运行时目录
+        import shutil
+        state["stage"] = "组装运行时目录…"
+        for item in files_dir.iterdir():
+            dst = pathlib.Path(rt_dir) / item.name
+            if dst.exists():
+                if dst.is_dir():
+                    shutil.rmtree(dst, ignore_errors=True)
+                else:
+                    dst.unlink()
+            shutil.move(str(item), str(dst))
+        if not (pathlib.Path(rt_dir) / "QQ.exe").is_file():
+            return False, "组装后未找到 QQ.exe"
+        # 引导配置：payload 不带 versions/config.json（安装器运行时才写），
+        # 补上让 QQ.exe 启动器与 NapCat 版本适配都指向唯一版本
+        vcfg = pathlib.Path(rt_dir) / "versions" / "config.json"
+        if not vcfg.is_file():
+            vcfg.write_text(json.dumps(
+                {"baseVersion": RUNTIME_QQ_VERSION,
+                 "curVersion": RUNTIME_QQ_VERSION},
+                ensure_ascii=False), encoding="utf-8")
+        return True, ""
+    except subprocess.TimeoutExpired:
+        return False, "解压超时（15 分钟）"
+    except OSError as e:
+        return False, "解压异常：%r" % e
+    finally:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def _run():
     _STATE.update(running=True, pct=0, stage="准备下载…", error="",
                   started=time.time())
@@ -185,26 +267,17 @@ def _run():
         if not (rt / "QQ.exe").is_file():
             qq_exe = ddir / _QQ_EXE_NAME
             if not qq_exe.is_file():
-                st = {"error": ""}
-                if not _download_with_fallback(_QQ_SOURCES, str(qq_exe), st,
+                # 进度直接写 _STATE（此前误传局部 st → UI 永远 0%）
+                if not _download_with_fallback(_QQ_SOURCES, str(qq_exe),
+                                               _STATE,
                                                "下载 QQ %s 安装包" % RUNTIME_QQ_VERSION):
-                    _STATE.update(running=False, error=st.get("error", ""))
+                    _STATE.update(running=False, error=_STATE.get("error", ""))
                     return
-            _STATE.update(stage="静默安装便携 QQ（约 1-2 分钟）…", pct=40)
-            # NSIS 静默安装到运行时目录（不碰注册表开始菜单以外的东西；
-            # /D 必须无引号最后参数）
+            _STATE.update(stage="解压便携 QQ（无需管理员权限）…", pct=40)
             rt.mkdir(parents=True, exist_ok=True)
-            cmd = [str(qq_exe), "/S", "/D=" + str(rt)]
-            try:
-                subprocess.run(cmd, timeout=600,
-                               capture_output=True)
-            except subprocess.TimeoutExpired:
-                _STATE.update(running=False,
-                              error="QQ 静默安装超时（10 分钟）")
-                return
-            if not (rt / "QQ.exe").is_file():
-                _STATE.update(running=False,
-                              error="QQ 安装后未找到 QQ.exe（安装器行为变化？）")
+            ok_x, err_x = _extract_portable_qq(qq_exe, rt, _STATE)
+            if not ok_x:
+                _STATE.update(running=False, error=err_x)
                 return
 
         # ② NapCat Shell（复用在线下载器与安装器）
