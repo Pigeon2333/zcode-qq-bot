@@ -875,10 +875,21 @@ def start_napcat(cfg, wait_sec=150, on_progress=None):
 def napcat_compat_check(cfg=None):
     """启动前预检：QQ 当前版本与已装 NapCat 的适配状态。
     返回 (level, message)：level = ok / warn / danger。
+    - 独立运行时模式：自成一体（QQ 随应用受控），只查就绪度
     - NapCat 未装 → ok（还没到检测时机）
     - versions 布局且当前版本 app 目录缺 NapCat 入口（QQ 刚升级）→ danger
     - hosts 锁未开且 QQ 有自动更新通道 → warn（建议开锁定）"""
     cfg = cfg or C.load_app_config()
+    if str(cfg.get("napcat_mode") or "") == "runtime":
+        try:
+            import qq_napcat_runtime as _RT
+            if not _RT.is_installed():
+                return ("danger",
+                        "独立运行时未就绪：到 设置 → 运行环境 点「安装独立运行时」"
+                        "（自动下载受控版 QQ + NapCat，不碰你自己的 QQ）。")
+            return "ok", ""
+        except Exception:
+            return "ok", ""
     qqnt = C.qqnt_dir_resolved(cfg)
     if not qqnt or not os.path.isfile(os.path.join(qqnt, "NapCatWinBootMain.exe")):
         return "ok", ""
@@ -893,7 +904,8 @@ def napcat_compat_check(cfg=None):
     if not qq_update_block_active():
         return ("warn",
                 "QQ 自动更新未被屏蔽：QQ 升级可能再次破坏 NapCat。"
-                "建议在 设置 → 运行环境 打开「锁定 QQ 版本」。")
+                "建议在 设置 → 运行环境 打开「锁定 QQ 版本」，或改用「独立运行时」"
+                "（与你的 QQ 完全分离，一劳永逸）。")
     return "ok", ""
 
 

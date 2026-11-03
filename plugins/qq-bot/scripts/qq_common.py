@@ -24,7 +24,7 @@ DATA_DIR = os.environ.get("QQBOT_DATA_DIR") or os.path.join(
     os.path.expanduser("~"), ".zcode-qq-bot")
 DATA_ROOT = pathlib.Path(DATA_DIR)
 
-APP_VERSION = "0.1.23"         # 发布版本号（更新检查与本页展示用；发版时同步改）
+APP_VERSION = "0.2.0"          # 发布版本号（更新检查与本页展示用；发版时同步改）
 # 更新默认指向主仓库（已开源，release 资产匿名可读；旧发布仓库已归档）
 DEFAULT_UPDATE_REPO = "Pigeon2333/zcode-qq-bot"
 
@@ -49,6 +49,7 @@ DEFAULT_CONFIG = {
     "logs_dir": "",            # 日志目录（空=~/.zcode-qq-bot/logs；改动重启各组件后生效）
     "logs_autoclean_enabled": False,  # 日志自动清理（删 N 天前的 *.log）
     "qq_version_lock": True,  # 锁定 QQ 版本（hosts 屏蔽自动更新，保护 NapCat 兼容）
+    "napcat_mode": "qqnt",    # qqnt=跟随用户 QQ 安装 | runtime=独立运行时（分离布局，QQ 升级不影响机器人）
     "logs_keep_days": 30,      # 日志保留天数（1-365）
     "owner_bilibili_uid": "",  # 主人的 B 站 UID（B站插件站内私信分享目标；曾漏在白名单外导致存了读不到）
     "backup_keep_days": 30,    # 备份保留天数（超过自动清理）
@@ -246,8 +247,15 @@ def save_app_config(cfg):
 
 
 def qqnt_dir_resolved(cfg=None):
-    """返回可用的 QQNT 目录：配置优先，否则注册表探测。"""
+    """返回机器人实际使用的 QQNT 目录：
+    napcat_mode=runtime（独立运行时）且运行时就绪 → 数据目录 napcat-runtime/；
+    否则配置 qqnt_dir 优先，注册表探测兜底。"""
     cfg = cfg or load_app_config()
+    if str(cfg.get("napcat_mode") or "") == "runtime":
+        rt = os.path.join(DATA_DIR, "napcat-runtime")
+        if os.path.isfile(os.path.join(rt, "QQ.exe")):
+            return rt
+        # 运行时未就绪时回落到常规目录（启动预检会引导安装）
     d = str(cfg.get("qqnt_dir") or "").strip()
     if d and os.path.isfile(os.path.join(d, "QQ.exe")):
         return d

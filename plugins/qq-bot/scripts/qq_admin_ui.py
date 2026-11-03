@@ -1622,7 +1622,18 @@ async function vSettings(){
    <span class="k">在线版自动从 NapCat 官方 GitHub 下载最新 Shell 并安装（国内自动走镜像）；本地版选自己下载的 zip（github.com/NapNeko/NapCatQQ/releases）。Program Files 目录需管理员权限运行本程序</span></div>
   <div id="ncdl-status" class="k" style="margin-top:6px"></div>
   <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)"><label class="master"><input type="checkbox" id="sqqlock" ${c.qqnt_dir||c.detected_qqnt?'':'disabled'} onchange="qqLockToggle(this.checked)">
-   <span><b>锁定 QQ 版本（机器人兼容保护）</b><div class="k" style="margin-top:3px">QQ 自动更新可能让 NapCat 失效（机器人起不来/报「文件已损坏」）。开启后屏蔽 QQ 的更新下载源，把版本固定住；更新 NapCat 前建议保持开启。改动 hosts 需要管理员确认一次。<span id="qqlock-state" class="k"></span></div></span></label></div>
+   <span><b>锁定 QQ 版本（机器人兼容保护）</b><div class="k" style="margin-top:3px">QQ 自动更新可能让 NapCat 失效（机器人起不来/报「文件已损坏」）。开启后屏蔽 QQ 的更新下载源，把版本固定住；更新 NapCat 前建议保持开启。改动 hosts 需要管理员确认一次。<span id="qqlock-state" class="k"></span></div></span></label>
+   <div class="k" style="margin-top:8px">更彻底的做法是下面的「独立运行时」：机器人用自己的 QQ，与你的 QQ 互不干扰。</div></div>
+  <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">
+   <div class="k" style="margin-bottom:6px"><b>NapCat 运行方式</b>（决定机器人寄生在哪份 QQ 上）</div>
+   <label style="display:block;margin:6px 0"><input type="radio" name="ncmode" value="qqnt" ${c.napcat_mode!=='runtime'?'checked':''} onchange="ncModeSet('qqnt')"> <b>跟随你的 QQ 安装</b><span class="k">（现状）共用你电脑上的 QQ，受 QQ 自动更新影响，需要配合上面的版本锁定</span></label>
+   <label style="display:block;margin:6px 0"><input type="radio" name="ncmode" value="runtime" ${c.napcat_mode==='runtime'?'checked':''} onchange="ncModeSet('runtime')"> <b>独立运行时（推荐，一劳永逸）</b><span class="k">数据目录里自带一份受控版 QQ + NapCat（约 600MB），你的 QQ 随便升级/重装/卸载都不影响机器人</span></label>
+   <div id="rt-status" class="k" style="margin-top:8px"></div>
+   <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+    <button class="act ghost" style="margin:0" id="rt-install-btn" onclick="rtInstall()">安装/修复独立运行时…</button>
+    <button class="act ghost danger" style="margin:0" onclick="rtDelete()">删除运行时</button>
+   </div>
+  </div>
   <div class="k" style="margin-top:8px">扫码登录：密钥（登录页要填的 Token）与「打开登录页（免密钥）」按钮见「状态」页的 <b>NapCat 登录密钥</b> 卡片（密钥由程序自动从 NapCat 配置读取，不用手抄）。切换机器人账号在上方「① 身份与称呼 → 机器人 QQ 号」里改，改完自动走切换流程。</div></div>
   <div class="k" style="margin-top:12px">端口（一般无需改动；改动重启各组件后生效）</div>
   <div style="display:flex;gap:10px;margin-top:6px;flex-wrap:wrap;align-items:center">
@@ -1802,7 +1813,44 @@ async function vSettings(){
    ?'（已生效：QQ 更新源已屏蔽'+(q.qq_version&&q.qq_version!=='legacy'?'，当前 '+q.qq_version:'')+'）'
    :(q.lock_wanted?'（⚠ 尚未生效：需要管理员权限，点一次开关并确认 UAC）':'（未开启）');
  }).catch(()=>{});
+ // 独立运行时状态
+ api('/api/napcat-runtime').then(rt=>{rtPaint(rt)}).catch(()=>{});
 }
+let _rtTimer=null;
+function rtPaint(rt){
+ const el=document.getElementById('rt-status');
+ if(!el)return;
+ el.innerHTML=rt.installed
+  ?'✅ 已就绪：QQ '+esc(rt.qq_version||'')+' + NapCat，位于数据目录 napcat-runtime/'
+  :(rt.running?'⏳ '+esc(rt.stage||'安装中…')+' '+rt.pct+'%'+(rt.elapsed?(' · '+rt.elapsed+'s'):'')
+   :'❌ 未安装'+(rt.error?('：'+esc(rt.error)):''));
+ if(rt.running){if(!_rtTimer)_rtTimer=setInterval(async()=>{
+  const s=await api('/api/napcat-runtime').catch(()=>null);
+  if(!s)return rtPaint({running:false,error:'轮询失败'});
+  rtPaint(s);
+  if(!s.running){clearInterval(_rtTimer);_rtTimer=null;load()}
+ },2000)}
+}
+async function rtInstall(){
+ const r=await api('/api/napcat-runtime/install',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>({ok:false,error:'请求失败'}));
+ if(r.ok===false){toast(r.error||'启动失败',false);return}
+ toast(r.already?'安装已在进行中':'开始安装独立运行时（下载 QQ 约 300MB + NapCat，几分钟）');
+ rtPaint({installed:false,running:true,stage:'准备下载…',pct:0});
+}
+async function rtDelete(){
+ if(!await dlgConfirm({title:'删除独立运行时',body:'删除数据目录下的 napcat-runtime（便携 QQ + NapCat，约 600MB）？<br>机器人会切回「跟随你的 QQ 安装」。确定？',okText:'删除',danger:true}))return;
+ const r=await api('/api/napcat-runtime/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>({ok:false,error:'请求失败'}));
+ if(r.ok===false){toast(r.error||'删除失败',false);return}
+ toast('已删除，模式切回跟随 QQ 安装');load()}
+async function ncModeSet(mode){
+ if(mode==='runtime'){
+  const rt=await api('/api/napcat-runtime').catch(()=>({installed:false}));
+  if(!rt.installed){
+   if(!await dlgConfirm({title:'先安装独立运行时',body:'切换前需要先下载受控版 QQ + NapCat 到数据目录（约 600MB，不碰你自己的 QQ）。<br>现在开始安装？',okText:'开始安装'})){load();return}
+   await rtInstall();load();return}}
+ const r=await api('/api/napcat-mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:mode})}).catch(()=>({ok:false,error:'请求失败'}));
+ if(r.ok===false){toast(r.error||'切换失败',false);load();return}
+ toast(mode==='runtime'?'已切到独立运行时（下次启动机器人生效）':'已切回跟随 QQ 安装');load()}
 async function qqLockToggle(on){
  if(!await dlgConfirm(on
   ?{title:'锁定 QQ 版本',body:'将屏蔽 QQ 自动更新的下载源（改 hosts，可随时在本开关关闭恢复）。<br>QQ 版本固定后 NapCat 才不容易被更新破坏。现在继续？',okText:'锁定'}
@@ -3055,11 +3103,19 @@ class UiHandler(BaseHTTPRequestHandler):
             return self._reply(200, {"ok": True, **_ND.status()})
         if u.path == "/api/qq-compat":
             lvl, msg = S.napcat_compat_check()
+            cfg_c = C.load_app_config()
             return self._reply(200, {"ok": True, "level": lvl, "message": msg,
                                      "qq_version": C.qq_current_version(),
                                      "lock_active": S.qq_update_block_active(),
-                                     "lock_wanted": bool(C.load_app_config().get(
-                                         "qq_version_lock", True))})
+                                     "lock_wanted": bool(cfg_c.get(
+                                         "qq_version_lock", True)),
+                                     "napcat_mode": str(cfg_c.get("napcat_mode") or "qqnt")})
+        if u.path == "/api/napcat-runtime":
+            import qq_napcat_runtime as _RT
+            cfg_c = C.load_app_config()
+            return self._reply(200, {"ok": True,
+                                     "mode": str(cfg_c.get("napcat_mode") or "qqnt"),
+                                     **_RT.status()})
         if u.path == "/api/napcat-login-info":
             cfg = C.load_app_config()
             cfg_dir = S.napcat_config_dir(cfg)
@@ -4433,6 +4489,32 @@ class UiHandler(BaseHTTPRequestHandler):
             return self._reply(200, {"ok": True, "mode": mode,
                                      "app_dir": app_dir,
                                      "data_dir": C.DATA_DIR if mode == "wipe" else ""})
+        if u.path == "/api/napcat-runtime/install":
+            import qq_napcat_runtime as _RT
+            return self._reply(200, _RT.install())
+        if u.path == "/api/napcat-runtime/delete":
+            # 危险确认在浏览器端完成（与其他 danger 操作一致）
+            import qq_napcat_runtime as _RT
+            r = _RT.delete()
+            if r.get("ok"):
+                data = load_json_const(C.APP_CONFIG_PATH, {})
+                data["napcat_mode"] = "qqnt"
+                write_const(C.APP_CONFIG_PATH, json.dumps(
+                    data, ensure_ascii=False, indent=2))
+            return self._reply(200 if r.get("ok") else 400, r)
+        if u.path == "/api/napcat-mode":
+            mode = str(body.get("mode") or "").strip()
+            if mode not in ("qqnt", "runtime"):
+                return self._reply(400, {"ok": False, "error": "mode 非法"})
+            if mode == "runtime":
+                import qq_napcat_runtime as _RT
+                if not _RT.is_installed():
+                    return self._reply(200, {"ok": False, "need_install": True})
+            data = load_json_const(C.APP_CONFIG_PATH, {})
+            data["napcat_mode"] = mode
+            write_const(C.APP_CONFIG_PATH, json.dumps(
+                data, ensure_ascii=False, indent=2))
+            return self._reply(200, {"ok": True, "mode": mode})
         if u.path == "/api/elevate-qq-lock":
             # 提权代理：写临时执行器 → Start-Process -Verb RunAs（用户 UAC 确认）
             # → 以管理员重跑本端点完成 hosts 修改
