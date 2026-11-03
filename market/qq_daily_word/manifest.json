@@ -1,0 +1,8 @@
+{
+  "name": "qq_daily_word",
+  "title": "每日一句",
+  "version": "1.0.2",
+  "description": "每天一句「一言」进上下文，她偶尔会冒出一句好听的话（hitokoto.cn 免费接口）。",
+  "default_enabled": true,
+  "settings": []
+}
