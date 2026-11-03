@@ -15,6 +15,8 @@ import json
 import os
 import pathlib
 import re
+import subprocess
+import sys
 import time
 
 import qq_common as C
@@ -24,6 +26,92 @@ SOURCES = {
     "qq": {"label": "QQ", "hint": "用 qq-cli 导出（md/json），或任何「时间 发送人： 内容」格式的文本"},
     "wx": {"label": "微信", "hint": "用 wechat-cli 的 export_markdown.py 导出，或任何「时间 发送人： 内容」格式的文本"},
 }
+
+# qq-cli 技能脚本（本机已装时可直接调用导出）
+_QQCLI_SKILL = os.path.join(
+    os.environ.get("USERPROFILE", ""), ".zcode", "skills", "qq-cli",
+    "scripts", "qq_cli.py")
+
+
+def qq_cli_available():
+    return os.path.isfile(_QQCLI_SKILL)
+
+
+def probe(source):
+    """环境探测：客户端进程 + 常见聊天数据目录候选（供向导展示）。"""
+    src = source if source in SOURCES else "qq"
+    exe = {"qq": "QQ.exe", "wx": "Weixin.exe"}.get(src, "")
+    running = False
+    try:
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq %s" % exe,
+                              "/NH"], capture_output=True, timeout=15)
+        running = exe.lower() in out.stdout.decode("gbk", "replace").lower()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    user = os.environ.get("USERPROFILE", "")
+    appdata = os.environ.get("APPDATA", "")
+    docs_tf = os.path.join(user, "Documents", "Tencent Files")
+    xw = os.path.join(appdata, "Tencent", "xwechat_files")
+    if src == "qq":
+        cands = [
+            ("新版 QQ 数据目录（nt_qq）",
+             [os.path.join(appdata, "Tencent", "QQ", "nt_qq", d)
+              for d in (os.listdir(os.path.join(appdata, "Tencent", "QQ",
+                                                "nt_qq"))
+                        if os.path.isdir(os.path.join(
+                            appdata, "Tencent", "QQ", "nt_qq")) else [])]),
+            ("旧版 QQ 数据目录（Documents\\Tencent Files）",
+             [os.path.join(docs_tf, d) for d in
+              (os.listdir(docs_tf) if os.path.isdir(docs_tf) else [])]),
+        ]
+    else:
+        cands = [
+            ("微信 4.x 数据目录（xwechat_files）",
+             [os.path.join(xw, d) for d in
+              (os.listdir(xw) if os.path.isdir(xw) else [])]),
+            ("微信 3.x 数据目录（Documents\\WeChat Files）",
+             [os.path.join(user, "Documents", "WeChat Files", d) for d in
+              (os.listdir(os.path.join(user, "Documents", "WeChat Files"))
+               if os.path.isdir(os.path.join(user, "Documents",
+                                             "WeChat Files")) else [])]),
+        ]
+    found = []
+    for label, dirs in cands:
+        for d in dirs:
+            if os.path.isdir(d):
+                found.append({"label": label, "path": d})
+    return {"client_running": running, "data_dirs": found,
+            "qq_cli_available": qq_cli_available() if src == "qq" else False}
+
+
+def qq_cli_export(chat):
+    """调用本机 qq-cli 技能导出指定会话（json）到收件区并入库。
+    需要先手工运行过 qq_cli.py init（密钥提取）。"""
+    if not qq_cli_available():
+        return {"ok": False,
+                "error": "本机未安装 qq-cli 技能"
+                         "（skillhub.cn 搜 xujianpeng/qq-cli 安装后重试）"}
+    inbox = pathlib.Path(BASE_DIR) / "qq" / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    outp = str(inbox / ("export_%d.json" % int(time.time())))
+    try:
+        r = subprocess.run(
+            [sys.executable, _QQCLI_SKILL, "export", str(chat)[:40],
+             "--format", "json", "--output", outp],
+            capture_output=True, timeout=300)
+        if r.returncode != 0 or not os.path.isfile(outp):
+            detail = (r.stderr or r.stdout or b"").decode("utf-8", "replace")
+            return {"ok": False, "error": detail[-200:] or "导出失败"}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "导出超时（300 秒）"}
+    res = store("qq", str(chat)[:40], outp)
+    try:
+        os.remove(outp)
+    except OSError:
+        pass
+    if res.get("ok"):
+        res["sessions"] = sessions("qq")
+    return res
 _MAX_FILE = 80 * 1024 * 1024       # 80MB 导出文件上限
 _MAX_MSGS = 200000                 # 单会话消息上限
 

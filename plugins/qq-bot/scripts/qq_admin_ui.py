@@ -2344,12 +2344,35 @@ async function plSet(name,key,value){
 function chatImpPage(d,p){
  const src=d&&d.source||'qq', label=(d&&d.label)||'聊天', hint=(d&&d.hint)||'';
  const ss=(d&&d.sessions)||[];
+ const pb=(d&&d.probe)||{};
  const rows=ss.map(s=>'<div class="card" style="margin-top:10px"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b>'+esc(s.name)+'</b><span class="badge" style="background:var(--tint);color:var(--dim)">'+s.count+' 条</span>'+(s.range&&s.range[0]?'<span class="k">'+esc(s.range[0])+' ~ '+esc(s.range[1])+'</span>':'')+'<span style="margin-left:auto;display:flex;gap:6px"><button class="act" style="margin:0;padding:4px 14px;font-size:12.5px" onclick="ciLearn(\''+src+'\',\''+esc(s.name)+'\')">✨ 学习成人设</button><button class="act ghost danger" style="margin:0;padding:4px 12px;font-size:12px" onclick="ciDelete(\''+src+'\',\''+esc(s.name)+'\')">删除</button></span></div>'+(s.senders&&s.senders.length?'<div class="k" style="margin-top:4px">说话人：'+esc(s.senders.join('、'))+'</div>':'')+'</div>').join('');
- return '<div class="card"><div class="k"><b>① 准备'+label+'聊天记录文件</b></div><div class="k" style="margin-top:6px">'+esc(hint)+'。导入后存到独立隔离库（<span class="mono">~/.zcode-qq-bot/chat_import/</span>），<b>不进记忆、不进上下文</b>，只是学习原料。</div><div style="margin-top:10px"><button class="act" style="margin:0" onclick="ciPick(\''+src+'\')">选择文件并导入…</button></div></div>'
- +(ss.length?'<div class="card"><div class="k"><b>② 隔离库中的会话</b>（点「学习成人设」让机器人消化记录）</div>'+rows+'</div>':'<div class="card" style="margin-top:10px"><div class="k">还没有导入任何会话。</div></div>');
+ const envRow=(ok,txt)=>'<div class="k" style="margin:3px 0">'+(ok?'✅ ':'⚠ ')+esc(txt)+'</div>';
+ const dirsHtml=(pb.data_dirs||[]).map(x=>'<div class="k mono" style="font-size:12px;margin:3px 0">📂 '+esc(x.label)+'：'+esc(x.path)+'</div>').join('')||'<div class="k">未在常见位置找到聊天记录数据库（可能装在自定义目录）</div>';
+ const isQQ=src==='qq';
+ const step2=isQQ
+  ?((pb.qq_cli_available
+    ?'<div style="margin-top:8px"><div class="k" style="margin-bottom:4px">方式 A（推荐）：本机已装 qq-cli，直接导出</div><div style="display:flex;gap:8px;align-items:center"><input id="ci-chat" placeholder="QQ号 / 昵称 / 群名（需先运行过一次 qq_cli.py init 提取密钥）" style="flex:1" onchange=""><button class="act" style="margin:0" onclick="ciQqCliExport()">导出并导入</button></div></div><div class="k" style="margin-top:6px">方式 B：自己用 qq-cli 导出 md/json 后点下面按钮导入</div>'
+    :'<div class="k">本机未装 qq-cli 技能——可在 ZCode 里安装 skillhub 的 <b>xujianpeng/qq-cli</b>（装好后回本页即可一键导出），或自己用 qq-cli / 任意工具导出 md/json</div>')
+   +'<div style="margin-top:8px"><button class="act ghost" style="margin:0" onclick="ciPick(\''+src+'\')">选择已导出的文件导入…</button></div>')
+  :'<div style="margin-top:8px"><div class="k">微信记录导出：用 skillhub 的 <b>user_514405d2/wechat-cli</b>（scripts/export_markdown.py 导出 md）</div><div style="margin-top:8px"><button class="act ghost" style="margin:0" onclick="ciPick(\''+src+'\')">选择已导出的文件导入…</button></div></div>';
+ return '<div class="card"><div class="k"><b>① 环境检测</b></div>'
+ +envRow(pb.client_running,label+' 客户端正在运行'+(pb.client_running?'':'（导出/读库前请先打开并登录'+label+'）'))
+ +'<div class="k" style="margin-top:4px">本机聊天数据目录：</div>'+dirsHtml
+ +(isQQ?envRow(pb.qq_cli_available,'qq-cli 技能'+(pb.qq_cli_available?'已安装（位于 ~/.zcode/skills/qq-cli）':'未安装')):'')
+ +'</div>'
+ +'<div class="card"><div class="k"><b>② 导出聊天记录</b></div><div class="k" style="margin-top:6px">'+esc(hint)+'</div>'+step2+'</div>'
+ +'<div class="card"><div class="k"><b>③ 隔离库中的会话</b>（导入后在这里，点「学习成人设」让机器人消化）</div>'+(ss.length?rows:'<div class="k" style="margin-top:6px">还没有导入任何会话。</div>')+'</div>'
+ +'<div class="k" style="margin-top:6px">隔离库位置：<span class="mono">~/.zcode-qq-bot/chat_import/</span>（不进记忆、不进上下文，只是学习原料）</div>';
 }
-function qqChatImpPage(d,p){return chatImpPage(Object.assign({},d,{source:'qq',label:'QQ',hint:'用 qq-cli 导出 md/json（或任何「时间 发送人： 内容」格式文本）'}),p)}
-function wxChatImpPage(d,p){return chatImpPage(Object.assign({},d,{source:'wx',label:'微信',hint:'用 wechat-cli 的 export_markdown.py 导出（或任何「时间 发送人： 内容」格式文本）'}),p)}
+function qqChatImpPage(d,p){return chatImpPage(Object.assign({},d,{source:'qq',label:'QQ',hint:'见上方方式 A/B'}),p)}
+function wxChatImpPage(d,p){return chatImpPage(Object.assign({},d,{source:'wx',label:'微信',hint:'见上方方式（wechat-cli 导出）'}),p)}
+async function ciQqCliExport(){
+ const chat=document.getElementById('ci-chat').value.trim();
+ if(!chat){toast('先填会话（QQ号/昵称/群名）',false);return}
+ toast('正在调用 qq-cli 导出（最长 5 分钟）…');
+ const r=await api('/api/chatimport/qqcli-export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat:chat})}).catch(()=>({ok:false,error:'请求失败'}));
+ if(r.ok===false){toast(r.error||'导出失败',false);return}
+ toast('已导入「'+(r.session||chat)+'」'+(r.count||0)+' 条');load()}
 async function ciPick(src){
  toast('请选择导出文件…');
  const r=await api('/api/chatimport/pick',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>({ok:false,error:'请求失败'}));
@@ -3306,7 +3329,11 @@ class UiHandler(BaseHTTPRequestHandler):
             return self._reply(200, {"ok": True, "source": src,
                                      "label": _CI.SOURCES.get(src, {}).get("label", ""),
                                      "hint": _CI.SOURCES.get(src, {}).get("hint", ""),
+                                     "probe": _CI.probe(src),
                                      "sessions": _CI.sessions(src)})
+        if u.path == "/api/chatimport/qqcli-export":
+            import qq_chatimport as _CI
+            return self._reply(200, _CI.qq_cli_export(str(body.get("chat") or "")))
         if u.path == "/api/bili/qr":
             p = pathlib.Path(os.path.join(C.DATA_DIR, "bilibili_qr.png"))
             if p.exists():

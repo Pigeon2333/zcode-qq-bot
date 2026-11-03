@@ -389,7 +389,7 @@ def uninstall(name):
 # 市场清单文件名带版本：release 资产 CDN 缓存≈永久，clobber 同名文件更新后
 # 用户拿到的仍是旧字节——清单内容有变必须换新文件名（market-v3、v4…）
 DEFAULT_MARKET_URL = ("https://github.com/Pigeon2333/zcode-qq-bot/"
-                      "releases/download/plugins/market-v6.json")
+                      "releases/download/plugins/market-v7.json")
 _MARKET_MIRRORS = ("https://gh-proxy.com/" + DEFAULT_MARKET_URL,)
 
 

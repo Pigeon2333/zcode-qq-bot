@@ -1,10 +1,10 @@
 {
   "name": "qq_chat_import",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "title": "QQ 聊天记录导入与学习",
   "category": "记忆",
   "default_enabled": false,
-  "description": "把 QQ 聊天记录导出文件导入隔离库（不进记忆/上下文），再由机器人消化学习成人设草稿与候选记忆：覆盖人设有二次确认。导出可用 qq-cli（skillhub：xujianpeng/qq-cli）或任意「时间 发送人： 内容」格式文本。",
+  "description": "导入QQ聊天记录到隔离库，一键让机器人学习成人设与记忆。插件页内置三步向导：环境自动检测（客户端/数据目录）→ 导出引导（QQ 支持本机 qq-cli 一键导出）→ 学习与保存。不进记忆不进上下文。",
   "page": {
     "js": "qqChatImpPage",
     "data": "/api/chatimport/status?source=qq"
