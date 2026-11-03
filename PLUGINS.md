@@ -90,6 +90,8 @@ my_plugin.zip
     └── plugin.py
 ```
 
+仓库内的**纯市场插件**源码放 `market/<name>/`（不进应用内置目录；例：bili_scroll）。内置插件源码在 `plugins/qq-bot/scripts/plugins/<name>/`（随应用打包，仅保留基础设施类）。
+
 打包示例（在插件上级目录）：
 
 ```
