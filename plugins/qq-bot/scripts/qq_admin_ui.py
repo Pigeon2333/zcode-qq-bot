@@ -3331,9 +3331,6 @@ class UiHandler(BaseHTTPRequestHandler):
                                      "hint": _CI.SOURCES.get(src, {}).get("hint", ""),
                                      "probe": _CI.probe(src),
                                      "sessions": _CI.sessions(src)})
-        if u.path == "/api/chatimport/qqcli-export":
-            import qq_chatimport as _CI
-            return self._reply(200, _CI.qq_cli_export(str(body.get("chat") or "")))
         if u.path == "/api/bili/qr":
             p = pathlib.Path(os.path.join(C.DATA_DIR, "bilibili_qr.png"))
             if p.exists():
@@ -4977,6 +4974,10 @@ class UiHandler(BaseHTTPRequestHandler):
                 return self._reply(200 if res.get("ok") else 400, res)
             except Exception as e:
                 return self._reply(500, {"ok": False, "error": repr(e)})
+        if u.path == "/api/chatimport/qqcli-export":
+            # 用本机 qq-cli 技能导出指定会话并入库（引擎 qq_cli_export）
+            import qq_chatimport as _CI
+            return self._reply(200, _CI.qq_cli_export(str(body.get("chat") or "")))
         if u.path == "/api/chatimport/pick":
             # 文件对话框选导出文件 → 只解析预览（不落盘）
             import threading as _th

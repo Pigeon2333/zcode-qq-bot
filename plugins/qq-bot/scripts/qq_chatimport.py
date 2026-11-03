@@ -37,6 +37,9 @@ def qq_cli_available():
     return os.path.isfile(_QQCLI_SKILL)
 
 
+CREATE_NO_WINDOW = 0x08000000  # 后台子进程，避免控制台窗口闪现
+
+
 def probe(source):
     """环境探测：客户端进程 + 常见聊天数据目录候选（供向导展示）。"""
     src = source if source in SOURCES else "qq"
@@ -44,7 +47,8 @@ def probe(source):
     running = False
     try:
         out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq %s" % exe,
-                              "/NH"], capture_output=True, timeout=15)
+                              "/NH"], capture_output=True, timeout=15,
+                             creationflags=CREATE_NO_WINDOW)
         running = exe.lower() in out.stdout.decode("gbk", "replace").lower()
     except (OSError, subprocess.TimeoutExpired):
         pass
@@ -98,7 +102,8 @@ def qq_cli_export(chat):
         r = subprocess.run(
             [sys.executable, _QQCLI_SKILL, "export", str(chat)[:40],
              "--format", "json", "--output", outp],
-            capture_output=True, timeout=300)
+            capture_output=True, timeout=300,
+            creationflags=CREATE_NO_WINDOW)
         if r.returncode != 0 or not os.path.isfile(outp):
             detail = (r.stderr or r.stdout or b"").decode("utf-8", "replace")
             return {"ok": False, "error": detail[-200:] or "导出失败"}
