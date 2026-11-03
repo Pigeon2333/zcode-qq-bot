@@ -29,17 +29,20 @@ import urllib.parse
 
 import qq_common as C
 
-# 受控版本对（QQ 构建 ↔ NapCat Shell）——与官方 OneKey 4.18.42 同源认证
-RUNTIME_QQ_VERSION = "9.9.33-52230"
-RUNTIME_QQ_DATE = "260813"
-RUNTIME_QQ_HASH = "497e2f1f"
+# 受控版本对（QQ 构建 ↔ NapCat Shell）——9.9.32-51246 + NapCat 4.18.42
+# 为实机验证可用组合（2026-11-03：QQ 9.9.32 + versions app 双摆 = WS 正常）。
+# 注：OneKey 配对 9.9.33-52230，但该组合在本机复现上游 #2149/#2153
+# 「注入成功核心不启动」，故不用。
+RUNTIME_QQ_VERSION = "9.9.32-51246"
+RUNTIME_QQ_DATE = "260716"
+RUNTIME_QQ_HASH = ""
 RUNTIME_NAPCAT_MIN = "4.18.42"
 
-_QQ_EXE_NAME = "QQ_9.9.33_260813_x64_01.exe"
+_QQ_EXE_NAME = "QQ_9.9.32_260716_x64_01.exe"
 _QQ_SOURCES = (
-    "https://qqdl.gtimg.cn/qqfile/QQNT/9.9.33/release/497e2f1f/QQ_9.9.33_260813_x64_01.exe",
-    "https://github.com/Rodert/qq-versions/releases/download/qq-packages-20260813-1d08f1d4/QQ_9.9.33_260813_x64_01.exe",
-    "https://gh-proxy.com/https://github.com/Rodert/qq-versions/releases/download/qq-packages-20260813-1d08f1d4/QQ_9.9.33_260813_x64_01.exe",
+    "https://github.com/Rodert/qq-versions/releases/download/qq-packages-20260720-ffedf7c6/QQ_9.9.32_260716_x64_01.exe",
+    "https://gh-proxy.com/https://github.com/Rodert/qq-versions/releases/download/qq-packages-20260720-ffedf7c6/QQ_9.9.32_260716_x64_01.exe",
+    "https://ghfast.top/https://github.com/Rodert/qq-versions/releases/download/qq-packages-20260720-ffedf7c6/QQ_9.9.32_260716_x64_01.exe",
 )
 _SHELL_MIRROR_PREFIXES = ("", "https://gh-proxy.com/", "https://ghfast.top/")
 

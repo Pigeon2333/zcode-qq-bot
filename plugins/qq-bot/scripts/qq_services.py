@@ -843,11 +843,14 @@ def start_napcat(cfg, wait_sec=150, on_progress=None):
                 or os.path.realpath(qqnt) == os.path.realpath(
                     os.path.join(C.DATA_DIR, "napcat-runtime")))
             if runtime_mode:
-                # 独立运行时：裸调 bootmain + QQ 号（OneKey 同款）。
+                # 独立运行时：显式传运行时自己的 QQ.exe + hook（实测裸调
+                # bootmain+QQ号会立即退出；显式四参才进入 Boot 流程）。
                 # 不能用 launcher-user.bat——它从注册表解析 QQ 路径，
                 # 会拿到用户自己安装的 QQ.exe 而不是运行时里的这份。
                 bootmain = os.path.join(qqnt, "NapCatWinBootMain.exe")
-                subprocess.Popen([bootmain, qq], cwd=qqnt,
+                hook = os.path.join(qqnt, "NapCatWinBootHook.dll")
+                rt_qq = os.path.join(qqnt, "QQ.exe")
+                subprocess.Popen([bootmain, rt_qq, hook, qq], cwd=qqnt,
                                  stdin=subprocess.DEVNULL,
                                  stdout=logf, stderr=subprocess.STDOUT,
                                  creationflags=CREATE_NO_WINDOW)
