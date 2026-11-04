@@ -119,6 +119,23 @@ def _boot_state_persist():
         pass
 
 
+def _boot_state_resolve_if_recovered():
+    """上次启动若因「账号未登录」失败、而此刻 WS 已连上（扫码完成后
+    daemon 自动重连成功），把启动记录标记为已恢复——运行日志/状态页的
+    「启动失败」红字不再残留吓人（历史过程行保留，仅终态改为已恢复）。"""
+    with _boot_lock:
+        if not _boot_state["failed"] or _boot_state["running"]:
+            return
+        if "未登录" not in str(_boot_state.get("final") or ""):
+            return
+        _boot_state["failed"] = False
+        _boot_state["final"] = "已恢复：登录成功，组件全部在线（此前启动时的登录等待失败已解决）"
+        _boot_state["steps"] = (_boot_state.get("steps") or [])[-40:] + [{
+            "ts": time.time(), "component": "napcat",
+            "ok": True, "message": "检测到 WS 已连接——账号登录成功，启动失败标记自动解除"}]
+        _boot_state_persist()
+
+
 def _boot_state_load():
     """UI 刚启动、内存态为空时，从盘上恢复最近一次启动结果。"""
     try:
@@ -247,6 +264,8 @@ def _wd_check_once():
         elif r.get("ws_alive") is False:  # 老版本 daemon 无此字段时不误报
             healthy, detail = False, "WS 半死（动作通道无响应）"
             scope = "full"
+        if r.get("ws_connected"):
+            _boot_state_resolve_if_recovered()
     else:
         healthy, detail = False, "daemon 未运行（NapCat 仍在线）"
     with _wd_lock:
