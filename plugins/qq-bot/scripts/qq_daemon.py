@@ -825,6 +825,9 @@ class Daemon:
 
     def _ingest_message(self, ev, chat_type, chat_id, chat_name,
                         user_id, sender_name, info):
+        # 发言人身份必须进 info：AI 互聊节奏检测与「碎片合并」都按发言人统计条数。
+        # 此前 info 没有该字段，两处 info.get("sender_id","") 恒为空 → 静默失效。
+        info["sender_id"] = user_id
         triggered, reason = self._decide_trigger(chat_type, info, chat_id)
 
         with self.lock:
@@ -1041,9 +1044,12 @@ class Daemon:
         data = self._call_action(action, params, timeout=120)
         return {"ok": True, "data": data}
 
-    def _botloop_hit(self, chat_type, chat_id, sender_id):
-        """AI 互聊节奏检测（v2 的触发条件）：同一发送者 120s 内 ≥4 条、
-        且本机器人 180s 内已回 ≥3 条——高概率是两个 AI 在互相接话。"""
+    def _botloop_hit(self, chat_type, chat_id, sender_id,
+                     min_partner=4, min_mine=3):
+        """AI 互聊节奏检测：同一发送者 120s 内 ≥min_partner 条、
+        且本机器人 180s 内已回 ≥min_mine 条——高概率是两个 AI 在互相接话。
+        默认阈值(4/3)用于首次试探；cleared 后的「不配合」升级要求更高(6/5)，
+        避免真人被问过一次后又高速聊天就被静默。"""
         cfg = self._reply_config()
         if not cfg.get("botloop_guard_enabled", True):
             return False
@@ -1055,13 +1061,14 @@ class Daemon:
                       if str(r.get("sender_id")) == str(sender_id)
                       and not r.get("is_bot") and now - r.get("ts", 0) <= 120)
         mine = sum(1 for r in recs if r.get("is_bot") and now - r.get("ts", 0) <= 180)
-        return partner >= 4 and mine >= 3
+        return partner >= min_partner and mine >= min_mine
 
     def _botloop_gate(self, chat_type, chat_id, sender_id):
-        """互聊检测状态机（chat_random 专用门）：
+        """互聊检测状态机（所有群触发路径共用门，含 @ / 引用回复）：
         None=不拦截；返回 (True,"botloop_probe")=让 agent 发人设化试探；
         (True,"botloop_verify")=对方已回答，交给 agent 判定；
-        (False,"botloop")=已确认 AI 冷却中 / 试探无回应期，静默。
+        (False,"botloop")=已确认 AI 冷却中，静默。
+        cleared 相=问过一次但不是 AI（或没正面回答），1 小时内不再试探、正常聊。
         状态仅存内存（重启即清，重新试探一轮即可）。"""
         if not self._reply_config().get("botloop_guard_enabled", True):
             return None
@@ -1077,12 +1084,28 @@ class Daemon:
             elif ph == "probe":
                 if now - st.get("ts", 0) <= 600:  # 10 分钟内等对方回答
                     return True, "botloop_verify"
-                st["phase"] = "probe_wait"        # 无回应：2h 内静默，不重复试探
-                st["ts"] = now
-                return False, "botloop"
-            elif ph == "probe_wait":
-                if now - st.get("ts", 0) <= 7200:
-                    return False, "botloop"
+                # 试探无回应：不是高频互聊，1 小时内不再问，正常聊
+                self._botloop[bkey] = {"phase": "cleared", "ts": now}
+                return None
+            elif ph == "cleared":
+                if now - st.get("ts", 0) <= 3600:
+                    # 刚问过：正常聊，但若对方完全无视提问、又持续高频互引
+                    # （相隔 >2 分钟算新的一轮），累计 2 轮即冷处理 30 分钟——
+                    # AI 不会正面回答「你是不是AI」却会继续刷，真人被问通常会回应。
+                    if self._botloop_hit(chat_type, chat_id, sender_id,
+                                         6, 5) \
+                            and now - st.get("last_hit", 0) > 120:
+                        st["last_hit"] = now
+                        st["hits"] = int(st.get("hits", 0)) + 1
+                        if st["hits"] >= 2:
+                            self._botloop[bkey] = {"phase": "confirmed",
+                                                   "until": now + 1800}
+                            out("AGENT_LOG {\"msg\": \"botloop_uncooperative\", "
+                                "\"chat\": %s, \"sender\": %s}"
+                                % (json.dumps(str(chat_id)),
+                                   json.dumps(str(sender_id))))
+                            return False, "botloop"
+                    return None                  # 刚问过，正常放行
                 del self._botloop[bkey]
         if self._botloop_hit(chat_type, chat_id, sender_id):
             self._botloop[bkey] = {"phase": "probe", "ts": now}
@@ -1094,7 +1117,8 @@ class Daemon:
     def botloop_report(self, chat_type, chat_id, sender_id,
                        confirmed, cooldown_min=60):
         """agent 判定回执：confirmed=True → 该发送者进入冷却（非永久）；
-        False → 清除试探状态，恢复正常聊天。"""
+        False → 记为"问过但不是 AI"，1 小时内不再试探、正常聊天
+        （不能直接清状态：高频还在，清了会立刻再次命中、反复问"你是不是AI"）。"""
         bkey = "%s|%s|%s" % (chat_type, chat_id, sender_id)
         with self.lock:
             if confirmed:
@@ -1105,7 +1129,7 @@ class Daemon:
                 self._botloop[bkey] = {"phase": "confirmed",
                                        "until": time.time() + mins * 60}
             else:
-                self._botloop.pop(bkey, None)
+                self._botloop[bkey] = {"phase": "cleared", "ts": time.time()}
         out("AGENT_LOG {\"msg\": \"botloop_report\", \"sender\": %s, \"confirmed\": %s}"
             % (json.dumps(str(sender_id)), json.dumps(bool(confirmed))))
         return {"ok": True}
@@ -1117,6 +1141,12 @@ class Daemon:
         # 分群「暂停回应」：该群一切回应停止（@/回复也不触发），群仍留在白名单
         if cfg.get("paused"):
             return False, "group_paused"
+        # AI 互聊检测：放在所有触发路径之前——另一个 AI 会用「引用回复/@机器人」
+        # 绕过闲聊概率，只挂在 chat_random 上时形同虚设（实测两个 AI 互引聊了 5 分钟）。
+        # 节奏未命中时返回 None，对正常聊天零影响。
+        gate = self._botloop_gate(chat_type, chat_id, info.get("sender_id", ""))
+        if gate:
+            return gate
         if info["at_me"] and self.cfg.get("mention_trigger", True):
             return True, "at"
         if info["has_reply"] and self.cfg.get("reply_to_bot_trigger", True):
@@ -1143,12 +1173,6 @@ class Daemon:
         if mode in ("keyword", "chat") and econ_active(self._reply_config()):
             mode = "standard"
         text = info["text"]
-        # AI 互聊 v2：试探→判定→冷却 状态机（仅 chat_random；@/回复/关键词不受影响）
-        if mode == "chat":
-            gate = self._botloop_gate(chat_type, chat_id,
-                                      info.get("sender_id", ""))
-            if gate:
-                return gate
         if mode in ("keyword", "chat") and text:
             for w in cfg["keywords"]:
                 if w and w in text:
