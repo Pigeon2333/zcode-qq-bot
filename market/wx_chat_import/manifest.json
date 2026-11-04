@@ -1,6 +1,6 @@
 {
   "name": "wx_chat_import",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "title": "微信 聊天记录导入与学习",
   "category": "记忆",
   "default_enabled": false,

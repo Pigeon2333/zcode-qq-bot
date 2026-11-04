@@ -1,6 +1,6 @@
 {
   "name": "qq_chat_import",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "title": "QQ 聊天记录导入与学习",
   "category": "记忆",
   "default_enabled": false,

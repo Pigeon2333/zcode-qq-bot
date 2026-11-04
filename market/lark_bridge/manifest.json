@@ -1,6 +1,6 @@
 {
   "name": "lark_bridge",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "title": "飞书互通",
   "category": "工具",
   "default_enabled": false,

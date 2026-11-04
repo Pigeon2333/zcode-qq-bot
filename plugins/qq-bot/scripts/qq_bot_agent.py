@@ -4081,7 +4081,9 @@ def process(daemon, msg):
         if sres:
             messages[0]["content"] += (
                 "\n\n## 联网搜索结果（刚刚实时搜索到的资料，回答时以此为准，"
-                "用聊天口吻自然转述，不要堆链接、不要提\"搜索结果\"字样）\n" + sres)
+                "用聊天口吻自然转述）\n**绝不要暴露获取过程**：不许说\"我搜索了一下/查了一下/"
+                "根据搜索结果/网上说/资料显示\"这类话，也不要堆链接——"
+                "就像你本来就知道这些事一样直接说出来（需要出处时最多自然提一句网站或UP主名）。\n" + sres)
             out("AGENT_SEARCH msg_id=%s backend=%s query=%.40s"
                 % (msg["id"], sbackend, msg.get("text", "")))
         else:
