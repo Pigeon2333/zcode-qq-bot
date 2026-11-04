@@ -4,100 +4,118 @@
   <a href="README.md">简体中文</a> · <a href="README_EN.md">English</a>
 </p>
 
-A QQ group-chat AI bot that lives on your Windows PC — powered by Zhipu GLM, packaged as a desktop app, and also shipped as a ZCode plugin.
+A QQ group-chat AI bot that runs on your Windows PC. Zhipu GLM under the hood, shipped as a desktop app, also installable as a ZCode plugin.
 
-Multi-persona chat, long-term memory, self-evolving speaking style, sticker library, image understanding & generation, task sandbox, device control, proactive messages, voice replies, Feishu bridge, and a plugin marketplace — plus deep integration with ZCode (works fully standalone without it).
+It differs from the usual "wrap an API and go" QQ bots in a few ways:
 
-Messages flow through [NapCat](https://napcat.net) (a QQNT protocol implementation); every behavior is controlled from a local admin console, and all data stays on your own machine.
+- **More than chat**. Image understanding, image generation, web search, voice messages, controlling your PC, running code tasks — all built in, not a pile of bolted-on scripts. Device control uses a rotating 6-digit code, one per session.
+- **Actually remembers**. Things mentioned in passing become long-term memory and resurface naturally later. Her speaking style keeps adapting to your group over time.
+- **Plugins own the features**. Voice replies, Bilibili browsing, chat-log import — all marketplace plugins. Install, skip, or update them without touching the app. Write your own and publish it; no need to wait on app releases.
+- **Everything stays local**. Personas, memory, API keys, chat data — all in `~/.zcode-qq-bot/`. No cloud service, no account system. Copy the folder, and the migration is done.
+
+Messaging runs through [NapCat](https://napcat.net) (a QQNT protocol implementation). Everything is controlled from a local admin console.
 
 ![Console · first-run wizard](docs/console-status.png)
 
+## Contents
+
+- [Features](#features)
+- [Plugin marketplace](#plugin-marketplace)
+- [ZCode integration](#zcode-integration)
+- [Architecture](#architecture)
+- [Install](#install)
+- [Daily use](#daily-use)
+- [Operations](#operations)
+- [Security & risks](#security--risks)
+- [FAQ](#faq)
+- [Contributing](#contributing)
+
+---
+
 ## Features
 
-### Chat & Personality
-- **Multi-persona management**: built-in persona cards (create/rename/switch on the fly), plus a global baseline; per-contact personas — assign a dedicated persona by QQ number (private chat) or group ID
-- **Self-evolving style**: the bot distills style observations from group chat and injects them into the matching persona — it sounds more natural over time
-- **Long-term memory**: facts about people and group events are captured automatically; view/edit/add/remove anytime
-- **Reply modes**: standard (@-only) / keyword / casual (probability-gated interjections with anti-interruption and interest gating), per-group overrides and pause
-- **Stickers**: three libraries (persona / general / QQ favorites) — a vision model understands each sticker before sending, with rate limiting
-- **AI-to-AI loop detection**: when another AI bot chats with yours at superhuman cadence, it asks "are you an AI?" in persona before deciding whether to keep talking
-- **Abuse guard**: persona-injection defense, homework ghostwriting refusal, identity anchoring
+### Chat
 
-![Console · settings](docs/console-settings.png)
+Multi-persona is the distinctive part: build several persona cards and switch instantly, or assign per contact — one persona for a friend's private chat, another for a specific group, everyone else on the default. Switching takes effect immediately, no restart.
+
+Her speaking style grows on its own. Periodically she distills "what's the vibe in this group lately" into one or two observations and writes them into the matching persona, so the longer she's around, the more she sounds like a regular rather than a factory default.
+
+Memory splits into two kinds: facts about a specific person ("he mentioned an interview last week") and group events ("we agreed to play on Friday"). Both are captured automatically and editable in the console. She brings them up only when relevant — she doesn't rifle through old notes every message.
+
+Three reply modes: standard (talks only when @'d or replied to), keyword, and casual (probabilistic interjections, gated by "is this worth joining" and "are they actually talking to me"). Each group can have its own mode. If another AI bot in the group starts a superhuman back-and-forth with her, she asks "are you an AI?" like a person would, and wraps it up naturally once confirmed.
+
+Stickers come from three libraries: persona-specific, shared, and imported from QQ favorites. A vision model looks at each sticker first and judges whether it fits the moment — so misfires are rare. Rate limits keep her from spamming.
 
 ### Capabilities
-- **Image understanding**: images in messages go to a vision model
-- **Image generation**: `draw: <desc>` or plain language ("draw me a…") — no rigid command format
-- **Web search**: Zhipu search first, free Bing fallback; casual chat never triggers it
-- **Voice replies** (marketplace plugin): replies become voice messages in persona; four providers — Edge-TTS (free, 9 Chinese voices), Zhipu GLM-TTS (paid, 3-second voice cloning), SiliconFlow, any OpenAI-compatible service; keyword / always / mixed strategies; auto-fallback to text
-- **Task sandbox**: `task: …` hands work to an isolated subprocess (whitelisted commands, path limits, time budget)
-- **Device control** (high-risk, opt-in): after a 6-digit dynamic code, the owner commands the PC in plain language — find/read/send files, launch apps (critical processes can never be touched); protected directories are unreachable; results go to private chat only
-- **Proactive messages**: independent switches for groups/private, with probability, rate, per-group overrides and quiet hours
-- **Scheduled tasks**: `schedule HH:MM <task>` runs in the sandbox and reports back
-- **Bilibili browsing** (marketplace plugin): the bot browses videos by persona interests — injects what it watched into chat, shares favorites in its own voice (per-channel caps configurable), auto-detects BV links in messages
-- **Chat-log import** (marketplace plugins for QQ/WeChat): import chat history into an isolated store, then have the bot digest it into persona drafts and memory candidates — via merged-forward messages, files, or one-click tool export
-- **Feishu bridge** (marketplace plugin): two-way relay between QQ groups and Feishu groups, no public server needed
 
-### Models & Cost
-- **Multi-provider keys**: Zhipu / DeepSeek / Kimi / OpenAI / Grok / Gemini / custom OpenAI-compatible endpoints
-- **Fallback chain**: per-entry key/context/output/thinking config; 429, expired plans and quota exhaustion trigger tiered cooldown and failover
-- **Outbound proxy** for overseas providers (HTTP CONNECT, private addresses blocked)
-- **Token quota & usage stats**: rolling-window limit; totals / 30-day / today cards, per-model breakdown, trend charts
+Image understanding: images in messages go straight to a vision model — screenshots, memes, photos all work. You can give vision its own model instead of sharing the main one.
 
-### Stability & Ops
-- **NapCat liveness watchdog**: detects "TCP alive but silent" connections, reconnects first, then restarts or alerts per settings
-- **Daily auto-backup + one-click restore**: 15 item groups, retention by days and copies; secrets deliberately excluded
-- **Log rotation + live log viewer**: four sources aggregated, one-click diagnostic bundle
-- **Cache manager**: per-category sizes and manual cleanup (installers/assets/images) with recycle-bin safety
-- **Single-file desktop experience**: first-run wizard, single-instance lock, out-of-the-box access token, in-app auto-update
+Image generation: "draw a xxx" or something looser like "make me an avatar" both work. No required command prefix. Sometimes the model understands but the system misses it; she'll emit an internal marker herself to retrigger.
+
+Web search: real-time questions (news, releases, prices) trigger it automatically. Zhipu's search add-on comes first; if you don't have it, a free Bing fallback kicks in. Casual chat never triggers search, so it never costs you anything.
+
+Voice: with the plugin installed she sends voice messages. Four voice sources — Edge-TTS is free with nine built-in Chinese voices; Zhipu GLM-TTS is paid but can clone a custom voice from three seconds of audio; plus SiliconFlow and any OpenAI-compatible service. You set when she uses voice: trigger words, always, or keywords-mandatory-with-probability. If synthesis fails she falls back to text, so nothing gets lost.
+
+Task sandbox: send "task: write a scraper for xxx" and it goes to an isolated subprocess with whitelisted commands and a time budget. Results come back automatically.
+
+Device control: the most powerful and most dangerous feature. Say "find that report on my PC" in private chat and she'll ask for a 6-digit dynamic code (shown live in the console, changes each use). Authorized, you command in plain language — find files, read them, send them, open apps. Critical system processes are untouchable, protected directories are unreachable, and all results go to private chat only. Turn it off when you don't need it.
+
+Proactive messages: let her start conversations herself, controlled separately for groups and private chat, with probability caps, rate limits and quiet hours. She won't ping you at 3am unless you ask for it.
+
+Scheduled tasks: "定时 22:00 write the weekly report" runs on time and reports back.
+
+Bilibili browsing (plugin): she browses with her own registered Bilibili account, driven by persona interests. What she watches becomes conversational material; videos she genuinely likes get shared to you proactively — Bilibili DM or QQ, with per-channel per-round caps. BV links in chat automatically pull in video info.
+
+Chat-log import (plugins for QQ and WeChat): merged-forward a chat history to her with "导入" and it lands in an isolated store; hit "learn as persona" on the plugin page to digest it. File import and one-click tool export also work.
+
+Feishu bridge (plugin): two-way relay between QQ groups and Feishu groups, no public server needed.
+
+### Models & cost
+
+The model chain is what keeps her stable. Configure multiple models (Zhipu, DeepSeek, Kimi, OpenAI, Grok, Gemini, or any OpenAI-compatible endpoint) in order — if one fails the next takes over, 429s trigger a cooldown before returning, expired plans get skipped. Each entry binds its own API key; overseas providers can use a dedicated outbound proxy.
+
+Usage stats live on the model page: totals, last 30 days, today, broken down by model, with trend charts. Set a rolling token quota and she stops when it's hit. To save money, enable lean context (30–45% fewer tokens) and peak-hour saving mode (thinking off, flagship skipped automatically).
+
+Zhipu's free quota (like new-user grants) is consumed first automatically by entries on the same key, with graceful fallback when it runs out. No manual juggling.
 
 ![Console · models](docs/console-models.png)
 
-## Plugin Marketplace
+### Operations
 
-Features are not hard-coded — **plugins are first-class citizens**. Install, enable and update everything from the Plugins page with zero app changes:
+The watchdog solves "shows online but receives nothing" — NapCat sometimes ends up with a TCP connection that no longer pushes events. Every 45 seconds it probes with a real action; on failure it reconnects first, and only restarts components if that fails (with a 15-minute cooldown so it never loops).
+
+Nightly auto-backup covers 15 data groups (personas, memory, config…) locally, with retention by days and copies. Broke a persona? One click to restore from this morning's snapshot. Secret files are deliberately excluded from backups, so a leaked backup doesn't leak keys.
+
+Cache management lives in settings: installer caches, material caches and image temp files listed by size, cleaned manually. Deleted items go to the recycle bin, not the void.
+
+In-app updates: check on the About page, download, SHA256 verified, program directory replaced. `~/.zcode-qq-bot/` stays untouched.
+
+## Plugin marketplace
+
+Install, pause and update plugins from the console's Plugins page. No app changes involved.
 
 | Plugin | What it does |
 |---|---|
-| Voice Reply | Make the bot speak (multiple TTS providers, see above) |
-| Bilibili Browsing | Persona-driven video browsing, sharing, link cards |
-| QQ Chat Import | Chat logs → persona & memory (merged-forward / file / qq-cli export) |
-| WeChat Chat Import | WeChat variant (wechat-cli export + file import) |
-| Feishu Bridge | Two-way QQ group ↔ Feishu group relay |
-| Daily Quote | One "hitokoto" per day into context |
-| Humanizer ZH | Less AI-flavored Chinese: concrete over abstract, uneven rhythm |
-| Group Check-in | Send "签到" in group to check in; daily & all-time boards (third-party demo plugin) |
+| Voice Reply | The voice feature described above |
+| Bilibili Browsing | The Bilibili features described above |
+| QQ Chat Import | Chat logs → persona (merged-forward / file / qq-cli export) |
+| WeChat Chat Import | WeChat variant |
+| Feishu Bridge | QQ group ↔ Feishu group relay |
+| Daily Quote | One hitokoto per day into context |
+| Humanizer ZH | Less AI-flavored Chinese |
+| Group Check-in | Send 签到 in group to check in; daily and all-time boards (third-party demo plugin) |
 
-**Write your own**: one zip (plugin.py + manifest.json + optional page.js) unlocks the full capability surface — message hooks, sending (text/image/voice), scheduled jobs, context injection, declarative settings, private storage, custom endpoints, bundled settings pages. Install/enable/update all go through the plugin channel — **no app changes needed** (much like a Minecraft server core and its plugins). Publish your plugin to the marketplace for everyone. See [PLUGINS.md](./PLUGINS.md).
+Writing your own is fair game, and doesn't require waiting on my app releases. One zip (plugin.py + manifest.json, plus page.js if it needs a settings page) gets you the full API surface: message hooks, sending text/images/voice, scheduled jobs, context injection, declarative settings, private storage, custom HTTP endpoints. Install and it works; updates flow through the plugin channel independently — similar to how a Minecraft server core relates to its plugins. To share yours, open an issue and I'll list it on the marketplace. Docs in [PLUGINS.md](./PLUGINS.md).
 
-## ZCode Integration
+## ZCode integration
 
-Three roles first:
+This part is optional. The bot runs fine without [ZCode](https://zcode.ai) (an AI coding assistant), but with it installed and the master switch on:
 
-```
-┌──────────────────────────────────────────────────────────┐
-│ ZCode (AI coding assistant, GUI)                          │
-│   └─ the AI in a session gets, via the qq-bot plugin:     │
-│        • /qq-bot skill   • qq-bot MCP server (12 tools)   │
-└──────────────┬───────────────────────────────────────────┘
-               │ loopback HTTP / filesystem inbox
-┌──────────────▼───────────────────────────────────────────┐
-│ ZCode QQ Bot (this project, standalone desktop app)       │
-│   console UI + daemon (pipeline) + agent (brain) + sandbox│
-└──────────────┬───────────────────────────────────────────┘
-               │ OneBot 11 over WebSocket
-┌──────────────▼───────────────────────────────────────────┐
-│ NapCat (injected into QQNT) ──→ QQ messaging              │
-└──────────────────────────────────────────────────────────┘
-```
-
-**The bot runs fully standalone without ZCode**; with ZCode installed and the master switch on:
-
-1. **MCP server (12 tools)** — the AI in ZCode sessions can drive the bot directly: status, send, memory, personas, test injection, and more
-2. **Task inbox** — send `forward to ZCode: <task>` in QQ private chat → ZCode picks it up → result back to your QQ within a minute
-3. **Daily review reports** — nightly reports land in the ZCode workspace so ZCode can regularly "coach" the bot
-4. **ZCode process watch** — QQ alert when ZCode exits so long tasks never die silently
-5. **Scheduled ZCode tasks**, **owner context awareness** (privacy-sensitive, off by default), **GUI operation relay** (fine-grained UI work delegated to ZCode's computer-use)
+- The AI inside ZCode sessions can drive the bot directly — status, sending, memory, persona switching — through 12 MCP tools, not simulated clicks
+- Send "forward to ZCode: help me look at this error" in QQ private chat and the task lands in ZCode's inbox; results flow back to your QQ when done
+- The bot's daily ops report can land in the ZCode workspace, so ZCode can review her performance and suggest persona tweaks
+- If the ZCode process exits, the bot pings you on QQ (long tasks shouldn't die silently)
+- Fine-grained GUI work (clicking buttons, filling forms) isn't her thing; it gets delegated to ZCode's computer-use capability
 
 ![Console · ZCode integration](docs/console-zcode.png)
 
@@ -118,20 +136,19 @@ qq_services.py    component lifecycle (idempotent start/stop, NapCat config, zip
 qq_common.py      paths/config/provider registry/timezone (data dir ~/.zcode-qq-bot, QQBOT_DATA_DIR overrides)
 ```
 
-All data (keys, personas, memory, whitelists, logs, backups) stays in `~/.zcode-qq-bot/` on your machine.
+## Install
 
-## Install & Quick Start
+### Release build (recommended)
 
-### Option A: Download the release (recommended)
+1. Grab the zip from [Releases](../../releases) and extract
+2. Run `ZCodeQQBot/ZCodeQQBot.exe`
+3. Fill in the bot's QQ number and yours in the first-run wizard
+4. Add a Zhipu API key in Settings ([open.bigmodel.cn](https://open.bigmodel.cn) — free quota on signup)
+5. Hit "Start bot" on Status, scan with the bot's QQ on the NapCat page that opens
 
-1. Grab `ZCodeQQBot-vX.Y.Z-win-x64.zip` from [Releases](../../releases) and extract
-2. Run `ZCodeQQBot/ZCodeQQBot.exe` (data lives in your user directory regardless of exe location)
-3. Follow the **first-run wizard**: bot QQ number + your QQ number → save
-4. Add a Zhipu key in Settings → API Keys ([open.bigmodel.cn](https://open.bigmodel.cn))
-5. Back on Status, hit "Start bot" → the NapCat login page opens, scan with the bot's QQ
-   - If asked for a "login token": the NapCat token card shows it with one-click copy, or use "Open login page (token-free)"
+If the login page asks for a "login token", don't panic: the token card on the Status page shows it with one-click copy, or just hit "Open login page (token-free)".
 
-### Option B: Run from source
+### From source
 
 ```
 git clone https://github.com/Pigeon2333/zcode-qq-bot.git
@@ -142,133 +159,69 @@ python qq_app.py
 
 ### Requirements
 
-- Windows 10/11 x64
-- Regular QQ (QQNT) installed
-- **NapCat Shell**: `launcher-user.bat` must exist under the QQNT directory; one-click install from official zip in Settings → Runtime
-- A Zhipu API key ([open.bigmodel.cn](https://open.bigmodel.cn))
+Windows 10/11 x64; QQNT installed; NapCat Shell (one-click install from the console); a Zhipu API key.
 
-## User Guide
+## Daily use
 
-### Console pages
+Send "帮助" in private chat for the full command list. The common ones: image gen by plain language; device control starts with intent then the code; scheduled tasks look like "定时 22:00 do the thing"; tell her "安静" for quiet time; merged-forward chat logs plus "导入" feed her for learning.
 
-| Page | Contents |
-|---|---|
-| Status | component switches, first-run wizard, start/pause, watchdog, traffic stats |
-| Logs | daemon/agent/boot/NapCat aggregated live |
-| Models | fallback chain, thinking mode, usage stats, token quota |
-| Groups / Private | reply modes, whitelist, proactive messages, per-group overrides |
-| Persona / Style / Memory | persona cards, style evolution, long-term memory CRUD |
-| Stickers | three libraries, upload, vision descriptions |
-| Device Control | enable switch, dynamic code, action execution, protected dirs |
-| ZCode | master switch + seven independent integrations |
-| Plugins | my plugins (toggle/settings) + marketplace (category filter) |
-| Settings | identity, runtime, API keys, chat behavior, automation (backup/cache), app behavior |
-| About | project info, contributors, in-app update |
-
-### From QQ (owner)
-
-- **Remote control**: send "帮助" for the full command list
-- **Image generation**: plain language (`draw: desc`, "draw me a…")
-- **Voice**: with the plugin installed, say 念一下 / "send me a voice message" — or anything she deems voice-worthy
-- **Device control**: express intent → bot asks for the 6-digit code → read it from the console → command in plain language; results to private chat only
-- **Scheduled tasks**: `定时 22:00 <task>` / list / delete
-- **Task sandbox**: `任务：<desc>`
-- **Import chat logs**: merged-forward messages + "导入" → straight into the store, then "learn as persona" on the plugin page
-
-### What group members see
-
-@-replies with persona flavor, image conversations, stickers, being remembered, (if enabled) proactive chatter, and plugin features (check-in / video shares / voice). Homework ghostwriting gets refused in persona.
+Group members get: @-replies with persona flavor, showing her images, being remembered, (if you enabled it) proactive chatter, and plugin features like check-in and video shares. Ask her to do your homework and she'll refuse in persona — she's not a tool.
 
 ## Operations
 
-### Daily start/stop
+Logs live in `~/.zcode-qq-bot/logs/`; the console aggregates four sources live and can export a diagnostics bundle.
 
-- Status page: Start bot (idempotent) / Stop brain & pipeline (keeps login) / Full stop (incl. NapCat)
-- Tray icon reopens the window; close behavior is configurable
-- Autostart with Windows and auto-start-on-launch are both optional
+Reading the signs:
 
-### Logs & troubleshooting
+- Online but totally silent — NapCat push is half-dead; the watchdog recovers on its own, or full-stop then start if you're impatient
+- Bursts of `AGENT_MODEL_FAIL` — check the code: 429 is overload (chain auto-switches), 1308 is Zhipu's 5-hour window, 1314 is an expired plan (swap or delete that entry)
+- Persona broken or lost — restore from backup, pick this morning's snapshot
 
-- `~/.zcode-qq-bot/logs/`: daemon.log / agent.log / ui.log (auto-rotated past 20MB)
-- Console log page aggregates four sources, 3s refresh, one-click diagnostics export
-- Common patterns:
-  - Online but silent → NapCat push half-dead; the watchdog recovers automatically
-  - `AGENT_MODEL_FAIL` bursts → 429 = overload (auto cooldown), 1308 = 5h window, 1314 = expired plan
-  - "Persona/memory lost" → restore from backup in one click
+Upgrades go through in-app update and never touch the data directory. Plugin updates are independent of app versions — hit update in the marketplace and you're done.
 
-### Backup & restore
+## Security & risks
 
-Daily auto-backup (directory/retention configurable); restore picks a snapshot with a red confirmation. Take a manual snapshot before big changes.
+The console binds to 127.0.0.1 only; every API sits behind token auth. Device control has three layers: owner-only QQ, a rotating one-time code, and hard walls around critical processes and protected directories.
 
-### Models & cost
+A few things to keep in mind yourself:
 
-- Chain order = fallback order; entries bind their own key, context size and max output
-- Free/promotional quota is consumed first automatically
-- Cost-sensitive: enable "lean context" (30–45% savings) and "peak saving mode", set a token quota
-
-### Updates
-
-In-app auto-update (About page): download → SHA256 verify → replace program dir → auto-restart, **never touching the data directory**. Point the update source at your own fork if you like; private repos need a fine-grained PAT.
-
-Plugin updates are independent of app releases — plugin changes ship through the plugin channel; one click and they're in.
-
-## Security Model & Risk Notice
-
-### Built-in defenses
-
-- Console binds to 127.0.0.1 only, with token auth on every API
-- Device control: owner-only QQ + rotating 6-digit code + time-boxed window + protected dirs + private-chat results + critical processes untouchable
-- Sandbox: whitelisted commands, path limits, time budget
-- Installer: filename whitelist + containment checks (zip-slip) + auto-backup
-- Custom provider endpoints block private/loopback addresses (SSRF)
-- Prompt layer: task-abuse interception, injection refusal, identity anchoring
-- Secrets stay in the local data dir — never in the repo, never in backups
-
-### Risk notice (please read)
-
-- **Device control really operates your PC**: don't enable on shared machines; add protected dirs; turn off when unused
-- **API key risk**: keys sit in plaintext in the local data dir. Leaked key = spent quota; never commit `~/.zcode-qq-bot/` or sync it to cloud drives
-- **QQ account risk**: any unofficial protocol implementation (NapCat included) can theoretically trigger risk control or bans — assess yourself, prefer a spare account
-- **Generated content**: AI output doesn't represent the author; safety rules exist but can't guarantee 100% compliance
-- Provided "as is"; the author is not liable for any damage
+- **Device control really operates your PC.** Don't enable it on shared machines. Add protected dirs as needed, and turn it off when you're not using it.
+- **API keys sit in plaintext locally.** That's normal for desktop apps, but it means anyone with your `~/.zcode-qq-bot/` folder can spend your quota. Never commit it, never put it in a synced drive.
+- **NapCat is an unofficial protocol implementation**, so Tencent's risk control is a theoretical possibility. Weigh it yourself; a spare account is the safe call.
+- **Everything she says is AI-generated.** Plenty of safety rules, but no guarantees — keep an eye on group settings.
 
 ## FAQ
 
-**Q: The bot went totally silent but the console shows online?**
-A: Likely NapCat push half-dead. The watchdog recovers automatically; otherwise Full stop → Start bot.
+**Bot shows online but never replies?**
+Most likely NapCat push is half-dead. The watchdog recovers on its own by default; full-stop then start if you're in a hurry.
 
-**Q: "agent failed to start" at launch?**
-A: Usually just a missing API key — the agent idles online waiting; fill the key and it takes effect immediately, no restart.
+**"agent failed to start" at launch?**
+Nine times out of ten the API key isn't filled in yet. It takes effect immediately once saved — no restart.
 
-**Q: Where do I find the NapCat "login token / WebUI token"?**
-A: No need to copy it by hand — the token card on the Status page reads and shows it, and "Open login page (token-free)" goes straight in. NapCat rotates the token after a successful QR login; hit Refresh on the card then.
+**Where's the NapCat "login token"?**
+The token card on the Status page, one-click copy. NapCat rotates it after a successful QR login; hit Refresh on the card when that happens.
 
-**Q: Can I import QQ's built-in chat export (.bak)?**
-A: No — it's an encrypted container keyed to your account. Use merged-forward + "导入", or the file-import path the plugin page guides you through.
+**Can I import QQ's built-in chat export (.bak)?**
+No. That file is encrypted with account-held keys that third parties can't get. Use merged-forward + "导入", or export to text per the plugin page's guidance.
 
-**Q: Migrating to a new PC?**
-A: Copy the whole `~/.zcode-qq-bot/` directory (includes secrets — keep it safe).
+**Migrating to a new PC?**
+Copy the whole `~/.zcode-qq-bot/` folder (secrets inside — keep it safe).
 
-**Q: Keep the bot quiet in one group?**
-A: Set that group to "paused" on the Groups page, or remove it from the whitelist (with confirmation).
+**Keep the bot quiet in one group?**
+Set that group to "paused" on the Groups page, or remove it from the whitelist (with confirmation).
 
 ## Contributing
 
-- **Issues**: bug reports and feature ideas
-- **PRs**: provider adapters, sticker sources, plugin ecosystem, UI polish, tests, docs
-- **Write a plugin**: see [PLUGINS.md](./PLUGINS.md); open an issue to get yours listed on the marketplace
-- Convention: changes pass syntax checks and page-render self-tests; **persona copy goes in persona cards, never the base prompt**
+Issues for bugs and ideas are welcome. PR directions: provider adapters, sticker sources, the plugin ecosystem, UI, tests, docs. To write a plugin see [PLUGINS.md](./PLUGINS.md) — open an issue to get it listed on the marketplace.
 
-## Author & Credits
+One convention: persona copy goes in persona cards, never the base prompt. That keeps other users' personas unpolluted and plugin capability ownership clean.
 
-**从不咕咕的鸽纸 (Pigeon)** · [Bilibili](https://space.bilibili.com/280664902) · [GitHub](https://github.com/Pigeon2333) · ed@sodayo.net
+## Author
 
-- Brain: [Zhipu GLM](https://open.bigmodel.cn) models
-- Protocol: [NapCat](https://napcat.net) (OneBot 11)
-- Ecosystem: [ZCode](https://zcode.ai) and its plugin system
-- Thanks to the friends in the test groups who chatted with her and made her better
+从不咕咕的鸽纸 (Pigeon) · [Bilibili](https://space.bilibili.com/280664902) · [GitHub](https://github.com/Pigeon2333) · ed@sodayo.net
+
+Brain: [Zhipu GLM](https://open.bigmodel.cn). Protocol: [NapCat](https://napcat.net). Ecosystem: [ZCode](https://zcode.ai). Thanks to the friends in the test groups who chatted with her and made her better.
 
 ## License
 
-Licensed under [PolyForm Noncommercial 1.0.0](./LICENSE):
-personal study, research, modification and redistribution (including modified versions) are **allowed**; any commercial use is **prohibited**. Keep the license and copyright notice when redistributing.
+[PolyForm Noncommercial 1.0.0](./LICENSE): personal study, research, modification and redistribution are fine; commercial use is not. Keep the license notice when redistributing.
