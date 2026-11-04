@@ -143,6 +143,8 @@ def probe(source):
         out["qq_cli_available"] = qq_cli_available()
         out["python_ok"] = _py_exe() is not None
         out["qq_key_ready"] = qq_key_configured()
+        # 服务器端拼好可直接粘贴的 init 命令（绝对路径；%VAR% 在 PowerShell 不展开）
+        out["qq_cli_init_cmd"] = ('python "%s" init' % _QQCLI_SKILL)
     else:
         out["wx_skill_installed"] = wx_export_script() is not None
         out["wx_cli_cmd"] = wx_cli_cmd() or ""
@@ -160,7 +162,7 @@ def qq_key_configured():
 
 
 _INIT_HINT = ("首次使用需提取一次 QQ 数据库密钥：终端运行 "
-              "python %s init （保持 QQ 登录状态，按提示在 QQ 搜索框"
+              'python "%s" init （保持 QQ 登录状态，按提示在 QQ 搜索框'
               "输入任意词触发提取；自定义数据目录加 --db-dir 指到 "
               "nt_db 所在目录）" % _QQCLI_SKILL)
 
