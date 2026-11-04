@@ -8,6 +8,7 @@
 import hashlib
 import http.client
 import json
+import os
 import random
 import re
 import threading
@@ -15,6 +16,60 @@ import time
 import urllib.parse
 
 _BILI_STATE = {"last_window": 0.0}
+
+# 窗口与暂停状态持久化（热重载/重启不重置——否则每装一次插件就多刷一轮）
+_STATE_PATH = os.path.join(os.path.expanduser("~"), ".zcode-qq-bot",
+                           "bili_state.json")
+
+
+def _load_state():
+    try:
+        d = json.loads(open(_STATE_PATH, "r", encoding="utf-8").read())
+        return {"last_window": float(d.get("last_window") or 0),
+                "paused": bool(d.get("paused"))}
+    except (OSError, ValueError):
+        return {"last_window": 0.0, "paused": False}
+
+
+def _save_state(st):
+    try:
+        import tempfile
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(_STATE_PATH),
+                                   suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(st, f)
+        os.replace(tmp, _STATE_PATH)
+    except OSError:
+        pass
+
+
+def _caps():
+    """三个渠道的每轮上限（0=关）。"""
+    def _n(key):
+        try:
+            return max(0, min(10, int(_api.setting(key, 2))))
+        except (TypeError, ValueError):
+            return 2
+    return _n("max_bili_dm"), _n("max_qq_private"), _n("max_qq_group")
+
+
+_STOP_WORDS = ("别刷视频", "不要刷视频", "别发视频", "别再发视频",
+               "关掉刷视频", "停止刷视频", "别刷了", "不要再发视频")
+_RESUME_WORDS = ("恢复刷视频", "继续刷视频", "可以刷视频", "继续发视频")
+
+
+def _owner_says(msg):
+    """这条消息是否主人发的（私聊或群里）。"""
+    try:
+        import qq_bot_agent as A
+        owner = str(A.owner_qq() or "")
+        if not owner:
+            return False
+        if msg.get("chat_type") == "private":
+            return str(msg.get("chat_id")) == owner
+        return str(msg.get("sender_id")) == owner
+    except Exception:
+        return False
 _KEYWORDS = ("科技", "数码", "游戏", "美食", "音乐", "动画", "知识",
              "日常", "萌宠", "旅行")
 # 兴趣词+避雷词缓存（6h；人设或相关记忆变更即失效）
@@ -145,11 +200,8 @@ def _pick(items):
     max_per_round 是护栏不是任务量——按人设自主决定 0 到上限个，
     按感兴趣程度排序，没感觉不硬凑。"""
     try:
-        limit = 2
-        try:
-            limit = max(1, min(10, int(_api.setting("max_per_round", 2))))
-        except (TypeError, ValueError):
-            pass
+        dm, qp, qg = _caps()
+        limit = max(dm, qp, qg, 1)   # 挑选上限 = 各渠道上限的最大值
         import qq_bot_agent as A
         _, avoid = _interest_words()  # 缓存命中，不重复调 LLM
         avoid_line = ("\n已知主人/大家明确不喜欢的（这类不要挑）：%s。"
@@ -296,6 +348,11 @@ def _compose_share_text(it, feeling, where):
 
 def _share(daemon, picked):
     bili_uids, qq_users, qq_groups = _share_targets()
+    cap_dm, cap_qp, cap_qg = _caps()
+    # 分渠道各自截断（0=该渠道不发；同轮挑选里排前面的=最感兴趣的优先发）
+    dm_picked = picked[:cap_dm] if cap_dm > 0 else []
+    qp_picked = picked[:cap_qp] if cap_qp > 0 else []
+    qg_picked = picked[:cap_qg] if cap_qg > 0 else []
     if not (bili_uids or qq_users or qq_groups):
         _api.log("SHARE_SKIP no targets")
         return
@@ -312,18 +369,24 @@ def _share(daemon, picked):
         _last_share_texts.append(text)
         del _last_share_texts[:-3]
         for uid in bili_uids:
+            if (it, feeling) not in dm_picked:
+                continue       # 该渠道本轮条数已满
             try:
                 ok, msg = qb.send_insite_dm(uid, text)
                 _api.log("DM %s ok=%s %s" % (uid, ok, msg))
             except Exception as e:
                 _api.log("DM %s FAIL %r" % (uid, e))
         for qq in qq_users:
+            if (it, feeling) not in qp_picked:
+                continue
             try:
                 daemon.send("private", qq, [text])
                 _api.log("QQ_SHARE private/%s" % qq)
             except Exception as e:
                 _api.log("QQ_SHARE private/%s FAIL %r" % (qq, e))
         for gid in qq_groups:
+            if (it, feeling) not in qg_picked:
+                continue
             try:
                 daemon.send("group", gid, [text])
                 _api.log("QQ_SHARE group/%s" % gid)
@@ -341,9 +404,13 @@ def tick(daemon):
         window = max(30, int(window_min)) * 60
     except (TypeError, ValueError):
         window = 180 * 60
-    if now - _BILI_STATE["last_window"] < window:
+    # 窗口判定用持久化状态（热重载/重启不再"装完插件立刻又刷一轮"）
+    st = _load_state()
+    _BILI_STATE.update(st)
+    if now - st["last_window"] < window:
         return
     _BILI_STATE["last_window"] = now
+    _save_state(_BILI_STATE)
     # 兴趣来源：用户关键词 + 按人设与记忆生成的兴趣（叠加去重）；
     # 两者都空（无人设无记忆/LLM 失败）才回落内置兴趣池
     user_kws = [k.strip() for k in
@@ -363,12 +430,22 @@ def tick(daemon):
     _api.log("items=%d picked=%d kws=%s" % (len(items), len(picked),
                                             ",".join(kws[:3])))
     if picked and _api.setting("share_enabled", False):
+        if _BILI_STATE.get("paused"):
+            _api.log("SHARE_SKIP paused_by_owner")
+            return
+        dm, qp, qg = _caps()
+        if dm + qp + qg <= 0:
+            _api.log("SHARE_SKIP all channels capped 0")
+            return
         _share(daemon, picked)
 
 
 def context_line(chat_type, chat_id):
     qb = _mod()
     out = []
+    if _BILI_STATE.get("paused") or _load_state().get("paused"):
+        out.append("（系统：B站刷视频分享已被主人暂停——不要推荐/分享视频；"
+                   "被问到就自然地说先不刷了，主人说「恢复刷视频」才会继续）")
     e = _last_seen.get("%s:%s" % (chat_type, chat_id))
     if e and time.time() - e["ts"] < 300:
         if e.get("cards"):
@@ -499,11 +576,31 @@ def _hot_lines():
 
 
 def on_message(msg):
-    """消息观察（PluginAPI.on_message）：识别 BV/av/短链→预取卡片；
-    'B站+热门/什么火'→刷新热门缓存。供 context_line 注入。"""
+    """消息观察（PluginAPI.on_message）：主人说「别刷视频/恢复刷视频」→
+    暂停/恢复分享（持久化）；其余观察：BV/av/短链卡片、热门缓存。"""
     text = str(msg.get("text") or "")
     if not text:
         return
+    # 主人指令：暂停/恢复刷视频（不是安静模式！别当成"别说话"）
+    try:
+        if _owner_says(msg) and len(text) <= 40:
+            low = text.lower()
+            if any(w in text for w in _RESUME_WORDS):
+                st = _load_state()
+                if st.get("paused"):
+                    st["paused"] = False
+                    _save_state(st)
+                    _BILI_STATE.update(st)
+                    _api.log("SHARE_RESUMED by owner")
+            elif any(w in text for w in _STOP_WORDS):
+                st = _load_state()
+                if not st.get("paused"):
+                    st["paused"] = True
+                    _save_state(st)
+                    _BILI_STATE.update(st)
+                    _api.log("SHARE_PAUSED by owner")
+    except Exception:
+        pass
     key = "%s:%s" % (msg.get("chat_type"), msg.get("chat_id"))
     entry = {"ts": time.time(), "cards": [], "hot": False}
     try:

@@ -1,6 +1,6 @@
 {
   "name": "bili_scroll",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "title": "B 站刷视频",
   "description": "机器人用自己的 B 站账号扫码登录后，按周期以人设与记忆兴趣刷视频：见闻注入聊天、好物按人设口吻分享（渠道/目标可配）；消息里的 BV 号/链接自动带视频信息进对话。Cookie 只存本机。",
   "default_enabled": false,
@@ -14,11 +14,27 @@
       "max": 1440
     },
     {
-      "key": "max_per_round",
+      "key": "max_bili_dm",
       "type": "number",
-      "label": "每轮最多刷/分享几个（上限不是强制：她按人设口味自主决定这轮挑 0 到上限个，优先挑最感兴趣的，没感觉就不硬凑）",
+      "label": "B 站私信每轮最多发几个（0=该渠道不发；上限不是强制——她按人设口味自主挑 0 到上限个，优先最感兴趣的，不凑数）",
       "default": 2,
-      "min": 1,
+      "min": 0,
+      "max": 10
+    },
+    {
+      "key": "max_qq_private",
+      "type": "number",
+      "label": "QQ 私聊每轮最多发几个（0=该渠道不发；规则同上）",
+      "default": 2,
+      "min": 0,
+      "max": 10
+    },
+    {
+      "key": "max_qq_group",
+      "type": "number",
+      "label": "QQ 群聊每轮最多发几个（0=该渠道不发；规则同上）",
+      "default": 2,
+      "min": 0,
       "max": 10
     },
     {
