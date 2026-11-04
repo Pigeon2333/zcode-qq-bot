@@ -44,6 +44,8 @@ DATA_DIR = os.environ.get("QQBOT_DATA_DIR") or os.path.join(
 DATA_ROOT = os.path.realpath(DATA_DIR)
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 MEDIA_SUBDIRS = ("cache/images", "images", "stickers")  # 允许发送的图片所在数据目录子集（images=AI生成图）
+AUDIO_SUBDIRS = ("cache/tts",)  # 允许发送的语音文件（TTS 引擎输出目录）
+AUDIO_EXTS = {".mp3", ".wav", ".silk", ".amr", ".m4a"}
 GROUP_WHITELIST_PATH = os.path.realpath(os.path.join(DATA_DIR, "group_whitelist.json"))
 PRIVATE_CONFIG_PATH = os.path.realpath(os.path.join(DATA_DIR, "private_config.json"))
 
@@ -1241,6 +1243,27 @@ class Daemon:
 
     # ---------- 发送 ----------
 
+    def send_record(self, chat_type, chat_id, file_path):
+        """发送语音文件（mp3/wav/silk；NapCat 收到后自动转 QQ 语音格式）。
+        文件必须位于数据目录 cache/tts 之下（TTS 引擎输出目录）。"""
+        p = os.path.realpath(os.path.abspath(str(file_path)))
+        ext = os.path.splitext(p)[1].lower()
+        if ext not in AUDIO_EXTS:
+            raise ValueError("仅支持音频文件（%s），当前: %s" % (", ".join(sorted(AUDIO_EXTS)), ext))
+        allowed = [os.path.realpath(os.path.join(DATA_DIR, sub)) for sub in AUDIO_SUBDIRS]
+        if not any(p.startswith(r.rstrip("\\/") + os.sep) for r in allowed):
+            raise ValueError("语音文件必须位于 %s 之下" % ", ".join(AUDIO_SUBDIRS))
+        if not os.path.isfile(p):
+            raise FileNotFoundError("文件不存在: %s" % p)
+        chat_key = "%s_%s" % (chat_type, chat_id)
+        if not self._rate_ok(chat_key):
+            raise RuntimeError("触发每分钟限流，请稍后再发")
+        job = {"chat_type": chat_type, "chat_id": chat_id, "kind": "record",
+               "file": p, "text": "", "delay": 0}
+        self.send_queue.append(job)
+        threading.Thread(target=self._drain_send_queue, daemon=True).start()
+        return {"queued": 1}
+
     def _rate_ok(self, chat_key):
         now = time.time()
         with self.lock:
@@ -1354,6 +1377,9 @@ class Daemon:
             segs.append({"type": "image", "data": {"file": file_uri}})
             if job.get("text"):
                 segs.append({"type": "text", "data": {"text": job["text"]}})
+        elif job["kind"] == "record":
+            file_uri = "file:///" + job["file"].replace("\\", "/")
+            segs.append({"type": "record", "data": {"file": file_uri}})
         else:
             segs.append({"type": "text", "data": {"text": job["text"]}})
         if chat_type == "group":
@@ -1366,7 +1392,8 @@ class Daemon:
             self._mem_push(
                 {"chat_type": chat_type, "chat_id": chat_id,
                  "sender_id": self.login.get("user_id"), "ts": now_ts()},
-                mid, is_bot=True, text=job.get("text") or "[图片]",
+                mid, is_bot=True, text=job.get("text") or
+                ("[语音]" if job["kind"] == "record" else "[图片]"),
                 n_images=1 if job["kind"] == "image" else 0)
             self.stats["sent"] += 1
 

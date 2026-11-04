@@ -25,6 +25,8 @@ python -c "import PyInstaller, webview, PIL" 2>nul
 if errorlevel 1 goto :nodeps
 python -c "import pystray" >nul 2>&1
 if errorlevel 1 goto :nopystray
+python -c "import edge_tts" >nul 2>&1
+if errorlevel 1 goto :noedgetts
 
 rem 用户级 site-packages 也要让 PyInstaller 看见（pip install --user 很常见）
 for /f "delims=" %%i in ('python -c "import site; print(site.getusersitepackages())"') do set "PYTHONPATH=%%i;%PYTHONPATH%"
@@ -78,8 +80,14 @@ goto :fail
 
 :nopystray
 echo [ERROR] 未安装 pystray：托盘是发布版的核心交互（最小化到托盘、重新打开窗口），
-echo   缺了它打出的包"关闭窗口即退出"，属于残缺发布版——本脚本不再 WARN 跳过。
+echo         缺了它打出的包"关闭窗口即退出"，属于残缺发布版——本脚本不再 WARN 跳过。
 echo   请在同一环境执行：python -m pip install pystray 后重新打包。
+goto :fail
+
+:noedgetts
+echo [ERROR] 未安装 edge-tts：语音回复插件的免费默认来源（微软公共接口）。
+echo         缺了它打出的包"语音回复"无法合成（其余功能不受影响）。
+echo   请在同一环境执行：python -m pip install edge-tts 后重新打包。
 goto :fail
 
 :nopythonnet

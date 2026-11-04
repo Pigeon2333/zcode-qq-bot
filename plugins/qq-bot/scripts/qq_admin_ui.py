@@ -2410,6 +2410,164 @@ function chatImpPage(d,p){
 }
 function qqChatImpPage(d,p){return chatImpPage(Object.assign({},d,{source:'qq',label:'QQ',hint:'见上方方式 A/B'}),p)}
 function wxChatImpPage(d,p){return chatImpPage(Object.assign({},d,{source:'wx',label:'微信',hint:'就绪后可直接一键导出；未就绪按第②步两行命令装好后回本页'}),p)}
+let _VM=null;
+async function voicePage(){
+ if(!_VM){_VM=await api('/api/voice/meta').catch(()=>({ok:false}));if(_VM.ok===false){$('#view').innerHTML=head('语音回复')+ '<div class="card">加载失败，刷新重试</div>';return}}
+ const c=_VM.config||{};
+ const P=_VM.providers||{};
+ const prov=Object.keys(P);
+ const cur=c.provider||'edge';
+ const vopts=prov.map(k=>'<option value="'+k+'" '+(k===cur?'selected':'')+'>'+esc(P[k].label)+'</option>').join('');
+ const edgeOpts=(_VM.edge_voices||[]).map(v=>'<option value="'+esc(v[1])+'" '+(v[1]===(c.edge_voice||'zh-CN-XiaoxiaoNeural')?'selected':'')+'>'+esc(v[0])+'</option>').join('');
+ const zzOpts=(_VM.zhipu_voices||[]).map(v=>'<option value="'+esc(v[1])+'" '+(v[1]===(c.zhipu_voice||'tongtong')?'selected':'')+'>'+esc(v[0])+'</option>').join('');
+ const sfMOpts=(_VM.sf_models||[]).map(v=>'<option value="'+esc(v[1])+'" '+(v[1]===(c.sf_model||'FunAudioLLM/cosyvoice2-0.5B')?'selected':'')+'>'+esc(v[0])+'</option>').join('');
+ const sfVOpts=(_VM.sf_voices||[]).map(v=>'<option value="'+esc(v)+'" '+(v===(c.sf_voice||'anna')?'selected':'')+'>'+esc(v)+'</option>').join('');
+ const mode=String(c.mode||'keyword');
+ const kw=(c.keywords||[]).join('、');
+ $('#view').innerHTML=head('语音回复：让机器人开口说话')+
+ '<div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><b>开关与策略</b><span class="badge" style="background:var(--tint);color:var(--dim)">语音内容跟人设走，只换发送形式</span></div>'
+ +'<label class="master"><input type="checkbox" id="v-on" '+(c.enabled?'checked':'')+' onchange=""> <b>启用语音回复</b><div class="k" style="margin-top:3px">开启后按下面的策略把部分/全部回复改用语音发送；合成失败自动回退发文字，不会丢回复</div></label>'
+ +'<div style="display:flex;gap:14px;margin-top:8px;flex-wrap:wrap">'
+ +'<label><input type="checkbox" id="v-priv" '+(c.private_enabled!==false?'checked':'')+'> 私聊启用</label>'
+ +'<label><input type="checkbox" id="v-grp" '+(c.group_enabled?'checked':'')+'> 群聊启用</label>'
+ +'<label><input type="checkbox" id="v-wt" '+(c.with_text?'checked':'')+'> 语音和文字同时发</label></div>'
+ +'<div class="k" style="margin-top:10px">触发方式</div>'
+ +'<div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:4px">'
+ +'<label><input type="radio" name="vmode" value="keyword" '+(mode==='keyword'?'checked':'')+'> 对方消息含触发词时</label>'
+ +'<label><input type="radio" name="vmode" value="always" '+(mode==='always'?'checked':'')+'> 所有回复都用语音</label>'
+ +'<label><input type="radio" name="vmode" value="mixed" '+(mode==='mixed'?'checked':'')+'> 触发词必语音，其余按概率</label></div>'
+ +'<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">'
+ +'<input id="v-kw" value="'+esc(kw)+'" placeholder="触发词，用、分隔（如：念一下、发语音）" style="flex:1;min-width:220px">'
+ +'<label class="k">概率 <input id="v-prob" type="number" min="0" max="1" step="0.1" value="'+esc(String(c.prob||0))+'" style="width:64px"></label></div>'
+ +'<div style="margin-top:10px"><button class="act" style="margin:0" onclick="voiceSave()">保存设置</button><span class="k" id="v-ok" style="margin-left:8px"></span></div></div>'
+ +'<div class="card"><div class="k" style="margin-bottom:8px"><b>语音来源与音色</b>（供应商可随时换，互不影响）</div>'
+ +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="k">供应商</span><select id="v-prov" onchange="voiceProvChange()">'+vopts+'</select></div>'
+ +'<div class="k" id="v-bill" style="margin-top:8px;padding:8px;border:1px solid var(--line);border-radius:8px"></div>'
+ +'<div id="v-provbox" style="margin-top:10px"></div>'
+ +'<div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap">'
+ +'<input id="v-ptext" value="你好呀，我是你的语音小助手，听听这个声音怎么样？" style="flex:1;min-width:240px">'
+ +'<button class="act ghost" style="margin:0" onclick="voicePreview()">试听（用当前表单配置）</button></div>'
+ +'<audio id="v-audio" controls style="margin-top:8px;width:100%;display:none"></audio>'
+ +'<div class="k" id="v-pmsg" style="margin-top:6px"></div></div>'
+ +'<div class="card"><div class="k"><b>计费说明</b>（各家语音合成的收费情况，选前看清楚）</div>'
+ +prov.map(k=>'<div style="margin-top:8px"><b>'+esc(P[k].label)+'</b><div class="k" style="margin-top:3px">'+esc(P[k].billing)+'</div></div>').join('')
+ +'<div class="k" style="margin-top:10px">克隆专属音色（智谱，收费）：在 bigmodel.cn 控制台或开放平台用 3 秒以上人声样本创建复刻音色，把得到的 speaker_id 填到智谱栏即可——之后所有语音都用这个音色。</div></div>';
+ voiceProvChange();
+}
+function voiceBill(){const P=_VM.providers||{};const k=document.getElementById('v-prov').value;const el=document.getElementById('v-bill');el.textContent=P[k]?P[k].billing:''}
+function voiceProvChange(){
+ voiceBill();
+ const c=_VM.config||{};const k=document.getElementById('v-prov').value;
+ const box=document.getElementById('v-provbox');
+ if(k==='edge'){box.innerHTML='<div class="k" style="margin-bottom:4px">音色（微软公共接口，免费）</div><select id="v-ev">'+edgeOptsHtml()+'</select>'}
+ else if(k==='zhipu'){box.innerHTML='<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'
+  +'<div><div class="k" style="margin-bottom:4px">预设音色</div><select id="v-zv">'+zzOptsHtml()+'</select></div>'
+  +'<div><div class="k" style="margin-bottom:4px">克隆音色 speaker_id（填了优先生效）</div><input id="v-zsid" value="'+esc(String(c.zhipu_speaker_id||''))+'" placeholder="复刻得到的 speaker_id"></div>'
+  +'<div style="grid-column:1/-1"><div class="k" style="margin-bottom:4px">智谱 API Key（留空 = 复用模型管理里的智谱 Key）</div><input id="v-zkey" type="password" value="'+esc(String(c.zhipu_key||''))+'" placeholder="留空自动复用"></div></div>'}
+ else if(k==='siliconflow'){box.innerHTML='<div style="display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:10px">'
+  +'<div><div class="k" style="margin-bottom:4px">硅基流动 API Key</div><input id="v-sfk" type="password" value="'+esc(String(c.sf_key||''))+'"></div>'
+  +'<div><div class="k" style="margin-bottom:4px">模型</div><select id="v-sfm">'+sfMOptsHtml()+'</select></div>'
+  +'<div><div class="k" style="margin-bottom:4px">音色</div><select id="v-sfv">'+sfVOptsHtml()+'</select></div></div>'}
+ else{box.innerHTML='<div style="display:grid;grid-template-columns:1.6fr 1fr 1fr 1fr;gap:10px">'
+  +'<div><div class="k" style="margin-bottom:4px">接口地址（https，含 /v1/）</div><input id="v-cb" value="'+esc(String(c.custom_base||''))+'" placeholder="https://api.openai.com/v1/"></div>'
+  +'<div><div class="k" style="margin-bottom:4px">API Key</div><input id="v-ck" type="password" value="'+esc(String(c.custom_key||''))+'"></div>'
+  +'<div><div class="k" style="margin-bottom:4px">模型</div><input id="v-cm" value="'+esc(String(c.custom_model||'tts-1'))+'"></div>'
+  +'<div><div class="k" style="margin-bottom:4px">音色</div><input id="v-cv" value="'+esc(String(c.custom_voice||'alloy'))+'"></div></div>'}
+}
+function edgeOptsHtml(){return(_VM.edge_voices||[]).map(v=>'<option value="'+esc(v[1])+'" '+(v[1]===((_VM.config||{}).edge_voice||'zh-CN-XiaoxiaoNeural')?'selected':'')+'>'+esc(v[0])+'</option>').join('')}
+function zzOptsHtml(){return(_VM.zhipu_voices||[]).map(v=>'<option value="'+esc(v[1])+'" '+(v[1]===((_VM.config||{}).zhipu_voice||'tongtong')?'selected':'')+'>'+esc(v[0])+'</option>').join('')}
+function sfMOptsHtml(){return(_VM.sf_models||[]).map(v=>'<option value="'+esc(v[1])+'" '+(v[1]===((_VM.config||{}).sf_model||'FunAudioLLM/cosyvoice2-0.5B')?'selected':'')+'>'+esc(v[0])+'</option>').join('')}
+function sfVOptsHtml(){return(_VM.sf_voices||[]).map(v=>'<option value="'+esc(v)+'" '+(v===((_VM.config||{}).sf_voice||'anna')?'selected':'')+'>'+esc(v)+'</option>').join('')}
+function voiceCollect(){
+ const k=document.getElementById('v-prov').value;
+ const mode=(document.querySelector('input[name="vmode"]:checked')||{}).value||'keyword';
+ const v={enabled:document.getElementById('v-on').checked,provider:k,mode,
+  private_enabled:document.getElementById('v-priv').checked,
+  group_enabled:document.getElementById('v-grp').checked,
+  with_text:document.getElementById('v-wt').checked,
+  keywords:document.getElementById('v-kw').value.split(/[、,，]/).map(x=>x.trim()).filter(Boolean),
+  prob:parseFloat(document.getElementById('v-prob').value)||0};
+ const g=id=>{const el=document.getElementById(id);return el?el.value:''};
+ v.edge_voice=g('v-ev');v.zhipu_voice=g('v-zv');v.zhipu_speaker_id=g('v-zsid');v.zhipu_key=g('v-zkey');
+ v.sf_key=g('v-sfk');v.sf_model=g('v-sfm');v.sf_voice=g('v-sfv');
+ v.custom_base=g('v-cb');v.custom_key=g('v-ck');v.custom_model=g('v-cm');v.custom_voice=g('v-cv');
+ return v}
+async function voiceSave(){
+ const r=await api('/api/voice/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voice:voiceCollect()})}).catch(()=>({ok:false,error:'请求失败'}));
+ const el=document.getElementById('v-ok');
+ if(r.ok===false){toast(r.error||'保存失败',false);if(el)el.textContent='保存失败：'+(r.error||'');return}
+ _VM.config=r.config||voiceCollect();toast('语音设置已保存（即时生效）');if(el)el.textContent='已保存 ✓'}
+async function voicePreview(){
+ const msg=document.getElementById('v-pmsg');const au=document.getElementById('v-audio');
+ msg.textContent='合成中…（免费供应商约 1-3 秒）';au.style.display='none';
+ const r=await api('/api/voice/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voice:voiceCollect(),text:document.getElementById('v-ptext').value})}).catch(()=>({ok:false,error:'请求失败'}));
+ if(r.ok===false){msg.textContent='试听失败：'+(r.error||'');return}
+ au.src=r.audio;au.style.display='block';au.play().catch(()=>{});
+ msg.textContent='试听音频 '+((r.size||0)/1024).toFixed(0)+' KB（每次试听按该供应商计费规则计费）'}
+let _LM=null;
+async function larkPage(){
+ if(!_LM){_LM=await api('/api/lark/meta').catch(()=>({ok:false}));if(_LM.ok===false){$('#view').innerHTML=head('飞书互通')+ '<div class="card">加载失败，刷新重试</div>';return}}
+ const c=_LM.config||{};
+ const sdkTip=_LM.sdk?'':'（飞书→QQ 方向需要先在终端 pip install lark-oapi 并重启机器人；只开 QQ→飞书 则无需安装）';
+ const brs=c.bridges||[];
+ const rows=brs.map((b,i)=>'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0;padding:8px;border:1px solid var(--line);border-radius:8px">'
+  +'<input class="lkqq" value="'+esc(b.qq_group)+'" placeholder="QQ 群号" style="width:120px">'
+  +'<span class="k">↔</span>'
+  +'<input class="lklk" value="'+esc(b.lark_chat_id)+'" placeholder="飞书 chat_id（点右侧拉取选择）" style="flex:1;min-width:200px">'
+  +'<label><input type="checkbox" class="lk2f" '+(b.to_lark!==false?'checked':'')+'> QQ→飞书</label>'
+  +'<label><input type="checkbox" class="lk2q" '+(b.to_qq?'checked':'')+'> 飞书→QQ</label>'
+  +'<button class="act ghost" style="margin:0;padding:3px 10px;font-size:12px" onclick="lkDel(this)">删</button></div>').join('');
+ $('#view').innerHTML=head('飞书互通：QQ 群 ↔ 飞书群')+
+ '<div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><b>飞书自建应用</b><span class="badge" style="background:var(--tint);color:var(--dim)">免费 · 免公网</span></div>'
+ +'<div class="k">先在 <a href="https://open.feishu.cn" target="_blank">open.feishu.cn</a> 免费创建「企业自建应用」：①添加「机器人」能力 ②权限管理开通 im:chat 与 im:message（收发消息） ③发布版本 ④把机器人拉进目标飞书群。然后填 App ID / App Secret（Secret 只存本机）。'+sdkTip+'飞书方向用 WebSocket 长连接收事件，不需要公网服务器。</div>'
+ +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">'
+ +'<div><div class="k" style="margin-bottom:4px">App ID</div><input id="lk-aid" value="'+esc(String(c.app_id||''))+'"></div>'
+ +'<div><div class="k" style="margin-bottom:4px">App Secret（留空=保持已存）</div><input id="lk-sec" type="password" placeholder="'+(c.app_id?'已保存（留空不改）':'')+'"></div></div>'
+ +'<label class="master" style="margin-top:8px"><input type="checkbox" id="lk-on" '+(c.enabled?'checked':'')+'> <b>启用互通</b><span class="k">（保存后生效；QQ→飞书即时转发，飞书→QQ 在重启机器人后接入长连接）</span></label></div>'
+ +'<div class="card" id="lk-card"><div class="k" style="margin-bottom:6px"><b>桥接映射</b>（哪些 QQ 群和飞书群互通）</div>'+ (rows||'<div class="k">还没有桥接。点下面「添加桥接」。</div>')
+ +'<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="act ghost" style="margin:0" onclick="lkAdd()">＋ 添加桥接</button>'
+ +'<button class="act ghost" style="margin:0" onclick="lkChats()">拉取飞书群列表</button>'
+ +'<button class="act ghost" style="margin:0" onclick="lkTest()">发测试消息</button>'
+ +'<button class="act" style="margin:0" onclick="lkSave()">保存</button></div>'
+ +'<div class="k" id="lk-msg" style="margin-top:6px"></div></div>'
+ +'<div class="card"><div class="k"><b>隐私说明</b></div><div class="k" style="margin-top:6px">桥接开启后，命中群的消息文本会经你的飞书应用转发到对应飞书群（带说话人昵称）；app_secret 与消息都不经过第三方。仅转发文本，图片/语音等不转发。</div></div>';
+}
+function lkAdd(){const d=document.createElement('div');d.style.cssText='display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0;padding:8px;border:1px solid var(--line);border-radius:8px';
+ d.innerHTML='<input class="lkqq" value="" placeholder="QQ 群号" style="width:120px"><span class="k">↔</span><input class="lklk" value="" placeholder="飞书 chat_id" style="flex:1;min-width:200px"><label><input type="checkbox" class="lk2f" checked> QQ→飞书</label><label><input type="checkbox" class="lk2q"> 飞书→QQ</label><button class="act ghost" style="margin:0;padding:3px 10px;font-size:12px" onclick="this.parentElement.remove()">删</button>';
+ const card=document.getElementById('lk-card');
+ const btnrow=card.querySelector('div[style]');
+ card.insertBefore(d,card.children[card.children.length-1])}
+function lkDel(btn){btn.parentElement.remove()}
+function lkCollect(){
+ const rows=[...document.querySelectorAll('.lkqq')].map(inp=>inp.parentElement);
+ const bridges=rows.map(d=>({qq_group:d.querySelector('.lkqq').value.trim(),
+  lark_chat_id:d.querySelector('.lklk').value.trim(),
+  to_lark:d.querySelector('.lk2f').checked,to_qq:d.querySelector('.lk2q').checked}))
+  .filter(b=>b.qq_group&&b.lark_chat_id);
+ return {enabled:document.getElementById('lk-on').checked,
+  app_id:document.getElementById('lk-aid').value.trim(),
+  app_secret:document.getElementById('lk-sec').value.trim(),
+  bridges:bridges}}
+async function lkSave(){
+ const r=await api('/api/lark/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:lkCollect()})}).catch(()=>({ok:false,error:'请求失败'}));
+ const m=document.getElementById('lk-msg');
+ if(r.ok===false){toast(r.error||'保存失败',false);if(m)m.textContent='保存失败：'+(r.error||'');return}
+ _LM=null;toast('飞书配置已保存');if(m)m.textContent='已保存 ✓（飞书→QQ 若首次启用，重启机器人后接入）'}
+async function lkChats(){
+ const m=document.getElementById('lk-msg');if(m)m.textContent='拉取中…';
+ const r=await api('/api/lark/chats').catch(()=>({ok:false,error:'请求失败'}));
+ if(r.ok===false){if(m)m.textContent='拉取失败：'+(r.error||'')+'（检查 App ID/Secret 与 im:chat 权限，且机器人已被拉进群）';return}
+ const list=r.chats||[];
+ if(!list.length){if(m)m.textContent='没拉到群：先把机器人拉进至少一个飞书群';return}
+ const names=list.map(x=>x.name+'  =  '+x.chat_id).join('\n');
+ prompt('复制需要的 chat_id 填到桥接里：',names);
+ if(m)m.textContent='已拉到 '+list.length+' 个群（见弹窗）'}
+async function lkTest(){
+ const m=document.getElementById('lk-msg');if(m)m.textContent='发送中…';
+ const bid=(document.querySelector('.lklk')||{}).value||'';
+ if(!bid){toast('先填一个飞书 chat_id',false);return}
+ const r=await api('/api/lark/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:bid})}).catch(()=>({ok:false,error:'请求失败'}));
+ if(m)m.textContent=r.ok?'测试消息已发，去飞书群看看 ✓':'发送失败：'+(r.error||'')}
 async function ciQqCliExport(){
  const chat=document.getElementById('ci-chat').value.trim();
  if(!chat){toast('先填会话（QQ号/昵称/群名）',false);return}
@@ -3439,6 +3597,34 @@ class UiHandler(BaseHTTPRequestHandler):
             return self._reply(200, {"ok": True, "enabled": S.autostart_enabled()})
         if u.path == "/api/cache/stats":
             return self._reply(200, S.cache_stats())
+        if u.path == "/api/voice/meta":
+            # 语音回复元数据：供应商（含计费说明）+ 预设音色表
+            import qq_tts as _T
+            return self._reply(200, {
+                "ok": True,
+                "providers": {k: {"label": v["label"], "billing": v["billing"]}
+                              for k, v in _T.PROVIDERS.items()},
+                "edge_voices": _T.EDGE_VOICES,
+                "zhipu_voices": _T.ZHIPU_VOICES,
+                "sf_models": _T.SF_MODELS,
+                "sf_voices": _T.SF_VOICES,
+                "config": _T.voice_cfg(),
+            })
+        if u.path == "/api/lark/meta":
+            # 飞书互通：配置 + SDK 可用性
+            import qq_lark as _L
+            c = _L.cfg()
+            c = dict(c)
+            c.pop("app_secret", None)
+            return self._reply(200, {"ok": True, "config": c,
+                                     "sdk": _L.sdk_available()})
+        if u.path == "/api/lark/chats":
+            # 拉取机器人所在的飞书群（设置页下拉）
+            import qq_lark as _L
+            try:
+                return self._reply(200, {"ok": True, "chats": _L.list_chats()})
+            except Exception as e:
+                return self._reply(200, {"ok": False, "error": str(e)[:200]})
         if u.path == "/api/usage":
             usage_path = pathlib.Path(os.path.join(DATA_DIR, "usage_log.jsonl"))
             now = time.time()
@@ -4820,6 +5006,97 @@ class UiHandler(BaseHTTPRequestHandler):
             if not isinstance(keys, list) or len(keys) > 10:
                 return self._reply(400, {"ok": False, "error": "参数非法"})
             return self._reply(200, S.cache_clean(keys))
+        if u.path == "/api/voice/config":
+            # 保存语音回复配置（reply_config.voice）
+            import qq_tts as _T
+            v = body.get("voice")
+            if not isinstance(v, dict):
+                return self._reply(400, {"ok": False, "error": "参数非法"})
+            clean = {
+                "enabled": bool(v.get("enabled")),
+                "provider": str(v.get("provider") or "edge")[:16],
+                "mode": str(v.get("mode") or "keyword")[:12],
+                "group_enabled": bool(v.get("group_enabled")),
+                "private_enabled": bool(v.get("private_enabled", True)),
+                "with_text": bool(v.get("with_text")),
+                "keywords": [str(x).strip()[:20] for x in (v.get("keywords") or [])
+                             if str(x).strip()][:8],
+                "prob": min(1.0, max(0.0, float(v.get("prob") or 0))),
+                "edge_voice": str(v.get("edge_voice") or "zh-CN-XiaoxiaoNeural")[:48],
+                "zhipu_voice": str(v.get("zhipu_voice") or "")[:48],
+                "zhipu_speaker_id": str(v.get("zhipu_speaker_id") or "")[:64],
+                "zhipu_key": str(v.get("zhipu_key") or "")[:128],
+                "sf_key": str(v.get("sf_key") or "")[:128],
+                "sf_model": str(v.get("sf_model") or "FunAudioLLM/cosyvoice2-0.5B")[:64],
+                "sf_voice": str(v.get("sf_voice") or "anna")[:64],
+                "custom_base": str(v.get("custom_base") or "")[:200],
+                "custom_key": str(v.get("custom_key") or "")[:128],
+                "custom_model": str(v.get("custom_model") or "tts-1")[:64],
+                "custom_voice": str(v.get("custom_voice") or "alloy")[:64],
+            }
+            _T.save_voice_cfg(clean)
+            return self._reply(200, {"ok": True, "config": _T.voice_cfg()})
+        if u.path == "/api/voice/preview":
+            # 试听：用当前表单配置合成一句，返回 data URI（<audio> 直接播）
+            import base64
+            import qq_tts as _T
+            v = body.get("voice") or {}
+            if not isinstance(v, dict):
+                return self._reply(400, {"ok": False, "error": "参数非法"})
+            text = str(body.get("text") or "你好呀，这是语音试听。")[:120]
+            cfg = dict(_T.voice_cfg())
+            cfg.update({k: v[k] for k in (
+                "provider", "edge_voice", "zhipu_voice", "zhipu_speaker_id",
+                "zhipu_key", "sf_key", "sf_model", "sf_voice",
+                "custom_base", "custom_key", "custom_model", "custom_voice") if k in v})
+            try:
+                p = _T.synthesize(text, cfg)
+                import pathlib as _pl
+                data = _pl.Path(p).read_bytes()
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
+                return self._reply(200, {"ok": True, "size": len(data),
+                    "audio": "data:audio/mpeg;base64," + base64.b64encode(data).decode()})
+            except Exception as e:
+                return self._reply(200, {"ok": False, "error": str(e)[:300]})
+        if u.path == "/api/lark/config":
+            # 保存飞书配置（app_secret 单独保存，不回显）
+            import qq_lark as _L
+            v = body.get("config")
+            if not isinstance(v, dict):
+                return self._reply(400, {"ok": False, "error": "参数非法"})
+            old = _L.cfg()
+            clean = {
+                "enabled": bool(v.get("enabled")),
+                "app_id": str(v.get("app_id") or "").strip()[:64],
+                "bridges": [],
+            }
+            for b in (v.get("bridges") or [])[:10]:
+                if not isinstance(b, dict):
+                    continue
+                qq_g = str(b.get("qq_group") or "").strip()[:24]
+                lk = str(b.get("lark_chat_id") or "").strip()[:64]
+                if qq_g and lk:
+                    clean["bridges"].append({
+                        "qq_group": qq_g, "lark_chat_id": lk,
+                        "to_lark": bool(b.get("to_lark", True)),
+                        "to_qq": bool(b.get("to_qq", False)),
+                    })
+            secret = str(v.get("app_secret") or "").strip()[:128]
+            clean["app_secret"] = secret if secret else str(old.get("app_secret") or "")
+            _L.save_cfg(clean)
+            _L._TOKEN["value"] = ""
+            return self._reply(200, {"ok": True})
+        if u.path == "/api/lark/test":
+            # 向指定飞书群发测试消息（验证配置）
+            import qq_lark as _L
+            try:
+                _L.send_text(str(body.get("chat_id") or ""), "✅ ZCode QQ机器人·飞书互通测试成功")
+                return self._reply(200, {"ok": True})
+            except Exception as e:
+                return self._reply(200, {"ok": False, "error": str(e)[:200]})
         if u.path == "/api/pause":
             paused = bool(body.get("paused"))
             cfg = load_json_const(MODEL_CHAIN_PATH, {})

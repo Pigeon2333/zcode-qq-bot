@@ -4164,12 +4164,26 @@ def process(daemon, msg):
     try:
         if texts:
             texts = _apply_owner_name(texts)
-            # 被@或被回复的针对性回应：引用原消息（更像真人回话）；其余触发不引用
-            reply_target = str(msg.get("message_id") or "") \
-                if msg.get("trigger_reason") in ("at", "reply_to_bot") else None
-            daemon.send(msg["chat_type"], msg["chat_id"], texts,
-                        reply_message_id=reply_target)
-            sent_desc.append("text:%d%s" % (len(texts), "+quote" if reply_target else ""))
+            # 语音回复：插件「语音回复」开启且命中策略时，本条改发语音
+            # （失败自动回退文字，绝不因语音故障丢回复）
+            try:
+                import qq_tts as _TTS
+                if _TTS.should_voice(msg):
+                    sent_v = _TTS.send_voice(daemon, msg["chat_type"],
+                                             msg["chat_id"], texts)
+                    if sent_v:
+                        sent_desc.append("voice:%d" % len(texts))
+                        if not _TTS.voice_with_text():
+                            texts = []   # 只发语音
+            except Exception as _ve:
+                out("AGENT_VOICE_FAIL %r" % _ve)
+            if texts:
+                # 被@或被回复的针对性回应：引用原消息（更像真人回话）；其余触发不引用
+                reply_target = str(msg.get("message_id") or "") \
+                    if msg.get("trigger_reason") in ("at", "reply_to_bot") else None
+                daemon.send(msg["chat_type"], msg["chat_id"], texts,
+                            reply_message_id=reply_target)
+                sent_desc.append("text:%d%s" % (len(texts), "+quote" if reply_target else ""))
         if stickers:
             for sid in stickers:
                 path = sticker_file_path(sid, active_persona)
