@@ -2460,6 +2460,10 @@ def build_messages(daemon, msg, ctx_k=32):
         "- 遵守人设的语气与长度习惯；高冷人设就要少说话\n"
         "- 称呼群友用昵称/群名片（对话里冒号前的名字），不要叫QQ号——QQ号仅用于标记记忆，对话中永远用名字\n"
         "- 想连发多条短消息时用 [[SPLIT]] 分隔（最多3条）\n"
+        "- 你有发语音消息的能力！当对方明确要求你「发语音/念给我听/说出来/语音回复」"
+        "或语境明显适合语音时（长段朗读、唱歌、说悄悄话等），在回复末尾单独一行输出 [语音] 标记"
+        "——系统会自动把这条回复转为语音发送。不需要每条都加，只在对方要求或真正合适时用；"
+        "被问「你会发语音吗」时大方承认会\n"
         "- 表情包要克制：只在情绪真正契合时偶尔发（约七八条回复最多一次），两句话内不重复发；只在列表中某张的描述与当前对话情绪/内容真正匹配时才选它，拿不准就不发（不发永远不会错）\n"
         "- 想发某张表情包时，单独输出一行 [STICKER:表情包id]\n"
         "- 出现值得长期记住的信息时，单独输出一行记忆标记，格式只有两种："
@@ -2524,6 +2528,9 @@ _DRAW_MARK_RE = re.compile(r"\[\s*(?:画|DRAW)\s*[:：]\s*([^\]]{1,300}?)\s*\]",
                            re.I | re.S)
 _DRAW_LEAK_RE = re.compile(r"\[\s*(?:画|DRAW)\s*[:：][^\]]{0,300}\]",
                            re.I | re.S)
+# [语音] —— 模型结合语境自主决定用语音回复（与关键词触发互补，同 [连线] 模式）
+_VOICE_MARK_RE = re.compile(r"^\s*\[\s*语音\s*\]\s*$", re.M)
+_VOICE_MARK_ANY_RE = re.compile(r"\[\s*语音\s*\]")   # 兜底：正文残留剥掉
 # [发到群: 目标|内容] —— 主人让机器人替自己去某个白名单群发话（提取后剥离）
 # 目标可以是群号或群名（模糊匹配白名单）；分隔符 | 或中文冒号。
 _SENDGRP_MARK_RE = re.compile(
@@ -4124,6 +4131,9 @@ def process(daemon, msg):
     # [连线]：主模型结合语境判定主人要操作电脑（无论是否触发都剥离，绝不泄漏）
     dev_ask = _DEVC_MARK_RE.search(reply) is not None
     reply = _DEVC_MARK_ANY_RE.sub("", reply)
+    # [语音] 标记：模型结合语境自主决定用语音回复（与关键词触发互补）
+    voice_ask = _VOICE_MARK_RE.search(reply) is not None
+    reply = _VOICE_MARK_ANY_RE.sub("", reply)
     texts, stickers, memo, draw, sendgrp = parse_reply(reply)
     if texts == "WAIT":
         daemon.ack([msg["id"]])
@@ -4202,7 +4212,7 @@ def process(daemon, msg):
             # （失败自动回退文字，绝不因语音故障丢回复）
             try:
                 import qq_tts as _TTS
-                if _TTS.should_voice(msg):
+                if _TTS.should_voice(msg) or voice_ask:
                     sent_v = _TTS.send_voice(daemon, msg["chat_type"],
                                              msg["chat_id"], texts)
                     if sent_v:
