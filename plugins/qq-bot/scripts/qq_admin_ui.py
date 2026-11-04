@@ -588,8 +588,14 @@ function bootCardHtml(b){
  }).join('');
  const badge=b.running?'<span class="badge" style="background:var(--tint);color:var(--fg-strong)">进行中</span>'
   :(b.failed?'<span class="badge b-bad">有失败项</span>':'<span class="badge b-ok">已完成</span>');
+ // 状态页反映「当前」状态：若此刻组件已全部在线（WS 已连、daemon/agent 运行），
+ // 上次启动留下的"登录等待失败"不再亮红——那是已被后续扫码解决的历史过程。
+ const allOnlineNow=(typeof window._lastStatus==='object'&&window._lastStatus&&window._lastStatus.wsNow===true&&window._lastStatus.daemonOk===true&&window._lastStatus.agentOk===true);
+ const effBadge=(b.failed&&!b.running&&allOnlineNow)
+  ?'<span class="badge b-ok">已恢复（当前全部在线）</span>':badge;
+ const effFailed=b.failed&&!b.running&&allOnlineNow?false:b.failed;
  return '<div class="card" id="bootcard"><div class="k" style="display:flex;gap:10px;align-items:center;margin-bottom:6px">'
-  +'启动任务 '+badge+(b.final?'<span class="k"'+(b.failed?' style="color:var(--err)"':'')+'>'+esc(b.final)+'</span>':'')
+  +'启动任务 '+effBadge+(b.final?'<span class="k"'+(effFailed?' style="color:var(--err)"':'')+'>'+esc(b.final)+'</span>':'')
   +(b.running?'':' <button class="act ghost" style="margin:0;padding:3px 10px;font-size:12px" onclick="$(\'#bootcard\').remove()">收起</button>')
   +'</div>'+(rows||'<div class="k">等待第一步…</div>')+'</div>';
 }
@@ -623,6 +629,8 @@ async function vStatus(){
  ]);
  manageBootTimer(b);
  const ws=d.ws_connected, login=d.login||{};
+ // 供启动任务卡判断"当前是否已全部在线"（历史登录等待失败不再亮红）
+ window._lastStatus={wsNow:ws===true,daemonOk:d.ok===true,agentOk:(a&&a.ok&&a.ready!==false)||false};
  const booting=!!(b&&b.running);
  const wdEvents=(wd.events||[]).slice(0,5).map(e=>'<div class="k mono" style="margin-top:3px">'+new Date(e.ts*1000).toLocaleTimeString()+' ['+esc(e.kind)+'] '+esc(e.detail)+'</div>').join('');
  const wdOk=wd.enabled&&!(wd.strikes>0);
