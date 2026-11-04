@@ -459,6 +459,43 @@ def store(source, session, path):
             "range": r["range"], "senders": r["senders"]}
 
 
+def store_rows(source, session, rows):
+    """合并转发导入：程序化行列表（[{sender,text}, ...]）直接落隔离库。
+    不经过文件解析（转发展平行没有时间戳，ts 记 0 保持结构一致）。"""
+    msgs = []
+    for r in (rows or [])[:_MAX_MSGS]:
+        if not isinstance(r, dict):
+            continue
+        text = str(r.get("text") or "").strip()[:2000]
+        if not text:
+            continue
+        msgs.append({"ts": int(r.get("ts") or 0),
+                     "sender": str(r.get("sender") or "?").strip()[:32] or "?",
+                     "text": text})
+    if not msgs:
+        return {"ok": False, "error": "转发里没有可导入的文本内容"}
+    if source not in SOURCES:
+        return {"ok": False, "error": "source 非法"}
+    safe = _safe_name(session)
+    d = pathlib.Path(BASE_DIR) / source / safe
+    n = 2
+    base = safe
+    while d.exists():                      # 重名自动加序号（转发可能分批导）
+        safe = "%s-%d" % (base, n)
+        d = pathlib.Path(BASE_DIR) / source / safe
+        n += 1
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "messages.json").write_text(
+        json.dumps(msgs, ensure_ascii=False), encoding="utf-8")
+    (d / "meta.json").write_text(json.dumps(
+        {"count": len(msgs), "range": ["", ""],
+         "senders": sorted({m["sender"] for m in msgs})[:12],
+         "source_file": "forward", "imported": time.time()},
+        ensure_ascii=False), encoding="utf-8")
+    return {"ok": True, "session": safe, "count": len(msgs),
+            "senders": sorted({m["sender"] for m in msgs})[:12]}
+
+
 def sessions(source):
     """隔离库会话列表。"""
     root = pathlib.Path(BASE_DIR) / (source if source in SOURCES else "qq")

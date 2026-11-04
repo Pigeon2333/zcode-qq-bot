@@ -3984,6 +3984,38 @@ def process(daemon, msg):
                 out("AGENT_OWNER_CMD msg_id=%s chat=private/%s cmd=%.30s"
                     % (msg["id"], msg["chat_id"], str(msg.get("text", ""))))
                 return
+        # 合并转发导入：主人把聊天记录合并转发发给机器人并说「导入」（可带会话名，
+        # 如"导入 和小明的聊天"）→ 展平内容直接入隔离库，插件页可学习。
+        # 不碰数据库解密，官方消息通道，任何 QQ 版本可用。
+        try:
+            flines = msg.get("forward_lines") or []
+            raw_text = str(msg.get("text") or "")
+            if flines and is_owner(msg) and "导入" in raw_text:
+                import qq_chatimport as _CII
+                m = re.search(r"导入\s*([^\n]{0,24})", raw_text)
+                name = (m.group(1).strip() if m else "").strip("，。！! ")
+                session = name or ("合并转发_%s" % time.strftime("%m%d_%H%M"))
+                rows = []
+                for ln in flines[:500]:
+                    if ": " in ln:
+                        s, t = ln.split(": ", 1)
+                        rows.append({"sender": s.strip()[:32], "text": t.strip()})
+                res = _CII.store_rows("qq", session, rows)
+                if res.get("ok"):
+                    daemon.send(msg["chat_type"], msg["chat_id"],
+                                ["已导入「%s」%d 条（说话人：%s）。去 插件 → QQ 聊天记录导入 点「学习成人设」让我消化吧～"
+                                 % (res["session"], res["count"],
+                                    "、".join(res.get("senders") or [])[:60])])
+                else:
+                    daemon.send(msg["chat_type"], msg["chat_id"],
+                                ["导入失败：%s" % res.get("error", "未知错误")])
+                daemon.ack([msg["id"]])
+                RT.count_processed()
+                out("AGENT_FORWARD_IMPORT msg_id=%s lines=%d session=%s"
+                    % (msg["id"], len(flines), session))
+                return
+        except Exception as _fie:
+            out("AGENT_FORWARD_IMPORT_FAIL %r" % _fie)
         # AI 互聊 v2：daemon 状态机送来的试探/判定轮
     _tr = msg.get("trigger_reason")
     if _tr == "botloop_probe":

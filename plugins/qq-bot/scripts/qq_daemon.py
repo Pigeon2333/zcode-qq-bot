@@ -540,6 +540,8 @@ def extract_message_info(segments, self_id):
                     texts.append(_forward_flattened_text(ls))
                     info["image_urls"].extend(im)
                     info["forward_inline"] = True  # 已展平，无需再拉
+                    # 完整展平行（不截断）供「合并转发导入」用；text 里是 1200 字截断版
+                    info.setdefault("forward_lines", []).extend(ls)
                 else:
                     # 老形态：content 是 [{"text": ...}] 简单文本
                     got = False
@@ -801,6 +803,8 @@ class Daemon:
                 ls, im = self._fetch_forward_content(fid)
                 lines.extend(ls)
                 imgs.extend(im)
+                # 完整展平行（不截断）供「合并转发导入」用
+                info.setdefault("forward_lines", []).extend(ls)
             except Exception as e:
                 out("AGENT_LOG {\"msg\": \"forward_fetch_fail\", \"id\": %s,"
                     " \"detail\": %s}"
@@ -861,6 +865,7 @@ class Daemon:
                 "reply_text": info.get("reply_text", ""),
                 "face_count": info["face_count"],
                 "has_record": info["record"],
+                "forward_lines": info.get("forward_lines") or [],
             }
             self.inbox.append(item)
             self.stats["received"] += 1
