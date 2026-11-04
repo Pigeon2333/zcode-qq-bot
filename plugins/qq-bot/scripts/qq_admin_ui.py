@@ -2257,7 +2257,7 @@ async function biliScan(){
    else if(p.state==='expired'){el.textContent='二维码已过期，请关闭重试';clearInterval(timer)}
   }catch(e){}
  },2000)}
-let _plTab='mine',_plCat='';
+let _plTab='mine',_plCat='',_mktCat='';
 function plCatBar(cats,cur,fn){
  return '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px" id="plcats">'+
   [''].concat(cats).map(c=>'<button class="act '+(c===cur?'':'ghost')+'" style="margin:0;padding:4px 14px;font-size:12.5px" onclick="'+fn+'(\''+esc(c)+'\')">'+(c||'全部')+'</button>').join('')+'</div>';
@@ -2297,7 +2297,10 @@ async function vMarket(){
  const el=document.getElementById('mktbody');
  if(!el)return;
  if(r.ok===false){el.innerHTML='市场拉取失败：'+esc(r.error||'')+'<div style="margin-top:8px"><button class="act" onclick="load()">重试</button></div>';return}
- const rows=(r.plugins||[]).map(p=>{
+ const all=r.plugins||[];
+ const cats=[...new Set(all.map(p=>p.category||'其他'))].sort();
+ const shown=all.filter(p=>!_mktCat||p.category===_mktCat);
+ const rows=shown.map(p=>{
   const has=!!p.installed, upd=has&&p.local_version&&p.version&&p.local_version!==p.version;
   const btn=p.builtin?'<span class="badge" style="background:var(--tint);color:var(--dim)">内置，无需安装</span>':
    (upd?'<button class="act" style="margin:0" onclick="mktInstall(\''+esc(p.name)+'\',true)">更新到 v'+esc(p.version)+'</button>':
@@ -2306,9 +2309,11 @@ async function vMarket(){
   return '<div class="card" style="margin-bottom:12px"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b style="font-size:14px">'+esc(p.title||p.name)+'</b><span class="badge" style="background:var(--tint);color:var(--dim)">'+esc(p.category||'其他')+'</span>'+(p.version?'<span class="badge" style="background:var(--tint);color:var(--dim)">v'+esc(p.version)+'</span>':'')+(p.size?'<span class="k">'+(p.size/1024).toFixed(0)+'KB</span>':'')+'<span style="margin-left:auto">'+btn+'</span></div>'+
    '<div class="k" style="margin-top:6px">'+esc(p.description||'')+'</div></div>';
  }).join('');
- el.outerHTML=((r.plugins||[]).length?rows:'<div class="card">市场暂无插件</div>')+
+ el.outerHTML=(cats.length>1?plCatBar(cats,_mktCat,'mktCatSel'):'')+
+ (shown.length?rows:'<div class="card">该分类暂无插件</div>')+
  '<div class="card" style="margin-top:4px"><div class="k">把自己写的插件发上来？开发与上架流程见仓库 <b>PLUGINS.md</b>（github.com/Pigeon2333/zcode-qq-bot）</div></div>';
 }
+function mktCatSel(c){_mktCat=c;load()}
 async function mktInstall(name,updating){
  const r=await runTask((updating?'更新':'安装')+'插件 '+name,'/api/plugins/market-install',{name:name});
  if(r.ok===false){toast('失败：'+(r.error||''),false);return}
@@ -2319,6 +2324,14 @@ async function plPage(name){
  const r=await api('/api/plugins').catch(()=>({plugins:[]}));
  const p=(r.plugins||[]).find(x=>x.name===name);
  if(!p){toast('插件不存在',false);return}
+ // 插件包自带页面脚本：随 zip 分发（版本变化重新注入）——页面改版走插件更新通道
+ if(p.page&&p.page_js&&(!window['__pj_'+name]||window['__pj_'+name]!==p.version)){
+  const pj=await api('/api/plugins/pagejs?name='+encodeURIComponent(name)).catch(()=>({ok:false}));
+  if(pj&&pj.ok&&pj.js){
+   try{ (new Function(pj.js))(); window['__pj_'+name]=p.version; }
+   catch(e){ toast('插件页面脚本加载失败：'+e,false) }
+  }
+ }
  let data={};
  if(p.page&&p.page.data){data=await api(p.page.data).catch(()=>({}))}
  const fn=p.page?window[p.page.js]:null;
@@ -3579,8 +3592,27 @@ class UiHandler(BaseHTTPRequestHandler):
                             "enabled": host.enabled(name, bool(mf.get("default_enabled", False))),
                             "settings": mf.get("settings") or [],
                             "values": values,
-                            "page": mf.get("page") or None})
+                            "page": mf.get("page") or None,
+                            "page_js": os.path.isfile(os.path.join(str(pdir), "page.js"))})
             return self._reply(200, {"ok": True, "plugins": out})
+        if u.path == "/api/plugins/pagejs":
+            # 插件包自带页面脚本（随插件 zip 分发，更新插件即更新页面）
+            import qq_plugins as _qp
+            name = str(q.get("name") or "").strip()
+            if not _qp._safe_name(name):
+                return self._reply(400, {"ok": False, "error": "插件名非法"})
+            host = _qp.PluginHost()
+            for nm, (_mf, pdir, _b) in host.scan().items():
+                if nm == name:
+                    pj = os.path.join(str(pdir), "page.js")
+                    if os.path.isfile(pj):
+                        try:
+                            return self._reply(200, {"ok": True, "js":
+                                pathlib.Path(pj).read_text(encoding="utf-8")[:200000]})
+                        except OSError as e:
+                            return self._reply(200, {"ok": False, "error": repr(e)})
+                    return self._reply(200, {"ok": False, "error": "该插件不带 page.js"})
+            return self._reply(404, {"ok": False, "error": "插件不存在"})
         if u.path == "/api/persona-routes":
             d = load_json_const(PERSONA_ROUTES_PATH, {})
             routes = (d.get("routes") or []) if isinstance(d, dict) else []
