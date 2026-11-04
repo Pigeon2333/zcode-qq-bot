@@ -486,13 +486,21 @@ def _http_get(url, timeout=20, _hops=0, progress=None):
     return b"".join(chunks)
 
 
-def market_list(url=None):
-    """拉市场清单：[{"name","version","title","description","zip","size"}]。"""
+_MARKET_CACHE = {"ts": 0.0, "data": None}   # 5 分钟缓存（GitHub 拉取 20s+，每次进页面都等太慢）
+_MARKET_CACHE_TTL = 300
+
+
+def market_list(url=None, force=False):
+    """拉市场清单：[{"name","version","title","description","zip","size"}]。
+    5 分钟内存缓存：首次拉取后缓存，后续秒回；force=True 跳过缓存（安装/更新后用）。"""
     u = url or DEFAULT_MARKET_URL
+    if not force and not url and _MARKET_CACHE["data"] \
+            and time.time() - _MARKET_CACHE["ts"] < _MARKET_CACHE_TTL:
+        return _MARKET_CACHE["data"]
     last_err = None
     for cand in (u,) + tuple(m for m in _MARKET_MIRRORS if m != u):
         try:
-            data = _http_get(cand)
+            data = _http_get(cand, timeout=30)
             d = json.loads(data.decode("utf-8", "replace"))
             items = d.get("plugins") if isinstance(d, dict) else d
             out = []
@@ -507,16 +515,23 @@ def market_list(url=None):
                             "description": str(it.get("description") or ""),
                             "zip": str(it["zip"]),
                             "size": int(it.get("size") or 0)})
-            return {"ok": True, "plugins": out}
+            res = {"ok": True, "plugins": out}
+            if not url:
+                _MARKET_CACHE["ts"] = time.time()
+                _MARKET_CACHE["data"] = res
+            return res
         except Exception as e:
             last_err = e
+    # 全部失败时回落缓存（哪怕过期也比报错好）
+    if _MARKET_CACHE["data"]:
+        return _MARKET_CACHE["data"]
     return {"ok": False, "error": "市场清单拉取失败：%s" % last_err}
 
 
 def market_install(name, url=None, progress=None):
     """从市场下载并安装/更新一个插件（sha256 可选校验）。
     progress(phase, pct, msg) 供进度展示。"""
-    ml = market_list(url)
+    ml = market_list(url, force=True)   # 安装时跳过缓存（拿最新版本号）
     if not ml.get("ok"):
         return ml
     item = next((p for p in ml["plugins"] if p["name"] == str(name)), None)
