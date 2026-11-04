@@ -3611,6 +3611,31 @@ class UiHandler(BaseHTTPRequestHandler):
                             "page": mf.get("page") or None,
                             "page_js": os.path.isfile(os.path.join(str(pdir), "page.js"))})
             return self._reply(200, {"ok": True, "plugins": out})
+        if u.path == "/api/daily-summaries":
+            # 分天存储的日报+热点历史（daily_summaries/<date>.json）
+            sdir = pathlib.Path(DATA_DIR) / "daily_summaries"
+            date = str(q.get("date") or "").strip()
+            if date:
+                p = sdir / (date[:10] + ".json")
+                if not p.is_file():
+                    return self._reply(404, {"ok": False, "error": "该日无记录"})
+                try:
+                    return self._reply(200, json.loads(
+                        p.read_text(encoding="utf-8")))
+                except (OSError, ValueError) as e:
+                    return self._reply(200, {"ok": False, "error": str(e)[:120]})
+            out = []
+            if sdir.is_dir():
+                for f in sorted(sdir.glob("*.json"), reverse=True):
+                    try:
+                        d = json.loads(f.read_text(encoding="utf-8"))
+                        out.append({"date": d.get("date") or f.stem[:10],
+                                    "report": str(d.get("report") or "")[:80],
+                                    "hot": str(d.get("hot") or "")[:60],
+                                    "stats": d.get("stats") or {}})
+                    except (OSError, ValueError):
+                        continue
+            return self._reply(200, {"ok": True, "days": out[:90]})
         if u.path == "/api/plugins/pagejs":
             # 插件包自带页面脚本（随插件 zip 分发，更新插件即更新页面）
             import qq_plugins as _qp

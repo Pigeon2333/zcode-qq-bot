@@ -4559,6 +4559,37 @@ def _daily_review_once(daemon):
             out("AGENT_ZCODE_REPORT %s" % rdir)
         except OSError as e:
             out("AGENT_ZCODE_REPORT_FAIL %r" % e)
+    # 分天存储：日报+热点存 DATA_DIR/daily_summaries/<date>.json（设置页可查历史）
+    try:
+        sdir = pathlib.Path(DATA_DIR) / "daily_summaries"
+        sdir.mkdir(parents=True, exist_ok=True)
+        hot = ""
+        try:
+            _hb = json.loads(read_const(HOT_BRIEF_PATH, "{}"))
+            if isinstance(_hb, dict) and _hb.get("text"):
+                hot = str(_hb["text"])[:500]
+        except Exception:
+            pass
+        pathlib.Path(sdir / (time.strftime("%Y-%m-%d") + ".json")).write_text(
+            json.dumps({"date": time.strftime("%Y-%m-%d"),
+                        "report": report, "hot": hot,
+                        "stats": {"done": done, "skip": skip, "err": err},
+                        "persona": active,
+                        "notes": notes}, ensure_ascii=False, indent=1),
+            encoding="utf-8")
+        # 自动清理过期
+        try:
+            keep_days = int(C.load_app_config().get("summary_keep_days", 0))
+        except (TypeError, ValueError):
+            keep_days = 0
+        if keep_days > 0:
+            import datetime as _dt2
+            cutoff = (_dt2.date.today() - _dt2.timedelta(days=keep_days)).isoformat()
+            for f in sdir.glob("*.json"):
+                if f.stem < cutoff:
+                    f.unlink(missing_ok=True)
+    except Exception as e:
+        out("AGENT_SUMMARY_SAVE_FAIL %r" % e)
     out("AGENT_REVIEW_DONE done=%d skip=%d err=%d notes=%d"
         % (done, skip, err, len(notes)))
 
@@ -4630,12 +4661,20 @@ def _logs_autoclean():
 
 
 def _daily_review_loop(daemon):
-    """定时循环：复盘与备份各自按配置时间触发（错过当天在窗口内补跑一次）。"""
-    state = {"review": "", "backup": "", "logclean": ""}
+    """定时循环：复盘与备份各自按配置时间触发（错过当天在窗口内补跑一次）。
+    状态持久化到 DATA_DIR/.review_state.json——agent 重启不丢"今天已跑过"。"""
     import datetime as _dt
+    _SP = os.path.join(DATA_DIR, ".review_state.json")
+    def _load_st():
+        try:
+            return json.loads(read_const(_SP, "{}"))
+        except Exception:
+            return {}
+    def _save_st(st):
+        write_const(_SP, json.dumps(st))
+    state = _load_st()
     def _due(kind):
         cfg = C.load_app_config()
-        # logclean 不单设时间：跟在备份时间之后半小时触发
         _tkey = {"review": "review", "backup": "backup"}.get(kind, "backup")
         _def = "03:30" if kind == "review" else (
             "04:30" if kind == "logclean" else "04:00")
@@ -4651,15 +4690,17 @@ def _daily_review_loop(daemon):
                 _dt.time(4, 30) if kind == "logclean" else _dt.time(4, 0))
         now = _dt.datetime.now()
         key = now.strftime("%Y-%m-%d") + "|" + kind
-        if state[kind] == key:
+        if state.get(kind) == key:
             return False
         due_at = _dt.datetime.combine(now.date(), tgt)
-        window = due_at + _dt.timedelta(hours=2)
+        window = due_at + _dt.timedelta(hours=6)   # 补跑窗口 6h（重启频繁不再错过）
         if due_at <= now <= window:
             state[kind] = key
+            _save_st(state)
             return True
         return False
     while True:
+        time.sleep(60)   # 每分钟查一次（此前漏写 sleep 空转烧 CPU）
         try:
             cfg = C.load_app_config()
             if _due("logclean"):
