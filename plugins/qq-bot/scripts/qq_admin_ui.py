@@ -549,7 +549,7 @@ function dirtyOn(el,btnId){el.classList.add('dirty');const b=document.getElement
 function dirtyOff(btnId){const b=document.getElementById(btnId);if(b)b.disabled=true;document.querySelectorAll('textarea.dirty,input.dirty').forEach(x=>x.classList.remove('dirty'))}
 async function dirtyGuard(){const d=document.querySelector('textarea.dirty,input.dirty');if(!d)return true;
  return await dlgConfirm({title:'有未保存的修改',body:'当前有未保存的修改（蓝色边框标记），离开将丢失。确定离开？',okText:'放弃修改',danger:true})}
-async function load(){try{if(TAB==='status')await vStatus();else if(TAB==='runlog')await vRunlog();else if(TAB==='models')await vModels();else if(TAB==='groups')await vGroups();else if(TAB==='private')await vPrivate();else if(TAB==='persona')await vPersonas();else if(TAB==='style')await vFile('style');else if(TAB==='memory')await vMemory();else if(TAB==='stickers')await vStickers();else if(TAB==='devctrl')await vDevCtrl();else if(TAB==='zcode')await vZcode();else if(TAB==='plugins')await vPlugins();else if(TAB==='settings')await vSettings();else if(TAB==='about')await vAbout();}catch(e){$('#view').innerHTML='<div class="card">加载失败: '+esc(e)+'</div>'}}
+async function load(){try{if(TAB==='status')await vStatus();else if(TAB==='runlog')await vRunlog();else if(TAB==='models')await vModels();else if(TAB==='groups')await vGroups();else if(TAB==='private')await vPrivate();else if(TAB==='persona')await vPersonas();else if(TAB==='style')await vFile('style');else if(TAB==='memory')await vMemory();else if(TAB==='stickers')await vStickers();else if(TAB==='devctrl')await vDevCtrl();else if(TAB==='zcode')await vZcode();else if(TAB==='plugins')await vPlugins();else if(TAB==='settings'){await vSettings();cacheReload();}else if(TAB==='about')await vAbout();}catch(e){$('#view').innerHTML='<div class="card">加载失败: '+esc(e)+'</div>'}}
 document.querySelectorAll('#nav button').forEach(b=>b.onclick=async()=>{if(!await dirtyGuard())return;document.querySelectorAll('#nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');TAB=b.dataset.t;if(TAB!=='runlog'&&_runlogTimer){clearInterval(_runlogTimer);_runlogTimer=null}if(TAB!=='devctrl'&&_devCodeTimer){clearInterval(_devCodeTimer);_devCodeTimer=null}if(TAB!=='status'&&_ncTokTimer){clearInterval(_ncTokTimer);_ncTokTimer=null}skeleton();load()});
 const _urlTab=new URLSearchParams(location.search).get('tab');
 if(_urlTab&&TITLES[_urlTab]){TAB=_urlTab;document.querySelectorAll('#nav button').forEach(x=>x.classList.toggle('on',x.dataset.t===_urlTab));}
@@ -1763,6 +1763,13 @@ async function vSettings(){
   <button class="act ghost" style="margin:0" onclick="backupNow()">立即备份</button>
   <button class="act" style="margin:0" onclick="restorePicker()">从备份恢复…</button></div>
   <div class="k" style="margin-top:4px">备份范围：人设合集、风格卡、自进化观察、长期记忆、回复/分群/私聊/白名单配置、模型链、表情包索引（含视觉描述缓存）、设备操控流程、定时任务、主动消息状态、用量流水、本页应用设置。密钥类文件（API Key/token）出于安全不备份，恢复后如缺失需重新填写。超过保留天数或保留份数的旧备份自动清理（最旧的先清）</div></div></div>
+ <div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">缓存管理<span class="badge" style="background:var(--tint);color:var(--dim)">手动清理 · 进回收站 · 不会自动清理</span></div>
+  <div class="k" style="margin-bottom:4px">机器人会把重复使用的数据缓存在本机以省 token 和流量（安装包、当天素材、图片暂存等）。下面是各类缓存的实际大小，勾选后手动清理——<b>只释放磁盘空间</b>，人设/记忆/表情包/聊天导入库等个人数据不在此列；被清的都是可再生内容，文件移入回收站可反悔。</div>
+  <div id="cachelist"></div>
+  <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+   <button class="act ghost" style="margin:0" onclick="cacheReload()">刷新大小</button>
+   <button class="act" style="margin:0" onclick="cacheClean()">清理所选缓存…</button>
+   <span class="k" id="cachetotal"></span></div></div>
  <div class="card"><div class="k" style="margin-bottom:8px">所在地天气感知</div>
   <div class="k">已插件化：城市与开关在「插件 → 所在地天气感知 → ⚙ 设置」里配置（留空 = 不感知）。之前在这里填过的城市会自动沿用。</div></div>
  <div class="card"><div class="k" style="margin-bottom:8px">QQ 在线状态</div>
@@ -2012,6 +2019,35 @@ async function saveEnv(id,key,port,msg){
  const v=$('#'+id).value.trim();
  await saveKV('/api/app-config',{[key]:port?+v:v},msg||(port?'端口已保存（重启各组件后生效）':null))}
 async function saveAuto(on){const r=await api('/api/autostart',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enable:on})});_autoReg=on;toast(r.message||'已更新')}
+let _cacheItems=[];
+function cacheMB(b){return (b/1048576).toFixed(b>=1048576?1:2)+' MB'}
+async function cacheReload(){
+ const box=document.getElementById('cachelist');if(!box)return;
+ box.innerHTML='<div class="k">统计中…</div>';
+ const r=await api('/api/cache/stats').catch(()=>({ok:false}));
+ if(r.ok===false){box.innerHTML='<div class="k">统计失败（稍后重试）</div>';return}
+ _cacheItems=r.items||[];
+ box.innerHTML=_cacheItems.map(it=>'<div style="display:flex;gap:8px;align-items:flex-start;margin:7px 0;padding:8px;border:1px solid var(--line);border-radius:8px">'
+  +'<input type="checkbox" class="cacheck" data-k="'+esc(it.key)+'" checked style="margin-top:3px">'
+  +'<div style="flex:1"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b>'+esc(it.label)+'</b>'
+  +'<span class="badge" style="background:var(--tint);color:var(--dim)">'+(it.size?cacheMB(it.size):'空')+'</span></div>'
+  +'<div class="k" style="margin-top:3px">'+esc(it.desc)+'</div></div></div>').join('');
+ const tot=document.getElementById('cachetotal');
+ if(tot)tot.textContent='合计 '+cacheMB(_cacheItems.reduce((s,it)=>s+(it.size||0),0));
+}
+async function cacheClean(){
+ const keys=[...document.querySelectorAll('.cacheck:checked')].map(x=>x.dataset.k);
+ if(!keys.length){toast('先勾选要清理的缓存',false);return}
+ const names=keys.map(k=>((_cacheItems.find(i=>i.key===k)||{}).label||k)).join('、');
+ const sz=cacheMB(keys.reduce((s,k)=>s+(((_cacheItems.find(i=>i.key===k)||{}).size)||0),0));
+ const ok=await dlgConfirm({title:'清理缓存（二次确认）',danger:true,okText:'确认清理',
+  body:'将清理：<b>'+esc(names)+'</b>（约 '+sz+'）<br><br>· 文件移入<b>回收站</b>，删错可还原<br>· 各项后果见说明（如：组件安装包下次安装/修复时需重新下载；素材缓存下个节拍自动重拉，多花一点流量不花 token）<br>· 不影响人设、记忆、表情包、聊天导入库与任何个人数据<br><br>确定清理吗？'});
+ if(!ok)return;
+ const r=await api('/api/cache/clean',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({keys})}).catch(()=>({ok:false,error:'请求失败'}));
+ if(r.ok===false){toast(r.error||'清理失败',false);return}
+ toast('已清理 '+cacheMB(r.freed||0)+'（进回收站，可还原）');
+ cacheReload();
+}
 async function savePowerOn(on){await saveKV('/api/app-config',{auto_power_on:on},on?'已开启：打开应用即自动启动机器人（已生效）':'已关闭：需在「状态」页手动启动（已生效）')}
 async function saveCloseAction(v){await saveKV('/api/app-config',{close_action:v},'关闭行为已保存（已生效）')}
 const _MODE_NAME={standard:'标准',keyword:'关键词',chat:'闲聊'};
@@ -3401,6 +3437,8 @@ class UiHandler(BaseHTTPRequestHandler):
             return self._reply(200, {"ok": True, "set": bool(key), "mask": mask})
         if u.path == "/api/autostart":
             return self._reply(200, {"ok": True, "enabled": S.autostart_enabled()})
+        if u.path == "/api/cache/stats":
+            return self._reply(200, S.cache_stats())
         if u.path == "/api/usage":
             usage_path = pathlib.Path(os.path.join(DATA_DIR, "usage_log.jsonl"))
             now = time.time()
@@ -4776,6 +4814,12 @@ class UiHandler(BaseHTTPRequestHandler):
             data["_global"] = str(body.get("text", ""))[:20000]
             write_const(PERSONA_COLLECTION_PATH, json.dumps(data, ensure_ascii=False, indent=2))
             return self._reply(200, {"ok": True})
+        if u.path == "/api/cache/clean":
+            # 缓存清理（回收站）；keys 由 UI 二次确认后传入
+            keys = body.get("keys") or []
+            if not isinstance(keys, list) or len(keys) > 10:
+                return self._reply(400, {"ok": False, "error": "参数非法"})
+            return self._reply(200, S.cache_clean(keys))
         if u.path == "/api/pause":
             paused = bool(body.get("paused"))
             cfg = load_json_const(MODEL_CHAIN_PATH, {})

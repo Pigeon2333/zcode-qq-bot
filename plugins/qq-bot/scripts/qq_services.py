@@ -28,6 +28,8 @@ import threading
 import time
 import urllib.parse
 import winreg
+import ctypes
+import glob
 
 import qq_common as C
 
@@ -1030,3 +1032,112 @@ def set_autostart(enable):
     cfg["autostart_with_windows"] = enable
     C.save_app_config(cfg)
     return True, ("已开启开机自启" if enable else "已关闭开机自启")
+
+
+# ---------------------------------------------------------------------------
+# 缓存管理：为省 token / 流量不重复拉取的本地缓存，供用户手动清理
+# （不自动清理；清理走回收站，绝不直接删）
+# ---------------------------------------------------------------------------
+
+class _SHFILEOPSTRUCTW(ctypes.Structure):
+    _fields_ = [("hwnd", ctypes.c_void_p), ("wFunc", ctypes.c_uint),
+                ("pFrom", ctypes.c_wchar_p), ("pTo", ctypes.c_wchar_p),
+                ("fFlags", ctypes.c_ushort),
+                ("fAnyOperationsAborted", ctypes.c_int),
+                ("hNameMappings", ctypes.c_void_p),
+                ("lpszProgressTitle", ctypes.c_wchar_p)]
+
+
+def _recycle(path):
+    """把文件/目录移入回收站（FO_DELETE + FOF_ALLOW_UNDO）。"""
+    path = str(path)
+    if not os.path.exists(path):
+        return 0
+    op = _SHFILEOPSTRUCTW()
+    op.hwnd = None
+    op.wFunc = 3  # FO_DELETE
+    op.pFrom = path + "\0"
+    op.fFlags = 0x40 | 0x10  # FOF_ALLOW_UNDO | FOF_NOCONFIRMATION
+    try:
+        rc = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+        return 0 if rc == 0 else -1
+    except OSError:
+        return -1
+
+
+def _dir_size(path):
+    total = 0
+    try:
+        if os.path.isfile(path):
+            return os.path.getsize(path)
+        for root, _dirs, files in os.walk(path):
+            for f in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, f))
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return total
+
+
+def _cache_kinds():
+    """缓存分类清单：key → 说明（UI 展示）+ 待清路径生成器。
+    只列「可再生」的缓存——人设/记忆/表情包/聊天导入库等用户资产一律不列。"""
+    d = C.DATA_DIR
+
+    def _files(*names):
+        return [os.path.join(d, n) for n in names if os.path.isfile(os.path.join(d, n))]
+
+    return [
+        {"key": "downloads", "label": "组件安装包缓存",
+         "desc": "NapCat / 独立运行时 QQ 的安装包下载缓存。清理不影响已装好的组件；下次安装或修复时需重新下载。",
+         "paths": [os.path.join(d, "downloads")]},
+        {"key": "update_stage", "label": "在线更新残留",
+         "desc": "应用内更新时的解压临时文件（更新成功后本应自动清，偶尔残留）。清理无任何影响。",
+         "paths": [os.path.join(d, "updates", "stage")]},
+        {"key": "material", "label": "插件素材缓存",
+         "desc": "每日热点 / 每日一句 / B 站见闻等当天素材缓存。清理后下个节拍自动重新拉取（花一点点流量，不花 token）。",
+         "paths": _files("hot_brief.json", "daily_word.json", "bilibili_brief.json")},
+        {"key": "media_tmp", "label": "消息图片暂存",
+         "desc": "聊天中收发图片的临时文件（不含你的表情包库和 AI 生成图）。清理无影响。",
+         "paths": [os.path.join(d, "cache", "images")]},
+        {"key": "diag", "label": "诊断包",
+         "desc": "排障时生成的一次性诊断压缩包。交给开发者看完即可清。",
+         "paths": sorted(glob.glob(os.path.join(d, "qqbot-diag-*.zip")))},
+    ]
+
+
+def cache_stats():
+    """各类缓存大小统计（字节）。"""
+    out = []
+    for k in _cache_kinds():
+        size = 0
+        for p in k["paths"]:
+            size += _dir_size(p)
+        out.append({"key": k["key"], "label": k["label"], "desc": k["desc"],
+                    "size": size})
+    return {"ok": True, "items": out}
+
+
+def cache_clean(keys):
+    """清理所选缓存（回收站）。目录类清「内容」保留目录本身。"""
+    valid = {k["key"]: k for k in _cache_kinds()}
+    done, freed = [], 0
+    for key in [str(x) for x in (keys or [])]:
+        kind = valid.get(key)
+        if not kind:
+            continue
+        for p in kind["paths"]:
+            if not os.path.exists(p):
+                continue
+            freed += _dir_size(p)
+            if os.path.isdir(p):
+                # 目录：清内容、保留目录（downloads/stage/cache-images）
+                for item in os.listdir(p):
+                    if _recycle(os.path.join(p, item)) != 0:
+                        pass
+            else:
+                _recycle(p)
+        done.append(kind["label"])
+    return {"ok": True, "cleaned": done, "freed": freed}
