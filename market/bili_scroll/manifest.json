@@ -1,6 +1,6 @@
 {
   "name": "bili_scroll",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "title": "B 站刷视频",
   "description": "机器人用自己的 B 站账号扫码登录后，按周期以人设与记忆兴趣刷视频：见闻注入聊天、好物按人设口吻分享（渠道/目标可配）；消息里的 BV 号/链接自动带视频信息进对话。Cookie 只存本机。",
   "default_enabled": false,
@@ -12,6 +12,14 @@
       "default": 180,
       "min": 30,
       "max": 1440
+    },
+    {
+      "key": "max_per_round",
+      "type": "number",
+      "label": "每轮最多刷/分享几个（上限不是强制：她按人设口味自主决定这轮挑 0 到上限个，优先挑最感兴趣的，没感觉就不硬凑）",
+      "default": 2,
+      "min": 1,
+      "max": 10
     },
     {
       "key": "keywords",

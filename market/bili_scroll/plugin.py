@@ -141,8 +141,15 @@ def _interest_words():
 
 
 def _pick(items):
-    """LLM 兴趣判定（人设口味 + 记忆里的避雷线）：返回 [(item, feeling)]。"""
+    """LLM 兴趣判定（人设口味 + 记忆里的避雷线）：返回 [(item, feeling)]。
+    max_per_round 是护栏不是任务量——按人设自主决定 0 到上限个，
+    按感兴趣程度排序，没感觉不硬凑。"""
     try:
+        limit = 2
+        try:
+            limit = max(1, min(10, int(_api.setting("max_per_round", 2))))
+        except (TypeError, ValueError):
+            pass
         import qq_bot_agent as A
         _, avoid = _interest_words()  # 缓存命中，不重复调 LLM
         avoid_line = ("\n已知主人/大家明确不喜欢的（这类不要挑）：%s。"
@@ -153,11 +160,14 @@ def _pick(items):
         prompt = (
             "你是 B 站资深用户，正按自己的兴趣刷视频。你的人设与性格：\n%s\n%s\n\n"
             "候选视频：\n%s\n\n"
-            "从这些视频里挑 0-2 个你（以人设的身份和喜好）真心感兴趣的，"
+            "从这些视频里挑你（以人设的身份和喜好）真心感兴趣的，这轮最多 %d 个。"
+            "把挑中的按你的感兴趣程度从高到低排列（最想安利的排最前），"
             "并为每个写一句不超过 40 字的、符合人设口吻的观后感想（像发弹幕/跟朋友安利，"
-            "不要书面腔；没感觉就不硬挑）。输出纯 JSON："
+            "不要书面腔）。数量由真实兴趣决定：真心喜欢的多就多挑、只对一个有感觉就只挑一个、"
+            "都没感觉就一个不挑——绝不为了凑数硬挑。"
+            "输出纯 JSON："
             "{\"picks\":[{\"idx\":序号,\"feeling\":\"感想\"}]}，没有就 {\"picks\":[]}。"
-            % (_persona_digest(), avoid_line, listing))
+            % (_persona_digest(), avoid_line, listing, limit))
         _m, text = A.call_glm_with_fallback(
             [{"role": "system", "content": "只输出符合要求的 JSON。"},
              {"role": "user", "content": prompt}], "")
@@ -166,7 +176,7 @@ def _pick(items):
             return []
         got = json.loads(mm.group(0))
         out = []
-        for p in (got.get("picks") or [])[:2]:
+        for p in (got.get("picks") or [])[:limit]:
             try:
                 idx = int(p.get("idx", -1))
             except (TypeError, ValueError):
