@@ -61,6 +61,37 @@ class PluginAPI:
         """读私有存储的一个键（不存在返回 default）。"""
         return self._host.data_load(self.name, key, default)
 
+    def send(self, chat_type, chat_id, texts):
+        """以机器人身份发文字消息（走 daemon 发送队列：限流+打字延迟+防重复）。
+        chat_type: "group"/"private"；texts: str 或 [str]。"""
+        daemon = self._host.daemon
+        if daemon is None:
+            raise RuntimeError("发送通道未就绪（agent 尚未连接 daemon）")
+        if chat_type not in ("group", "private"):
+            raise ValueError("chat_type 必须是 group/private")
+        if not isinstance(texts, list):
+            texts = [texts]
+        return daemon.send_texts(chat_type, str(chat_id), texts)
+
+    def send_image(self, chat_type, chat_id, file_path, caption=None):
+        """以机器人身份发图片（文件须在数据目录约定子目录：cache/images、
+        images、stickers）。"""
+        daemon = self._host.daemon
+        if daemon is None:
+            raise RuntimeError("发送通道未就绪")
+        if chat_type not in ("group", "private"):
+            raise ValueError("chat_type 必须是 group/private")
+        return daemon.send_image(chat_type, str(chat_id), file_path, caption=caption)
+
+    def send_voice(self, chat_type, chat_id, file_path):
+        """以机器人身份发语音（文件须在数据目录 cache/tts 之下）。"""
+        daemon = self._host.daemon
+        if daemon is None:
+            raise RuntimeError("发送通道未就绪")
+        if chat_type not in ("group", "private"):
+            raise ValueError("chat_type 必须是 group/private")
+        return daemon.send_record(chat_type, str(chat_id), file_path)
+
     def on_tick(self, fn):
         self._host.hooks.setdefault(self.name, {})["tick"] = fn
 
@@ -105,6 +136,7 @@ class PluginHost:
         self.hooks = {}          # name -> {"tick": fn, "inject": fn}
         self.routes = {}         # name -> {method: fn}  插件自定义端点
         self.manifests = {}      # name -> manifest dict
+        self.daemon = None       # agent 连接的 DaemonClient（api.send 走它）
         self._log_fn = log_fn or (lambda m: print(m, flush=True))
         self._state_mtime = 0.0
         self._state_cache = {}
