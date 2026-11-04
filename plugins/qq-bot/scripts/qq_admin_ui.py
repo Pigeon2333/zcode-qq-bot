@@ -2473,7 +2473,7 @@ function voicePage(d){
  +'<div style="display:flex;gap:14px;margin-top:8px;flex-wrap:wrap">'
  +'<label><input type="checkbox" id="v-priv" '+(c.private_enabled!==false?'checked':'')+'> 私聊启用</label>'
  +'<label><input type="checkbox" id="v-grp" '+(c.group_enabled?'checked':'')+'> 群聊启用</label>'
- +'<label><input type="checkbox" id="v-wt" '+(c.with_text?'checked':'')+'> 语音和文字同时发</label></div>'
+ +'<label title="勾上=同一条回复发两个版本（先语音后同样内容的文字）；不勾=只发语音"><input type="checkbox" id="v-wt" '+(c.with_text?'checked':'')+'> 命中语音时同时发文字版</label></div>'
  +'<div class="k" style="margin-top:10px">触发方式</div>'
  +'<div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:4px">'
  +'<label><input type="radio" name="vmode" value="keyword" '+(mode==='keyword'?'checked':'')+'> 对方消息含触发词时</label>'
@@ -2481,7 +2481,7 @@ function voicePage(d){
  +'<label><input type="radio" name="vmode" value="mixed" '+(mode==='mixed'?'checked':'')+'> 触发词必语音，其余按概率</label></div>'
  +'<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">'
  +'<input id="v-kw" value="'+esc(kw)+'" placeholder="触发词，用、分隔（如：念一下、发语音）" style="flex:1;min-width:220px">'
- +'<label class="k">概率 <input id="v-prob" type="number" min="0" max="1" step="0.1" value="'+esc(String(c.prob||0))+'" style="width:64px"></label></div>'
+ +'<label class="k">语音概率 <input id="v-prob" type="number" min="0" max="100" step="5" value="'+esc(String(Math.round((c.prob||0)*100)))+'" style="width:64px"> %</label><span class="k">（触发词必语音；其余消息按此概率语音回复）</span></div>'
  +'<div style="margin-top:10px"><button class="act" style="margin:0" onclick="voiceSave()">保存设置</button><span class="k" id="v-ok" style="margin-left:8px"></span></div></div>'
  +'<div class="card"><div class="k" style="margin-bottom:8px"><b>语音来源与音色</b>（供应商可随时换，互不影响）</div>'
  +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="k">供应商</span><select id="v-prov" onchange="voiceProvChange()">'+vopts+'</select></div>'
@@ -2529,7 +2529,7 @@ function voiceCollect(){
   group_enabled:document.getElementById('v-grp').checked,
   with_text:document.getElementById('v-wt').checked,
   keywords:document.getElementById('v-kw').value.split(/[、,，]/).map(x=>x.trim()).filter(Boolean),
-  prob:parseFloat(document.getElementById('v-prob').value)||0};
+  prob:(parseFloat(document.getElementById('v-prob').value)||0)/100};
  const g=id=>{const el=document.getElementById(id);return el?el.value:''};
  v.edge_voice=g('v-ev');v.zhipu_voice=g('v-zv');v.zhipu_speaker_id=g('v-zsid');v.zhipu_key=g('v-zkey');
  v.sf_key=g('v-sfk');v.sf_model=g('v-sfm');v.sf_voice=g('v-sfv');
