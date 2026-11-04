@@ -28,6 +28,7 @@ import json
 import os
 import pathlib
 import sys
+import threading
 import time
 
 DATA_DIR = os.environ.get("QQBOT_DATA_DIR") or os.path.join(
@@ -44,6 +45,21 @@ class PluginAPI:
         self._host = host
         self.name = name
         self._windows = {}
+
+    def route(self, method, fn):
+        """注册自定义端点：插件的 page.js 可 POST /api/plugins/call
+        {name, method, args} 调到这里（经 UI → agent 转发，JSON in/out）。
+        第三方插件的完整能力闭环：数据/接口全在插件包里，不依赖宿主改版。"""
+        self._host.routes.setdefault(self.name, {})[str(method)[:40]] = fn
+
+    def store(self, key, value):
+        """插件私有存储：写 DATA_DIR/plugins_data/<name>.json 的一个键。
+        与设置面板的 setting 无关——存业务数据（榜单/缓存/状态机）。"""
+        self._host.data_store(self.name, key, value)
+
+    def load(self, key, default=None):
+        """读私有存储的一个键（不存在返回 default）。"""
+        return self._host.data_load(self.name, key, default)
 
     def on_tick(self, fn):
         self._host.hooks.setdefault(self.name, {})["tick"] = fn
@@ -81,14 +97,46 @@ class PluginAPI:
         return _wrapped
 
 
+_ACTIVE_HOST = None   # agent 进程里最近一次 load_all 的宿主（plugin-call 端点用）
+
+
 class PluginHost:
     def __init__(self, log_fn=None):
         self.hooks = {}          # name -> {"tick": fn, "inject": fn}
+        self.routes = {}         # name -> {method: fn}  插件自定义端点
         self.manifests = {}      # name -> manifest dict
         self._log_fn = log_fn or (lambda m: print(m, flush=True))
         self._state_mtime = 0.0
         self._state_cache = {}
         self._loaded_names = set()
+
+    # ---- 插件私有存储（plugins_data/<name>.json；agent 进程读写） ----
+    _DATA_LOCK = threading.RLock()
+
+    @staticmethod
+    def _data_path(name):
+        import qq_common as C
+        d = pathlib.Path(C.DATA_DIR) / "plugins_data"
+        d.mkdir(parents=True, exist_ok=True)
+        return d / ("%s.json" % _safe_name(name))
+
+    def data_store(self, name, key, value):
+        with PluginHost._DATA_LOCK:
+            p = self._data_path(name)
+            try:
+                d = json.loads(p.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                d = {}
+            d[str(key)[:64]] = value
+            p.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+
+    def data_load(self, name, key, default=None):
+        with PluginHost._DATA_LOCK:
+            try:
+                d = json.loads(self._data_path(name).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return default
+            return d.get(str(key)[:64], default)
 
     def log(self, msg):
         try:
@@ -154,7 +202,10 @@ class PluginHost:
 
     def load_all(self):
         """扫描并加载所有启用插件的钩子。重复调用安全（先卸载再装）。"""
+        global _ACTIVE_HOST
+        _ACTIVE_HOST = self
         self.hooks = {}
+        self.routes = {}       # 热重载后旧 route 注册失效，重新收集
         self.manifests = {}
         loaded, skipped = [], []
         scanned = self.scan()
@@ -389,7 +440,7 @@ def uninstall(name):
 # 市场清单文件名带版本：release 资产 CDN 缓存≈永久，clobber 同名文件更新后
 # 用户拿到的仍是旧字节——清单内容有变必须换新文件名（market-v3、v4…）
 DEFAULT_MARKET_URL = ("https://github.com/Pigeon2333/zcode-qq-bot/"
-                      "releases/download/plugins/market-v13.json")
+                      "releases/download/plugins/market-v14.json")
 _MARKET_MIRRORS = ("https://gh-proxy.com/" + DEFAULT_MARKET_URL,)
 
 

@@ -1,0 +1,13 @@
+{
+  "name": "group_checkin",
+  "version": "1.0.0",
+  "title": "群签到",
+  "category": "娱乐",
+  "default_enabled": false,
+  "description": "群里发「签到/打卡」打卡，机器人记录你是今天第几位签到；插件页看今日签到与累计总榜（前 20）。第三方示范插件：完全走插件包能力（消息钩子+私有存储+自定义端点+自带设置页），零宿主适配。",
+  "page": {
+    "js": "checkinPage",
+    "data": ""
+  },
+  "settings": []
+}

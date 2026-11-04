@@ -48,6 +48,29 @@ zip 分发**（更新插件即更新页面，不必等应用发版）；数据�
 `setTimeout(fn,0)`。注意宿主只保证注入时机在调用页面函数之前，page.js 里不要放立即执行的
 副作用代码。
 
+**插件自定义端点 + 私有存储（v1.0.0+，第三方完整能力闭环）**：
+
+```python
+def register(api):
+    # 自定义端点：page.js 可调（见下方 JS 端调用方式）
+    api.route("my_method", lambda args: {"ok": True, "data": ...})
+    # 私有存储（持久化 JSON，插件专用，与设置面板无关）
+    api.store("my_key", {"any": "json"})
+    v = api.load("my_key", default={})
+```
+
+page.js 调自定义端点：
+
+```js
+const r = await api('/api/plugins/call', {
+  method: 'POST', headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({name: 'my_plugin', method: 'my_method', args: {...}})
+});
+```
+
+宿主纯代理（UI → agent 转发到插件注册的 handler），**零宿主适配**——第三方插件的
+数据、接口、页面全在插件包里，装上即用、更新即新。
+
 **插件页硬规矩（宿主会校验）**：`page.js` 指向的函数必须是**同步纯函数**——接收宿主预取的 `data`（来自 `page.data` 端点）、**返回 HTML 字符串**。禁止在函数里自写 `#view`（会把宿主统一注入的页面头和「← 返回插件列表」按钮冲掉——每个插件页都必须能一键返回插件列表，这由宿主保证，插件不要自己碰）。返回 Promise 或 undefined 的页面会被宿主替换成错误提示；插入 DOM 后才能做的动态填充用 `setTimeout(fn, 0)`。
 
 ### plugin.py

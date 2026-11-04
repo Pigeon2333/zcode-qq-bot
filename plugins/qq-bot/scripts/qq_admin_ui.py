@@ -3281,6 +3281,22 @@ def proxy_get(host, port, path, token="", timeout=2.5):
         conn.close()
 
 
+def proxy_post(host, port, path, body, token="", timeout=30):
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["X-QQBot-Token"] = token
+    conn = http.client.HTTPConnection(host, int(port), timeout=timeout)
+    try:
+        conn.request("POST", path, body=json.dumps(body).encode("utf-8"),
+                     headers=headers)
+        resp = conn.getresponse()
+        return json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        return {"ok": False, "error": repr(e)}
+    finally:
+        conn.close()
+
+
 class UiHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -5342,6 +5358,18 @@ class UiHandler(BaseHTTPRequestHandler):
             write_const(KEYS_PATH, json.dumps(
                 {"keys": keys, "primary": primary}, ensure_ascii=False, indent=2))
             return self._reply(200, {"ok": True})
+        if u.path == "/api/plugins/call":
+            # 插件自定义端点统一入口：转发到 agent 进程里插件注册的
+            # api.route() 处理器——第三方插件的能力闭环（UI 纯代理）
+            name = str(body.get("name") or "").strip()
+            method = str(body.get("method") or "").strip()
+            if not name or not method:
+                return self._reply(400, {"ok": False, "error": "缺少 name/method"})
+            args = body.get("args") if isinstance(body.get("args"), dict) else {}
+            res = proxy_post("127.0.0.1", _agent_port(), "/admin/plugin-call",
+                             {"name": name, "method": method, "args": args},
+                             token=read_const(TOKEN_PATH), timeout=60)
+            return self._reply(200, res)
         if u.path == "/api/devctrl-flow":
             import qq_bot_agent as _A
             patch = {}

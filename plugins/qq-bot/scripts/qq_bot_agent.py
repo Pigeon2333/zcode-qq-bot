@@ -4291,6 +4291,32 @@ class AdminHandler(BaseHTTPRequestHandler):
         return self._reply(404, {"ok": False, "error": "not found"})
 
     def do_POST(self):
+        if urllib.parse.urlsplit(self.path).path == "/admin/plugin-call":
+            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                body = json.loads(self.rfile.read(n).decode("utf-8")) if n else {}
+            except ValueError:
+                return self._reply(400, {"ok": False, "error": "bad json"})
+            name = str(body.get("name") or "")
+            method = str(body.get("method") or "")
+            args = body.get("args") if isinstance(body.get("args"), dict) else {}
+            if not name or not method:
+                return self._reply(400, {"ok": False, "error": "缺少 name/method"})
+            fn = None
+            try:
+                import qq_plugins as _qp
+                host = getattr(_qp, "_ACTIVE_HOST", None)
+                fn = (host.routes.get(name, {}) or {}).get(method) if host else None
+            except Exception:
+                fn = None
+            if fn is None:
+                return self._reply(404, {"ok": False,
+                                         "error": "插件未注册该方法（未安装/未启用/名字错）"})
+            try:
+                res = fn(args)
+                return self._reply(200, res if isinstance(res, dict) else {"ok": True, "data": res})
+            except Exception as e:
+                return self._reply(200, {"ok": False, "error": repr(e)[:300]})
         if urllib.parse.urlsplit(self.path).path == "/admin/pause":
             n = int(self.headers.get("Content-Length") or 0)
             try:
