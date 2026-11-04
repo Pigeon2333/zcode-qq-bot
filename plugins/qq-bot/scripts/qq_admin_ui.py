@@ -528,7 +528,7 @@ const UI_TOKEN=(function(){ // 服务端注入（?tk= 有效时）；否则回�
  try{if('__UITOKEN__'.length>20)return '__UITOKEN__'}catch(e){}
  return localStorage.getItem('zbtk')||''})();
 function uiShowUnlock(){
- document.body.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100vh"><div class="card" style="max-width:420px"><h3>控制台已锁定</h3><div class="k" style="margin-top:8px">如果你是用<b>桌面程序</b>打开的：这是显示异常，点下面按钮重新进入即可。<br><br>如果是从浏览器打开的：需要访问令牌，文件位置 <span class="mono">C:\\Users\\你的用户名\\.zcode-qq-bot\\ui_token</span>（用记事本打开复制）。</div><div style="margin-top:10px"><button class="act" onclick="uiUnlockWith(prompt(\'粘贴令牌（桌面程序显示异常时直接点取消再重开程序即可）：\',\'\'))">重新进入 / 粘贴令牌</button></div></div></div></div>';}
+ document.body.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100vh"><div class="card" style="max-width:420px"><h3>控制台已锁定</h3><div class="k" style="margin-top:8px">如果你是用<b>桌面程序</b>打开的：这是显示异常，点下面按钮粘贴令牌即可解锁（会记住），也可以直接关闭窗口重新打开程序（会自动解锁）。<br><br>如果是从浏览器打开的：需要访问令牌，文件位置 <span class="mono">C:\\Users\\你的用户名\\.zcode-qq-bot\\ui_token</span>（用记事本打开，整行复制粘贴到下面）。</div><div style="margin-top:10px"><button class="act" onclick="uiUnlockWith(prompt(\'粘贴令牌（整行复制即可，末尾换行没关系；桌面程序也可点取消后重开程序）：\',\'\'))">粘贴令牌解锁</button></div></div></div></div>';}
 async function api(p,opts){
  if(!UI_TOKEN){uiShowUnlock();throw new Error('locked')}
  opts=opts||{};opts.headers=Object.assign({},opts.headers||{},{'X-UI-Token':UI_TOKEN});
@@ -3005,7 +3005,8 @@ class UiHandler(BaseHTTPRequestHandler):
 
     def _html(self, tk=""):
         token = ui_token()
-        page = PAGE.replace("__UITOKEN__", token if tk == token else "")
+        # strip：用户从记事本复制令牌常带末尾换行/空格，逐字比对会永远落锁
+        page = PAGE.replace("__UITOKEN__", token if tk.strip() == token else "")
         body = page.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -3016,8 +3017,9 @@ class UiHandler(BaseHTTPRequestHandler):
 
     def _authed(self, u, q):
         """API 鉴权：X-UI-Token 头或 ?tk= 与令牌一致。页面本身始终可加载（锁定态）。"""
-        want = ui_token()
-        got = self.headers.get("X-UI-Token", "") or str(q.get("tk") or "")
+        want = ui_token().strip()
+        # strip：粘贴的令牌/URL 参数可能带首尾空白（记事本复制常见），容错比对
+        got = (self.headers.get("X-UI-Token", "") or str(q.get("tk") or "")).strip()
         return got == want
 
     def handle_one_request(self):
