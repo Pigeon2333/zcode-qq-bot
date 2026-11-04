@@ -2460,8 +2460,7 @@ def build_messages(daemon, msg, ctx_k=32):
         "- 遵守人设的语气与长度习惯；高冷人设就要少说话\n"
         "- 称呼群友用昵称/群名片（对话里冒号前的名字），不要叫QQ号——QQ号仅用于标记记忆，对话中永远用名字\n"
         "- 想连发多条短消息时用 [[SPLIT]] 分隔（最多3条）\n"
-        + _voice_rule()
-        + "- 表情包要克制：只在情绪真正契合时偶尔发（约七八条回复最多一次），两句话内不重复发；只在列表中某张的描述与当前对话情绪/内容真正匹配时才选它，拿不准就不发（不发永远不会错）\n"
+        "- 表情包要克制：只在情绪真正契合时偶尔发（约七八条回复最多一次），两句话内不重复发；只在列表中某张的描述与当前对话情绪/内容真正匹配时才选它，拿不准就不发（不发永远不会错）\n"
         "- 想发某张表情包时，单独输出一行 [STICKER:表情包id]\n"
         "- 出现值得长期记住的信息时，单独输出一行记忆标记，格式只有两种："
         "[记忆@QQ号] 内容（关于某个具体人的事实/近况/约定，QQ号在对话括号里）"
@@ -2503,6 +2502,8 @@ def build_messages(daemon, msg, ctx_k=32):
         % (global_block, persona_block, style_block, evolved_block, mem_block,
            skip_block, guard_block, security, draw_rule, sticker_menu(active_name))
     )
+    # 语音能力提示按插件启用状态追加（不得拼进上面的 % 模板——会改变占位符计数）
+    system += _voice_rule()
     return ([{"role": "system", "content": system},
              {"role": "user", "content": content}], active_name)
 
@@ -4795,7 +4796,8 @@ def main():
                     _last_zcode_return = now_ts
                     _zcode_return_tick(daemon)
         except Exception as e:
-            out("AGENT_LOOP_ERROR %r" % e)
+            import traceback as _tb
+            out("AGENT_LOOP_ERROR %r\n%s" % (e, _tb.format_exc()))
             time.sleep(5)
         time.sleep(args.idle_sleep)
 
