@@ -393,9 +393,10 @@ DEFAULT_MARKET_URL = ("https://github.com/Pigeon2333/zcode-qq-bot/"
 _MARKET_MIRRORS = ("https://gh-proxy.com/" + DEFAULT_MARKET_URL,)
 
 
-def _http_get(url, timeout=20, _hops=0):
+def _http_get(url, timeout=20, _hops=0, progress=None):
     """https GET 白名单域（github.com / gh-proxy / raw / release-assets）；
-    自动跟随白名单内的 302（release 资产都会 302 到 release-assets 域）。"""
+    自动跟随白名单内的 302（release 资产都会 302 到 release-assets 域）。
+    progress(done_bytes, total_bytes) 供下载进度展示（total 未知时为 0）。"""
     import http.client
     import urllib.parse
     u = urllib.parse.urlsplit(url)
@@ -413,12 +414,25 @@ def _http_get(url, timeout=20, _hops=0):
         r.read()
         conn.close()
         if loc:
-            return _http_get(loc, timeout, _hops + 1)
-    data = r.read()
+            return _http_get(loc, timeout, _hops + 1, progress)
+    total = int(r.getheader("Content-Length") or 0)
+    chunks = []
+    got = 0
+    while True:
+        b = r.read(65536)
+        if not b:
+            break
+        chunks.append(b)
+        got += len(b)
+        if progress:
+            try:
+                progress(got, total)
+            except Exception:
+                pass
     conn.close()
     if r.status != 200:
         raise RuntimeError("HTTP %s" % r.status)
-    return data
+    return b"".join(chunks)
 
 
 def market_list(url=None):
@@ -448,8 +462,9 @@ def market_list(url=None):
     return {"ok": False, "error": "市场清单拉取失败：%s" % last_err}
 
 
-def market_install(name, url=None):
-    """从市场下载并安装/更新一个插件（sha256 可选校验）。"""
+def market_install(name, url=None, progress=None):
+    """从市场下载并安装/更新一个插件（sha256 可选校验）。
+    progress(phase, pct, msg) 供进度展示。"""
     ml = market_list(url)
     if not ml.get("ok"):
         return ml
@@ -461,7 +476,18 @@ def market_install(name, url=None):
                                        if m != item["zip"]):
         fd = None
         try:
-            data = _http_get(cand, timeout=60)
+            if progress:
+                progress("download", 3, "下载 %s（%.1f KB）"
+                         % (item["title"] or name, (item.get("size") or 0) / 1024.0))
+            def _dl_prog(g, t):
+                progress("download",
+                         max(3, int(g * 90 / t)) if t else 40,
+                         "下载中 %.0f/%s KB"
+                         % (g / 1024.0, ("%.0f" % (t / 1024.0)) if t else "?"))
+            data = _http_get(cand, timeout=60,
+                             progress=_dl_prog if progress else None)
+            if progress:
+                progress("install", 95, "安装中…")
             import os as _os
             import tempfile as _tf
             fd, tmpname = _tf.mkstemp(suffix=".zip")

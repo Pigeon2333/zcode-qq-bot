@@ -142,15 +142,33 @@ def probe(source):
     if src == "qq":
         out["qq_cli_available"] = qq_cli_available()
         out["python_ok"] = _py_exe() is not None
+        out["qq_key_ready"] = qq_key_configured()
     else:
         out["wx_skill_installed"] = wx_export_script() is not None
         out["wx_cli_cmd"] = wx_cli_cmd() or ""
     return out
 
 
-def qq_cli_export(chat):
+def qq_key_configured():
+    """qq-cli 是否已配置过密钥与数据目录（只查配置存在，不验证有效性）。"""
+    try:
+        p = pathlib.Path.home() / ".qq-cli" / "config.json"
+        cfg = json.loads(p.read_text(encoding="utf-8"))
+        return bool(cfg.get("key")) and bool(cfg.get("db_dir"))
+    except (OSError, ValueError):
+        return False
+
+
+_INIT_HINT = ("首次使用需提取一次 QQ 数据库密钥：终端运行 "
+              "python %s init （保持 QQ 登录状态，按提示在 QQ 搜索框"
+              "输入任意词触发提取；自定义数据目录加 --db-dir 指到 "
+              "nt_db 所在目录）" % _QQCLI_SKILL)
+
+
+def qq_cli_export(chat, on_progress=None):
     """调用本机 qq-cli 技能导出指定会话（json）到收件区并入库。
-    需要先手工运行过 qq_cli.py init（密钥提取）。"""
+    需要先手工运行过 qq_cli.py init（密钥提取）。on_progress(phase,pct,msg)。"""
+    prog = on_progress or (lambda *a, **k: None)
     if not qq_cli_available():
         return {"ok": False,
                 "error": "本机未安装 qq-cli 技能"
@@ -163,6 +181,8 @@ def qq_cli_export(chat):
     inbox = pathlib.Path(BASE_DIR) / "qq" / "inbox"
     inbox.mkdir(parents=True, exist_ok=True)
     outp = str(inbox / ("export_%d.json" % int(time.time())))
+    prog("export", 15, "调用 qq-cli 导出「%s」（最长 5 分钟，大库较久）"
+         % str(chat)[:24])
     try:
         r = subprocess.run(
             py + [_QQCLI_SKILL, "export", str(chat)[:40],
@@ -175,11 +195,14 @@ def qq_cli_export(chat):
             if "crypto" in low or "pycryptodome" in low:
                 detail = ("系统 Python 缺少 pycryptodome——终端执行："
                           "pip install pycryptodome 后重试")
+            elif ("init" in low or "解密" in detail or "明文" in detail):
+                detail = ("QQ 数据库密钥未就绪——" + _INIT_HINT
+                          + "（原始输出：" + detail[:80] + "）")
             return {"ok": False, "error": detail or
-                    "导出失败且无输出——通常是 qq-cli 还没初始化"
-                    "（先在终端跑一次 qq_cli.py init 提取密钥）"}
+                    ("导出失败且无输出。" + _INIT_HINT)}
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "导出超时（300 秒）"}
+    prog("store", 85, "导出完成，解析并入库…")
     res = store("qq", str(chat)[:40], outp)
     try:
         os.remove(outp)
@@ -231,8 +254,10 @@ def wx_cli_cmd():
     return None
 
 
-def wx_cli_export(chat):
-    """调用 wechat-cli 技能（export_markdown.py 清洗版）导出会话并入库。"""
+def wx_cli_export(chat, on_progress=None):
+    """调用 wechat-cli 技能（export_markdown.py 清洗版）导出会话并入库。
+    on_progress(phase,pct,msg)。"""
+    prog = on_progress or (lambda *a, **k: None)
     script = wx_export_script()
     cli = wx_cli_cmd()
     missing = []
@@ -252,6 +277,8 @@ def wx_cli_export(chat):
     inbox = pathlib.Path(BASE_DIR) / "wx" / "inbox"
     inbox.mkdir(parents=True, exist_ok=True)
     outp = str(inbox / ("wx_%d.md" % int(time.time())))
+    prog("export", 15, "调用 wechat-cli 导出「%s」（最长 5 分钟）"
+         % str(chat)[:24])
     try:
         r = subprocess.run(
             py + [script, str(chat)[:40], "--cli", cli,
@@ -265,6 +292,7 @@ def wx_cli_export(chat):
                     "（微信登录状态下跑一次技能里的 extract_keys.py）"}
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "导出超时（300 秒）"}
+    prog("store", 85, "导出完成，解析并入库…")
     res = store("wx", str(chat)[:40], outp)
     try:
         os.remove(outp)

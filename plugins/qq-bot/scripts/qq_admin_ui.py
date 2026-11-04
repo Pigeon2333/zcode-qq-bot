@@ -26,6 +26,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import qq_common as C
@@ -2282,8 +2283,7 @@ async function vMarket(){
  '<div class="card" style="margin-top:4px"><div class="k">把自己写的插件发上来？开发与上架流程见仓库 <b>PLUGINS.md</b>（github.com/Pigeon2333/zcode-qq-bot）</div></div>';
 }
 async function mktInstall(name,updating){
- toast((updating?'正在更新':'正在安装')+' '+name+'…');
- const r=await api('/api/plugins/market-install',{method:'POST',body:JSON.stringify({name:name})}).catch(e=>({ok:false,error:'请求失败'}));
+ const r=await runTask((updating?'更新':'安装')+'插件 '+name,'/api/plugins/market-install',{name:name});
  if(r.ok===false){toast('失败：'+(r.error||''),false);return}
  toast((r.updated?'已更新':(updating?'已更新':'已安装'))+'「'+(r.title||name)+'」'+(r.updated?'':'（默认停用，可在我的插件里启用）'));
  load();
@@ -2297,8 +2297,18 @@ async function plPage(name){
  const fn=p.page?window[p.page.js]:null;
  $('#view').innerHTML=head('插件 · '+(p.title||name))+'<div style="margin-top:10px"><button class="act ghost" onclick="goTab(\'plugins\')">← 返回插件列表</button></div><div id="plpage" style="margin-top:12px"></div>';
  // 专属页结构：①插件自带 page（登录等专属界面）②声明式 settings 卡（任何插件都有）
+ // 插件页契约（硬规矩）：page 函数必须是同步纯函数——接收预取 data、返回 HTML
+ // 字符串；禁止自写 #view（会冲掉宿主注入的「← 返回插件列表」按钮与页面头）。
+ // 需要异步数据的走 manifest.page.data 让宿主预取；插入后的动态填充用 setTimeout。
  let inner='';
- if(typeof fn==='function'){inner+=fn(data,p)}
+ if(typeof fn==='function'){
+   let html=fn(data,p);
+   if(html&&typeof html.then==='function'){
+     html.then(h=>{const el=document.getElementById('plpage');if(el&&typeof h==='string')el.innerHTML=h}).catch(()=>{});
+     inner+='<div class="card">页面生成中…</div>'
+   }else if(typeof html==='string'){inner+=html}
+   else{inner+='<div class="card">插件页 '+esc(p.page.js)+'() 必须返回 HTML 字符串（不得自写界面容器）</div>'}
+ }
  else if(p.page){inner+='<div class="card">插件设置页加载失败：缺少 '+esc(p.page.js)+'()</div>'}
  if(p.settings&&p.settings.length){
   const rowsS=(p.settings||[]).map(s=>{
@@ -2402,7 +2412,10 @@ function chatImpPage(d,p){
  return '<div class="card"><div class="k"><b>① 环境检测</b></div>'
  +envRow(pb.client_running,label+' 客户端正在运行'+(pb.client_running?'':'（导出/读库前请先打开并登录'+label+'）'))
  +'<div class="k" style="margin-top:4px">本机聊天数据目录：</div>'+dirsHtml
- +(isQQ?envRow(pb.qq_cli_available,'qq-cli 技能'+(pb.qq_cli_available?'已安装（位于 ~/.zcode/skills/qq-cli）':'未安装'))+envRow(pb.python_ok!==false,'系统 Python（打包版调用技能导出用）'+(pb.python_ok===false?'未检测到（python.org 安装）':'可用')):envRow(pb.wx_skill_installed,'wechat-cli 技能（skillhub user_514405d2）'+(pb.wx_skill_installed?'已安装':'未安装'))+envRow(!!pb.wx_cli_cmd,'wechat-cli 命令（py-wechat-cli）'+(pb.wx_cli_cmd?'可用：'+esc(pb.wx_cli_cmd):'未安装')))
+ +(isQQ?envRow(pb.qq_cli_available,'qq-cli 技能'+(pb.qq_cli_available?'已安装（位于 ~/.zcode/skills/qq-cli）':'未安装'))
+   +envRow(pb.python_ok!==false,'系统 Python（打包版调用技能导出用）'+(pb.python_ok===false?'未检测到（python.org 安装）':'可用'))
+   +envRow(pb.qq_key_ready,'QQ 数据库密钥'+(pb.qq_key_ready?'已配置（若导出报解密失败请重新提取）':'未提取——首次导出前需跑一次 init'))
+   +(pb.qq_key_ready?'':'<div class="k mono" style="font-size:12px;margin:4px 0;display:flex;gap:6px;align-items:center">python %USERPROFILE%\\.zcode\\skills\\qq-cli\\scripts\\qq_cli.py init '+cp('ci-cmdinit','python %USERPROFILE%\\.zcode\\skills\\qq-cli\\scripts\\qq_cli.py init')+'</div><div class="k" style="font-size:12px;margin:2px 0 6px">保持 QQ 登录状态运行，按提示在 QQ 搜索框输入任意词触发提取；数据目录不在默认位置时加 --db-dir 指到 nt_db 所在目录</div>'):envRow(pb.wx_skill_installed,'wechat-cli 技能（skillhub user_514405d2）'+(pb.wx_skill_installed?'已安装':'未安装'))+envRow(!!pb.wx_cli_cmd,'wechat-cli 命令（py-wechat-cli）'+(pb.wx_cli_cmd?'可用：'+esc(pb.wx_cli_cmd):'未安装')))
  +'</div>'
  +'<div class="card"><div class="k"><b>② 导出聊天记录</b></div><div class="k" style="margin-top:6px">'+esc(hint)+'</div>'+step2+'</div>'
  +'<div class="card"><div class="k"><b>③ 隔离库中的会话</b>（导入后在这里，点「学习成人设」让机器人消化）</div>'+(ss.length?rows:'<div class="k" style="margin-top:6px">还没有导入任何会话。</div>')+'</div>'
@@ -2411,10 +2424,12 @@ function chatImpPage(d,p){
 function qqChatImpPage(d,p){return chatImpPage(Object.assign({},d,{source:'qq',label:'QQ',hint:'见上方方式 A/B'}),p)}
 function wxChatImpPage(d,p){return chatImpPage(Object.assign({},d,{source:'wx',label:'微信',hint:'就绪后可直接一键导出；未就绪按第②步两行命令装好后回本页'}),p)}
 let _VM=null;
-async function voicePage(){
- if(!_VM){_VM=await api('/api/voice/meta').catch(()=>({ok:false}));if(_VM.ok===false){$('#view').innerHTML=head('语音回复')+ '<div class="card">加载失败，刷新重试</div>';return}}
- const c=_VM.config||{};
+// 插件页契约：page 函数接收宿主预取的 data、返回 HTML 字符串；
+// 不允许自写 #view（会把宿主注入的「← 返回插件列表」按钮冲掉）
+function voicePage(d){
+ _VM=(d&&d.providers)?d:(_VM||{config:{}});
  const P=_VM.providers||{};
+ const c=_VM.config||{};
  const prov=Object.keys(P);
  const cur=c.provider||'edge';
  const vopts=prov.map(k=>'<option value="'+k+'" '+(k===cur?'selected':'')+'>'+esc(P[k].label)+'</option>').join('');
@@ -2424,7 +2439,7 @@ async function voicePage(){
  const sfVOpts=(_VM.sf_voices||[]).map(v=>'<option value="'+esc(v)+'" '+(v===(c.sf_voice||'anna')?'selected':'')+'>'+esc(v)+'</option>').join('');
  const mode=String(c.mode||'keyword');
  const kw=(c.keywords||[]).join('、');
- $('#view').innerHTML=head('语音回复：让机器人开口说话')+
+ return '<div class="k" style="margin-bottom:10px">让机器人开口说话：语音内容跟人设走，只是换成语音发送。配置即时生效。</div>'+
  '<div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><b>开关与策略</b><span class="badge" style="background:var(--tint);color:var(--dim)">语音内容跟人设走，只换发送形式</span></div>'
  +'<label class="master"><input type="checkbox" id="v-on" '+(c.enabled?'checked':'')+' onchange=""> <b>启用语音回复</b><div class="k" style="margin-top:3px">开启后按下面的策略把部分/全部回复改用语音发送；合成失败自动回退发文字，不会丢回复</div></label>'
  +'<div style="display:flex;gap:14px;margin-top:8px;flex-wrap:wrap">'
@@ -2452,7 +2467,7 @@ async function voicePage(){
  +'<div class="card"><div class="k"><b>计费说明</b>（各家语音合成的收费情况，选前看清楚）</div>'
  +prov.map(k=>'<div style="margin-top:8px"><b>'+esc(P[k].label)+'</b><div class="k" style="margin-top:3px">'+esc(P[k].billing)+'</div></div>').join('')
  +'<div class="k" style="margin-top:10px">克隆专属音色（智谱，收费）：在 bigmodel.cn 控制台或开放平台用 3 秒以上人声样本创建复刻音色，把得到的 speaker_id 填到智谱栏即可——之后所有语音都用这个音色。</div></div>';
- voiceProvChange();
+ setTimeout(voiceProvChange,0);   // 等 plPage 把返回的 HTML 插进 DOM 后再填供应商区
 }
 function voiceBill(){const P=_VM.providers||{};const k=document.getElementById('v-prov').value;const el=document.getElementById('v-bill');el.textContent=P[k]?P[k].billing:''}
 function voiceProvChange(){
@@ -2505,8 +2520,9 @@ async function voicePreview(){
  au.src=r.audio;au.style.display='block';au.play().catch(()=>{});
  msg.textContent='试听音频 '+((r.size||0)/1024).toFixed(0)+' KB（每次试听按该供应商计费规则计费）'}
 let _LM=null;
-async function larkPage(){
- if(!_LM){_LM=await api('/api/lark/meta').catch(()=>({ok:false}));if(_LM.ok===false){$('#view').innerHTML=head('飞书互通')+ '<div class="card">加载失败，刷新重试</div>';return}}
+function larkPage(d){
+ _LM=(d&&d.ok!==undefined)?d:(_LM||{config:{}});
+ if(!_LM||_LM.ok===false){return '<div class="card">飞书数据加载失败，刷新重试</div>'}
  const c=_LM.config||{};
  const sdkTip=_LM.sdk?'':'（飞书→QQ 方向需要先在终端 pip install lark-oapi 并重启机器人；只开 QQ→飞书 则无需安装）';
  const brs=c.bridges||[];
@@ -2517,7 +2533,7 @@ async function larkPage(){
   +'<label><input type="checkbox" class="lk2f" '+(b.to_lark!==false?'checked':'')+'> QQ→飞书</label>'
   +'<label><input type="checkbox" class="lk2q" '+(b.to_qq?'checked':'')+'> 飞书→QQ</label>'
   +'<button class="act ghost" style="margin:0;padding:3px 10px;font-size:12px" onclick="lkDel(this)">删</button></div>').join('');
- $('#view').innerHTML=head('飞书互通：QQ 群 ↔ 飞书群')+
+ return '<div class="k" style="margin-bottom:10px">把 QQ 群和飞书群连起来：消息双向转发（各自可开关）。配置保存后即时生效。</div>'+
  '<div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><b>飞书自建应用</b><span class="badge" style="background:var(--tint);color:var(--dim)">免费 · 免公网</span></div>'
  +'<div class="k">先在 <a href="https://open.feishu.cn" target="_blank">open.feishu.cn</a> 免费创建「企业自建应用」：①添加「机器人」能力 ②权限管理开通 im:chat 与 im:message（收发消息） ③发布版本 ④把机器人拉进目标飞书群。然后填 App ID / App Secret（Secret 只存本机）。'+sdkTip+'飞书方向用 WebSocket 长连接收事件，不需要公网服务器。</div>'
  +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">'
@@ -2571,15 +2587,13 @@ async function lkTest(){
 async function ciQqCliExport(){
  const chat=document.getElementById('ci-chat').value.trim();
  if(!chat){toast('先填会话（QQ号/昵称/群名）',false);return}
- toast('正在调用 qq-cli 导出（最长 5 分钟）…');
- const r=await api('/api/chatimport/qqcli-export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat:chat})}).catch(()=>({ok:false,error:'请求失败'}));
+ const r=await runTask('QQ 导出「'+chat.slice(0,12)+'」','/api/chatimport/qqcli-export',{chat:chat});
  if(r.ok===false){toast(r.error||'导出失败',false);return}
  toast('已导入「'+(r.session||chat)+'」'+(r.count||0)+' 条');load()}
 async function ciWxCliExport(){
  const chat=document.getElementById('ci-wxchat').value.trim();
  if(!chat){toast('先填会话（联系人备注/昵称 或 群名）',false);return}
- toast('正在调用 wechat-cli 导出（最长 5 分钟）…');
- const r=await api('/api/chatimport/wxcli-export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat:chat})}).catch(()=>({ok:false,error:'请求失败'}));
+ const r=await runTask('微信导出「'+chat.slice(0,12)+'」','/api/chatimport/wxcli-export',{chat:chat});
  if(r.ok===false){toast(r.error||'导出失败',false);return}
  toast('已导入「'+(r.session||chat)+'」'+(r.count||0)+' 条');load()}
 function ciCopy(id){
@@ -2778,6 +2792,39 @@ async function syncQQ(){
   const r=await api('/api/stickers/sync-qq',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pool:$('#stpool').value,count:100})});
   toast(r.ok?('同步完成：新增 '+r.added+' 张（拉取 '+r.fetched+'，失败 '+r.failed+'，重复自动跳过）'):('同步失败: '+(r.error||'')),r.ok!==false);load();
  }catch(e){toast('同步失败: '+e,false)}
+}
+/* ---- 长任务进度卡：runTask(label, url, body) → 右下角任务卡轮询直至完成 ----
+   后端约定：POST 返回 {task: id}；GET /api/task/status?id= → {phase,pct,msg,done,ok,result} */
+const _PHASE_TXT={download:'下载',export:'导出',store:'解析入库',install:'安装',starting:'准备',done:'完成',error:'失败'};
+function _phaseTxt(p){return _PHASE_TXT[p]||p||''}
+async function runTask(label,url,body){
+ let st=document.getElementById('taskbox');
+ if(!st){st=document.createElement('div');st.id='taskbox';
+  st.style.cssText='position:fixed;right:16px;bottom:16px;z-index:9999;max-width:340px';
+  document.body.appendChild(st)}
+ const card=document.createElement('div');card.className='card';
+ card.style.cssText='margin-top:8px;box-shadow:0 4px 16px rgba(0,0,0,.25)';
+ const t0=Date.now();
+ card.innerHTML='<div class="k" style="display:flex;gap:8px;align-items:center"><b>'+esc(label)+'</b><span class="k taskphase" style="margin-left:auto"></span></div>'
+ +'<div style="height:6px;border-radius:3px;background:var(--line);margin-top:8px;overflow:hidden"><div class="taskbar" style="height:100%;width:0%;border-radius:3px;background:var(--accent,#4a7dff);transition:width .4s"></div></div>'
+ +'<div class="k taskmsg" style="margin-top:6px;font-size:12px"></div>';
+ st.appendChild(card);
+ const set=(phase,pct,msg)=>{card.querySelector('.taskbar').style.width=(pct||0)+'%';
+  card.querySelector('.taskphase').textContent=_phaseTxt(phase)+(pct?' '+pct+'%':'')+' · '+Math.round((Date.now()-t0)/1000)+'s';
+  if(msg)card.querySelector('.taskmsg').textContent=msg};
+ set('starting',0,'');
+ const r=await api(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})}).catch(()=>({ok:false,error:'请求失败'}));
+ if(r.ok===false||!r.task){card.remove();return r}
+ const tid=r.task;
+ return new Promise(res=>{
+  const iv=setInterval(async()=>{
+   const s=await api('/api/task/status?id='+encodeURIComponent(tid)).catch(()=>null);
+   if(!s)return;
+   if(!s.done){set(s.phase,s.pct,s.msg);return}
+   clearInterval(iv);set(s.phase,100,s.ok?'完成':'失败：'+((s.result||{}).error||''));
+   setTimeout(()=>card.remove(),s.ok?3500:8000);
+   res(s.result||{ok:s.ok})
+  },1200)})
 }
 load(); setInterval(()=>{if(TAB==='status')load()},10000);
 </script></body></html>"""
@@ -3597,6 +3644,14 @@ class UiHandler(BaseHTTPRequestHandler):
             return self._reply(200, {"ok": True, "enabled": S.autostart_enabled()})
         if u.path == "/api/cache/stats":
             return self._reply(200, S.cache_stats())
+        if u.path == "/api/task/status":
+            tid = str(q.get("id") or "")
+            with _TASKS_LOCK:
+                t = _TASKS.get(tid)
+                t = dict(t) if t else None
+            if not t:
+                return self._reply(404, {"ok": False, "error": "任务不存在"})
+            return self._reply(200, t)
         if u.path == "/api/voice/meta":
             # 语音回复元数据：供应商（含计费说明）+ 预设音色表
             import qq_tts as _T
@@ -5266,12 +5321,15 @@ class UiHandler(BaseHTTPRequestHandler):
             name = str(body.get("name", "")).strip()
             if not name:
                 return self._reply(400, {"ok": False, "error": "缺少插件名"})
-            try:
+
+            def _job(tid):
                 import qq_plugins as _qp
-                res = _qp.market_install(name)
-                return self._reply(200 if res.get("ok") else 400, res)
-            except Exception as e:
-                return self._reply(500, {"ok": False, "error": repr(e)})
+
+                def _prog(phase, pct, msg):
+                    task_update(tid, phase=phase, pct=pct, msg=msg)
+                return _qp.market_install(name, progress=_prog)
+            return self._reply(200, {"ok": True,
+                                     "task": task_start("安装插件", _job)})
         if u.path == "/api/plugins/install":
             # 文件对话框选 zip → 安全解压校验 → 装到用户插件目录（同名=更新覆盖）
             zipf = body.get("zip") if isinstance(body, dict) else None
@@ -5316,13 +5374,27 @@ class UiHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._reply(500, {"ok": False, "error": repr(e)})
         if u.path == "/api/chatimport/qqcli-export":
-            # 用本机 qq-cli 技能导出指定会话并入库（引擎 qq_cli_export）
+            # 用本机 qq-cli 技能导出指定会话并入库（job 化，前端轮询进度）
             import qq_chatimport as _CI
-            return self._reply(200, _CI.qq_cli_export(str(body.get("chat") or "")))
+            chat = str(body.get("chat") or "")
+
+            def _job(tid):
+                def _prog(phase, pct, msg):
+                    task_update(tid, phase=phase, pct=pct, msg=msg)
+                return _CI.qq_cli_export(chat, on_progress=_prog)
+            return self._reply(200, {"ok": True,
+                                     "task": task_start("QQ 导出「%s」" % chat[:16], _job)})
         if u.path == "/api/chatimport/wxcli-export":
-            # 用本机 wechat-cli 技能导出指定会话并入库（引擎 wx_cli_export）
+            # 用本机 wechat-cli 技能导出指定会话并入库（job 化）
             import qq_chatimport as _CI
-            return self._reply(200, _CI.wx_cli_export(str(body.get("chat") or "")))
+            chat = str(body.get("chat") or "")
+
+            def _job(tid):
+                def _prog(phase, pct, msg):
+                    task_update(tid, phase=phase, pct=pct, msg=msg)
+                return _CI.wx_cli_export(chat, on_progress=_prog)
+            return self._reply(200, {"ok": True,
+                                     "task": task_start("微信导出「%s」" % chat[:16], _job)})
         if u.path == "/api/chatimport/pick":
             # 文件对话框选导出文件 → 只解析预览（不落盘）
             import threading as _th
@@ -5577,6 +5649,53 @@ def _watch_parent(ppid):
     except Exception:
         return
     os._exit(0)
+
+
+# ---------------------------------------------------------------------------
+# 长任务进度系统：导出/插件安装等耗时操作 job 化，前端轮询 /api/task/status
+# ---------------------------------------------------------------------------
+_TASKS = {}
+_TASKS_LOCK = threading.Lock()
+
+
+def task_start(label, fn):
+    """后台跑 fn(tid)；fn 内用 task_update(tid, phase/pct/msg) 汇报进度，
+    返回值作为最终 result（dict）。返回 task_id。"""
+    tid = uuid.uuid4().hex[:12]
+    with _TASKS_LOCK:
+        _TASKS[tid] = {"label": str(label)[:60], "phase": "starting", "pct": 0,
+                       "msg": "", "done": False, "ok": None, "result": None,
+                       "ts": time.time()}
+        if len(_TASKS) > 40:      # 只留最近 40 个任务记录
+            for k in sorted(_TASKS, key=lambda x: _TASKS[x]["ts"])[:-40]:
+                _TASKS.pop(k, None)
+
+    def _run():
+        try:
+            res = fn(tid) or {}
+            with _TASKS_LOCK:
+                _TASKS[tid].update(done=True, ok=bool(res.get("ok", True)),
+                                   result=res, phase="done", pct=100)
+        except Exception as e:
+            with _TASKS_LOCK:
+                _TASKS[tid].update(done=True, ok=False,
+                                   result={"ok": False, "error": str(e)[:300]},
+                                   phase="error")
+    threading.Thread(target=_run, daemon=True).start()
+    return tid
+
+
+def task_update(tid, phase=None, pct=None, msg=None):
+    with _TASKS_LOCK:
+        t = _TASKS.get(tid)
+        if not t:
+            return
+        if phase is not None:
+            t["phase"] = str(phase)[:40]
+        if pct is not None:
+            t["pct"] = max(0, min(100, int(pct)))
+        if msg is not None:
+            t["msg"] = str(msg)[:160]
 
 
 def main():
