@@ -171,6 +171,10 @@ def qq_cli_export(chat):
             creationflags=CREATE_NO_WINDOW)
         if r.returncode != 0 or not os.path.isfile(outp):
             detail = _clean_noise(r.stderr, r.stdout)
+            low = detail.lower()
+            if "crypto" in low or "pycryptodome" in low:
+                detail = ("系统 Python 缺少 pycryptodome——终端执行："
+                          "pip install pycryptodome 后重试")
             return {"ok": False, "error": detail or
                     "导出失败且无输出——通常是 qq-cli 还没初始化"
                     "（先在终端跑一次 qq_cli.py init 提取密钥）"}
