@@ -2349,23 +2349,31 @@ function chatImpPage(d,p){
  const envRow=(ok,txt)=>'<div class="k" style="margin:3px 0">'+(ok?'✅ ':'⚠ ')+esc(txt)+'</div>';
  const dirsHtml=(pb.data_dirs||[]).map(x=>'<div class="k mono" style="font-size:12px;margin:3px 0">📂 '+esc(x.label)+'：'+esc(x.path)+'</div>').join('')||'<div class="k">未在常见位置找到聊天记录数据库（可能装在自定义目录）</div>';
  const isQQ=src==='qq';
+ const cp=(id,txt)=>'<button class="act ghost" style="margin:0;padding:3px 10px;font-size:11.5px" onclick="ciCopy(\''+id+'\')">复制</button><textarea id="'+id+'" style="position:absolute;left:-9999px;top:0">'+esc(txt)+'</textarea>';
+ const wxReady=(pb.wx_skill_installed&&pb.wx_cli_cmd);
  const step2=isQQ
   ?((pb.qq_cli_available
-    ?'<div style="margin-top:8px"><div class="k" style="margin-bottom:4px">方式 A（推荐）：本机已装 qq-cli，直接导出</div><div style="display:flex;gap:8px;align-items:center"><input id="ci-chat" placeholder="QQ号 / 昵称 / 群名（需先运行过一次 qq_cli.py init 提取密钥）" style="flex:1" onchange=""><button class="act" style="margin:0" onclick="ciQqCliExport()">导出并导入</button></div></div><div class="k" style="margin-top:6px">方式 B：自己用 qq-cli 导出 md/json 后点下面按钮导入</div>'
+    ?'<div style="margin-top:8px"><div class="k" style="margin-bottom:4px">方式 A（推荐）：本机已装 qq-cli，直接导出</div>'+(pb.python_ok===false?'<div class="k" style="color:var(--danger,#c00)">⚠ 未检测到系统 Python（打包版调用 qq-cli 需要）：python.org 安装 Python 3 后重试</div>':'')+'<div style="display:flex;gap:8px;align-items:center"><input id="ci-chat" placeholder="QQ号 / 昵称 / 群名（需先运行过一次 qq_cli.py init 提取密钥）" style="flex:1" onchange=""><button class="act" style="margin:0" onclick="ciQqCliExport()">导出并导入</button></div></div><div class="k" style="margin-top:6px">方式 B：自己用 qq-cli 导出 md/json 后点下面按钮导入</div>'
     :'<div class="k">本机未装 qq-cli 技能——可在 ZCode 里安装 skillhub 的 <b>xujianpeng/qq-cli</b>（装好后回本页即可一键导出），或自己用 qq-cli / 任意工具导出 md/json</div>')
    +'<div style="margin-top:8px"><button class="act ghost" style="margin:0" onclick="ciPick(\''+src+'\')">选择已导出的文件导入…</button></div>')
-  :'<div style="margin-top:8px"><div class="k">微信记录导出：用 skillhub 的 <b>user_514405d2/wechat-cli</b>（scripts/export_markdown.py 导出 md）</div><div style="margin-top:8px"><button class="act ghost" style="margin:0" onclick="ciPick(\''+src+'\')">选择已导出的文件导入…</button></div></div>';
+  :(wxReady
+    ?'<div style="margin-top:8px"><div class="k" style="margin-bottom:4px">方式 A（推荐）：本机 wechat-cli 已就绪，直接导出</div><div style="display:flex;gap:8px;align-items:center"><input id="ci-wxchat" placeholder="联系人备注/昵称 或 群名" style="flex:1" onchange=""><button class="act" style="margin:0" onclick="ciWxCliExport()">导出并导入</button></div></div><div class="k" style="margin-top:6px">首次使用需先提取密钥（微信登录状态下，终端跑一次技能 scripts/extract_keys.py）</div><div style="margin-top:8px"><button class="act ghost" style="margin:0" onclick="ciPick(\''+src+'\')">选择已导出的文件导入…</button></div>'
+    :'<div style="margin-top:8px"><div class="k" style="margin-bottom:4px">装好下面两步即可解锁「一键导出」（当前：'+(pb.wx_skill_installed?'技能 ✅':'技能 ⚠ 未装')+' · '+(pb.wx_cli_cmd?'命令 ✅':'命令 ⚠ 未装')+'）</div>'
+     +'<div class="k mono" style="font-size:12px;margin:4px 0;display:flex;gap:6px;align-items:center">① skillhub install wechat-cli --namespace user_514405d2 '+cp('ci-cmd1','skillhub install wechat-cli --namespace user_514405d2')+'</div>'
+     +'<div class="k mono" style="font-size:12px;margin:4px 0;display:flex;gap:6px;align-items:center">② pip install git+https://github.com/jidechao/py-wechat-cli.git '+cp('ci-cmd2','pip install git+https://github.com/jidechao/py-wechat-cli.git')+'</div>'
+     +'<div class="k" style="margin-top:6px">②装完后再登录微信提取一次密钥（技能 scripts/extract_keys.py）；两步都 ✅ 后回本页刷新。装不动也没关系：用任意工具导出 md/txt 后点下面按钮导入。</div>'
+     +'<div style="margin-top:8px"><button class="act ghost" style="margin:0" onclick="ciPick(\''+src+'\')">选择已导出的文件导入…</button></div></div>');
  return '<div class="card"><div class="k"><b>① 环境检测</b></div>'
  +envRow(pb.client_running,label+' 客户端正在运行'+(pb.client_running?'':'（导出/读库前请先打开并登录'+label+'）'))
  +'<div class="k" style="margin-top:4px">本机聊天数据目录：</div>'+dirsHtml
- +(isQQ?envRow(pb.qq_cli_available,'qq-cli 技能'+(pb.qq_cli_available?'已安装（位于 ~/.zcode/skills/qq-cli）':'未安装')):'')
+ +(isQQ?envRow(pb.qq_cli_available,'qq-cli 技能'+(pb.qq_cli_available?'已安装（位于 ~/.zcode/skills/qq-cli）':'未安装'))+envRow(pb.python_ok!==false,'系统 Python（打包版调用技能导出用）'+(pb.python_ok===false?'未检测到（python.org 安装）':'可用')):envRow(pb.wx_skill_installed,'wechat-cli 技能（skillhub user_514405d2）'+(pb.wx_skill_installed?'已安装':'未安装'))+envRow(!!pb.wx_cli_cmd,'wechat-cli 命令（py-wechat-cli）'+(pb.wx_cli_cmd?'可用：'+esc(pb.wx_cli_cmd):'未安装')))
  +'</div>'
  +'<div class="card"><div class="k"><b>② 导出聊天记录</b></div><div class="k" style="margin-top:6px">'+esc(hint)+'</div>'+step2+'</div>'
  +'<div class="card"><div class="k"><b>③ 隔离库中的会话</b>（导入后在这里，点「学习成人设」让机器人消化）</div>'+(ss.length?rows:'<div class="k" style="margin-top:6px">还没有导入任何会话。</div>')+'</div>'
  +'<div class="k" style="margin-top:6px">隔离库位置：<span class="mono">~/.zcode-qq-bot/chat_import/</span>（不进记忆、不进上下文，只是学习原料）</div>';
 }
 function qqChatImpPage(d,p){return chatImpPage(Object.assign({},d,{source:'qq',label:'QQ',hint:'见上方方式 A/B'}),p)}
-function wxChatImpPage(d,p){return chatImpPage(Object.assign({},d,{source:'wx',label:'微信',hint:'见上方方式（wechat-cli 导出）'}),p)}
+function wxChatImpPage(d,p){return chatImpPage(Object.assign({},d,{source:'wx',label:'微信',hint:'就绪后可直接一键导出；未就绪按第②步两行命令装好后回本页'}),p)}
 async function ciQqCliExport(){
  const chat=document.getElementById('ci-chat').value.trim();
  if(!chat){toast('先填会话（QQ号/昵称/群名）',false);return}
@@ -2373,6 +2381,16 @@ async function ciQqCliExport(){
  const r=await api('/api/chatimport/qqcli-export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat:chat})}).catch(()=>({ok:false,error:'请求失败'}));
  if(r.ok===false){toast(r.error||'导出失败',false);return}
  toast('已导入「'+(r.session||chat)+'」'+(r.count||0)+' 条');load()}
+async function ciWxCliExport(){
+ const chat=document.getElementById('ci-wxchat').value.trim();
+ if(!chat){toast('先填会话（联系人备注/昵称 或 群名）',false);return}
+ toast('正在调用 wechat-cli 导出（最长 5 分钟）…');
+ const r=await api('/api/chatimport/wxcli-export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat:chat})}).catch(()=>({ok:false,error:'请求失败'}));
+ if(r.ok===false){toast(r.error||'导出失败',false);return}
+ toast('已导入「'+(r.session||chat)+'」'+(r.count||0)+' 条');load()}
+function ciCopy(id){
+ const t=document.getElementById(id);if(!t)return;
+ t.select();document.execCommand('copy');toast('已复制，去终端粘贴执行')}
 async function ciPick(src){
  toast('请选择导出文件…');
  const r=await api('/api/chatimport/pick',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>({ok:false,error:'请求失败'}));
@@ -4980,6 +4998,10 @@ class UiHandler(BaseHTTPRequestHandler):
             # 用本机 qq-cli 技能导出指定会话并入库（引擎 qq_cli_export）
             import qq_chatimport as _CI
             return self._reply(200, _CI.qq_cli_export(str(body.get("chat") or "")))
+        if u.path == "/api/chatimport/wxcli-export":
+            # 用本机 wechat-cli 技能导出指定会话并入库（引擎 wx_cli_export）
+            import qq_chatimport as _CI
+            return self._reply(200, _CI.wx_cli_export(str(body.get("chat") or "")))
         if u.path == "/api/chatimport/pick":
             # 文件对话框选导出文件 → 只解析预览（不落盘）
             import threading as _th

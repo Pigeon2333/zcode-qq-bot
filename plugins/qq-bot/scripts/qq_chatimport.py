@@ -15,6 +15,7 @@ import json
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -38,6 +39,59 @@ def qq_cli_available():
 
 
 CREATE_NO_WINDOW = 0x08000000  # 后台子进程，避免控制台窗口闪现
+
+_PY_EXE_CACHE = None
+
+
+def _py_exe():
+    """跑外部 python 脚本用的解释器（qq-cli / wechat-cli 均为纯标准库）。
+
+    打包版里 sys.executable 是本应用 exe 本身——直接用它跑脚本会误启
+    第二个应用实例（单实例互斥弹「应用已在运行」，exe 加载托盘图标还
+    打印 libpng 噪音），所以冻结环境必须找系统 Python。"""
+    global _PY_EXE_CACHE
+    if _PY_EXE_CACHE is not None:
+        return list(_PY_EXE_CACHE) if _PY_EXE_CACHE else None
+    cands = []
+    if not getattr(sys, "frozen", False):
+        cands.append([sys.executable])
+    else:
+        for name in ("py", "python", "python3"):
+            w = shutil.which(name)
+            if w:
+                cands.append([w, "-3"] if name == "py" else [w])
+    for cmd in cands:
+        try:
+            r = subprocess.run(cmd + ["-c", "import sys"],
+                               capture_output=True, timeout=20,
+                               creationflags=CREATE_NO_WINDOW)
+            if r.returncode == 0:
+                _PY_EXE_CACHE = cmd
+                return list(cmd)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+    _PY_EXE_CACHE = []
+    return None
+
+
+_NOISE_MARKS = ("libpng", "iccp", "deprecat", "userwarning",
+                "deprecationwarning", "futurewarning")
+
+
+def _clean_noise(*streams):
+    """合并子进程输出并滤掉无害告警（libpng iCCP / Deprecation 等），
+    取尾部几行作为可读的错误详情。"""
+    lines = []
+    for s in streams:
+        try:
+            txt = (s or b"").decode("utf-8", "replace")
+        except AttributeError:
+            txt = str(s or "")
+        for ln in txt.splitlines():
+            t = ln.strip()
+            if t and not any(m in t.lower() for m in _NOISE_MARKS):
+                lines.append(t)
+    return " | ".join(lines[-4:])
 
 
 def probe(source):
@@ -84,8 +138,14 @@ def probe(source):
         for d in dirs:
             if os.path.isdir(d):
                 found.append({"label": label, "path": d})
-    return {"client_running": running, "data_dirs": found,
-            "qq_cli_available": qq_cli_available() if src == "qq" else False}
+    out = {"client_running": running, "data_dirs": found}
+    if src == "qq":
+        out["qq_cli_available"] = qq_cli_available()
+        out["python_ok"] = _py_exe() is not None
+    else:
+        out["wx_skill_installed"] = wx_export_script() is not None
+        out["wx_cli_cmd"] = wx_cli_cmd() or ""
+    return out
 
 
 def qq_cli_export(chat):
@@ -95,18 +155,25 @@ def qq_cli_export(chat):
         return {"ok": False,
                 "error": "本机未安装 qq-cli 技能"
                          "（skillhub.cn 搜 xujianpeng/qq-cli 安装后重试）"}
+    py = _py_exe()
+    if not py:
+        return {"ok": False,
+                "error": "打包版调用 qq-cli 需要系统装有 Python 3"
+                         "（python.org 下载安装后重试）"}
     inbox = pathlib.Path(BASE_DIR) / "qq" / "inbox"
     inbox.mkdir(parents=True, exist_ok=True)
     outp = str(inbox / ("export_%d.json" % int(time.time())))
     try:
         r = subprocess.run(
-            [sys.executable, _QQCLI_SKILL, "export", str(chat)[:40],
-             "--format", "json", "--output", outp],
+            py + [_QQCLI_SKILL, "export", str(chat)[:40],
+                  "--format", "json", "--output", outp],
             capture_output=True, timeout=300,
             creationflags=CREATE_NO_WINDOW)
         if r.returncode != 0 or not os.path.isfile(outp):
-            detail = (r.stderr or r.stdout or b"").decode("utf-8", "replace")
-            return {"ok": False, "error": detail[-200:] or "导出失败"}
+            detail = _clean_noise(r.stderr, r.stdout)
+            return {"ok": False, "error": detail or
+                    "导出失败且无输出——通常是 qq-cli 还没初始化"
+                    "（先在终端跑一次 qq_cli.py init 提取密钥）"}
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "导出超时（300 秒）"}
     res = store("qq", str(chat)[:40], outp)
@@ -117,6 +184,97 @@ def qq_cli_export(chat):
     if res.get("ok"):
         res["sessions"] = sessions("qq")
     return res
+
+
+# ---- 微信：wechat-cli 技能（skillhub user_514405d2）+ py-wechat-cli 命令 ----
+def _wx_skill_dirs():
+    """wechat-cli 技能可能装到的位置（ZCode 用户目录 / 应用旁目录）。"""
+    dirs = [os.path.join(os.environ.get("USERPROFILE", ""),
+                         ".zcode", "skills", "wechat-cli")]
+    if getattr(sys, "frozen", False):
+        # skillhub 默认装到「当前目录」，打包版工作目录在 exe 旁
+        base = os.path.dirname(os.path.abspath(sys.executable))
+        dirs.append(os.path.join(os.path.dirname(base), "skills",
+                                 "@user_514405d2", "wechat-cli"))
+        dirs.append(os.path.join(base, "skills", "wechat-cli"))
+    else:
+        dirs.append(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__)))), "skills",
+            "@user_514405d2", "wechat-cli"))
+    return dirs
+
+
+def wx_export_script():
+    for d in _wx_skill_dirs():
+        p = os.path.join(d, "scripts", "export_markdown.py")
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def wx_cli_cmd():
+    """定位 py-wechat-cli 的 wechat-cli 命令（which + SKILL.md 约定路径）。"""
+    w = shutil.which("wechat-cli")
+    if w:
+        return w
+    user = os.environ.get("USERPROFILE", "")
+    for c in (os.path.join(user, ".workbuddy", "binaries", "python",
+                           "envs", "default", "Scripts", "wechat-cli.exe"),
+              os.path.join(user, "AppData", "Local", "Programs", "Python",
+                           "Python313", "Scripts", "wechat-cli.exe")):
+        if os.path.isfile(c):
+            return c
+    return None
+
+
+def wx_cli_export(chat):
+    """调用 wechat-cli 技能（export_markdown.py 清洗版）导出会话并入库。"""
+    script = wx_export_script()
+    cli = wx_cli_cmd()
+    missing = []
+    if not script:
+        missing.append("①skillhub 安装 wechat-cli 技能")
+    if not cli:
+        missing.append("②源码安装 py-wechat-cli 命令")
+    if missing:
+        return {"ok": False,
+                "error": "微信导出未就绪，缺：" + "、".join(missing) +
+                         "（插件页第②步有完整命令）"}
+    py = _py_exe()
+    if not py:
+        return {"ok": False,
+                "error": "打包版调用 wechat-cli 需要系统装有 Python 3"
+                         "（python.org 下载安装后重试）"}
+    inbox = pathlib.Path(BASE_DIR) / "wx" / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    outp = str(inbox / ("wx_%d.md" % int(time.time())))
+    try:
+        r = subprocess.run(
+            py + [script, str(chat)[:40], "--cli", cli,
+                  "--output", outp, "--no-raw"],
+            capture_output=True, timeout=300,
+            creationflags=CREATE_NO_WINDOW)
+        if r.returncode != 0 or not os.path.isfile(outp):
+            detail = _clean_noise(r.stderr, r.stdout)
+            return {"ok": False, "error": detail or
+                    "导出失败且无输出——通常是还没提取密钥"
+                    "（微信登录状态下跑一次技能里的 extract_keys.py）"}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "导出超时（300 秒）"}
+    res = store("wx", str(chat)[:40], outp)
+    try:
+        os.remove(outp)
+    except OSError:
+        pass
+    if res.get("ok"):
+        res["sessions"] = sessions("wx")
+        if not res.get("count"):
+            res = dict(res)
+            res["ok"] = False
+            res["error"] = ("导出的文件里没认出消息行（格式不认识）——"
+                            "请把文件发作者看看格式")
+    return res
+
 _MAX_FILE = 80 * 1024 * 1024       # 80MB 导出文件上限
 _MAX_MSGS = 200000                 # 单会话消息上限
 
@@ -203,6 +361,9 @@ def parse_file(path):
         line = raw.rstrip()
         if not line:
             continue
+        # 微信 export_markdown 的消息行带 markdown 列表前缀「- 」
+        if line.startswith("- "):
+            line = line[2:].rstrip()
         if line.startswith("#") and not any(pt.match(line) for pt in _TS_PATTERNS):
             continue  # md 标题
         if line.startswith(("```", "---", ">>")):
@@ -214,8 +375,11 @@ def parse_file(path):
                 hit = m
                 break
         if hit:
+            sender = hit.group(3).strip()[:32]
+            # 微信行是「[时间] [会话名] 发送者: 内容」——剥掉开头的会话名标签
+            sender = re.sub(r"^\[[^\]]{1,24}\]\s*", "", sender) or sender
             msgs.append({"ts": _norm_ts(hit.group(1), hit.group(2)),
-                         "sender": hit.group(3).strip()[:32],
+                         "sender": sender,
                          "text": hit.group(4).strip()[:2000]})
             if len(msgs) >= _MAX_MSGS:
                 break

@@ -1,10 +1,10 @@
 {
   "name": "wx_chat_import",
-  "version": "1.0.1",
-  "title": "微信聊天记录导入与学习",
+  "version": "1.0.2",
+  "title": "微信 聊天记录导入与学习",
   "category": "记忆",
   "default_enabled": false,
-  "description": "导入微信聊天记录到隔离库，一键让机器人学习成人设与记忆。插件页内置三步向导：环境自动检测（客户端/数据目录）→ 导出引导（QQ 支持本机 qq-cli 一键导出）→ 学习与保存。不进记忆不进上下文。",
+  "description": "导入微信聊天记录到隔离库，一键让机器人学习成人设与记忆。插件页三步向导：环境自动检测（客户端/数据目录/导出组件就绪度）→ 导出（组件就绪时填联系人/群名一键导出入库；未就绪给两行可复制命令的分步引导）→ 学习与保存。不进记忆不进上下文。",
   "page": {
     "js": "wxChatImpPage",
     "data": "/api/chatimport/status?source=wx"
