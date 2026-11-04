@@ -1763,8 +1763,6 @@ async function vSettings(){
   <label class="master"><input type="checkbox" ${rv.daily_review_enabled!==false?'checked':''} onchange="saveFeature('daily_review_enabled',this.checked)">
    <span><b>夜间自动复盘</b><div class="k" style="margin-top:3px">每日 03:30 自动统计当日表现、提炼风格观察、日报发主人私聊</div></span></label>
  </div>
- <div class="card"><div class="k">电脑状态感知</div>
-  <div class="k" style="margin-top:6px">已插件化：开关在「插件 → 电脑状态感知」（默认关闭；数据只进主人私聊）。</div></div>
  <div class="card"><div class="k">开机自启（登录 Windows 后自动打开控制台窗口${c.autostart_with_windows?'，已开启':'，未开启'}）</div>
   <div style="margin-top:8px"><label><input type="checkbox" id="sauto" ${c.autostart_with_windows||S_autostartRegistry()?'checked':''} onchange="saveAuto(this.checked)"> 开机自动启动本应用</label></div></div>
  <div class="card"><div class="k">启动行为</div>
