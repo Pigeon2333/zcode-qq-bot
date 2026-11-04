@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "skills": {
+    "@user_514405d2/wechat-cli": {
+      "name": "微信聊天记录读取与分析",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=wechat-cli&namespace=user_514405d2",
+      "source": "community",
+      "version": "1.1.0",
+      "namespace": {
+        "canonicalName": "@user_514405d2/wechat-cli",
+        "displayName": "user_514405d2",
+        "handle": "user_514405d2",
+        "publicSlug": "wechat-cli"
+      },
+      "internalSlug": "wechat-cli",
+      "publicSlug": "wechat-cli",
+      "installDir": "D:\\ZCode\\workspaces\\qq-bot\\skills\\@user_514405d2\\wechat-cli"
+    },
+    "@clawhub_liuxy951129-cpu/humanizer-zh": {
+      "name": "humanizer-zh",
+      "zip_url": "https://api.skillhub.cn/api/v1/download?slug=humanizer-zh&namespace=clawhub_liuxy951129-cpu",
+      "source": "clawhub",
+      "version": "1.0.0",
+      "namespace": {
+        "canonicalName": "@clawhub_liuxy951129-cpu/humanizer-zh",
+        "displayName": "liuxy951129-cpu",
+        "handle": "clawhub_liuxy951129-cpu",
+        "publicSlug": "humanizer-zh"
+      },
+      "internalSlug": "humanizer-zh",
+      "publicSlug": "humanizer-zh",
+      "installDir": "D:\\ZCode\\workspaces\\qq-bot\\skills\\@clawhub_liuxy951129-cpu\\humanizer-zh"
+    }
+  }
+}

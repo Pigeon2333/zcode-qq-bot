@@ -1592,6 +1592,8 @@ async function vZcode(){
    <span class="badge ${zs.installed?'b-ok':''}" style="${zs.installed?'':'background:var(--tint);color:var(--dim)'}">${zs.installed?'已安装':'未检测到 ZCode'}</span>
    <span class="badge ${zs.running?'b-ok':''}" style="${zs.running?'':'background:var(--tint);color:var(--dim)'}">${zs.running?'运行中':'未运行'}</span>
   </div>
+  ${(!zs.installed)?'<div class="k" style="margin-top:8px;padding:10px;border:1px dashed var(--line2,var(--line));border-radius:8px;background:var(--tint)"><b>想装 ZCode？两步就好：</b><br>① 到 <a href="https://zcode.ai" target="_blank">zcode.ai</a> 下载 ZCode 并安装（免费）；<br>② 装好 ZCode 后，打开 ZCode → 在它的插件市场安装「QQ机器人」插件（或本地安装本项目 <span class="mono">plugins/</span> 目录）→ 回本页刷新，总开关即可打开。<br>不装也完全没关系——机器人所有核心功能都不依赖它。</div>':''}
+  ${(zs.installed&&!zs.running)?'<div class="k" style="margin-top:8px">ZCode 已安装但当前未运行——打开 ZCode 后回本页刷新即可。</div>':''}
   <label class="master"><input type="checkbox" ${c.zcode_bridge_enabled&&c.zcode_installed?'checked':''} ${c.zcode_installed?'':'disabled'} onchange="saveKVLoad('/api/app-config',{zcode_bridge_enabled:this.checked?1:0},this.checked?'ZCode 联动已开启':'ZCode 联动已关闭')">
    <span><b>启用 ZCode 联动（总开关）</b><div class="k" style="margin-top:3px">机器人独立运行完全不受影响；开启后下面的联动能力可用。未安装 ZCode 时无法开启${c.zcode_installed?'':'（检测路径：~/.zcode 或 Program Files\\\\ZCode，安装后刷新本页）'}</div></span></label>
   <div class="k" style="margin-top:6px">在 ZCode 里通过 /qq-bot 技能 + qq-bot MCP 工具（qq_send / qq_notify / qq_task_done / qq_sticker_add 等）与本页联动。</div></div>

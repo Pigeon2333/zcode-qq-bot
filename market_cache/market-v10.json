@@ -1,0 +1,67 @@
+{
+ "plugins": [
+  {
+   "name": "qq_daily_word",
+   "version": "1.0.2",
+   "title": "每日一句",
+   "category": "感知",
+   "description": "每天一句「一言」进上下文，她偶尔会冒出一句好听的话（hitokoto.cn 免费接口）。",
+   "zip": "https://github.com/Pigeon2333/zcode-qq-bot/releases/download/plugins/qq_daily_word-1.0.2.zip",
+   "size": 1353
+  },
+  {
+   "name": "humanizer_zh",
+   "version": "1.0.0",
+   "title": "中文去AI味",
+   "category": "风格",
+   "description": "让她的聊天少一点AI味：具体压倒抽象、展示压倒告知、节奏不工整、允许不完美（方法论来自 SkillHub @user_c160f2b7/humanizer-zh）。",
+   "zip": "https://github.com/Pigeon2333/zcode-qq-bot-release/releases/download/plugins/humanizer_zh-1.0.0.zip",
+   "size": 2105
+  },
+  {
+   "name": "bili_scroll",
+   "version": "1.2.0",
+   "title": "B 站刷视频",
+   "category": "娱乐",
+   "description": "机器人用自己的 B 站账号扫码登录后，按周期以人设与记忆兴趣刷视频：见闻注入聊天、好物按人设口吻顺口分享（渠道/目标可配）；消息里的 BV 号/链接自动带视频信息进对话。Cookie 只存本机。",
+   "zip": "https://github.com/Pigeon2333/zcode-qq-bot/releases/download/plugins/bili_scroll-1.2.0.zip",
+   "size": 9144
+  },
+  {
+   "name": "qq_chat_import",
+   "version": "1.0.1",
+   "title": "QQ 聊天记录导入与学习",
+   "category": "记忆",
+   "description": "把 QQ 聊天记录导出文件导入隔离库（不进记忆/上下文），再由机器人消化学习成人设草稿与候选记忆：覆盖人设有二次确认。导出可用 qq-cli 或任意「时间 发送人： 内容」格式文本。",
+   "zip": "https://github.com/Pigeon2333/zcode-qq-bot/releases/download/plugins/qq_chat_import-1.0.1.zip",
+   "size": 953
+  },
+  {
+   "name": "wx_chat_import",
+   "version": "1.0.2",
+   "title": "微信 聊天记录导入与学习",
+   "category": "记忆",
+   "description": "导入微信聊天记录到隔离库，一键让机器人学习成人设与记忆。插件页三步向导：环境自动检测（客户端/数据目录/导出组件就绪度）→ 导出（组件就绪时填联系人/群名一键导出入库；未就绪给两行可复制命令的分步引导）→ 学习与保存。不进记忆不进上下文。",
+   "zip": "https://github.com/Pigeon2333/zcode-qq-bot/releases/download/plugins/wx_chat_import-1.0.2.zip",
+   "size": 956
+  },
+  {
+   "name": "voice_reply",
+   "version": "1.0.1",
+   "title": "语音回复",
+   "category": "风格",
+   "description": "让机器人开口说话：回复用语音发送（内容跟人设走，只换发送形式）。多语音来源可选——Edge-TTS 免费零配置（内置 9 个中文音色）、智谱 GLM-TTS（收费，支持 3 秒样本克隆专属音色）、硅基流动（部分模型免费额度）、任意 OpenAI 兼容服务（OpenAI/Groq/MiniMax）。触发策略自由配（触发词/全部/概率混合，群聊私聊独立开关），合成失败自动回退发文字。设置页明示各家计费规则。",
+   "zip": "https://github.com/Pigeon2333/zcode-qq-bot/releases/download/plugins/voice_reply-1.0.1.zip",
+   "size": 4771
+  },
+  {
+   "name": "lark_bridge",
+   "version": "1.0.0",
+   "title": "飞书互通",
+   "category": "工具",
+   "description": "QQ 群 ↔ 飞书群消息互通：在飞书开放平台免费创建自建应用（免公网服务器），配置桥接映射后，QQ 群消息实时转发到飞书群（带说话人昵称，纯文本）；飞书群消息也可反向转到 QQ 群（WebSocket 长连接，需 pip install lark-oapi）。Secret 只存本机，消息不经第三方。",
+   "zip": "https://github.com/Pigeon2333/zcode-qq-bot/releases/download/plugins/lark_bridge-1.0.0.zip",
+   "size": 1145
+  }
+ ]
+}

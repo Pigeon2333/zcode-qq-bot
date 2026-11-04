@@ -1,10 +1,10 @@
 {
   "name": "lark_bridge",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "title": "飞书互通",
   "category": "工具",
   "default_enabled": false,
-  "description": "QQ 群 ↔ 飞书群消息互通：在飞书开放平台免费创建自建应用（免公网服务器），配置桥接映射后，QQ 群消息实时转发到飞书群（带说话人昵称，纯文本）；飞书群消息也可反向转到 QQ 群（WebSocket 长连接，需 pip install lark-oapi）。Secret 只存本机，消息不经第三方。",
+  "description": "QQ 群 ↔ 飞书群消息互通：在飞书开放平台免费创建自建应用（免公网服务器），配置桥接映射后，QQ 群消息实时转发到飞书群（带说话人昵称，纯文本）；飞书群消息也可反向转到 QQ 群（WebSocket 长连接，需 pip install lark-oapi）。Secret 只存本机，消息不经第三方。（引擎随插件包自带，完全独立于主程序版本）",
   "page": {
     "js": "larkPage",
     "data": "/api/lark/meta"

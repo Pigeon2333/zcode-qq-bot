@@ -4225,7 +4225,7 @@ def process(daemon, msg):
             try:
                 import qq_tts as _TTS
                 if _TTS.should_voice(msg) or (voice_ask and _TTS.voice_cfg().get("enabled")):
-                    sent_v = _TTS.send_voice(daemon, msg["chat_type"],
+                    sent_v = _TTS.send_voice(None, msg["chat_type"],
                                              msg["chat_id"], texts)
                     if sent_v:
                         sent_desc.append("voice:%d" % len(texts))
@@ -4758,6 +4758,7 @@ def main():
                 break
     RT.reload_chain()
     start_admin_server(args.admin_port, daemon)
+    PLUGIN_HOST.daemon = daemon   # 插件 api.send()/send_image()/send_voice() 走同一发送队列
     _proactive_state_load()
     try:
         PLUGIN_HOST.load_all()
