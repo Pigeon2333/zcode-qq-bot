@@ -331,6 +331,19 @@ def _synth_edge(text, cfg):
     return out
 
 
+def _wav_duration(data):
+    """WAV 字节 → 时长秒（读 RIFF 头帧数；失败返回 0）。"""
+    try:
+        import wave
+        import io as _io
+        w = wave.open(_io.BytesIO(data), 'rb')
+        dur = w.getnframes() / max(1, w.getframerate())
+        w.close()
+        return dur
+    except Exception:
+        return 0.0
+
+
 def synthesize(text, cfg):
     """合成 → 返回 mp3 路径；失败抛异常（调用方回退文字）。text 会被截断。"""
     text = str(text or "").strip().replace("\n", " ")[:_MAX_TEXT]
@@ -349,6 +362,16 @@ def synthesize(text, cfg):
         data = _post_audio_speech("https://open.bigmodel.cn/api/paas/v4/",
                                    key, "cogtts", voice, text,
                                    audio_format="wav")  # 智谱支持 wav（mp3 报 1214）
+        # 克隆音色「样本复现」兜底（实测：6 字文本合成出 19 秒——模型把
+        # 克隆样本里的原文混进输出）。合成时长超过文本预估 2 倍且当前用的
+        # 是克隆音色时，改用预设音色重合成一次，保证内容可听
+        est = max(4.0, len(text) * 0.32 + 1.5)
+        if str(cfg.get("zhipu_speaker_id") or "").strip() \
+                and _wav_duration(data) > est * 2:
+            fallback_voice = str(cfg.get("zhipu_voice") or "tongtong")
+            data = _post_audio_speech("https://open.bigmodel.cn/api/paas/v4/",
+                                      key, "cogtts", fallback_voice, text,
+                                      audio_format="wav")
     elif provider == "siliconflow":
         key = str(cfg.get("sf_key", "")).strip()
         if not key:
