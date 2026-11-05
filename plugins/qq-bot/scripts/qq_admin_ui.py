@@ -2678,12 +2678,12 @@ function vGsvCardTeaser(){
   +'<div class="k" style="margin-top:6px">③ 解压完刷新本页——引擎卡会自动出现，点「启动引擎」即可（首次加载约 1 分钟）。</div>'
   +'<div class="k" style="margin-top:6px">合成完全免费（本机 GPU 推理）；没有 NVIDIA 显卡建议用云端的智谱 GLM-TTS。</div></div></div></div>';
 }
-async function gsvExpandSetup(btn){
+ async function gsvExpandSetup(btn){
  btn&&(btn.disabled=true);
  const box=document.getElementById('gsv-setup');box&&(box.style.display='block');
  const env=document.getElementById('gsv-env');
  try{
-  const r=await api('/api/voice/gsv/env',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  const r=await api('/api/voice/gsv/env');
   if(r&&r.ok){
    env.innerHTML=r.has_nvidia
     ?('✓ 检测到 '+esc(r.gpu)+'（显存 '+(r.vram_mb||0)+'MB）'+(r.ok?' —— 可以安装。':' —— 显存偏小，可用但偶尔会回退。'))
