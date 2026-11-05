@@ -917,6 +917,21 @@ class Daemon:
         # 模型容易把其中一条误读成对方说的（复读/自己接自己话的根因）。
         mid = str(message_id or "")
         if mid and mid in self.msg_id_index:
+            # 占位升级：回显先到时 record/图片只有「[语音]/空」占位文本，
+            # 之后带真实文本的写入（_send_one 传了语音说的内容）应覆盖占位——
+            # 否则模型看不到自己语音说了什么（跨会话复读的根因之一）
+            if is_bot and text:
+                hist = self.mem_history.get(
+                    "%s_%s" % (item.get("chat_type"), item.get("chat_id")))
+                if hist:
+                    for rec in reversed(hist):
+                        if str(rec.get("message_id")) == mid:
+                            old = str(rec.get("text") or "")
+                            if old in ("", "[语音]", "[图片]", "[表情包]"):
+                                rec["text"] = text
+                                if n_images and not rec.get("n_images"):
+                                    rec["n_images"] = n_images
+                            break
             return
         rec = {
             "ts": item.get("ts") or now_ts(),
