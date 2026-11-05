@@ -2299,7 +2299,7 @@ async function vPlugins(){
  $('#view').innerHTML=head('插件（可按需启停的功能模块）')+saveHint('启停即时生效；每个插件的全部设置在其专属设置页里（点卡片或 ⚙ 设置进入）。')
  +((window.__pj_voice_reply||'')!==''?'':'')
  +('<div class="card" style="border-color:#f0c36d;background:#fffcf0"><div class="k"><b>📢 语音回复功能已内置</b>——0.5.0 起搬到侧边栏「<a href="#" onclick="goTab(\'voice\');return false">语音消息</a>」页（新增免费本地引擎 GPT-SoVITS）。</div>'
- +'<div class="k" style="margin-top:4px">如果下面的「语音回复」插件还开着，建议在这里停用并卸载：配置已自动共用，内置版功能更全（含本地引擎、音色管理），避免两边同时开着重复发语音。</div></div>')+
+ +'<div class="k" style="margin-top:4px">已装过该插件的会在升级时自动停用（配置共用，「语音消息」页里所有设置原样生效），可在下方直接卸载残留文件。</div></div>')+
  '<div style="display:flex;gap:8px;margin-bottom:14px"><button class="act" style="margin:0" onclick="plTab(\'mine\')">我的插件</button><button class="act ghost" style="margin:0" onclick="plTab(\'market\')">🌐 插件市场</button><span style="flex:1"></span><button class="act ghost" style="margin:0" onclick="plInstall()">从 zip 安装…</button></div>'+
  (cats.length>1?plCatBar(cats,_plCat,'plCatSel'):'')+
  (shown.length?'<div style="margin-top:4px">'+rows+'</div>':'<div class="card">该分类暂无插件</div>');

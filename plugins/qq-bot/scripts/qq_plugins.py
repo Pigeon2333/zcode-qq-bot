@@ -241,10 +241,11 @@ class PluginHost:
         self.hooks = {}
         self.routes = {}       # 热重载后旧 route 注册失效，重新收集
         self.manifests = {}
-        loaded, skipped = [], []
+        loaded, skipped, migrated = [], [], []
         scanned = self.scan()
         # 目录集合 + 关键文件 mtime 签名（装/卸载与代码更新都触发热重载）
         self._scan_sig = self._sig_of(scanned)
+        self._migrate_deprecated(scanned, migrated)
         for name, (mf, pdir, builtin) in scanned.items():
             mf = dict(mf)
             mf.setdefault("title", name)
@@ -272,7 +273,31 @@ class PluginHost:
             except Exception as e:
                 self.log("PLUGIN_LOAD_FAIL %s %r" % (name, e))
         self._loaded_names = set(loaded)
+        if migrated:
+            self.log("PLUGINS_MIGRATED deprecated→builtin: %s" % ",".join(migrated))
         self.log("PLUGINS loaded=%s disabled=%s" % (",".join(loaded) or "-", ",".join(skipped) or "-"))
+
+    # 已被应用内置取代的插件（0.5.0 语音内置）：升级后自动停用，
+    # 配置 reply_config.voice 共用不丢；插件文件保留可随时手动删
+    _DEPRECATED_BUILTIN = ("voice_reply",)
+
+    def _migrate_deprecated(self, scanned, migrated):
+        st = self._state()
+        changed = False
+        for name in self._DEPRECATED_BUILTIN:
+            if name not in scanned:
+                continue
+            if (st.get("enabled") or {}).get(name) is not False:
+                st.setdefault("enabled", {})[name] = False
+                changed = True
+                migrated.append(name)
+        if changed:
+            try:
+                pathlib.Path(STATE_PATH).write_text(
+                    json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
+                self._state_mtime = os.path.getmtime(STATE_PATH)
+            except OSError:
+                pass
 
     # ---- 运行时钩子 ----
 
@@ -474,7 +499,7 @@ def uninstall(name):
 # 市场清单文件名带版本：release 资产 CDN 缓存≈永久，clobber 同名文件更新后
 # 用户拿到的仍是旧字节——清单内容有变必须换新文件名（market-v3、v4…）
 DEFAULT_MARKET_URL = ("https://github.com/Pigeon2333/zcode-qq-bot/"
-                      "releases/download/plugins/market-v23.json")
+                      "releases/download/plugins/market-v24.json")
 _MARKET_MIRRORS = ("https://gh-proxy.com/" + DEFAULT_MARKET_URL,)
 
 
