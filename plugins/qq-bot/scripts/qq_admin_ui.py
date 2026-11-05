@@ -2529,7 +2529,17 @@ function voiceProvChange(){
  else if(k==='zhipu'){box.innerHTML='<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'
   +'<div><div class="k" style="margin-bottom:4px">预设音色</div><select id="v-zv">'+zzOptsHtml()+'</select></div>'
   +'<div><div class="k" style="margin-bottom:4px">克隆音色 speaker_id（填了优先生效）</div><input id="v-zsid" value="'+esc(String(c.zhipu_speaker_id||''))+'" placeholder="复刻得到的 speaker_id"></div>'
-  +'<div style="grid-column:1/-1"><div class="k" style="margin-bottom:4px">智谱 API Key（留空 = 复用模型管理里的智谱 Key）</div><input id="v-zkey" type="password" value="'+esc(String(c.zhipu_key||''))+'" placeholder="留空自动复用"></div></div>'}
+  +'<div style="grid-column:1/-1"><div class="k" style="margin-bottom:4px">智谱 API Key（留空 = 复用模型管理里的智谱 Key）</div><input id="v-zkey" type="password" value="'+esc(String(c.zhipu_key||''))+'" placeholder="留空自动复用"></div>'
+  +'<div style="grid-column:1/-1;border:1px dashed var(--line);border-radius:8px;padding:10px">'
+  +'<div class="k" style="margin-bottom:6px"><b>一键克隆音色</b> · 选文件 → 自动截取 → 上传克隆 → 自动填入 → 试听</div>'
+  +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+  +'<input type="file" id="v-file" accept="audio/*,video/*" style="flex:1;min-width:180px">'
+  +'<label class="k">起始 <input id="v-start" type="number" min="0" step="1" value="0" style="width:58px"> 秒</label>'
+  +'<label class="k">时长 <input id="v-dur" type="number" min="3" max="30" step="1" value="12" style="width:52px"> 秒</label>'
+  +'<input id="v-vname" placeholder="音色名（如 爱音）" style="width:130px">'
+  +'<button class="act" style="margin:0" onclick="voiceClone()">开始克隆</button></div>'
+  +'<input id="v-sample" placeholder="可选：这段音频里说的话（填了克隆更像）" style="width:100%;margin-top:6px">'
+  +'<div class="k" id="v-cmsg" style="margin-top:6px">支持 mp4/mov/mp3/m4a/wav；页面自动截取所选片段转 16kHz 单声道 WAV 再上传（智谱限 3-30 秒、≤10MB）。克隆与合成都计费。</div></div></div>'}
  else if(k==='siliconflow'){box.innerHTML='<div style="display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:10px">'
   +'<div><div class="k" style="margin-bottom:4px">硅基流动 API Key</div><input id="v-sfk" type="password" value="'+esc(String(c.sf_key||''))+'"></div>'
   +'<div><div class="k" style="margin-bottom:4px">模型</div><select id="v-sfm">'+sfMOptsHtml()+'</select></div>'
@@ -2554,9 +2564,15 @@ function voiceCollect(){
   keywords:document.getElementById('v-kw').value.split(/[、,，]/).map(x=>x.trim()).filter(Boolean),
   prob:(parseFloat(document.getElementById('v-prob').value)||0)/100};
  const g=id=>{const el=document.getElementById(id);return el?el.value:''};
- v.edge_voice=g('v-ev');v.zhipu_voice=g('v-zv');v.zhipu_speaker_id=g('v-zsid');v.zhipu_key=g('v-zkey');
- v.sf_key=g('v-sfk');v.sf_model=g('v-sfm');v.sf_voice=g('v-sfv');
- v.custom_base=g('v-cb');v.custom_key=g('v-ck');v.custom_model=g('v-cm');v.custom_voice=g('v-cv');
+ v.edge_voice=g('v-ev');v.zhipu_voice=g('v-zv');v.zhipu_speaker_id=g('v-sid')||g('v-zsid');
+ // Key fallback：表单字段可能还没渲染（首次加载 zhipu 表单区时序问题），
+ // 读不到就用已保存的配置值（用户已保存过 Key 的话）
+ v.zhipu_key=g('v-zkey')||((_VM.config||{}).zhipu_key||'');
+ v.sf_key=g('v-sfk')||((_VM.config||{}).sf_key||'');
+ v.sf_model=g('v-sfm');v.sf_voice=g('v-sfv');
+ v.custom_base=g('v-cb')||((_VM.config||{}).custom_base||'');
+ v.custom_key=g('v-ck')||((_VM.config||{}).custom_key||'');
+ v.custom_model=g('v-cm');v.custom_voice=g('v-cv');
  return v}
 async function voiceSave(){
  const r=await api('/api/voice/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voice:voiceCollect()})}).catch(()=>({ok:false,error:'请求失败'}));
@@ -2570,6 +2586,54 @@ async function voicePreview(){
  if(r.ok===false){msg.textContent='试听失败：'+(r.error||'');return}
  au.src=r.audio;au.style.display='block';au.play().catch(()=>{});
  msg.textContent='试听音频 '+((r.size||0)/1024).toFixed(0)+' KB（每次试听按该供应商计费规则计费）'}
+// ---- 一键克隆：浏览器解码 → 截取 → 16k 单声道 WAV → 上传智谱 ----
+function vcB64(u8){let s='';const CH=0x8000;for(let i=0;i<u8.length;i+=CH){s+=String.fromCharCode.apply(null,u8.subarray(i,i+CH))}return btoa(s)}
+function vcWav(ab,start,dur){
+ const sr=16000;
+ return new Promise((res,rej)=>{
+  let off;try{off=new OfflineAudioContext(1,Math.max(1,Math.ceil(dur*sr)),sr)}catch(e){rej(e);return}
+  const src=off.createBufferSource();src.buffer=ab;src.connect(off.destination);
+  try{src.start(0,Math.max(0,start),dur)}catch(e){rej(e);return}
+  off.startRendering().then(rendered=>{
+   const f=rendered.getChannelData(0);const buf=new ArrayBuffer(44+f.length*2);const dv=new DataView(buf);
+   const ws=(o,s)=>{for(let i=0;i<s.length;i++)dv.setUint8(o+i,s.charCodeAt(i))};
+   ws(0,'RIFF');dv.setUint32(4,36+f.length*2,true);ws(8,'WAVE');ws(12,'fmt ');
+   dv.setUint32(16,16,true);dv.setUint16(20,1,true);dv.setUint16(22,1,true);
+   dv.setUint32(24,sr,true);dv.setUint32(28,sr*2,true);dv.setUint16(32,2,true);dv.setUint16(34,16,true);
+   ws(36,'data');dv.setUint32(40,f.length*2,true);
+   let o=44;for(let i=0;i<f.length;i++){const v=Math.max(-1,Math.min(1,f[i]));dv.setInt16(o,v<0?v*0x8000:v*0x7FFF,true);o+=2}
+   res(new Uint8Array(buf));
+  }).catch(rej);
+ })}
+async function voiceClone(){
+ const msg=document.getElementById('v-cmsg');
+ const f=(document.getElementById('v-file').files||[])[0];
+ if(!f){msg.textContent='先选一个音频或视频文件';return}
+ if(f.size>120*1024*1024){msg.textContent='文件太大（超过 120MB），请先剪出 10-30 秒再上传';return}
+ const start=Math.max(0,parseFloat(document.getElementById('v-start').value)||0);
+ const dur=Math.min(30,Math.max(3,parseFloat(document.getElementById('v-dur').value)||12));
+ const name=(document.getElementById('v-vname').value||'').trim();
+ if(!name){msg.textContent='给这个音色起个名字（如 爱音）';return}
+ msg.textContent='① 解码音频中…（长视频需要几秒）';
+ let wav;
+ try{
+  const buf=await f.arrayBuffer();
+  const Ctx=window.AudioContext||window.webkitAudioContext;
+  const ac=new Ctx();
+  const ab=await ac.decodeAudioData(buf);
+  if(ac.close)ac.close();
+  if(!ab||!ab.duration){msg.textContent='解码失败：浏览器读不出这段音频';return}
+  if(ab.duration<start+1){msg.textContent='起始位置超出音频时长（该文件约 '+Math.round(ab.duration)+' 秒）';return}
+  msg.textContent='② 截取 '+dur+' 秒并转 WAV…';
+  wav=await vcWav(ab,start,dur);
+ }catch(e){msg.textContent='音频解码失败：'+((e&&e.message)||e)+'。换 mp3/wav/m4a 试试，或先用工具剪一段。';return}
+ msg.textContent='③ 上传并克隆中…（约 10-30 秒，按智谱计费）';
+ const r=await api('/api/voice/clone',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voice:voiceCollect(),audio:vcB64(wav),voice_name:name,sample_text:document.getElementById('v-sample').value,preview_text:'你好呀，我是你的语音助手，听听这个声音怎么样？'})}).catch(()=>({ok:false,error:'请求失败（克隆需要 0.4.12 及以上版本的应用）'}));
+ if(!r||r.ok===false){msg.textContent='克隆失败：'+((r&&r.error)||'未知错误');return}
+ const sid=document.getElementById('v-zsid');if(sid)sid.value=r.voice_id;
+ msg.textContent='✓ 克隆完成（'+r.voice_id+'），已填入并保存。点上面「试听」听听效果。';
+ await voiceSave();
+}
 let _LM=null;
 function larkPage(d){
  _LM=(d&&d.ok!==undefined)?d:(_LM||{config:{}});
@@ -5230,6 +5294,34 @@ class UiHandler(BaseHTTPRequestHandler):
                     "audio": "data:%s;base64," % mime + base64.b64encode(data).decode()})
             except Exception as e:
                 return self._reply(200, {"ok": False, "error": str(e)[:300]})
+        if u.path == "/api/voice/clone":
+            # 一键克隆：设置页在浏览器里截好 3-30 秒 WAV（base64）传上来，
+            # 这里上传智谱 → /voice/clone → 返回 voice id，页面自动填入并保存
+            import base64 as _b64
+            import qq_tts as _T
+            v = body.get("voice") if isinstance(body.get("voice"), dict) else {}
+            name = str(body.get("voice_name") or "").strip()[:40]
+            if not name:
+                return self._reply(200, {"ok": False, "error": "先给这个音色起个名字"})
+            raw = str(body.get("audio") or "")
+            if not raw or len(raw) > 20 * 1024 * 1024:
+                return self._reply(200, {"ok": False, "error": "音频为空或过大（上限约 15MB）"})
+            try:
+                wav = _b64.b64decode(raw.split(",", 1)[-1])
+            except Exception:
+                return self._reply(200, {"ok": False, "error": "音频数据解码失败"})
+            cfg = dict(_T.voice_cfg())
+            if v.get("zhipu_key"):
+                cfg["zhipu_key"] = str(v["zhipu_key"])[:128]
+            try:
+                vid, ofid = _T.clone_zhipu_voice(
+                    _T.zhipu_key(cfg), wav, name,
+                    str(body.get("sample_text") or "")[:300],
+                    str(body.get("preview_text") or "")[:120])
+            except Exception as e:
+                return self._reply(200, {"ok": False, "error": str(e)[:300]})
+            return self._reply(200, {"ok": True, "voice_id": vid,
+                                     "output_file_id": ofid})
         if u.path == "/api/lark/config":
             # 保存飞书配置（app_secret 单独保存，不回显）
             import qq_lark as _L

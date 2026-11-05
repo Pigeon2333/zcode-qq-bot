@@ -119,7 +119,7 @@ def _cleanup_old(keep=12):
     """只保留最近 keep 个合成文件（试听/发送产生的缓存）。"""
     d = pathlib.Path(TTS_DIR)
     try:
-        files = sorted((f for f in d.glob("*.mp3")),
+        files = sorted(list(d.glob("*.mp3")) + list(d.glob("*.wav")),
                        key=lambda f: f.stat().st_mtime, reverse=True)
         for f in files[keep:]:
             try:
@@ -174,6 +174,80 @@ def _pcm_to_wav(pcm, sample_rate=16000, channels=1, bits=16):
         channels, sample_rate, byte_rate, block_align, bits,
         b"data", data_size)
     return header + pcm
+
+
+def clone_zhipu_voice(key, wav_bytes, voice_name, sample_text="", preview_text=""):
+    """用一段 WAV 样本克隆智谱音色 → 返回 (voice_id, 预览音频 file_id)。
+
+    流程（智谱开放平台）：
+      1) POST /api/paas/v4/files  multipart，purpose=voice-clone-input → file_id
+      2) POST /api/paas/v4/voice/clone {model, voice_name, file_id, input[, text]}
+    限制：样本 ≤10MB，建议 3-30 秒人声；样本 WAV 由设置页在浏览器里截好再传上来。
+    """
+    import http.client
+    if not str(key or "").strip():
+        raise RuntimeError("未找到智谱 API Key")
+    if not wav_bytes or wav_bytes[:4] != b"RIFF":
+        raise RuntimeError("样本必须是 WAV 音频")
+    if len(wav_bytes) > 10 * 1024 * 1024:
+        raise RuntimeError("样本超过 10MB，请缩短时长后重试")
+    key = str(key).strip()
+    boundary = "----qqbot" + secrets.token_hex(8)
+    head = ("--%s\r\nContent-Disposition: form-data; name=\"purpose\"\r\n\r\n"
+            "voice-clone-input\r\n"
+            "--%s\r\nContent-Disposition: form-data; name=\"file\"; "
+            "filename=\"sample.wav\"\r\nContent-Type: audio/wav\r\n\r\n"
+            % (boundary, boundary)).encode("utf-8")
+    tail = ("\r\n--%s--\r\n" % boundary).encode("utf-8")
+    body = head + wav_bytes + tail
+    conn = http.client.HTTPSConnection("open.bigmodel.cn", 443, timeout=120)
+    conn.request("POST", "/api/paas/v4/files", body=body, headers={
+        "Authorization": "Bearer " + key,
+        "Content-Type": "multipart/form-data; boundary=" + boundary,
+        "Content-Length": str(len(body))})
+    r = conn.getresponse()
+    raw = r.read()
+    conn.close()
+    if r.status != 200:
+        raise RuntimeError("上传样本失败 HTTP %d: %s"
+                           % (r.status, raw[:200].decode("utf-8", "replace")))
+    try:
+        file_id = str(json.loads(raw.decode("utf-8")).get("id") or "")
+    except ValueError:
+        file_id = ""
+    if not file_id:
+        raise RuntimeError("上传成功但没有拿到 file_id")
+
+    payload = {
+        "model": "glm-tts-clone",
+        "voice_name": str(voice_name or "my_voice")[:40],
+        "file_id": file_id,
+        # input = 克隆后用于试听合成的目标文本（接口必填）
+        "input": str(preview_text or "你好呀，我是你的语音助手，听听这个声音怎么样？")[:120],
+    }
+    if str(sample_text or "").strip():
+        payload["text"] = str(sample_text).strip()[:300]   # 样本原文（可选，填了更像）
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    conn = http.client.HTTPSConnection("open.bigmodel.cn", 443, timeout=180)
+    conn.request("POST", "/api/paas/v4/voice/clone", body=data, headers={
+        "Authorization": "Bearer " + key,
+        "Content-Type": "application/json",
+        "Content-Length": str(len(data))})
+    r = conn.getresponse()
+    raw = r.read()
+    conn.close()
+    if r.status != 200:
+        raise RuntimeError("克隆失败 HTTP %d: %s"
+                           % (r.status, raw[:300].decode("utf-8", "replace")))
+    try:
+        obj = json.loads(raw.decode("utf-8"))
+    except ValueError:
+        raise RuntimeError("克隆接口返回非 JSON")
+    voice_id = str(obj.get("voice") or "")
+    if not voice_id:
+        raise RuntimeError("克隆接口没有返回 voice id: %s"
+                           % raw[:200].decode("utf-8", "replace"))
+    return voice_id, str(obj.get("file_id") or "")
 
 
 def _synth_edge(text, cfg):

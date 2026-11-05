@@ -45,20 +45,25 @@ SF_VOICES = ["anna", "bella", "benjamin", "charles", "claire", "david", "diana"]
 
 PROVIDERS = {
     "edge": {
-        "label": "Edge-TTS（免费）",
+        "label": "Edge-TTS（免费 · 入门）",
         "billing": "免费。走微软 Edge 朗读的公共接口（非官方通道，无需任何 Key；"
-                   "绝大多数时候稳定，偶发不可用时自动回退发文字）。",
+                   "绝大多数时候稳定，偶发不可用时自动回退发文字）。"
+                   "语音清晰但节奏均匀、无情感起伏——入门够用。",
     },
     "zhipu": {
-        "label": "智谱 GLM-TTS（收费，支持克隆）",
-        "billing": "收费：按合成字符数计费，价格见 bigmodel.cn/pricing（新账号通常有赠送额度）。"
-                   "「音色复刻」用 3 秒样本克隆专属音色，复刻与用克隆音色合成都计费。"
-                   "Key 可复用你已配置的智谱 API Key。",
+        "label": "智谱 GLM-TTS（⭐ 推荐 · 支持克隆）",
+        "billing": "收费：按合成字符计费（日常聊天一个月约几块钱）。"
+                   "充值：open.bigmodel.cn → 控制台 → 费用中心 → 充值（10 元够用很久）。"
+                   "新用户有赠送额度；Key 可复用模型管理里已配的智谱 Key。"
+                   "有情感起伏、自然停顿、语气变化，远比免费方案更像真人。"
+                   "「声音复刻」用 3-30 秒音频样本克隆专属音色（推荐走插件页引导），"
+                   "克隆与用克隆音色合成都计费。",
     },
     "siliconflow": {
         "label": "硅基流动（部分模型免费额度）",
         "billing": "CosyVoice2-0.5B 等模型有免费额度，超出或 FishSpeech 按量收费"
-                   "（siliconflow.cn 查看价格与免费模型清单）。需硅基流动 API Key。",
+                   "（siliconflow.cn 查看价格与免费模型清单）。需硅基流动 API Key。"
+                   "充值：siliconflow.cn → 控制台 → 费用 → 充值。",
     },
     "custom": {
         "label": "自定义（任意 OpenAI 兼容 TTS）",
@@ -114,7 +119,7 @@ def _cleanup_old(keep=12):
     """只保留最近 keep 个合成文件（试听/发送产生的缓存）。"""
     d = pathlib.Path(TTS_DIR)
     try:
-        files = sorted((f for f in d.glob("*.mp3")),
+        files = sorted(list(d.glob("*.mp3")) + list(d.glob("*.wav")),
                        key=lambda f: f.stat().st_mtime, reverse=True)
         for f in files[keep:]:
             try:
@@ -125,8 +130,10 @@ def _cleanup_old(keep=12):
         pass
 
 
-def _post_audio_speech(base_url, key, model, voice, text, timeout=90):
-    """OpenAI 兼容 POST <base>/audio/speech → mp3 字节。base_url 只允许 https 域名。"""
+def _post_audio_speech(base_url, key, model, voice, text, timeout=90,
+                       audio_format="mp3"):
+    """POST <base>/audio/speech → 音频字节。base_url 只允许 https 域名。
+    audio_format: 传 None 则不发 response_format（默认 mp3）。"""
     import http.client
     import urllib.parse
     base = str(base_url or "").strip()
@@ -137,8 +144,9 @@ def _post_audio_speech(base_url, key, model, voice, text, timeout=90):
     u = urllib.parse.urlsplit(base + "audio/speech")
     if u.scheme != "https" or not u.hostname:
         raise RuntimeError("接口地址非法（必须 https 域名）")
-    payload = {"model": str(model), "input": str(text), "voice": str(voice),
-               "response_format": "mp3"}
+    payload = {"model": str(model), "input": str(text), "voice": str(voice)}
+    if audio_format:
+        payload["response_format"] = audio_format
     conn = http.client.HTTPSConnection(u.hostname, u.port or 443, timeout=timeout)
     conn.request("POST", u.path + ("?" + u.query if u.query else ""),
                  body=json.dumps(payload).encode("utf-8"),
@@ -150,6 +158,96 @@ def _post_audio_speech(base_url, key, model, voice, text, timeout=90):
     if r.status != 200:
         raise RuntimeError("HTTP %d: %s" % (r.status, data[:160].decode("utf-8", "replace")))
     return data
+
+
+def _pcm_to_wav(pcm, sample_rate=16000, channels=1, bits=16):
+    """raw PCM → WAV 字节（44 字节头 + PCM 数据）。"""
+    import struct
+    byte_rate = sample_rate * channels * bits // 8
+    block_align = channels * bits // 8
+    data_size = len(pcm)
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF", 36 + data_size, b"WAVE",
+        b"fmt ", 16,
+        1,  # PCM
+        channels, sample_rate, byte_rate, block_align, bits,
+        b"data", data_size)
+    return header + pcm
+
+
+def clone_zhipu_voice(key, wav_bytes, voice_name, sample_text="", preview_text=""):
+    """用一段 WAV 样本克隆智谱音色 → 返回 (voice_id, 预览音频 file_id)。
+
+    流程（智谱开放平台）：
+      1) POST /api/paas/v4/files  multipart，purpose=voice-clone-input → file_id
+      2) POST /api/paas/v4/voice/clone {model, voice_name, file_id, input[, text]}
+    限制：样本 ≤10MB，建议 3-30 秒人声；样本 WAV 由设置页在浏览器里截好再传上来。
+    """
+    import http.client
+    if not str(key or "").strip():
+        raise RuntimeError("未找到智谱 API Key")
+    if not wav_bytes or wav_bytes[:4] != b"RIFF":
+        raise RuntimeError("样本必须是 WAV 音频")
+    if len(wav_bytes) > 10 * 1024 * 1024:
+        raise RuntimeError("样本超过 10MB，请缩短时长后重试")
+    key = str(key).strip()
+    boundary = "----qqbot" + secrets.token_hex(8)
+    head = ("--%s\r\nContent-Disposition: form-data; name=\"purpose\"\r\n\r\n"
+            "voice-clone-input\r\n"
+            "--%s\r\nContent-Disposition: form-data; name=\"file\"; "
+            "filename=\"sample.wav\"\r\nContent-Type: audio/wav\r\n\r\n"
+            % (boundary, boundary)).encode("utf-8")
+    tail = ("\r\n--%s--\r\n" % boundary).encode("utf-8")
+    body = head + wav_bytes + tail
+    conn = http.client.HTTPSConnection("open.bigmodel.cn", 443, timeout=120)
+    conn.request("POST", "/api/paas/v4/files", body=body, headers={
+        "Authorization": "Bearer " + key,
+        "Content-Type": "multipart/form-data; boundary=" + boundary,
+        "Content-Length": str(len(body))})
+    r = conn.getresponse()
+    raw = r.read()
+    conn.close()
+    if r.status != 200:
+        raise RuntimeError("上传样本失败 HTTP %d: %s"
+                           % (r.status, raw[:200].decode("utf-8", "replace")))
+    try:
+        file_id = str(json.loads(raw.decode("utf-8")).get("id") or "")
+    except ValueError:
+        file_id = ""
+    if not file_id:
+        raise RuntimeError("上传成功但没有拿到 file_id")
+
+    payload = {
+        "model": "glm-tts-clone",
+        "voice_name": str(voice_name or "my_voice")[:40],
+        "file_id": file_id,
+        # input = 克隆后用于试听合成的目标文本（接口必填）
+        "input": str(preview_text or "你好呀，我是你的语音助手，听听这个声音怎么样？")[:120],
+    }
+    if str(sample_text or "").strip():
+        payload["text"] = str(sample_text).strip()[:300]   # 样本原文（可选，填了更像）
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    conn = http.client.HTTPSConnection("open.bigmodel.cn", 443, timeout=180)
+    conn.request("POST", "/api/paas/v4/voice/clone", body=data, headers={
+        "Authorization": "Bearer " + key,
+        "Content-Type": "application/json",
+        "Content-Length": str(len(data))})
+    r = conn.getresponse()
+    raw = r.read()
+    conn.close()
+    if r.status != 200:
+        raise RuntimeError("克隆失败 HTTP %d: %s"
+                           % (r.status, raw[:300].decode("utf-8", "replace")))
+    try:
+        obj = json.loads(raw.decode("utf-8"))
+    except ValueError:
+        raise RuntimeError("克隆接口返回非 JSON")
+    voice_id = str(obj.get("voice") or "")
+    if not voice_id:
+        raise RuntimeError("克隆接口没有返回 voice id: %s"
+                           % raw[:200].decode("utf-8", "replace"))
+    return voice_id, str(obj.get("file_id") or "")
 
 
 def _synth_edge(text, cfg):
@@ -180,7 +278,8 @@ def synthesize(text, cfg):
         if not key:
             raise RuntimeError("未找到智谱 API Key（模型管理里配置，或在语音设置里单独填）")
         data = _post_audio_speech("https://open.bigmodel.cn/api/paas/v4/",
-                                  key, "cogtts", voice, text)
+                                   key, "cogtts", voice, text,
+                                   audio_format="wav")  # 智谱支持 wav（mp3 报 1214）
     elif provider == "siliconflow":
         key = str(cfg.get("sf_key", "")).strip()
         if not key:
@@ -196,6 +295,9 @@ def synthesize(text, cfg):
     else:
         raise RuntimeError("未知供应商: %s" % provider)
     out = _out_path()
+    # WAV 格式用 .wav 扩展名（NapCat/Audio 元素按扩展名识别格式）
+    if data[:4] == b"RIFF":
+        out = out.with_suffix(".wav")
     out.write_bytes(data)
     return out
 
@@ -243,18 +345,34 @@ def voice_with_text():
 
 
 def send_voice(daemon, chat_type, chat_id, texts):
-    """把 texts（1-N 段）逐段合成语音发送。成功段数>0 返回 True。"""
+    """把 texts（1-N 段）逐段合成语音发送。成功段数>0 返回 True。
+    daemon 参数兼容旧调用方；优先从 agent 的 PLUGIN_HOST 拿 daemon。"""
     ok = 0
+    sender = daemon
+    if sender is None:
+        try:
+            import qq_plugins as _qp
+            host = getattr(_qp, "_ACTIVE_HOST", None)
+            if host and getattr(host, "daemon", None):
+                sender = host.daemon
+        except Exception:
+            pass
+    if sender is None:
+        try:
+            import qq_bot_agent as _A
+            sender = _A.PLUGIN_HOST.daemon
+        except Exception:
+            pass
+    if sender is None:
+        return False
     for t in (texts or [])[:3]:
         try:
             mp3 = synthesize(t, voice_cfg())
-            res = daemon.send_record(chat_type, chat_id, str(mp3))
+            res = sender.send_record(chat_type, chat_id, str(mp3))
             if res:
                 ok += 1
-            try:
-                mp3.unlink()
-            except OSError:
-                pass
+            # 不立即删文件：发送队列是异步的，NapCat 真正发的时候文件必须还在。
+            # 由 _cleanup_old() 统一清理（保留最近 12 个）
         except Exception:
             break
     _cleanup_old()

@@ -1,17 +1,17 @@
 // voice_reply 插件设置页（随插件包分发；引擎与 /api/voice/* 端点在宿主，旧宿主有 fallback 版）
 // 插件页契约：page 函数接收宿主预取 data、返回 HTML 字符串，不自写 #view
-let _VM=null;
+var __VRVM=null;
 function voicePage(d){
- _VM=(d&&d.providers)?d:(_VM||{config:{}});
- const P=_VM.providers||{};
- const c=_VM.config||{};
+ __VRVM=(d&&d.providers)?d:(__VRVM||{config:{}});
+ const P=__VRVM.providers||{};
+ const c=__VRVM.config||{};
  const prov=Object.keys(P);
  const cur=c.provider||'edge';
  const vopts=prov.map(k=>'<option value="'+k+'" '+(k===cur?'selected':'')+'>'+esc(P[k].label)+'</option>').join('');
- const edgeOpts=(_VM.edge_voices||[]).map(v=>'<option value="'+esc(v[1])+'" '+(v[1]===(c.edge_voice||'zh-CN-XiaoxiaoNeural')?'selected':'')+'>'+esc(v[0])+'</option>').join('');
- const zzOpts=(_VM.zhipu_voices||[]).map(v=>'<option value="'+esc(v[1])+'" '+(v[1]===(c.zhipu_voice||'tongtong')?'selected':'')+'>'+esc(v[0])+'</option>').join('');
- const sfMOpts=(_VM.sf_models||[]).map(v=>'<option value="'+esc(v[1])+'" '+(v[1]===(c.sf_model||'FunAudioLLM/cosyvoice2-0.5B')?'selected':'')+'>'+esc(v[0])+'</option>').join('');
- const sfVOpts=(_VM.sf_voices||[]).map(v=>'<option value="'+esc(v)+'" '+(v===(c.sf_voice||'anna')?'selected':'')+'>'+esc(v)+'</option>').join('');
+ const edgeOpts=(__VRVM.edge_voices||[]).map(v=>'<option value="'+esc(v[1])+'" '+(v[1]===(c.edge_voice||'zh-CN-XiaoxiaoNeural')?'selected':'')+'>'+esc(v[0])+'</option>').join('');
+ const zzOpts=(__VRVM.zhipu_voices||[]).map(v=>'<option value="'+esc(v[1])+'" '+(v[1]===(c.zhipu_voice||'tongtong')?'selected':'')+'>'+esc(v[0])+'</option>').join('');
+ const sfMOpts=(__VRVM.sf_models||[]).map(v=>'<option value="'+esc(v[1])+'" '+(v[1]===(c.sf_model||'FunAudioLLM/cosyvoice2-0.5B')?'selected':'')+'>'+esc(v[0])+'</option>').join('');
+ const sfVOpts=(__VRVM.sf_voices||[]).map(v=>'<option value="'+esc(v)+'" '+(v===(c.sf_voice||'anna')?'selected':'')+'>'+esc(v)+'</option>').join('');
  const mode=String(c.mode||'keyword');
  const kw=(c.keywords||[]).join('、');
  return '<div class="k" style="margin-bottom:10px">让机器人开口说话：语音内容跟人设走，只是换成语音发送。配置即时生效。</div>'
@@ -44,16 +44,26 @@ function voicePage(d){
  +'<div class="k" style="margin-top:10px">克隆专属音色（智谱，收费）：在 bigmodel.cn 控制台或开放平台用 3 秒以上人声样本创建复刻音色，把得到的 speaker_id 填到智谱栏即可——之后所有语音都用这个音色。</div></div>';
  setTimeout(voiceProvChange,0);   // 等 plPage 把返回的 HTML 插进 DOM 后再填供应商区
 }
-function voiceBill(){const P=_VM.providers||{};const k=document.getElementById('v-prov').value;const el=document.getElementById('v-bill');el.textContent=P[k]?P[k].billing:''}
+function voiceBill(){const P=__VRVM.providers||{};const k=document.getElementById('v-prov').value;const el=document.getElementById('v-bill');el.textContent=P[k]?P[k].billing:''}
 function voiceProvChange(){
  voiceBill();
- const c=_VM.config||{};const k=document.getElementById('v-prov').value;
+ const c=__VRVM.config||{};const k=document.getElementById('v-prov').value;
  const box=document.getElementById('v-provbox');
  if(k==='edge'){box.innerHTML='<div class="k" style="margin-bottom:4px">音色（微软公共接口，免费）</div><select id="v-ev">'+edgeOptsHtml()+'</select>'}
  else if(k==='zhipu'){box.innerHTML='<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'
   +'<div><div class="k" style="margin-bottom:4px">预设音色</div><select id="v-zv">'+zzOptsHtml()+'</select></div>'
   +'<div><div class="k" style="margin-bottom:4px">克隆音色 speaker_id（填了优先生效）</div><input id="v-zsid" value="'+esc(String(c.zhipu_speaker_id||''))+'" placeholder="复刻得到的 speaker_id"></div>'
-  +'<div style="grid-column:1/-1"><div class="k" style="margin-bottom:4px">智谱 API Key（留空 = 复用模型管理里的智谱 Key）</div><input id="v-zkey" type="password" value="'+esc(String(c.zhipu_key||''))+'" placeholder="留空自动复用"></div></div>'}
+  +'<div style="grid-column:1/-1"><div class="k" style="margin-bottom:4px">智谱 API Key（留空 = 复用模型管理里的智谱 Key）</div><input id="v-zkey" type="password" value="'+esc(String(c.zhipu_key||''))+'" placeholder="留空自动复用"></div>'
+  +'<div style="grid-column:1/-1;border:1px dashed var(--line);border-radius:8px;padding:10px">'
+  +'<div class="k" style="margin-bottom:6px"><b>一键克隆音色</b> · 选文件 → 自动截取 → 上传克隆 → 自动填入 → 试听</div>'
+  +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+  +'<input type="file" id="v-file" accept="audio/*,video/*" style="flex:1;min-width:180px">'
+  +'<label class="k">起始 <input id="v-start" type="number" min="0" step="1" value="0" style="width:58px"> 秒</label>'
+  +'<label class="k">时长 <input id="v-dur" type="number" min="3" max="30" step="1" value="12" style="width:52px"> 秒</label>'
+  +'<input id="v-vname" placeholder="音色名（如 爱音）" style="width:130px">'
+  +'<button class="act" style="margin:0" onclick="voiceClone()">开始克隆</button></div>'
+  +'<input id="v-sample" placeholder="可选：这段音频里说的话（填了克隆更像）" style="width:100%;margin-top:6px">'
+  +'<div class="k" id="v-cmsg" style="margin-top:6px">支持 mp4/mov/mp3/m4a/wav；页面自动截取所选片段转 16kHz 单声道 WAV 再上传（智谱限 3-30 秒、≤10MB）。克隆与合成都计费。</div></div></div>'}
  else if(k==='siliconflow'){box.innerHTML='<div style="display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:10px">'
   +'<div><div class="k" style="margin-bottom:4px">硅基流动 API Key</div><input id="v-sfk" type="password" value="'+esc(String(c.sf_key||''))+'"></div>'
   +'<div><div class="k" style="margin-bottom:4px">模型</div><select id="v-sfm">'+sfMOptsHtml()+'</select></div>'
@@ -64,10 +74,10 @@ function voiceProvChange(){
   +'<div><div class="k" style="margin-bottom:4px">模型</div><input id="v-cm" value="'+esc(String(c.custom_model||'tts-1'))+'"></div>'
   +'<div><div class="k" style="margin-bottom:4px">音色</div><input id="v-cv" value="'+esc(String(c.custom_voice||'alloy'))+'"></div></div>'}
 }
-function edgeOptsHtml(){return(_VM.edge_voices||[]).map(v=>'<option value="'+esc(v[1])+'" '+(v[1]===((_VM.config||{}).edge_voice||'zh-CN-XiaoxiaoNeural')?'selected':'')+'>'+esc(v[0])+'</option>').join('')}
-function zzOptsHtml(){return(_VM.zhipu_voices||[]).map(v=>'<option value="'+esc(v[1])+'" '+(v[1]===((_VM.config||{}).zhipu_voice||'tongtong')?'selected':'')+'>'+esc(v[0])+'</option>').join('')}
-function sfMOptsHtml(){return(_VM.sf_models||[]).map(v=>'<option value="'+esc(v[1])+'" '+(v[1]===((_VM.config||{}).sf_model||'FunAudioLLM/cosyvoice2-0.5B')?'selected':'')+'>'+esc(v[0])+'</option>').join('')}
-function sfVOptsHtml(){return(_VM.sf_voices||[]).map(v=>'<option value="'+esc(v)+'" '+(v===((_VM.config||{}).sf_voice||'anna')?'selected':'')+'>'+esc(v)+'</option>').join('')}
+function edgeOptsHtml(){return(__VRVM.edge_voices||[]).map(v=>'<option value="'+esc(v[1])+'" '+(v[1]===((__VRVM.config||{}).edge_voice||'zh-CN-XiaoxiaoNeural')?'selected':'')+'>'+esc(v[0])+'</option>').join('')}
+function zzOptsHtml(){return(__VRVM.zhipu_voices||[]).map(v=>'<option value="'+esc(v[1])+'" '+(v[1]===((__VRVM.config||{}).zhipu_voice||'tongtong')?'selected':'')+'>'+esc(v[0])+'</option>').join('')}
+function sfMOptsHtml(){return(__VRVM.sf_models||[]).map(v=>'<option value="'+esc(v[1])+'" '+(v[1]===((__VRVM.config||{}).sf_model||'FunAudioLLM/cosyvoice2-0.5B')?'selected':'')+'>'+esc(v[0])+'</option>').join('')}
+function sfVOptsHtml(){return(__VRVM.sf_voices||[]).map(v=>'<option value="'+esc(v)+'" '+(v===((__VRVM.config||{}).sf_voice||'anna')?'selected':'')+'>'+esc(v)+'</option>').join('')}
 function voiceCollect(){
  const k=document.getElementById('v-prov').value;
  const mode=(document.querySelector('input[name="vmode"]:checked')||{}).value||'keyword';
@@ -81,18 +91,18 @@ function voiceCollect(){
  v.edge_voice=g('v-ev');v.zhipu_voice=g('v-zv');v.zhipu_speaker_id=g('v-sid')||g('v-zsid');
  // Key fallback：表单字段可能还没渲染（首次加载 zhipu 表单区时序问题），
  // 读不到就用已保存的配置值（用户已保存过 Key 的话）
- v.zhipu_key=g('v-zkey')||((_VM.config||{}).zhipu_key||'');
- v.sf_key=g('v-sfk')||((_VM.config||{}).sf_key||'');
+ v.zhipu_key=g('v-zkey')||((__VRVM.config||{}).zhipu_key||'');
+ v.sf_key=g('v-sfk')||((__VRVM.config||{}).sf_key||'');
  v.sf_model=g('v-sfm');v.sf_voice=g('v-sfv');
- v.custom_base=g('v-cb')||((_VM.config||{}).custom_base||'');
- v.custom_key=g('v-ck')||((_VM.config||{}).custom_key||'');
+ v.custom_base=g('v-cb')||((__VRVM.config||{}).custom_base||'');
+ v.custom_key=g('v-ck')||((__VRVM.config||{}).custom_key||'');
  v.custom_model=g('v-cm');v.custom_voice=g('v-cv');
  return v}
 async function voiceSave(){
  const r=await api('/api/voice/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voice:voiceCollect()})}).catch(()=>({ok:false,error:'请求失败'}));
  const el=document.getElementById('v-ok');
  if(r.ok===false){toast(r.error||'保存失败',false);if(el)el.textContent='保存失败：'+(r.error||'');return}
- _VM.config=r.config||voiceCollect();toast('语音设置已保存（即时生效）');if(el)el.textContent='已保存 ✓'}
+ __VRVM.config=r.config||voiceCollect();toast('语音设置已保存（即时生效）');if(el)el.textContent='已保存 ✓'}
 async function voicePreview(){
  const msg=document.getElementById('v-pmsg');const au=document.getElementById('v-audio');
  msg.textContent='合成中…（免费供应商约 1-3 秒）';au.style.display='none';
@@ -100,3 +110,51 @@ async function voicePreview(){
  if(r.ok===false){msg.textContent='试听失败：'+(r.error||'');return}
  au.src=r.audio;au.style.display='block';au.play().catch(()=>{});
  msg.textContent='试听音频 '+((r.size||0)/1024).toFixed(0)+' KB（每次试听按该供应商计费规则计费）'}
+// ---- 一键克隆：浏览器解码 → 截取 → 16k 单声道 WAV → 上传智谱 ----
+function vcB64(u8){let s='';const CH=0x8000;for(let i=0;i<u8.length;i+=CH){s+=String.fromCharCode.apply(null,u8.subarray(i,i+CH))}return btoa(s)}
+function vcWav(ab,start,dur){
+ const sr=16000;
+ return new Promise((res,rej)=>{
+  let off;try{off=new OfflineAudioContext(1,Math.max(1,Math.ceil(dur*sr)),sr)}catch(e){rej(e);return}
+  const src=off.createBufferSource();src.buffer=ab;src.connect(off.destination);
+  try{src.start(0,Math.max(0,start),dur)}catch(e){rej(e);return}
+  off.startRendering().then(rendered=>{
+   const f=rendered.getChannelData(0);const buf=new ArrayBuffer(44+f.length*2);const dv=new DataView(buf);
+   const ws=(o,s)=>{for(let i=0;i<s.length;i++)dv.setUint8(o+i,s.charCodeAt(i))};
+   ws(0,'RIFF');dv.setUint32(4,36+f.length*2,true);ws(8,'WAVE');ws(12,'fmt ');
+   dv.setUint32(16,16,true);dv.setUint16(20,1,true);dv.setUint16(22,1,true);
+   dv.setUint32(24,sr,true);dv.setUint32(28,sr*2,true);dv.setUint16(32,2,true);dv.setUint16(34,16,true);
+   ws(36,'data');dv.setUint32(40,f.length*2,true);
+   let o=44;for(let i=0;i<f.length;i++){const v=Math.max(-1,Math.min(1,f[i]));dv.setInt16(o,v<0?v*0x8000:v*0x7FFF,true);o+=2}
+   res(new Uint8Array(buf));
+  }).catch(rej);
+ })}
+async function voiceClone(){
+ const msg=document.getElementById('v-cmsg');
+ const f=(document.getElementById('v-file').files||[])[0];
+ if(!f){msg.textContent='先选一个音频或视频文件';return}
+ if(f.size>120*1024*1024){msg.textContent='文件太大（超过 120MB），请先剪出 10-30 秒再上传';return}
+ const start=Math.max(0,parseFloat(document.getElementById('v-start').value)||0);
+ const dur=Math.min(30,Math.max(3,parseFloat(document.getElementById('v-dur').value)||12));
+ const name=(document.getElementById('v-vname').value||'').trim();
+ if(!name){msg.textContent='给这个音色起个名字（如 爱音）';return}
+ msg.textContent='① 解码音频中…（长视频需要几秒）';
+ let wav;
+ try{
+  const buf=await f.arrayBuffer();
+  const Ctx=window.AudioContext||window.webkitAudioContext;
+  const ac=new Ctx();
+  const ab=await ac.decodeAudioData(buf);
+  if(ac.close)ac.close();
+  if(!ab||!ab.duration){msg.textContent='解码失败：浏览器读不出这段音频';return}
+  if(ab.duration<start+1){msg.textContent='起始位置超出音频时长（该文件约 '+Math.round(ab.duration)+' 秒）';return}
+  msg.textContent='② 截取 '+dur+' 秒并转 WAV…';
+  wav=await vcWav(ab,start,dur);
+ }catch(e){msg.textContent='音频解码失败：'+((e&&e.message)||e)+'。换 mp3/wav/m4a 试试，或先用工具剪一段。';return}
+ msg.textContent='③ 上传并克隆中…（约 10-30 秒，按智谱计费）';
+ const r=await api('/api/voice/clone',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voice:voiceCollect(),audio:vcB64(wav),voice_name:name,sample_text:document.getElementById('v-sample').value,preview_text:'你好呀，我是你的语音助手，听听这个声音怎么样？'})}).catch(()=>({ok:false,error:'请求失败（克隆需要 0.4.12 及以上版本的应用）'}));
+ if(!r||r.ok===false){msg.textContent='克隆失败：'+((r&&r.error)||'未知错误');return}
+ const sid=document.getElementById('v-zsid');if(sid)sid.value=r.voice_id;
+ msg.textContent='✓ 克隆完成（'+r.voice_id+'），已填入并保存。点上面「试听」听听效果。';
+ await voiceSave();
+}
