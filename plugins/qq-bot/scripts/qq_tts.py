@@ -30,6 +30,109 @@ _GSV_DIR_CANDIDATES = [
 ]
 _GSV_PORT = 9880
 _GSV_PROC = {"p": None}      # runtime/python.exe 子进程句柄（仅本进程内有效）
+_GSV_VOICES_DIR = os.path.join(C.DATA_DIR, "gsv_voices")
+_GSV_VOICES_JSON = os.path.join(C.DATA_DIR, "gsv_voices.json")
+
+
+def gsv_env_check():
+    """安装前环境体检（不强制）：NVIDIA GPU 型号/显存。"""
+    import subprocess
+    has, gpu, vram = False, "", 0
+    try:
+        r = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,memory.total",
+             "--format=csv,noheader"], capture_output=True, text=True, timeout=6)
+        line = (r.stdout or "").strip().splitlines()[0] if r.stdout else ""
+        if "," in line:
+            gpu, vram_s = [x.strip() for x in line.split(",", 1)]
+            vram = int("".join(ch for ch in vram_s if ch.isdigit()) or 0)
+            has = True
+    except Exception:
+        pass
+    notes = []
+    if not has:
+        notes.append("未检测到 NVIDIA 显卡——本地引擎基本无法使用（CPU 模式极慢，"
+                     "不建议）。可直接用云端的智谱 GLM-TTS（收费但免部署）。")
+    elif vram and vram < 6000:
+        notes.append("显存 %dMB 偏小（推荐 6GB+）：合成可用但可能偶尔显存不足回退。" % vram)
+    return {"has_nvidia": has, "gpu": gpu, "vram_mb": vram,
+            "ok": has and (not vram or vram >= 6000), "notes": notes}
+
+
+def _gsv_voices_load():
+    try:
+        d = json.loads(pathlib.Path(_GSV_VOICES_JSON).read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) and isinstance(d.get("voices"), list) \
+            else {"voices": []}
+    except (OSError, ValueError):
+        return {"voices": []}
+
+
+def _gsv_voices_save(d):
+    pathlib.Path(C.DATA_DIR).mkdir(parents=True, exist_ok=True)
+    pathlib.Path(_GSV_VOICES_JSON).write_text(
+        json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def gsv_voice_list():
+    out = []
+    for v in _gsv_voices_load()["voices"]:
+        out.append({"id": v.get("id"), "name": v.get("name"),
+                    "prompt_text": v.get("prompt_text", ""),
+                    "prompt_lang": v.get("prompt_lang", "zh"),
+                    "created": v.get("created", 0),
+                    "exists": os.path.isfile(v.get("file") or "")})
+    return out
+
+
+def gsv_voice_get(voice_id):
+    for v in _gsv_voices_load()["voices"]:
+        if str(v.get("id")) == str(voice_id):
+            return v
+    return None
+
+
+def gsv_voice_save(name, wav_bytes, prompt_text="", prompt_lang="zh"):
+    """保存一个本地音色（参考音频 wav + 元信息）→ id。"""
+    if not wav_bytes or wav_bytes[:4] != b"RIFF":
+        raise RuntimeError("音频必须是 WAV")
+    name = str(name or "").strip()[:40]
+    if not name:
+        raise RuntimeError("先给音色起个名字")
+    pathlib.Path(_GSV_VOICES_DIR).mkdir(parents=True, exist_ok=True)
+    vid = "v" + secrets.token_hex(4)
+    fpath = os.path.join(_GSV_VOICES_DIR, vid + ".wav")
+    pathlib.Path(fpath).write_bytes(wav_bytes)
+    d = _gsv_voices_load()
+    d["voices"].append({"id": vid, "name": name, "file": fpath,
+                        "prompt_text": str(prompt_text or "")[:300],
+                        "prompt_lang": str(prompt_lang or "zh")[:8],
+                        "created": time.time()})
+    _gsv_voices_save(d)
+    return vid
+
+
+def gsv_voice_delete(voice_id):
+    d = _gsv_voices_load()
+    keep, removed = [], None
+    for v in d["voices"]:
+        if str(v.get("id")) == str(voice_id):
+            removed = v
+            try:
+                os.remove(v.get("file") or "")
+            except OSError:
+                pass
+        else:
+            keep.append(v)
+    if removed is None:
+        return False
+    d["voices"] = keep
+    _gsv_voices_save(d)
+    cfg = voice_cfg()
+    if str(cfg.get("gsv_voice_id") or "") == str(voice_id):
+        cfg["gsv_voice_id"] = ""
+        save_voice_cfg(cfg)
+    return True
 
 
 def gsv_dir(cfg=None):
@@ -117,19 +220,30 @@ def gsv_stop():
 
 def gsv_tts(text, cfg):
     """GPT-SoVITS 本地合成 → WAV 字节。失败抛异常（调用方回退）。
-    参考音频 = gsv_ref_wav（插件一键克隆截好的片段或用户指定路径），
+    参考音频优先级：gsv_voice_id（本地音色库）> gsv_ref_wav（手动路径）。
     gsv_prompt_text = 参考音频原文，gsv_prompt_lang = 参考语言。"""
     import http.client
     from urllib.parse import quote
     d = gsv_dir(cfg)
-    ref = str(cfg.get("gsv_ref_wav") or "").strip()
+    ref, ptext, plang = "", "", "zh"
+    vid = str(cfg.get("gsv_voice_id") or "").strip()
+    if vid:
+        v = gsv_voice_get(vid)
+        if v and os.path.isfile(v.get("file") or ""):
+            ref = v["file"]
+            ptext = str(v.get("prompt_text") or "")
+            plang = str(v.get("prompt_lang") or "zh")
+    if not ref:
+        ref = str(cfg.get("gsv_ref_wav") or "").strip()
+        ptext = str(cfg.get("gsv_prompt_text") or "")
+        plang = str(cfg.get("gsv_prompt_lang") or "zh")
     if not ref or not os.path.isfile(ref):
-        raise RuntimeError("未设置参考音频（语音页「本地引擎」卡里选一段 5-15 秒的目标音色片段）")
+        raise RuntimeError("未设置参考音频（语音页「本地引擎」卡里克隆/选择一个音色）")
     params = {
         "text": str(text)[:_MAX_TEXT], "text_lang": "zh",
         "ref_audio_path": ref,
-        "prompt_text": str(cfg.get("gsv_prompt_text") or ""),
-        "prompt_lang": str(cfg.get("gsv_prompt_lang") or "zh"),
+        "prompt_text": ptext,
+        "prompt_lang": plang,
         "text_split_method": "cut0",
         "media_type": "wav", "streaming_mode": False,
     }
