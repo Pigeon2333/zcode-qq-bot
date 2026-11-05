@@ -2911,10 +2911,12 @@ def _proactive_compose(daemon, chat_type, chat_id):
             {"role": "user", "content": content}], persona_name
 
 
-def _proactive_pick(cfg, kind, pool, now):
+def _proactive_pick(cfg, kind, pool, now, daemon=None):
     """某一类（groups/private）的主动判定：开关/间隔/时段/概率通过则返回目标。
     群目标支持分群覆盖（group_reply_modes 的 proactive_probability/
-    proactive_min_interval_sec）；间隔状态按目标分别记录。"""
+    proactive_min_interval_sec）；间隔状态按目标分别记录。
+    冷却：机器人刚在某个会话说过话（≤3 分钟），那个会话本轮跳过——
+    防止她回复完立刻又'主动'追加一条（用户反馈的重复回复体验）。"""
     st = _proactive_state[kind]
     if now - st["last_attempt"] < 60:
         return None
@@ -2926,6 +2928,19 @@ def _proactive_pick(cfg, kind, pool, now):
     pool = [t for t in pool if t[0] == want]
     if not pool:
         return None
+    # 过滤刚回复过的会话（3 分钟冷却）：拿该会话最近历史，末条是 bot 说的且距现在 <180s 就跳
+    if daemon:
+        _cooled = []
+        for ct, cid in pool:
+            try:
+                hist = daemon.history(ct, cid, limit=1)
+                if hist and hist[-1].get("is_bot") and \
+                        now - float(hist[-1].get("ts") or 0) < 180:
+                    continue
+            except Exception:
+                pass
+            _cooled.append((ct, cid))
+        pool = _cooled
     try:
         g_iv = max(300, int(cfg.get("proactive_%s_min_interval_sec" % kind, 1800)))
     except (TypeError, ValueError):
@@ -2997,7 +3012,7 @@ def _proactive_tick(daemon):
     targets = _proactive_targets(daemon, cfg)
     picked = None
     for kind in kinds:
-        picked = _proactive_pick(cfg, kind, targets, now)
+        picked = _proactive_pick(cfg, kind, targets, now, daemon=daemon)
         if picked:
             break
     if not picked:
