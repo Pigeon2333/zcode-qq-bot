@@ -2711,15 +2711,17 @@ function vGsvCardInstalled(m,g){
   +'<div><div class="k" style="margin-bottom:4px">整合包目录（默认自动探测 E:\\GPTSoVITS）</div><input id="v-gdir" value="'+esc(String(c.gsv_dir||''))+'" placeholder="留空自动探测"></div>'
   +'<div><div class="k" style="margin-bottom:4px">端口</div><input id="v-gport" value="'+esc(String(c.gsv_port||'9880'))+'"></div></div>'
   +'<div style="margin-top:10px;border:1px dashed var(--line);border-radius:8px;padding:10px">'
-  +'<div class="k" style="margin-bottom:6px"><b>克隆新音色</b> · 选文件 → 截取 → 本地保存 → 试听（完全免费）</div>'
+  +'<div class="k" style="margin-bottom:6px"><b>克隆新音色</b> · 选文件 → 截取 → <b>试听</b> → 满意再命名保存（完全免费）</div>'
   +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
   +'<input type="file" id="v-gfile" accept="audio/*,video/*" style="flex:1;min-width:180px">'
   +'<label class="k">起始 <input id="v-gstart" type="number" min="0" step="1" value="0" style="width:58px"> 秒</label>'
-  +'<label class="k">时长 <input id="v-gdur" type="number" min="3" max="30" step="1" value="10" style="width:52px"> 秒</label>'
-  +'<input id="v-gname" placeholder="音色名（如 安和昴）" style="width:130px"></div>'
+  +'<label class="k">时长 <input id="v-gdur" type="number" min="3" max="10" step="1" value="8" style="width:52px"> 秒</label></div>'
   +'<input id="v-gptext" placeholder="强烈建议填：这段音频里说的话（语言要与上方参考语言一致）" style="width:100%;margin-top:6px">'
-  +'<div style="margin-top:6px"><button class="act" style="margin:0" onclick="gsvVoiceClone()">保存到音色列表</button>'
-  +'<span class="k" id="v-gmsg" style="margin-left:8px">⚠ 样本语言要与参考语言一致（日文样本说中文会发音混杂）。</span></div></div>'
+  +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px">'
+  +'<button class="act ghost" style="margin:0" onclick="gsvVoiceTry()">① 试听效果</button>'
+  +'<input id="v-gname" placeholder="② 满意后填音色名（如 安和昴）" style="flex:1;min-width:150px">'
+  +'<button class="act" style="margin:0" onclick="gsvVoiceSave()">③ 保存到音色列表</button></div>'
+  +'<div class="k" id="v-gmsg" style="margin-top:6px">⚠ 参考音频限 <b>3-10 秒</b>（引擎硬限制——零样本克隆取一小段最代表音色的即可，更长不是更好；大量素材想利用需走微调训练）。样本语言要与参考语言一致。</div></div>'
   +'<div style="margin-top:10px"><div class="k" style="margin-bottom:6px"><b>本地音色列表</b>（选中=给机器人用；合成免费）</div><div id="gsv-vlist" class="k">加载中…</div></div>'
   +'</div>';
 }
@@ -2733,20 +2735,22 @@ async function gsvVoicesLoad(){
  box.innerHTML=vs.map(v=>'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:5px 0;padding:7px;border:1px solid var(--line);border-radius:6px">'
   +'<b>'+esc(v.name||'(未命名)')+'</b>'
   +(v.id===cur?'<span class="badge" style="background:#e6f7e6;color:#1a7f37">使用中</span>':'')
+  +(v.dur?'<span class="k">参考 '+v.dur+'s</span>':'')
+  +(v.warn?'<span class="k" style="color:#b42318">⚠ '+esc(v.warn)+'</span>':'')
   +'<span class="k" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(v.prompt_text||'（未填原文）')+'</span>'
   +'<button class="act ghost" style="margin:0;padding:3px 10px;font-size:12px" onclick="gsvVoicePreview(\''+esc(v.id)+'\')">试听</button>'
   +'<button class="act ghost" style="margin:0;padding:3px 10px;font-size:12px" onclick="gsvVoiceUse(\''+esc(v.id)+'\')">启用</button>'
-  +'<button class="act ghost danger" style="margin:0;padding:3px 10px;font-size:12px" onclick="gsvVoiceDel(\''+esc(v.id)+'\',\''+esc(v.name||v.id)+'\')">删除</button></div>').join('');
+  +'<button class="act ghost danger" style="margin:0;padding:3px 10px;font-size:12px" onclick="gsvVoiceDel(\''+esc(v.id)+'\',\''+esc(v.name||v.id)+'\')">删除</button></div>').join('')
+  +'<div class="k" style="margin-top:6px">删除不可恢复；删「使用中」的音色机器人自动退回其他来源。</div>';
 }
-async function gsvVoiceClone(){
+let __GSVWAV=null;   // 已截取待保存的参考音频（b64）；试听→满意→保存三段共用
+async function gsvVoiceTrim(){
  const msg=document.getElementById('v-gmsg');
  const f=(document.getElementById('v-gfile').files||[])[0];
- if(!f){msg.textContent='先选一个音频/视频文件';return}
- if(f.size>120*1024*1024){msg.textContent='文件太大（超 120MB），先剪出 10-30 秒';return}
+ if(!f){msg.textContent='先选一个音频/视频文件';return false}
+ if(f.size>120*1024*1024){msg.textContent='文件太大（超 120MB），先剪出 10-30 秒';return false}
  const start=Math.max(0,parseFloat(document.getElementById('v-gstart').value)||0);
- const dur=Math.min(30,Math.max(3,parseFloat(document.getElementById('v-gdur').value)||10));
- const name=(document.getElementById('v-gname').value||'').trim();
- if(!name){msg.textContent='给音色起个名字';return}
+ const dur=Math.min(10,Math.max(3,parseFloat(document.getElementById('v-gdur').value)||8));
  msg.textContent='① 解码音频中…';
  let wav;
  try{
@@ -2755,15 +2759,34 @@ async function gsvVoiceClone(){
   const ac=new Ctx();
   const ab=await ac.decodeAudioData(buf);
   if(ac.close)ac.close();
-  if(!ab||!ab.duration){msg.textContent='解码失败：浏览器读不出这段音频';return}
-  if(ab.duration<start+1){msg.textContent='起始位置超出音频时长（约 '+Math.round(ab.duration)+' 秒）';return}
+  if(!ab||!ab.duration){msg.textContent='解码失败：浏览器读不出这段音频';return false}
+  if(ab.duration<start+1){msg.textContent='起始位置超出音频时长（约 '+Math.round(ab.duration)+' 秒）';return false}
   msg.textContent='② 截取 '+dur+' 秒…';
   wav=await vcWav(ab,start,dur);
- }catch(e){msg.textContent='解码失败：'+((e&&e.message)||e);return}
- msg.textContent='③ 保存中…';
- const r=await api('/api/voice/gsv/voice-save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,audio:vcB64(wav),prompt_text:document.getElementById('v-gptext').value,prompt_lang:document.getElementById('v-gplang').value})}).catch(()=>({ok:false,error:'请求失败'}));
+ }catch(e){msg.textContent='解码失败：'+((e&&e.message)||e);return false}
+ __GSVWAV=vcB64(wav);
+ return true;
+}
+async function gsvVoiceTry(){
+ const msg=document.getElementById('v-gmsg');
+ if(!__GSVWAV && !await gsvVoiceTrim())return;
+ msg.textContent='③ 本地合成试听中…（引擎约几秒）';
+ const r=await api('/api/voice/gsv/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({audio:__GSVWAV,prompt_text:document.getElementById('v-gptext').value,prompt_lang:document.getElementById('v-gplang').value,text:'你好呀，我是你的语音小助手，听听这个声音怎么样？'})}).catch(()=>({ok:false,error:'请求失败'}));
+ if(!r||r.ok===false){msg.textContent='试听失败：'+((r&&r.error)||'');return}
+ const au=document.getElementById('v-audio');
+ au.src=r.audio;au.style.display='block';au.play().catch(()=>{});
+ msg.textContent='✓ 试听完成（'+((r.size||0)/1024).toFixed(0)+' KB）。满意就填音色名点「③ 保存到音色列表」；不满意调起始/时长或换片段再点①。';
+}
+async function gsvVoiceSave(){
+ const msg=document.getElementById('v-gmsg');
+ const name=(document.getElementById('v-gname').value||'').trim();
+ if(!name){msg.textContent='先填音色名再保存';return}
+ if(!__GSVWAV && !await gsvVoiceTrim())return;
+ msg.textContent='保存中…';
+ const r=await api('/api/voice/gsv/voice-save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,audio:__GSVWAV,prompt_text:document.getElementById('v-gptext').value,prompt_lang:document.getElementById('v-gplang').value})}).catch(()=>({ok:false,error:'请求失败'}));
  if(!r||r.ok===false){msg.textContent='保存失败：'+((r&&r.error)||'');return}
- msg.textContent='✓ 已保存「'+name+'」到音色列表。点列表里「试听」确认效果，满意就「启用」。';
+ __GSVWAV=null;
+ msg.textContent='✓ 已保存「'+name+'」到音色列表。在列表里「启用」即可给机器人用。';
  await gsvVoicesLoad();
 }
 async function gsvVoicePreview(id){
@@ -5567,6 +5590,28 @@ class UiHandler(BaseHTTPRequestHandler):
             cfg["gsv_voice_id"] = vid
             _T.save_voice_cfg(cfg)
             return self._reply(200, {"ok": True, "name": v.get("name")})
+        if u.path == "/api/voice/gsv/preview":
+            # 克隆试听：用页面截好的临时参考音频合成（不进音色库，满意再保存）
+            import base64 as _b64
+            import qq_tts as _T
+            raw = str(body.get("audio") or "")
+            if not raw or len(raw) > 20 * 1024 * 1024:
+                return self._reply(200, {"ok": False, "error": "音频为空或过大"})
+            try:
+                wav = _b64.b64decode(raw.split(",", 1)[-1])
+            except Exception:
+                return self._reply(200, {"ok": False, "error": "音频解码失败"})
+            try:
+                data = _T.gsv_preview_bytes(
+                    str(body.get("text") or "你好呀，我是你的语音小助手，听听这个声音怎么样？"),
+                    wav,
+                    str(body.get("prompt_text") or "")[:300],
+                    str(body.get("prompt_lang") or "zh")[:8],
+                    _T.voice_cfg())
+            except Exception as e:
+                return self._reply(200, {"ok": False, "error": str(e)[:300]})
+            return self._reply(200, {"ok": True, "size": len(data),
+                "audio": "data:audio/wav;base64," + _b64.b64encode(data).decode()})
         if u.path == "/api/voice/clone":
             # 一键克隆：设置页在浏览器里截好 3-30 秒 WAV（base64）传上来，
             # 这里上传智谱 → /voice/clone → 返回 voice id，页面自动填入并保存

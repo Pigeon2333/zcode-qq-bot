@@ -77,9 +77,13 @@ def _gsv_voices_save(d):
 def gsv_voice_list():
     out = []
     for v in _gsv_voices_load()["voices"]:
+        dur = float(v.get("dur") or 0)
         out.append({"id": v.get("id"), "name": v.get("name"),
                     "prompt_text": v.get("prompt_text", ""),
                     "prompt_lang": v.get("prompt_lang", "zh"),
+                    "dur": dur,
+                    "warn": "" if 3 <= dur <= 10 else
+                            ("参考 %.1f 秒超出引擎 3-10 秒限制，合成会失败——删掉重新截取" % dur) if dur else "",
                     "created": v.get("created", 0),
                     "exists": os.path.isfile(v.get("file") or "")})
     return out
@@ -93,12 +97,14 @@ def gsv_voice_get(voice_id):
 
 
 def gsv_voice_save(name, wav_bytes, prompt_text="", prompt_lang="zh"):
-    """保存一个本地音色（参考音频 wav + 元信息）→ id。"""
+    """保存一个本地音色（参考音频 wav + 元信息）→ id。记录时长供列表警示
+    （引擎限参考音频 3-10 秒，超长合成必失败）。"""
     if not wav_bytes or wav_bytes[:4] != b"RIFF":
         raise RuntimeError("音频必须是 WAV")
     name = str(name or "").strip()[:40]
     if not name:
         raise RuntimeError("先给音色起个名字")
+    dur = _wav_duration(wav_bytes)
     pathlib.Path(_GSV_VOICES_DIR).mkdir(parents=True, exist_ok=True)
     vid = "v" + secrets.token_hex(4)
     fpath = os.path.join(_GSV_VOICES_DIR, vid + ".wav")
@@ -107,6 +113,7 @@ def gsv_voice_save(name, wav_bytes, prompt_text="", prompt_lang="zh"):
     d["voices"].append({"id": vid, "name": name, "file": fpath,
                         "prompt_text": str(prompt_text or "")[:300],
                         "prompt_lang": str(prompt_lang or "zh")[:8],
+                        "dur": round(dur, 1),
                         "created": time.time()})
     _gsv_voices_save(d)
     return vid
@@ -218,27 +225,10 @@ def gsv_stop():
             "note": "没有由本应用启动的引擎（外部启动的进程不受管理）"}
 
 
-def gsv_tts(text, cfg):
-    """GPT-SoVITS 本地合成 → WAV 字节。失败抛异常（调用方回退）。
-    参考音频优先级：gsv_voice_id（本地音色库）> gsv_ref_wav（手动路径）。
-    gsv_prompt_text = 参考音频原文，gsv_prompt_lang = 参考语言。"""
+def _gsv_request(text, ref, ptext, plang, cfg):
+    """调本地引擎 /tts → WAV 字节。"""
     import http.client
     from urllib.parse import quote
-    d = gsv_dir(cfg)
-    ref, ptext, plang = "", "", "zh"
-    vid = str(cfg.get("gsv_voice_id") or "").strip()
-    if vid:
-        v = gsv_voice_get(vid)
-        if v and os.path.isfile(v.get("file") or ""):
-            ref = v["file"]
-            ptext = str(v.get("prompt_text") or "")
-            plang = str(v.get("prompt_lang") or "zh")
-    if not ref:
-        ref = str(cfg.get("gsv_ref_wav") or "").strip()
-        ptext = str(cfg.get("gsv_prompt_text") or "")
-        plang = str(cfg.get("gsv_prompt_lang") or "zh")
-    if not ref or not os.path.isfile(ref):
-        raise RuntimeError("未设置参考音频（语音页「本地引擎」卡里克隆/选择一个音色）")
     params = {
         "text": str(text)[:_MAX_TEXT], "text_lang": "zh",
         "ref_audio_path": ref,
@@ -248,7 +238,7 @@ def gsv_tts(text, cfg):
         "media_type": "wav", "streaming_mode": False,
     }
     qs = "&".join("%s=%s" % (k, quote(str(v))) for k, v in params.items())
-    port = int(cfg.get("gsv_port") or _GSV_PORT)
+    port = int((cfg or {}).get("gsv_port") or _GSV_PORT)
     c = http.client.HTTPConnection("127.0.0.1", port, timeout=300)
     c.request("GET", "/tts?" + qs)
     r = c.getresponse()
@@ -267,6 +257,50 @@ def gsv_tts(text, cfg):
     if len(data) < 1000:
         raise RuntimeError("GPT-SoVITS 返回音频过短")
     return data
+
+
+def gsv_tts(text, cfg):
+    """GPT-SoVITS 本地合成 → WAV 字节。失败抛异常（调用方回退）。
+    参考音频优先级：gsv_voice_id（本地音色库）> gsv_ref_wav（手动路径）。
+    gsv_prompt_text = 参考音频原文，gsv_prompt_lang = 参考语言。"""
+    d = gsv_dir(cfg)
+    ref, ptext, plang = "", "", "zh"
+    vid = str(cfg.get("gsv_voice_id") or "").strip()
+    if vid:
+        v = gsv_voice_get(vid)
+        if v and os.path.isfile(v.get("file") or ""):
+            ref = v["file"]
+            ptext = str(v.get("prompt_text") or "")
+            plang = str(v.get("prompt_lang") or "zh")
+    if not ref:
+        ref = str(cfg.get("gsv_ref_wav") or "").strip()
+        ptext = str(cfg.get("gsv_prompt_text") or "")
+        plang = str(cfg.get("gsv_prompt_lang") or "zh")
+    if not ref or not os.path.isfile(ref):
+        raise RuntimeError("未设置参考音频（语音页「本地引擎」卡里克隆/选择一个音色）")
+    return _gsv_request(text, ref, ptext, plang, cfg)
+
+
+def gsv_preview_bytes(text, wav_bytes, prompt_text="", prompt_lang="zh", cfg=None):
+    """克隆试听：用一段临时参考音频（页面截好、未入库）合成 → WAV 字节。
+    试听不等于保存——满意后由调用方走 gsv_voice_save 入库。"""
+    d = gsv_dir(cfg)
+    if not d or not os.path.isdir(d):
+        raise RuntimeError("本地引擎未安装")
+    if not wav_bytes or wav_bytes[:4] != b"RIFF":
+        raise RuntimeError("参考音频必须是 WAV")
+    tmp = pathlib.Path(TTS_DIR)
+    tmp.mkdir(parents=True, exist_ok=True)
+    tref = tmp / ("gsvref_%s.wav" % secrets.token_hex(4))
+    tref.write_bytes(wav_bytes)
+    try:
+        return _gsv_request(text, str(tref),
+                            str(prompt_text or ""), str(prompt_lang or "zh"), cfg)
+    finally:
+        try:
+            tref.unlink()
+        except OSError:
+            pass
 
 # 各供应商预设音色（label 仅展示用；value 原样传 API）
 EDGE_VOICES = [
