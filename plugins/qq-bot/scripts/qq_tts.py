@@ -22,6 +22,138 @@ import qq_common as C
 TTS_DIR = os.path.join(C.DATA_DIR, "cache", "tts")
 _MAX_TEXT = 220          # 单条语音文本上限（约 35-40 秒；QQ 长语音上游有已知问题）
 
+# ---------------- GPT-SoVITS 本地引擎管理 ----------------
+# 集成包默认目录（用户可用 gsv_dir 覆盖）：E:\GPTSoVITS\<包名>
+_GSV_DIR_CANDIDATES = [
+    r"E:\GPTSoVITS\GPT-SoVITS-v3lora-20250228",
+    r"D:\GPTSoVITS\GPT-SoVITS-v3lora-20250228",
+]
+_GSV_PORT = 9880
+_GSV_PROC = {"p": None}      # runtime/python.exe 子进程句柄（仅本进程内有效）
+
+
+def gsv_dir(cfg=None):
+    """整合包目录：配置 gsv_dir 优先，其次候选路径里第一个存在的。"""
+    d = str((cfg or {}).get("gsv_dir") or "").strip()
+    if d and os.path.isdir(d):
+        return d
+    for c in _GSV_DIR_CANDIDATES:
+        if os.path.isdir(c):
+            return c
+    return d   # 配置了但不存在 → 原样返回（状态页会提示路径无效）
+
+
+def gsv_status(cfg=None):
+    """引擎状态：包是否存在 / 服务是否在跑（探测 9880）/ 由谁启动。"""
+    d = gsv_dir(cfg)
+    py = os.path.join(d, "runtime", "python.exe") if d else ""
+    api = os.path.join(d, "api_v2.py") if d else ""
+    running = False
+    try:
+        import http.client
+        c = http.client.HTTPConnection("127.0.0.1", _GSV_PORT, timeout=2)
+        c.request("GET", "/")
+        r = c.getresponse()
+        r.read()
+        c.close()
+        running = True     # 404 也算在跑（FastAPI 根路径无路由）
+    except Exception:
+        running = False
+    return {
+        "dir": d,
+        "dir_ok": bool(d) and os.path.isdir(d) and os.path.isfile(py) and os.path.isfile(api),
+        "running": running,
+        "ours": bool(_GSV_PROC["p"] and _GSV_PROC["p"].poll() is None),
+        "port": _GSV_PORT,
+    }
+
+
+def gsv_start(cfg=None):
+    """启动本地引擎（api_v2.py，CUDA）。已在跑则直接返回。"""
+    st = gsv_status(cfg)
+    if st["running"]:
+        return {"ok": True, "already": True, **st}
+    if not st["dir_ok"]:
+        return {"ok": False, "error": "未找到整合包（runtime/python.exe 或 api_v2.py 缺失）。"
+                                      "请先在语音页按引导下载并解压到 E:\\GPTSoVITS", **st}
+    import subprocess
+    d = st["dir"]
+    logf = open(os.path.join(C.DATA_DIR, "logs", "gsv_engine.log"), "ab")
+    p = subprocess.Popen(
+        [os.path.join(d, "runtime", "python.exe"), "api_v2.py",
+         "-a", "127.0.0.1", "-p", str(_GSV_PORT),
+         "-c", os.path.join("GPT_SoVITS", "configs", "tts_infer.yaml")],
+        cwd=d, stdout=logf, stderr=logf,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    _GSV_PROC["p"] = p
+    # 等端口就绪（模型加载 20-90 秒）
+    import time
+    import http.client
+    for _ in range(60):
+        time.sleep(2)
+        try:
+            c = http.client.HTTPConnection("127.0.0.1", _GSV_PORT, timeout=2)
+            c.request("GET", "/")
+            r = c.getresponse()
+            r.read()
+            c.close()
+            return {"ok": True, "started": True, **gsv_status(cfg)}
+        except Exception:
+            if p.poll() is not None:
+                return {"ok": False, "error": "引擎进程退出（详见 logs/gsv_engine.log）", **gsv_status(cfg)}
+    return {"ok": False, "error": "启动超时（模型加载慢，稍后重试或直接用）", **gsv_status(cfg)}
+
+
+def gsv_stop():
+    """停止本应用启动的引擎（外部启动的不动）。"""
+    p = _GSV_PROC.get("p")
+    if p and p.poll() is None:
+        p.terminate()
+        _GSV_PROC["p"] = None
+        return {"ok": True, "stopped": True}
+    return {"ok": True, "stopped": False,
+            "note": "没有由本应用启动的引擎（外部启动的进程不受管理）"}
+
+
+def gsv_tts(text, cfg):
+    """GPT-SoVITS 本地合成 → WAV 字节。失败抛异常（调用方回退）。
+    参考音频 = gsv_ref_wav（插件一键克隆截好的片段或用户指定路径），
+    gsv_prompt_text = 参考音频原文，gsv_prompt_lang = 参考语言。"""
+    import http.client
+    from urllib.parse import quote
+    d = gsv_dir(cfg)
+    ref = str(cfg.get("gsv_ref_wav") or "").strip()
+    if not ref or not os.path.isfile(ref):
+        raise RuntimeError("未设置参考音频（语音页「本地引擎」卡里选一段 5-15 秒的目标音色片段）")
+    params = {
+        "text": str(text)[:_MAX_TEXT], "text_lang": "zh",
+        "ref_audio_path": ref,
+        "prompt_text": str(cfg.get("gsv_prompt_text") or ""),
+        "prompt_lang": str(cfg.get("gsv_prompt_lang") or "zh"),
+        "text_split_method": "cut0",
+        "media_type": "wav", "streaming_mode": False,
+    }
+    qs = "&".join("%s=%s" % (k, quote(str(v))) for k, v in params.items())
+    port = int(cfg.get("gsv_port") or _GSV_PORT)
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=300)
+    c.request("GET", "/tts?" + qs)
+    r = c.getresponse()
+    ct = r.getheader("Content-Type") or ""
+    if r.status != 200 or "audio" not in ct:
+        body = r.read()[:200].decode("utf-8", "replace")
+        c.close()
+        raise RuntimeError("GPT-SoVITS 合成失败 HTTP %d: %s" % (r.status, body))
+    data = b""
+    while True:
+        chunk = r.read(1 << 20)
+        if not chunk:
+            break
+        data += chunk
+    c.close()
+    if len(data) < 1000:
+        raise RuntimeError("GPT-SoVITS 返回音频过短")
+    return data
+
 # 各供应商预设音色（label 仅展示用；value 原样传 API）
 EDGE_VOICES = [
     ("晓晓（女·温柔，最自然）", "zh-CN-XiaoxiaoNeural"),
@@ -44,6 +176,12 @@ SF_MODELS = [
 SF_VOICES = ["anna", "bella", "benjamin", "charles", "claire", "david", "diana"]
 
 PROVIDERS = {
+    "gsv": {
+        "label": "GPT-SoVITS（本地 · 免费）",
+        "billing": "完全免费：本机 GPU 推理，无字符计费、无限量。需按引导安装整合包"
+                   "（约 6GB 下载 / 12GB 磁盘，RTX 显卡推荐）并保持引擎运行；"
+                   "未启动时自动回退其他来源。中文参考音频效果最佳（日文样本说中文会发音混杂）。",
+    },
     "edge": {
         "label": "Edge-TTS（免费 · 入门）",
         "billing": "免费。走微软 Edge 朗读的公共接口（非官方通道，无需任何 Key；"
@@ -372,6 +510,11 @@ def synthesize(text, cfg):
     if not text:
         raise RuntimeError("空文本")
     provider = str(cfg.get("provider") or "edge")
+    if provider == "gsv":
+        data = gsv_tts(text, cfg)   # 本地引擎直接返回 WAV 字节
+        out = _out_path().with_suffix(".wav")
+        out.write_bytes(data)
+        return out
     if provider == "edge":
         return _synth_edge(text, cfg)
     if provider == "zhipu":

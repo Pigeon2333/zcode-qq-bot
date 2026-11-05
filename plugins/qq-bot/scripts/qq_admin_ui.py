@@ -477,6 +477,7 @@ select.mini,input.mini{padding:4px 8px;font-size:12.5px}
   <button data-t="models">模型管理</button>
   <button data-t="groups">群消息</button>
   <button data-t="private">私聊消息</button>
+  <button data-t="voice">语音消息</button>
   <button data-t="persona">人设</button>
   <button data-t="style">风格卡</button>
   <button data-t="memory">记忆</button>
@@ -500,7 +501,7 @@ select.mini,input.mini{padding:4px 8px;font-size:12.5px}
 <script>
 const $=s=>document.querySelector(s);
 let TAB='status';
-const TITLES={status:'状态',runlog:'运行日志',models:'模型管理',groups:'群消息',private:'私聊消息',persona:'人设',style:'风格卡',memory:'记忆',stickers:'表情包',devctrl:'设备操控',zcode:'ZCode 联动',plugins:'插件',settings:'设置',about:'关于'};
+const TITLES={status:'状态',runlog:'运行日志',models:'模型管理',groups:'群消息',private:'私聊消息',voice:'语音消息',persona:'人设',style:'风格卡',memory:'记忆',stickers:'表情包',devctrl:'设备操控',zcode:'ZCode 联动',plugins:'插件',settings:'设置',about:'关于'};
 function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 function head(sub){return '<h2>'+TITLES[TAB]+'</h2>'+(sub?'<div class="sub">'+sub+'</div>':'')}
 function goTab(t){const b=document.querySelector('#nav button[data-t="'+t+'"]');if(b)b.click()}
@@ -569,7 +570,7 @@ function dirtyOn(el,btnId){el.classList.add('dirty');const b=document.getElement
 function dirtyOff(btnId){const b=document.getElementById(btnId);if(b)b.disabled=true;document.querySelectorAll('textarea.dirty,input.dirty').forEach(x=>x.classList.remove('dirty'))}
 async function dirtyGuard(){const d=document.querySelector('textarea.dirty,input.dirty');if(!d)return true;
  return await dlgConfirm({title:'有未保存的修改',body:'当前有未保存的修改（蓝色边框标记），离开将丢失。确定离开？',okText:'放弃修改',danger:true})}
-async function load(){try{if(TAB==='status')await vStatus();else if(TAB==='runlog')await vRunlog();else if(TAB==='models')await vModels();else if(TAB==='groups')await vGroups();else if(TAB==='private')await vPrivate();else if(TAB==='persona')await vPersonas();else if(TAB==='style')await vFile('style');else if(TAB==='memory')await vMemory();else if(TAB==='stickers')await vStickers();else if(TAB==='devctrl')await vDevCtrl();else if(TAB==='zcode')await vZcode();else if(TAB==='plugins')await vPlugins();else if(TAB==='settings'){await vSettings();cacheReload();}else if(TAB==='about')await vAbout();}catch(e){$('#view').innerHTML='<div class="card">加载失败: '+esc(e)+'</div>'}}
+async function load(){try{if(TAB==='status')await vStatus();else if(TAB==='runlog')await vRunlog();else if(TAB==='models')await vModels();else if(TAB==='groups')await vGroups();else if(TAB==='private')await vPrivate();else if(TAB==='voice')await vVoice();else if(TAB==='persona')await vPersonas();else if(TAB==='style')await vFile('style');else if(TAB==='memory')await vMemory();else if(TAB==='stickers')await vStickers();else if(TAB==='devctrl')await vDevCtrl();else if(TAB==='zcode')await vZcode();else if(TAB==='plugins')await vPlugins();else if(TAB==='settings'){await vSettings();cacheReload();}else if(TAB==='about')await vAbout();}catch(e){$('#view').innerHTML='<div class="card">加载失败: '+esc(e)+'</div>'}}
 document.querySelectorAll('#nav button').forEach(b=>b.onclick=async()=>{if(!await dirtyGuard())return;document.querySelectorAll('#nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');TAB=b.dataset.t;if(TAB!=='runlog'&&_runlogTimer){clearInterval(_runlogTimer);_runlogTimer=null}if(TAB!=='devctrl'&&_devCodeTimer){clearInterval(_devCodeTimer);_devCodeTimer=null}if(TAB!=='status'&&_ncTokTimer){clearInterval(_ncTokTimer);_ncTokTimer=null}skeleton();load()});
 const _urlTab=new URLSearchParams(location.search).get('tab');
 if(_urlTab&&TITLES[_urlTab]){TAB=_urlTab;document.querySelectorAll('#nav button').forEach(x=>x.classList.toggle('on',x.dataset.t===_urlTab));}
@@ -2295,7 +2296,10 @@ async function vPlugins(){
    '<div class="k" style="margin-top:6px">'+esc(p.description||'')+'</div>'+
    '<div class="k" style="margin-top:6px;opacity:.7">点「⚙ 设置」或本卡片进入该插件的专属设置页 →</div></div>';
  }).join('');
- $('#view').innerHTML=head('插件（可按需启停的功能模块）')+saveHint('启停即时生效；每个插件的全部设置在其专属设置页里（点卡片或 ⚙ 设置进入）。')+
+ $('#view').innerHTML=head('插件（可按需启停的功能模块）')+saveHint('启停即时生效；每个插件的全部设置在其专属设置页里（点卡片或 ⚙ 设置进入）。')
+ +((window.__pj_voice_reply||'')!==''?'':'')
+ +('<div class="card" style="border-color:#f0c36d;background:#fffcf0"><div class="k"><b>📢 语音回复功能已内置</b>——0.5.0 起搬到侧边栏「<a href="#" onclick="goTab(\'voice\');return false">语音消息</a>」页（新增免费本地引擎 GPT-SoVITS）。</div>'
+ +'<div class="k" style="margin-top:4px">如果下面的「语音回复」插件还开着，建议在这里停用并卸载：配置已自动共用，内置版功能更全（含本地引擎、音色管理），避免两边同时开着重复发语音。</div></div>')+
  '<div style="display:flex;gap:8px;margin-bottom:14px"><button class="act" style="margin:0" onclick="plTab(\'mine\')">我的插件</button><button class="act ghost" style="margin:0" onclick="plTab(\'market\')">🌐 插件市场</button><span style="flex:1"></span><button class="act ghost" style="margin:0" onclick="plInstall()">从 zip 安装…</button></div>'+
  (cats.length>1?plCatBar(cats,_plCat,'plCatSel'):'')+
  (shown.length?'<div style="margin-top:4px">'+rows+'</div>':'<div class="card">该分类暂无插件</div>');
@@ -2539,7 +2543,9 @@ function voiceProvChange(){
  voiceBill();
  const c=_VM.config||{};const k=document.getElementById('v-prov').value;
  const box=document.getElementById('v-provbox');
- if(k==='edge'){box.innerHTML='<div class="k" style="margin-bottom:4px">音色（微软公共接口，免费）</div><select id="v-ev">'+edgeOptsHtml()+'</select>'}
+ if(k==='gsv'){box.innerHTML='<div class="k" style="margin-bottom:6px">本地引擎（免费）：合成走「GPT-SoVITS 本地引擎」卡里配置的参考音频与原文——先确保引擎已启动。</div>'
+  +'<div class="k" style="margin-top:6px">参考音频：'+esc(String(((__VRVM.gsv)||{}).dir_ok?'已就绪':'未安装引擎'))+'；效果调优都在上方「本地引擎」卡。</div>'}
+ else if(k==='edge'){box.innerHTML='<div class="k" style="margin-bottom:4px">音色（微软公共接口，免费）</div><select id="v-ev">'+edgeOptsHtml()+'</select>'}
  else if(k==='zhipu'){box.innerHTML='<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'
   +'<div><div class="k" style="margin-bottom:4px">预设音色</div><select id="v-zv">'+zzOptsHtml()+'</select></div>'
   +'<div><div class="k" style="margin-bottom:4px">克隆音色 speaker_id（填了优先生效）</div><input id="v-zsid" value="'+esc(String(c.zhipu_speaker_id||''))+'" placeholder="复刻得到的 speaker_id"></div>'
@@ -2587,6 +2593,8 @@ function voiceCollect(){
  v.custom_base=g('v-cb')||((_VM.config||{}).custom_base||'');
  v.custom_key=g('v-ck')||((_VM.config||{}).custom_key||'');
  v.custom_model=g('v-cm');v.custom_voice=g('v-cv');
+ v.gsv_dir=g('v-gdir');v.gsv_port=g('v-gport');
+ v.gsv_ref_wav=g('v-gref');v.gsv_prompt_text=g('v-gptext');v.gsv_prompt_lang=g('v-gplang');
  return v}
 async function voiceSave(){
  const r=await api('/api/voice/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voice:voiceCollect()})}).catch(()=>({ok:false,error:'请求失败'}));
@@ -2648,6 +2656,93 @@ async function voiceClone(){
  msg.textContent='✓ 克隆完成（'+r.voice_id+'），已填入并保存。点上面「试听」听听效果。';
  await voiceSave();
 }
+// ---------------- 语音消息页（0.5.0 内置；原语音回复插件功能整体搬迁至此） ----------------
+let _VM2=null;
+async function vVoice(){
+ const m=await api('/api/voice/meta').catch(()=>({ok:false}));
+ if(!m||m.ok===false){$('#view').innerHTML=head('语音引擎数据加载失败，刷新重试')+'<div class="card">加载失败：'+esc((m&&m.error)||'')+'</div>';return}
+ _VM2=m;_VM=m;   // _VM 同步：voiceProvChange/voiceCollect 等共用函数读它
+ const g=m.gsv||{};
+ const provHtml=vVoiceCards(m,g);
+ $('#view').innerHTML=head('让机器人开口说话：回复改发语音（内容跟人设走，只换发送形式）。')+provHtml;
+ setTimeout(()=>{voiceProvChange();},0);
+}
+function vVoiceCards(m,g){
+ const P=m.providers||{};const c=m.config||{};
+ const prov=Object.keys(P);
+ const cur=c.provider||'edge';
+ const vopts=prov.map(k=>'<option value="'+k+'" '+(k===cur?'selected':'')+'>'+esc(P[k].label)+'</option>').join('');
+ const mode=String(c.mode||'keyword');
+ const kw=(c.keywords||[]).join('、');
+ const gsvBadge=g.running?'<span class="badge" style="background:#e6f7e6;color:#1a7f37">● 运行中（端口 '+g.port+'）</span>'
+  :(g.dir_ok?'<span class="badge" style="background:var(--tint);color:var(--dim)">已安装 · 未启动</span>'
+  :'<span class="badge" style="background:#fde8e8;color:#b42318">未安装</span>');
+ const gsvCard='<div class="card" id="gsv-card"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px"><b>GPT-SoVITS 本地引擎</b>'+gsvBadge
+  +'<span style="margin-left:auto;display:flex;gap:8px">'
+  +(g.running?'<button class="act ghost" style="margin:0" onclick="gsvStop()">停止引擎</button>':'<button class="act" style="margin:0" onclick="gsvStart()">启动引擎</button>')
+  +'<button class="act ghost" style="margin:0" onclick="vVoice()">刷新状态</button></span></div>'
+  +(g.dir_ok
+   ?'<div class="k">整合包：'+esc(g.dir)+'</div>'
+    +'<div class="k" style="margin-top:6px">引擎没开时合成会自动回退其他来源（不丢回复）；重启电脑后引擎不会自启，回来点一下「启动引擎」即可。</div>'
+    +'<div style="display:grid;grid-template-columns:1.6fr 1fr 1fr;gap:10px;margin-top:10px">'
+    +'<div style="grid-column:1/-1"><div class="k" style="margin-bottom:4px">参考音频（wav 路径，5-15 秒目标音色；用下方一键克隆截好的片段或本机任意 wav）</div><input id="v-gref" value="'+esc(String(c.gsv_ref_wav||''))+'" placeholder="E:\\GPTSoVITS\\ref_ahoyo.wav"></div>'
+    +'<div style="grid-column:1/-1"><div class="k" style="margin-bottom:4px">参考音频原文（强烈建议填；语言选对）</div><input id="v-gptext" value="'+esc(String(c.gsv_prompt_text||''))+'" placeholder="这段音频里说的话"></div>'
+    +'<div><div class="k" style="margin-bottom:4px">参考语言</div><select id="v-gplang">'
+    +'<option value="zh"'+((c.gsv_prompt_lang||'zh')==='zh'?' selected':'')+'>中文</option>'
+    +'<option value="ja"'+((c.gsv_prompt_lang)==='ja'?' selected':'')+'>日文</option>'
+    +'<option value="en"'+((c.gsv_prompt_lang)==='en'?' selected':'')+'>英文</option></select></div>'
+    +'<div><div class="k" style="margin-bottom:4px">整合包目录（默认自动探测 E:\\GPTSoVITS）</div><input id="v-gdir" value="'+esc(String(c.gsv_dir||''))+'" placeholder="留空自动探测"></div>'
+    +'<div><div class="k" style="margin-bottom:4px">端口</div><input id="v-gport" value="'+esc(String(c.gsv_port||'9880'))+'"></div></div>'
+   :'<div class="k"><b>还没安装本地引擎（可选，免费）</b>——三步：</div>'
+    +'<div class="k" style="margin-top:8px">① <b>下载整合包</b>（约 6.4GB，需 RTX 显卡推荐）：<a href="https://hf-mirror.com/lj1995/GPT-SoVITS-windows-package/resolve/main/GPT-SoVITS-v3lora-20250228.7z?download=true" target="_blank">点此下载（国内镜像）</a> 或 <a href="https://www.yuque.com/baicaigongchang1145haoyuangong/ib3g1e/dkxgpiy9zb96hob4#KTvnO" target="_blank">官方网盘列表</a></div>'
+    +'<div class="k" style="margin-top:6px">② 用 <a href="https://www.7-zip.org" target="_blank">7-Zip</a> 解压到 <b class="mono">E:\\GPTSoVITS\\</b>（解压出 GPT-SoVITS-v3lora-20250228 文件夹；放其他盘也行，填到下方目录框）</div>'
+    +'<div class="k" style="margin-top:6px">③ 回本页点「<b>启动引擎</b>」——首次启动要加载模型约 1 分钟，之后选参考音频就能合成，完全免费。</div>'
+    +'<div class="k" style="margin-top:6px">合成依赖 GPU（NVIDIA 显卡）。没有独显/显存小就用云端的智谱 GLM-TTS（收费但免部署）。</div>')
+  +'</div>';
+ return '<div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><b>开关与策略</b><span class="badge" style="background:var(--tint);color:var(--dim)">语音内容跟人设走，只换发送形式</span></div>'
+ +'<label class="master"><input type="checkbox" id="v-on" '+(c.enabled?'checked':'')+' onchange=""> <b>启用语音回复</b><div class="k" style="margin-top:3px">开启后按下面的策略把部分/全部回复改用语音发送；合成失败自动回退发文字，不会丢回复</div></label>'
+ +'<div style="display:flex;gap:14px;margin-top:8px;flex-wrap:wrap">'
+ +'<label><input type="checkbox" id="v-priv" '+(c.private_enabled!==false?'checked':'')+'> 私聊启用</label>'
+ +'<label><input type="checkbox" id="v-grp" '+(c.group_enabled?'checked':'')+'> 群聊启用</label>'
+ +'<label title="勾上=同一条回复发两个版本（先语音后同样内容的文字）；不勾=只发语音"><input type="checkbox" id="v-wt" '+(c.with_text?'checked':'')+'> 命中语音时同时发文字版</label></div>'
+ +'<div class="k" style="margin-top:10px">触发方式</div>'
+ +'<div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:4px">'
+ +'<label><input type="radio" name="vmode" value="keyword" '+(mode==='keyword'?'checked':'')+'> 对方消息含触发词时</label>'
+ +'<label><input type="radio" name="vmode" value="always" '+(mode==='always'?'checked':'')+'> 所有回复都用语音</label>'
+ +'<label><input type="radio" name="vmode" value="mixed" '+(mode==='mixed'?'checked':'')+'> 触发词必语音，其余按概率</label></div>'
+ +'<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">'
+ +'<input id="v-kw" value="'+esc(kw)+'" placeholder="触发词，用、分隔（如：念一下、发语音）" style="flex:1;min-width:220px">'
+ +'<label class="k">语音概率 <input id="v-prob" type="number" min="0" max="100" step="5" value="'+esc(String(Math.round((c.prob||0)*100)))+'" style="width:64px"> %</label><span class="k">（触发词必语音；其余消息按此概率语音回复）</span></div>'
+ +'<div style="margin-top:10px"><button class="act" style="margin:0" onclick="voiceSave()">保存设置</button><span class="k" id="v-ok" style="margin-left:8px"></span></div></div>'
+ +gsvCard
+ +'<div class="card"><div class="k" style="margin-bottom:8px"><b>语音来源与音色</b>（供应商可随时换，互不影响）</div>'
+ +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="k">供应商</span><select id="v-prov" onchange="voiceProvChange()">'+vopts+'</select></div>'
+ +'<div class="k" id="v-bill" style="margin-top:8px;padding:8px;border:1px solid var(--line);border-radius:8px"></div>'
+ +'<div id="v-provbox" style="margin-top:10px"></div>'
+ +'<div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap">'
+ +'<input id="v-ptext" value="你好呀，我是你的语音小助手，听听这个声音怎么样？" style="flex:1;min-width:240px">'
+ +'<button class="act ghost" style="margin:0" onclick="voicePreview()">试听（用当前表单配置）</button></div>'
+ +'<audio id="v-audio" controls style="margin-top:8px;width:100%;display:none"></audio>'
+ +'<div class="k" id="v-pmsg" style="margin-top:6px"></div></div>'
+ +'<div class="card"><div class="k"><b>计费说明</b>（各家语音合成的收费情况，选前看清楚）</div>'
+ +prov.map(k=>'<div style="margin-top:8px"><b>'+esc(P[k].label)+'</b><div class="k" style="margin-top:3px">'+esc(P[k].billing)+'</div></div>').join('')
+ +'</div>';
+}
+async function gsvStart(){
+ const b=event.target;b&&(b.disabled=true);
+ toast('引擎启动中…（模型加载约 1 分钟）');
+ const r=await api('/api/voice/gsv/start',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>({ok:false,error:'请求失败'}));
+ b&&(b.disabled=false);
+ if(!r||r.ok===false){toast('启动失败：'+((r&&r.error)||''),false);return}
+ toast('本地引擎已启动（免费合成已可用）');
+ vVoice();
+}
+async function gsvStop(){
+ const r=await api('/api/voice/gsv/stop',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>({ok:false,error:'请求失败'}));
+ toast(r&&r.ok?'引擎已停止':'停止失败',!(r&&r.ok));
+ vVoice();
+}
+function vGsvRefresh(){}
 let _LM=null;
 function larkPage(d){
  _LM=(d&&d.ok!==undefined)?d:(_LM||{config:{}});
@@ -3846,7 +3941,7 @@ class UiHandler(BaseHTTPRequestHandler):
                 return self._reply(404, {"ok": False, "error": "任务不存在"})
             return self._reply(200, t)
         if u.path == "/api/voice/meta":
-            # 语音回复元数据：供应商（含计费说明）+ 预设音色表
+            # 语音回复元数据：供应商（含计费说明）+ 预设音色表 + 本地引擎状态
             import qq_tts as _T
             return self._reply(200, {
                 "ok": True,
@@ -3857,7 +3952,14 @@ class UiHandler(BaseHTTPRequestHandler):
                 "sf_models": _T.SF_MODELS,
                 "sf_voices": _T.SF_VOICES,
                 "config": _T.voice_cfg(),
+                "gsv": _T.gsv_status(_T.voice_cfg()),
             })
+        if u.path == "/api/voice/gsv/start":
+            import qq_tts as _T
+            return self._reply(200, _T.gsv_start(_T.voice_cfg()))
+        if u.path == "/api/voice/gsv/stop":
+            import qq_tts as _T
+            return self._reply(200, _T.gsv_stop())
         if u.path == "/api/lark/meta":
             # 飞书互通：配置 + SDK 可用性
             import qq_lark as _L
@@ -5281,6 +5383,12 @@ class UiHandler(BaseHTTPRequestHandler):
                 "custom_key": str(v.get("custom_key") or "")[:128],
                 "custom_model": str(v.get("custom_model") or "tts-1")[:64],
                 "custom_voice": str(v.get("custom_voice") or "alloy")[:64],
+                # GPT-SoVITS 本地引擎
+                "gsv_dir": str(v.get("gsv_dir") or "")[:200],
+                "gsv_port": str(v.get("gsv_port") or "")[:8],
+                "gsv_ref_wav": str(v.get("gsv_ref_wav") or "")[:300],
+                "gsv_prompt_text": str(v.get("gsv_prompt_text") or "")[:300],
+                "gsv_prompt_lang": str(v.get("gsv_prompt_lang") or "zh")[:8],
             }
             _T.save_voice_cfg(clean)
             return self._reply(200, {"ok": True, "config": _T.voice_cfg()})
