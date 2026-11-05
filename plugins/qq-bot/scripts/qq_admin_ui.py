@@ -2363,7 +2363,7 @@ async function plPage(name){
    if(s.type==='number')return '<div class="card" style="margin-top:10px"><div class="k">'+esc(s.label||s.key)+'</div><div style="margin-top:6px"><input type="number" value="'+esc(String(v??''))+'" style="width:110px" onchange="plSet(\''+esc(p.name)+'\',\''+esc(s.key)+'\',parseInt(this.value)||0)"></div></div>';
    return '<div class="card" style="margin-top:10px"><div class="k">'+esc(s.label||s.key)+'</div><input value="'+esc(String(v??''))+'" style="width:100%;margin-top:6px" onchange="plSet(\''+esc(p.name)+'\',\''+esc(s.key)+'\',this.value)"></div>';
   }).join('');
-  inner+='<div class="card" style="margin-top:12px"><div class="k" style="font-weight:600">插件设置</div></div>'+rowsS;
+  inner+='<div class="card" style="margin-top:12px"><div class="k" style="display:flex;gap:8px;align-items:center"><div class="k" style="font-weight:600">插件设置</div><span class="badge" style="background:var(--tint);color:var(--dim)">✓ 修改后自动保存，即时生效</span></div></div>'+rowsS;
  }
  document.getElementById('plpage').innerHTML=inner||'<div class="card">该插件没有可配置项</div>';
  if(typeof fn==='function'&&typeof window[p.page.js+'Init']==='function'){try{window[p.page.js+'Init'](data,p)}catch(e){}}
@@ -2431,7 +2431,11 @@ async function plToggle(name,on){
  const r=await saveKV('/api/plugins/toggle',{name:name,enabled:on},'插件已'+(on?'启用':'停用')+'（即时生效）');
  if(r.ok!==false)load()}
 async function plSet(name,key,value){
- await saveKV('/api/plugins/setting',{name:name,key:key,value:value},'插件设置已更新（即时生效）')}
+ try{
+  const r=await api('/api/plugins/setting',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,key:key,value:value})});
+  if(r.ok===false){toast('保存失败: '+(r.error||''),false);return}
+  toast('✓ 已保存（即时生效）');
+ }catch(e){toast('保存失败：网络错误',false)}}
 // ---- 聊天记录导入与学习（QQ/微信共用页，source=qq|wx） ----
 function chatImpPage(d,p){
  const src=d&&d.source||'qq', label=(d&&d.label)||'聊天', hint=(d&&d.hint)||'';
