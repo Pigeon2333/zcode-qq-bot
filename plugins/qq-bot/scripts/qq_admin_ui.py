@@ -5330,6 +5330,32 @@ class UiHandler(BaseHTTPRequestHandler):
             return self._reply(200, {"ok": True, "voice_id": vid,
                                      "voice_name_used": used,
                                      "output_file_id": ofid})
+        if u.path == "/api/voice/voices":
+            # 复刻音色列表（管理/删除用）
+            import qq_tts as _T
+            cfg = dict(_T.voice_cfg())
+            try:
+                voices = _T.list_zhipu_voices(_T.zhipu_key(cfg))
+            except Exception as e:
+                return self._reply(200, {"ok": False, "error": str(e)[:300]})
+            return self._reply(200, {"ok": True, "voices": voices,
+                "current": str(_T.voice_cfg().get("zhipu_speaker_id") or "")})
+        if u.path == "/api/voice/voice-delete":
+            # 删除复刻音色（danger：前端已二次确认）；删的是当前使用的则顺手清空配置
+            import qq_tts as _T
+            vid = str(body.get("voice_id") or "").strip()
+            if not vid:
+                return self._reply(200, {"ok": False, "error": "缺少音色 ID"})
+            cfg = dict(_T.voice_cfg())
+            try:
+                did, _ts = _T.delete_zhipu_voice(_T.zhipu_key(cfg), vid)
+            except Exception as e:
+                return self._reply(200, {"ok": False, "error": str(e)[:300]})
+            if str(cfg.get("zhipu_speaker_id") or "").strip() == did:
+                cfg["zhipu_speaker_id"] = ""
+                _T.save_voice_cfg(cfg)
+            return self._reply(200, {"ok": True, "voice": did,
+                "cleared_current": True})
         if u.path == "/api/lark/config":
             # 保存飞书配置（app_secret 单独保存，不回显）
             import qq_lark as _L

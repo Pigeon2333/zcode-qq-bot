@@ -66,8 +66,13 @@ function voiceProvChange(){
   +'<input id="v-vname" placeholder="音色名（如 爱音）" style="width:130px">'
   +'<button class="act" style="margin:0" onclick="voiceClone()">开始克隆</button></div>'
   +'<input id="v-sample" placeholder="可选：这段音频里说的话（填了克隆更像）" style="width:100%;margin-top:6px">'
-  +'<div class="k" id="v-cmsg" style="margin-top:6px">支持 mp4/mov/mp3/m4a/wav；页面自动截取所选片段转 16kHz 单声道 WAV 再上传（智谱限 3-30 秒、≤10MB）。克隆与合成都计费。</div></div></div>'}
- else if(k==='siliconflow'){box.innerHTML='<div style="display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:10px">'
+  +'<div class="k" id="v-cmsg" style="margin-top:6px">支持 mp4/mov/mp3/m4a/wav；页面自动截取所选片段转 16kHz 单声道 WAV 再上传（智谱限 3-30 秒、≤10MB）。克隆与合成都计费。</div></div>'
+  +'<div style="grid-column:1/-1;border:1px dashed var(--line);border-radius:8px;padding:10px">'
+  +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px"><b>已克隆音色</b>'
+  +'<button class="act ghost" style="margin:0;padding:3px 10px;font-size:12px" onclick="voiceVoicesLoad()">刷新列表</button>'
+  +'<span class="k" id="v-vlmsg"></span></div>'
+  +'<div id="v-vlist" class="k">（点「刷新列表」拉取本账号的复刻音色）</div></div></div>'}
+  else if(k==='siliconflow'){box.innerHTML='<div style="display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:10px">'
   +'<div><div class="k" style="margin-bottom:4px">硅基流动 API Key</div><input id="v-sfk" type="password" value="'+esc(String(c.sf_key||''))+'"></div>'
   +'<div><div class="k" style="margin-bottom:4px">模型</div><select id="v-sfm">'+sfMOptsHtml()+'</select></div>'
   +'<div><div class="k" style="margin-bottom:4px">音色</div><select id="v-sfv">'+sfVOptsHtml()+'</select></div></div>'}
@@ -159,7 +164,44 @@ async function voiceClone(){
  if(!r||r.ok===false){msg.textContent='克隆失败：'+((r&&r.error)||'未知错误');return}
  const sid=document.getElementById('v-zsid');if(sid)sid.value=r.voice_id;
  let renamed='';
- if(r.voice_name_used&&r.voice_name_used!==name)renamed='（平台提示同名已存在，已自动改名为「'+r.voice_name_used+'」）';
  msg.textContent='✓ 克隆完成（'+r.voice_id+'）'+renamed+'，已填入并保存。点上面「试听」听听效果。';
  await voiceSave();
+}
+// ---- 已克隆音色管理：列表 / 一键填入 / 试听 / 删除 ----
+async function voiceVoicesLoad(){
+ const box=document.getElementById('v-vlist');const m=document.getElementById('v-vlmsg');
+ if(!box)return;
+ m&&(m.textContent='拉取中…');
+ const r=await api('/api/voice/voices').catch(()=>({ok:false,error:'请求失败'}));
+ if(m)m.textContent='';
+ if(!r||r.ok===false){box.innerHTML='拉取失败：'+esc((r&&r.error)||'');return}
+ const vs=r.voices||[];
+ if(!vs.length){
+  box.innerHTML='还没有克隆音色（下面「一键克隆」一个，或去 bigmodel.cn 控制台创建）';
+  return;
+ }
+ const cur=r.current||'';
+ box.innerHTML=vs.map(v=>'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:5px 0;padding:7px;border:1px solid var(--line);border-radius:6px">'
+  +'<b>'+esc(v.name||'(未命名)')+'</b>'
+  +(v.id===cur?'<span class="badge" style="background:var(--tint);color:var(--dim)">当前使用</span>':'')
+  +'<span class="k mono" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(v.id)+'">'+esc(v.id)+'</span>'
+  +(v.created?'<span class="k">'+esc(v.created)+'</span>':'')
+  +(v.url?'<a class="k" href="'+esc(v.url)+'" target="_blank">试听</a>':'')
+  +'<button class="act ghost" style="margin:0;padding:3px 10px;font-size:12px" onclick="voiceVoiceFill(\''+esc(v.id)+'\')">填入使用</button>'
+  +'<button class="act ghost danger" style="margin:0;padding:3px 10px;font-size:12px" onclick="voiceVoiceDel(\''+esc(v.id)+'\',\''+esc(v.name||v.id)+'\')">删除</button></div>').join('')
+  +'<div class="k" style="margin-top:6px">删除不可恢复（平台侧真删）；删「当前使用」的音色会自动退回预设音色。</div>';
+}
+async function voiceVoiceFill(id){
+ const sid=document.getElementById('v-zsid');
+ if(sid)sid.value=id;
+ await voiceSave();
+ toast('已切换到音色 '+id.slice(0,13)+'…（即时生效）');
+ voiceVoicesLoad();
+}
+async function voiceVoiceDel(id,name){
+ if(!await dlgConfirm({title:'删除音色「'+name+'」？',body:'将从智谱平台永久删除（不可恢复）。删除后用这个音色的语音会改用预设音色。',danger:true,okText:'删除'}))return;
+ const r=await api('/api/voice/voice-delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voice_id:id})}).catch(()=>({ok:false,error:'请求失败'}));
+ if(!r||r.ok===false){toast('删除失败：'+((r&&r.error)||''),false);return}
+ toast('已删除「'+name+'」');
+ voiceVoicesLoad();
 }

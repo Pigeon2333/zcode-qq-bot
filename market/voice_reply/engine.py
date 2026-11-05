@@ -263,6 +263,62 @@ def clone_zhipu_voice(key, wav_bytes, voice_name, sample_text="", preview_text="
     return voice_id, str(obj.get("file_id") or ""), used_name
 
 
+def list_zhipu_voices(key):
+    """拉取本账号的复刻音色列表（PRIVATE）→ [{id, name, created, url}]。"""
+    import http.client
+    if not str(key or "").strip():
+        raise RuntimeError("未找到智谱 API Key")
+    conn = http.client.HTTPSConnection("open.bigmodel.cn", 443, timeout=30)
+    conn.request("GET", "/api/paas/v4/voice/list?voiceType=PRIVATE",
+                 headers={"Authorization": "Bearer " + str(key).strip()})
+    r = conn.getresponse()
+    raw = r.read()
+    conn.close()
+    if r.status != 200:
+        raise RuntimeError("拉取音色列表失败 HTTP %d: %s"
+                           % (r.status, raw[:200].decode("utf-8", "replace")))
+    try:
+        d = json.loads(raw.decode("utf-8"))
+    except ValueError:
+        raise RuntimeError("音色列表返回非 JSON")
+    out = []
+    for it in (d.get("voice_list") or []):
+        out.append({
+            "id": str(it.get("voice") or ""),
+            "name": str(it.get("voice_name") or ""),
+            "created": str(it.get("create_time") or ""),
+            "url": str(it.get("download_url") or ""),
+        })
+    return out
+
+
+def delete_zhipu_voice(key, voice_id):
+    """删除一个复刻音色。返回 (被删 id, 删除时间)。"""
+    import http.client
+    vid = str(voice_id or "").strip()
+    if not str(key or "").strip():
+        raise RuntimeError("未找到智谱 API Key")
+    if not vid:
+        raise RuntimeError("缺少音色 ID")
+    data = json.dumps({"voice": vid}).encode("utf-8")
+    conn = http.client.HTTPSConnection("open.bigmodel.cn", 443, timeout=30)
+    conn.request("POST", "/api/paas/v4/voice/delete", body=data, headers={
+        "Authorization": "Bearer " + str(key).strip(),
+        "Content-Type": "application/json",
+        "Content-Length": str(len(data))})
+    r = conn.getresponse()
+    raw = r.read()
+    conn.close()
+    if r.status != 200:
+        raise RuntimeError("删除音色失败 HTTP %d: %s"
+                           % (r.status, raw[:300].decode("utf-8", "replace")))
+    try:
+        d = json.loads(raw.decode("utf-8"))
+    except ValueError:
+        return vid, ""
+    return str(d.get("voice") or vid), str(d.get("update_time") or "")
+
+
 def _synth_edge(text, cfg):
     import asyncio
     import edge_tts
