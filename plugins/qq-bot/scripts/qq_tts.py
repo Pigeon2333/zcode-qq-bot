@@ -125,8 +125,10 @@ def _cleanup_old(keep=12):
         pass
 
 
-def _post_audio_speech(base_url, key, model, voice, text, timeout=90):
-    """OpenAI 兼容 POST <base>/audio/speech → mp3 字节。base_url 只允许 https 域名。"""
+def _post_audio_speech(base_url, key, model, voice, text, timeout=90,
+                       send_format=True):
+    """POST <base>/audio/speech → 音频字节。base_url 只允许 https 域名。
+    send_format=False 时不发 response_format（智谱 TTS 不支持该参数，报 1214）。"""
     import http.client
     import urllib.parse
     base = str(base_url or "").strip()
@@ -137,8 +139,9 @@ def _post_audio_speech(base_url, key, model, voice, text, timeout=90):
     u = urllib.parse.urlsplit(base + "audio/speech")
     if u.scheme != "https" or not u.hostname:
         raise RuntimeError("接口地址非法（必须 https 域名）")
-    payload = {"model": str(model), "input": str(text), "voice": str(voice),
-               "response_format": "mp3"}
+    payload = {"model": str(model), "input": str(text), "voice": str(voice)}
+    if send_format:
+        payload["response_format"] = "mp3"
     conn = http.client.HTTPSConnection(u.hostname, u.port or 443, timeout=timeout)
     conn.request("POST", u.path + ("?" + u.query if u.query else ""),
                  body=json.dumps(payload).encode("utf-8"),
@@ -180,7 +183,8 @@ def synthesize(text, cfg):
         if not key:
             raise RuntimeError("未找到智谱 API Key（模型管理里配置，或在语音设置里单独填）")
         data = _post_audio_speech("https://open.bigmodel.cn/api/paas/v4/",
-                                  key, "cogtts", voice, text)
+                                  key, "cogtts", voice, text,
+                                  send_format=False)  # 智谱不支持 response_format
     elif provider == "siliconflow":
         key = str(cfg.get("sf_key", "")).strip()
         if not key:
