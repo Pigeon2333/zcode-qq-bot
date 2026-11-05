@@ -11,7 +11,7 @@ async function hotBriefPage(d){
   +'<button class="act ghost" style="margin:0;padding:3px 10px;font-size:12px" onclick="hbView(\''+esc(x.date)+'\')">查看</button>'
   +'<button class="act ghost danger" style="margin:0;padding:3px 10px;font-size:12px" onclick="hbDel(\''+esc(x.date)+'\')">删</button></div>').join('');
  const curText=(cur.ok&&cur.record)?(cur.record.text||''):'';
- return '<div class="card"><div class="k" style="margin-bottom:6px"><b>今日速览</b></div>'
+ const html='<div class="card"><div class="k" style="margin-bottom:6px"><b>今日速览</b></div>'
  +(curText?'<div class="k" style="white-space:pre-wrap;font-size:12.5px">'+esc(curText.slice(0,600))+'</div>':'<div class="k">今天还没总结过——点下面按钮立刻来一份。</div>')
  +'<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
  +'<button class="act" style="margin:0" onclick="hbRefresh()">立刻总结当前热点</button>'
@@ -28,6 +28,7 @@ async function hotBriefPage(d){
  +'<div class="card"><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px"><b>历史记录</b><span class="k">（分天存档，可回看/删除）</span>'
  +'<span style="margin-left:auto;display:flex;gap:6px;align-items:center" class="k">自动清理 <input type="number" id="hb-clean" min="0" max="3650" step="1" style="width:58px" title="每天自动删除 N 天前的旧记录；0=不清理"> 天前的记录（0=不清理）</span></div>'
  +(rows||'<div class="k">暂无历史记录</div>')+'</div>';
+ // 必须在 return 之前调度（写在 return 后是死代码——回显已存配置全靠它）
  setTimeout(async()=>{
   const st=await api('/api/plugins/call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'hot_brief',method:'load_auto'})}).catch(()=>null);
   const el=document.getElementById('hb-auto');
@@ -41,6 +42,7 @@ async function hotBriefPage(d){
   const q=document.getElementById('hb-query');
   if(q&&st&&st.ok)q.value=st.query||'';
  },0);
+ return html;
 }
 async function hbSetClean(v){
  const n=parseInt(v)||0;

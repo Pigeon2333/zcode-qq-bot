@@ -228,14 +228,27 @@ def clone_zhipu_voice(key, wav_bytes, voice_name, sample_text="", preview_text="
     if str(sample_text or "").strip():
         payload["text"] = str(sample_text).strip()[:300]   # 样本原文（可选，填了更像）
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    conn = http.client.HTTPSConnection("open.bigmodel.cn", 443, timeout=180)
-    conn.request("POST", "/api/paas/v4/voice/clone", body=data, headers={
-        "Authorization": "Bearer " + key,
-        "Content-Type": "application/json",
-        "Content-Length": str(len(data))})
-    r = conn.getresponse()
-    raw = r.read()
-    conn.close()
+    used_name = payload["voice_name"]
+    for attempt in (1, 2):
+        conn = http.client.HTTPSConnection("open.bigmodel.cn", 443, timeout=180)
+        conn.request("POST", "/api/paas/v4/voice/clone", body=data, headers={
+            "Authorization": "Bearer " + key,
+            "Content-Type": "application/json",
+            "Content-Length": str(len(data))})
+        r = conn.getresponse()
+        raw = r.read()
+        conn.close()
+        if r.status == 400 and ("1214" in raw.decode("utf-8", "replace")
+                                or "已存在" in raw.decode("utf-8", "replace")):
+            # 音色名重复：平台同一账号下名字唯一——自动加短后缀重试一次
+            # （用户重传同名样本时不必手动改名；旧音色仍在平台上可继续用其 id）
+            if attempt == 1:
+                used_name = ("%s_%s" % (payload["voice_name"],
+                                        secrets.token_hex(2)))[:40]
+                payload["voice_name"] = used_name
+                data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                continue
+        break
     if r.status != 200:
         raise RuntimeError("克隆失败 HTTP %d: %s"
                            % (r.status, raw[:300].decode("utf-8", "replace")))
@@ -247,7 +260,7 @@ def clone_zhipu_voice(key, wav_bytes, voice_name, sample_text="", preview_text="
     if not voice_id:
         raise RuntimeError("克隆接口没有返回 voice id: %s"
                            % raw[:200].decode("utf-8", "replace"))
-    return voice_id, str(obj.get("file_id") or "")
+    return voice_id, str(obj.get("file_id") or ""), used_name
 
 
 def _synth_edge(text, cfg):

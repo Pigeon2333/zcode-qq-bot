@@ -14,7 +14,7 @@ function voicePage(d){
  const sfVOpts=(__VRVM.sf_voices||[]).map(v=>'<option value="'+esc(v)+'" '+(v===(c.sf_voice||'anna')?'selected':'')+'>'+esc(v)+'</option>').join('');
  const mode=String(c.mode||'keyword');
  const kw=(c.keywords||[]).join('、');
- return '<div class="k" style="margin-bottom:10px">让机器人开口说话：语音内容跟人设走，只是换成语音发送。配置即时生效。</div>'
+ const html='<div class="k" style="margin-bottom:10px">让机器人开口说话：语音内容跟人设走，只是换成语音发送。配置即时生效。</div>'
  +'<div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><b>开关与策略</b><span class="badge" style="background:var(--tint);color:var(--dim)">语音内容跟人设走，只换发送形式</span></div>'
  +'<label class="master"><input type="checkbox" id="v-on" '+(c.enabled?'checked':'')+' onchange=""> <b>启用语音回复</b><div class="k" style="margin-top:3px">开启后按下面的策略把部分/全部回复改用语音发送；合成失败自动回退发文字，不会丢回复</div></label>'
  +'<div style="display:flex;gap:14px;margin-top:8px;flex-wrap:wrap">'
@@ -42,7 +42,10 @@ function voicePage(d){
  +'<div class="card"><div class="k"><b>计费说明</b>（各家语音合成的收费情况，选前看清楚）</div>'
  +prov.map(k=>'<div style="margin-top:8px"><b>'+esc(P[k].label)+'</b><div class="k" style="margin-top:3px">'+esc(P[k].billing)+'</div></div>').join('')
  +'<div class="k" style="margin-top:10px">克隆专属音色（智谱，收费）：在 bigmodel.cn 控制台或开放平台用 3 秒以上人声样本创建复刻音色，把得到的 speaker_id 填到智谱栏即可——之后所有语音都用这个音色。</div></div>';
- setTimeout(voiceProvChange,0);   // 等 plPage 把返回的 HTML 插进 DOM 后再填供应商区
+ // 必须在 return 之前调度（写在 return 后是死代码，永远不会执行——
+ // 「首次进入智谱设置区空白、要切走再切回来才出现」就是它）
+ setTimeout(voiceProvChange,0);
+ return html;
 }
 function voiceBill(){const P=__VRVM.providers||{};const k=document.getElementById('v-prov').value;const el=document.getElementById('v-bill');el.textContent=P[k]?P[k].billing:''}
 function voiceProvChange(){
@@ -155,6 +158,8 @@ async function voiceClone(){
  const r=await api('/api/voice/clone',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voice:voiceCollect(),audio:vcB64(wav),voice_name:name,sample_text:document.getElementById('v-sample').value,preview_text:'你好呀，我是你的语音助手，听听这个声音怎么样？'})}).catch(()=>({ok:false,error:'请求失败（克隆需要 0.4.12 及以上版本的应用）'}));
  if(!r||r.ok===false){msg.textContent='克隆失败：'+((r&&r.error)||'未知错误');return}
  const sid=document.getElementById('v-zsid');if(sid)sid.value=r.voice_id;
- msg.textContent='✓ 克隆完成（'+r.voice_id+'），已填入并保存。点上面「试听」听听效果。';
+ let renamed='';
+ if(r.voice_name_used&&r.voice_name_used!==name)renamed='（平台提示同名已存在，已自动改名为「'+r.voice_name_used+'」）';
+ msg.textContent='✓ 克隆完成（'+r.voice_id+'）'+renamed+'，已填入并保存。点上面「试听」听听效果。';
  await voiceSave();
 }

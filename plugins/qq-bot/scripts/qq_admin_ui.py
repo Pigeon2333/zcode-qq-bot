@@ -2490,7 +2490,7 @@ function voicePage(d){
  const sfVOpts=(_VM.sf_voices||[]).map(v=>'<option value="'+esc(v)+'" '+(v===(c.sf_voice||'anna')?'selected':'')+'>'+esc(v)+'</option>').join('');
  const mode=String(c.mode||'keyword');
  const kw=(c.keywords||[]).join('、');
- return '<div class="k" style="margin-bottom:10px">让机器人开口说话：语音内容跟人设走，只是换成语音发送。配置即时生效。</div>'+
+ const html='<div class="k" style="margin-bottom:10px">让机器人开口说话：语音内容跟人设走，只是换成语音发送。配置即时生效。</div>'+
  '<div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><b>开关与策略</b><span class="badge" style="background:var(--tint);color:var(--dim)">语音内容跟人设走，只换发送形式</span></div>'
  +'<label class="master"><input type="checkbox" id="v-on" '+(c.enabled?'checked':'')+' onchange=""> <b>启用语音回复</b><div class="k" style="margin-top:3px">开启后按下面的策略把部分/全部回复改用语音发送；合成失败自动回退发文字，不会丢回复</div></label>'
  +'<div style="display:flex;gap:14px;margin-top:8px;flex-wrap:wrap">'
@@ -2518,7 +2518,10 @@ function voicePage(d){
  +'<div class="card"><div class="k"><b>计费说明</b>（各家语音合成的收费情况，选前看清楚）</div>'
  +prov.map(k=>'<div style="margin-top:8px"><b>'+esc(P[k].label)+'</b><div class="k" style="margin-top:3px">'+esc(P[k].billing)+'</div></div>').join('')
  +'<div class="k" style="margin-top:10px">克隆专属音色（智谱，收费）：在 bigmodel.cn 控制台或开放平台用 3 秒以上人声样本创建复刻音色，把得到的 speaker_id 填到智谱栏即可——之后所有语音都用这个音色。</div></div>';
- setTimeout(voiceProvChange,0);   // 等 plPage 把返回的 HTML 插进 DOM 后再填供应商区
+ // 必须在 return 之前调度（写在 return 后是死代码，永远不会执行——
+ // 「首次进入智谱设置区空白、要切走再切回来才出现」就是它）
+ setTimeout(voiceProvChange,0);
+ return html;
 }
 function voiceBill(){const P=_VM.providers||{};const k=document.getElementById('v-prov').value;const el=document.getElementById('v-bill');el.textContent=P[k]?P[k].billing:''}
 function voiceProvChange(){
@@ -5318,13 +5321,14 @@ class UiHandler(BaseHTTPRequestHandler):
             if v.get("zhipu_key"):
                 cfg["zhipu_key"] = str(v["zhipu_key"])[:128]
             try:
-                vid, ofid = _T.clone_zhipu_voice(
+                vid, ofid, used = _T.clone_zhipu_voice(
                     _T.zhipu_key(cfg), wav, name,
                     str(body.get("sample_text") or "")[:300],
                     str(body.get("preview_text") or "")[:120])
             except Exception as e:
                 return self._reply(200, {"ok": False, "error": str(e)[:300]})
             return self._reply(200, {"ok": True, "voice_id": vid,
+                                     "voice_name_used": used,
                                      "output_file_id": ofid})
         if u.path == "/api/lark/config":
             # 保存飞书配置（app_secret 单独保存，不回显）

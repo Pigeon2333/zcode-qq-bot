@@ -1,6 +1,6 @@
 {
   "name": "voice_reply",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "title": "语音回复",
   "category": "风格",
   "default_enabled": true,

@@ -48,6 +48,18 @@ zip 分发**（更新插件即更新页面，不必等应用发版）；数据�
 `setTimeout(fn,0)`。注意宿主只保证注入时机在调用页面函数之前，page.js 里不要放立即执行的
 副作用代码。
 
+**setTimeout 必须在 `return` 之前调度（踩过两次的坑）**：写在 `return` 语句之后是死代码，
+永远不会执行——页面"首次打开动态区空白、切走再切回来才出现"就是它（0.4.11 voice_reply、
+0.4.17 hot_brief 都中过）。正确写法：
+
+```js
+function xxxPage(d){
+  const html='<div>...</div>';      // 先把 HTML 存变量
+  setTimeout(fillDynamic, 0);       // 再调度动态填充
+  return html;                      // 最后返回
+}
+```
+
 **page.js 变量命名（踩过的坑）**：page.js 与宿主页面在同一个全局作用域执行，**禁止在顶层用
 `let`/`const`/`class` 声明**——宿主已有同名绑定（如 `_VM`）时会抛 "Identifier has already been
 declared"，整个脚本一行都不执行，页面静默退回宿主内置版；插件升级重新注入时也会再次失败。
