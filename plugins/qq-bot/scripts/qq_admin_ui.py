@@ -2328,8 +2328,14 @@ async function plPage(name){
  if(p.page&&p.page_js&&(!window['__pj_'+name]||window['__pj_'+name]!==p.version)){
   const pj=await api('/api/plugins/pagejs?name='+encodeURIComponent(name)).catch(()=>({ok:false}));
   if(pj&&pj.ok&&pj.js){
-   try{ (new Function(pj.js))(); window['__pj_'+name]=p.version; }
-   catch(e){ toast('插件页面脚本加载失败：'+e,false) }
+   // 必须用 <script> 注入：new Function 内的 function 声明是局部作用域，
+   // 挂不到 window，宿主后续 window[p.page.js] 会找不到（页面"缺少 xx()"）
+   try{
+    const s=document.createElement('script');
+    s.textContent=pj.js;
+    document.body.appendChild(s);
+    window['__pj_'+name]=p.version;
+   }catch(e){ toast('插件页面脚本加载失败：'+e,false) }
   }
  }
  let data={};
