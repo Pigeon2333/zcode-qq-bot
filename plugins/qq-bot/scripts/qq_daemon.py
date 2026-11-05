@@ -645,6 +645,7 @@ class Daemon:
         self.stats = {"received": 0, "triggered": 0, "sent": 0, "dropped_rate": 0}
         self.quiet_until = 0.0  # 安静模式截止时间戳（0=关闭；@/回复不受影响）
         self._botloop = {}      # AI 互聊状态机：chat|id|sender → {phase, ts/until}
+        self._peer_talk = {}    # 群友对话中标记：chat_id → 最后一次群友间@/引用的时间
         self.ws_last_ok = time.time()  # 动作通道最近一次成功响应
         self._group_names = None       # {group_id: group_name} 缓存
         self._group_names_ts = 0.0
@@ -1195,6 +1196,19 @@ class Daemon:
             % (json.dumps(str(sender_id)), json.dumps(bool(confirmed))))
         return {"ok": True}
 
+    def _peer_talk_window(self):
+        """群友对话抑制窗口（秒），配置 peer_talk_window_sec，默认 90。"""
+        try:
+            return max(0, int(self._reply_config().get("peer_talk_window_sec", 90)))
+        except (TypeError, ValueError):
+            return 90
+
+    def _mark_peer_talk(self, chat_type, chat_id):
+        """记录「群友正在互相对话」：该会话 90 秒内的裸消息不做闲聊插话。
+        状态仅存内存。"""
+        with self.lock:
+            self._peer_talk["%s_%s" % (chat_type, chat_id)] = time.time()
+
     def _decide_trigger(self, chat_type, info, chat_id=""):
         if chat_type == "private":
             return True, "private"
@@ -1223,9 +1237,20 @@ class Daemon:
         # 结构性防插嘴：消息明确指向他人时，主动插话一律不触发
         # （@我/回复我的消息在上面已放行；走到这里说明没@我也没回复我）
         if info["at_users"] and not info["at_me"]:
+            self._mark_peer_talk(chat_type, chat_id)
             return False, "at_other"
         if info["has_reply"]:
+            self._mark_peer_talk(chat_type, chat_id)
             return False, "reply_other"
+        # 群友对话进行中抑制（用户实测：引用+@别的群友后的裸短消息「没」
+        # 「告诉我」还会被闲聊抽样抽中，机器人对着别人的对话接话）——
+        # 近 90 秒内出现过群友间 @/引用 时，关键词/闲聊主动插话一律跳过；
+        # @我/回复我不受影响（上面已放行）
+        now2 = time.time()
+        with self.lock:
+            pt_ts = self._peer_talk.get("%s_%s" % (chat_type, chat_id), 0.0)
+        if now2 - pt_ts < self._peer_talk_window():
+            return False, "peer_talk"
         # 碎片合并：此人还在连发中，主动插话暂缓（@/回复不受影响；
         # 等此人静默 gap 秒后下一条自然走正常触发，上下文也更完整）
         if self._is_bursting(chat_type, chat_id, info.get("sender_id", "")):
