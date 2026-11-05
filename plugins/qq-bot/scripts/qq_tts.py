@@ -109,6 +109,28 @@ def zhipu_key(cfg):
         return ""
 
 
+def zhipu_keys(cfg):
+    """智谱语音 Key 候选序（去重保序）：插件页单独填的 → 主 Key →
+    模型管理里的全部智谱备用 Key。多账户场景（实测：企业 Key 语音
+    额度耗尽、个人 Key 有余额）逐个尝试，1113 余额类错误自动换下一个。"""
+    seen, out = set(), []
+    cands = [str(cfg.get("zhipu_key") or "").strip()]
+    try:
+        import qq_bot_agent as A
+        cands.append(str(A.glm_key("zhipu") or "").strip())
+        keys = A.load_api_keys()
+        for e in (keys.get("keys") or []):
+            if str(e.get("provider") or "zhipu") == "zhipu":
+                cands.append(str(e.get("key") or "").strip())
+    except Exception:
+        pass
+    for k in cands:
+        if k and k not in seen:
+            seen.add(k)
+            out.append(k)
+    return out
+
+
 def _out_path():
     d = pathlib.Path(TTS_DIR)
     d.mkdir(parents=True, exist_ok=True)
@@ -359,9 +381,26 @@ def synthesize(text, cfg):
         key = zhipu_key(cfg)
         if not key:
             raise RuntimeError("未找到智谱 API Key（模型管理里配置，或在语音设置里单独填）")
-        data = _post_audio_speech("https://open.bigmodel.cn/api/paas/v4/",
-                                   key, "cogtts", voice, text,
-                                   audio_format="wav")  # 智谱支持 wav（mp3 报 1214）
+        data = None
+        last_err = None
+        good_key = key
+        for k in zhipu_keys(cfg):
+            try:
+                data = _post_audio_speech("https://open.bigmodel.cn/api/paas/v4/",
+                                           k, "cogtts", voice, text,
+                                           audio_format="wav")  # 智谱支持 wav（mp3 报 1214）
+                good_key = k
+                break
+            except RuntimeError as e:
+                s = str(e)
+                if "1113" in s or "余额不足" in s or "资源包" in s:
+                    # 该账户语音额度不可用（多账户场景：主 Key 企业额度耗尽、
+                    # 个人 Key 有余额）——换下一个候选 Key
+                    last_err = e
+                    continue
+                raise
+        if data is None:
+            raise last_err or RuntimeError("没有可用的智谱语音 Key")
         # 克隆音色「样本复现」兜底（实测：6 字文本合成出 19 秒——模型把
         # 克隆样本里的原文混进输出）。合成时长超过文本预估 2 倍且当前用的
         # 是克隆音色时，改用预设音色重合成一次，保证内容可听
@@ -370,7 +409,7 @@ def synthesize(text, cfg):
                 and _wav_duration(data) > est * 2:
             fallback_voice = str(cfg.get("zhipu_voice") or "tongtong")
             data = _post_audio_speech("https://open.bigmodel.cn/api/paas/v4/",
-                                      key, "cogtts", fallback_voice, text,
+                                      good_key, "cogtts", fallback_voice, text,
                                       audio_format="wav")
     elif provider == "siliconflow":
         key = str(cfg.get("sf_key", "")).strip()
