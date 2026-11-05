@@ -269,10 +269,8 @@ def send_voice(daemon, chat_type, chat_id, texts):
             res = sender.send_record(chat_type, chat_id, str(mp3))
             if res:
                 ok += 1
-            try:
-                mp3.unlink()
-            except OSError:
-                pass
+            # 不立即删文件：发送队列是异步的，NapCat 真正发的时候文件必须还在。
+            # 由 _cleanup_old() 统一清理（保留最近 12 个）
         except Exception:
             break
     _cleanup_old()
