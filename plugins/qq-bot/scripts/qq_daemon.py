@@ -1668,6 +1668,10 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
                                    wait=bool(body.get("wait")),
                                    allow_any=bool(body.get("allow_any")))
                 return self._reply(200, {"ok": True, **res})
+            if u.path == "/send-record":
+                res = d.send_record(body["chat_type"], body["chat_id"],
+                                    body["file"])
+                return self._reply(200, {"ok": True, **res})
             if u.path == "/send-file":
                 res = d.send_file(body["chat_type"], body["chat_id"],
                                   body["file"])

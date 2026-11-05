@@ -393,6 +393,12 @@ class DaemonClient:
             "allow_any": bool(allow_any)},
             timeout=90)
 
+    def send_record(self, chat_type, chat_id, file_path):
+        """发语音文件（daemon 校验路径在 cache/tts 下）"""
+        return self._request("POST", "/send-record", {
+            "chat_type": chat_type, "chat_id": chat_id, "file": file_path},
+            timeout=90)
+
     def botloop_report(self, chat_type, chat_id, sender_id, confirmed,
                        cooldown_min=60):
         """AI 判定回执：daemon 据此冷却该发送者或恢复正常聊天。"""
