@@ -4060,51 +4060,6 @@ class UiHandler(BaseHTTPRequestHandler):
                 "gsv": _T.gsv_status(_T.voice_cfg()),
                 "gsv_voices": _T.gsv_voice_list(),
             })
-        if u.path == "/api/voice/gsv/env":
-            import qq_tts as _T
-            return self._reply(200, {"ok": True, **_T.gsv_env_check()})
-        if u.path == "/api/voice/gsv/start":
-            import qq_tts as _T
-            return self._reply(200, _T.gsv_start(_T.voice_cfg()))
-        if u.path == "/api/voice/gsv/stop":
-            import qq_tts as _T
-            return self._reply(200, _T.gsv_stop())
-        if u.path == "/api/voice/gsv/voice-save":
-            # 本地音色库：保存（页面已截好 16k WAV，base64 传来）
-            import base64 as _b64
-            import qq_tts as _T
-            raw = str(body.get("audio") or "")
-            if not raw or len(raw) > 20 * 1024 * 1024:
-                return self._reply(200, {"ok": False, "error": "音频为空或过大"})
-            try:
-                wav = _b64.b64decode(raw.split(",", 1)[-1])
-            except Exception:
-                return self._reply(200, {"ok": False, "error": "音频解码失败"})
-            try:
-                vid = _T.gsv_voice_save(
-                    str(body.get("name") or ""), wav,
-                    str(body.get("prompt_text") or "")[:300],
-                    str(body.get("prompt_lang") or "zh")[:8])
-            except Exception as e:
-                return self._reply(200, {"ok": False, "error": str(e)[:300]})
-            return self._reply(200, {"ok": True, "voice_id": vid})
-        if u.path == "/api/voice/gsv/voice-delete":
-            import qq_tts as _T
-            ok = _T.gsv_voice_delete(str(body.get("id") or ""))
-            if ok:
-                return self._reply(200, {"ok": True})
-            return self._reply(200, {"ok": False, "error": "音色不存在"})
-        if u.path == "/api/voice/gsv/voice-use":
-            # 启用一个本地音色（写 voice cfg 的 gsv_voice_id）
-            import qq_tts as _T
-            vid = str(body.get("id") or "").strip()
-            v = _T.gsv_voice_get(vid) if vid else None
-            if not v:
-                return self._reply(200, {"ok": False, "error": "音色不存在"})
-            cfg = dict(_T.voice_cfg())
-            cfg["gsv_voice_id"] = vid
-            _T.save_voice_cfg(cfg)
-            return self._reply(200, {"ok": True, "name": v.get("name")})
         if u.path == "/api/lark/meta":
             # 飞书互通：配置 + SDK 可用性
             import qq_lark as _L
@@ -5568,6 +5523,51 @@ class UiHandler(BaseHTTPRequestHandler):
                     "audio": "data:%s;base64," % mime + base64.b64encode(data).decode()})
             except Exception as e:
                 return self._reply(200, {"ok": False, "error": str(e)[:300]})
+        if u.path == "/api/voice/gsv/env":
+            import qq_tts as _T
+            return self._reply(200, {"ok": True, **_T.gsv_env_check()})
+        if u.path == "/api/voice/gsv/start":
+            import qq_tts as _T
+            return self._reply(200, _T.gsv_start(_T.voice_cfg()))
+        if u.path == "/api/voice/gsv/stop":
+            import qq_tts as _T
+            return self._reply(200, _T.gsv_stop())
+        if u.path == "/api/voice/gsv/voice-save":
+            # 本地音色库：保存（页面已截好 16k WAV，base64 传来）
+            import base64 as _b64
+            import qq_tts as _T
+            raw = str(body.get("audio") or "")
+            if not raw or len(raw) > 20 * 1024 * 1024:
+                return self._reply(200, {"ok": False, "error": "音频为空或过大"})
+            try:
+                wav = _b64.b64decode(raw.split(",", 1)[-1])
+            except Exception:
+                return self._reply(200, {"ok": False, "error": "音频解码失败"})
+            try:
+                vid = _T.gsv_voice_save(
+                    str(body.get("name") or ""), wav,
+                    str(body.get("prompt_text") or "")[:300],
+                    str(body.get("prompt_lang") or "zh")[:8])
+            except Exception as e:
+                return self._reply(200, {"ok": False, "error": str(e)[:300]})
+            return self._reply(200, {"ok": True, "voice_id": vid})
+        if u.path == "/api/voice/gsv/voice-delete":
+            import qq_tts as _T
+            ok = _T.gsv_voice_delete(str(body.get("id") or ""))
+            if ok:
+                return self._reply(200, {"ok": True})
+            return self._reply(200, {"ok": False, "error": "音色不存在"})
+        if u.path == "/api/voice/gsv/voice-use":
+            # 启用一个本地音色（写 voice cfg 的 gsv_voice_id）
+            import qq_tts as _T
+            vid = str(body.get("id") or "").strip()
+            v = _T.gsv_voice_get(vid) if vid else None
+            if not v:
+                return self._reply(200, {"ok": False, "error": "音色不存在"})
+            cfg = dict(_T.voice_cfg())
+            cfg["gsv_voice_id"] = vid
+            _T.save_voice_cfg(cfg)
+            return self._reply(200, {"ok": True, "name": v.get("name")})
         if u.path == "/api/voice/clone":
             # 一键克隆：设置页在浏览器里截好 3-30 秒 WAV（base64）传上来，
             # 这里上传智谱 → /voice/clone → 返回 voice id，页面自动填入并保存
