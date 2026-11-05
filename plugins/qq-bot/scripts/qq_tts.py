@@ -45,20 +45,25 @@ SF_VOICES = ["anna", "bella", "benjamin", "charles", "claire", "david", "diana"]
 
 PROVIDERS = {
     "edge": {
-        "label": "Edge-TTS（免费）",
+        "label": "Edge-TTS（免费 · 入门）",
         "billing": "免费。走微软 Edge 朗读的公共接口（非官方通道，无需任何 Key；"
-                   "绝大多数时候稳定，偶发不可用时自动回退发文字）。",
+                   "绝大多数时候稳定，偶发不可用时自动回退发文字）。"
+                   "语音清晰但节奏均匀、无情感起伏——入门够用。",
     },
     "zhipu": {
-        "label": "智谱 GLM-TTS（收费，支持克隆）",
-        "billing": "收费：按合成字符数计费，价格见 bigmodel.cn/pricing（新账号通常有赠送额度）。"
-                   "「音色复刻」用 3 秒样本克隆专属音色，复刻与用克隆音色合成都计费。"
-                   "Key 可复用你已配置的智谱 API Key。",
+        "label": "智谱 GLM-TTS（⭐ 推荐 · 支持克隆）",
+        "billing": "收费：按合成字符计费（日常聊天一个月约几块钱）。"
+                   "充值：open.bigmodel.cn → 控制台 → 费用中心 → 充值（10 元够用很久）。"
+                   "新用户有赠送额度；Key 可复用模型管理里已配的智谱 Key。"
+                   "有情感起伏、自然停顿、语气变化，远比免费方案更像真人。"
+                   "「声音复刻」用 3-30 秒音频样本克隆专属音色（推荐走插件页引导），"
+                   "克隆与用克隆音色合成都计费。",
     },
     "siliconflow": {
         "label": "硅基流动（部分模型免费额度）",
         "billing": "CosyVoice2-0.5B 等模型有免费额度，超出或 FishSpeech 按量收费"
-                   "（siliconflow.cn 查看价格与免费模型清单）。需硅基流动 API Key。",
+                   "（siliconflow.cn 查看价格与免费模型清单）。需硅基流动 API Key。"
+                   "充值：siliconflow.cn → 控制台 → 费用 → 充值。",
     },
     "custom": {
         "label": "自定义（任意 OpenAI 兼容 TTS）",
