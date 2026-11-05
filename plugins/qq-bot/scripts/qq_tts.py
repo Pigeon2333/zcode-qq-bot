@@ -368,7 +368,12 @@ def send_voice(daemon, chat_type, chat_id, texts):
     for t in (texts or [])[:3]:
         try:
             mp3 = synthesize(t, voice_cfg())
-            res = sender.send_record(chat_type, chat_id, str(mp3))
+            try:
+                # text 会写进会话历史（模型才知道自己说过什么，防复读）
+                res = sender.send_record(chat_type, chat_id, str(mp3), text=t)
+            except TypeError:
+                # 旧宿主 DaemonClient 没有 text 参数（插件更新先于应用时的兼容）
+                res = sender.send_record(chat_type, chat_id, str(mp3))
             if res:
                 ok += 1
             # 不立即删文件：发送队列是异步的，NapCat 真正发的时候文件必须还在。

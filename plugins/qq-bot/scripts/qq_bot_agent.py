@@ -393,11 +393,12 @@ class DaemonClient:
             "allow_any": bool(allow_any)},
             timeout=90)
 
-    def send_record(self, chat_type, chat_id, file_path):
-        """发语音文件（daemon 校验路径在 cache/tts 下）"""
+    def send_record(self, chat_type, chat_id, file_path, text=""):
+        """发语音文件（daemon 校验路径在 cache/tts 下）。
+        text = 语音实际说的话（写进会话历史；只发语音时模型也要记得自己说过什么）"""
         return self._request("POST", "/send-record", {
-            "chat_type": chat_type, "chat_id": chat_id, "file": file_path},
-            timeout=90)
+            "chat_type": chat_type, "chat_id": chat_id, "file": file_path,
+            "text": str(text or "")}, timeout=90)
 
     def botloop_report(self, chat_type, chat_id, sender_id, confirmed,
                        cooldown_min=60):
@@ -2638,6 +2639,10 @@ def _owner_groups_line(daemon):
 
 def parse_reply(text):
     # 所有 return 必须同形（5 元组）：texts/stickers/memo/draw/sendgrp
+    # 思考块剥离：部分模型（thinking 档）会把 <think>…</think> 混进正文，
+    # 原样发出去就是一段自言自语（模型退化成复读的根因之一）
+    text = re.sub(r"(?is)<\s*think(?:ing)?\s*>.*?<\s*/\s*think(?:ing)?\s*>", "", text)
+    text = re.sub(r"(?is)<\s*/?\s*think(?:ing)?\s*>", "", text)
     if "[SKIP]" in text.upper().replace(" ", "") or _SKIP_CN_RE.search(text):
         return None, [], None, None, None
     if "[WAIT]" in text.upper().replace(" ", "") and wait_gate_enabled():
@@ -2706,6 +2711,45 @@ def _content_keywords(text):
 _ECHO_LINE_RE = re.compile(r"^([^:：\n]{1,20})[:：]\s*(.*)$", re.M)
 # 强脏话（「我操」排除 我操作/我操控 等正常词）；人设（妈妈系等）绝不骂脏话
 _PROFANITY_RE = re.compile(r"我操(?!作|控|盘|心)|卧槽|操你|草你|他妈的|傻逼|傻b|nmsl", re.I)
+
+# 跨会话复读断路器：模型退化时会把同一段胡话分别发给不同会话（单会话去重
+# 守卫只看本会话历史，拦不住）。这里记最近 30 分钟任何会话说过的话，
+# 换会话又冒出同一段（≥40 字且互相包含/相同）就丢弃。
+_GLOBAL_SENT = []              # [(ts, chat_key, norm_text)]
+_GLOBAL_SENT_LOCK = threading.Lock()
+_GLOBAL_SENT_WINDOW = 1800
+
+
+def _global_dup_filter(texts, msg):
+    if not texts:
+        return texts
+    now = time.time()
+    ck = "%s_%s" % (msg.get("chat_type"), msg.get("chat_id"))
+    keep = []
+    with _GLOBAL_SENT_LOCK:
+        _GLOBAL_SENT[:] = [x for x in _GLOBAL_SENT
+                           if now - x[0] < _GLOBAL_SENT_WINDOW]
+        snapshot = list(_GLOBAL_SENT)
+        for t in texts:
+            n = _norm_dup(t)
+            if len(n) >= 40:
+                other = ""
+                for _ts, c, nt in snapshot:
+                    if c == ck or len(nt) < 40:
+                        continue
+                    if n == nt or n in nt or nt in n:
+                        other = c
+                        break
+                if other:
+                    out("AGENT_GLOBAL_DUP_DROP msg_id=%s other=%s len=%d"
+                        % (msg.get("id"), other, len(n)))
+                    continue
+            keep.append(t)
+            if len(n) >= 20:
+                _GLOBAL_SENT.append((now, ck, n))
+        if len(_GLOBAL_SENT) > 200:
+            del _GLOBAL_SENT[:-200]
+    return keep
 
 
 def _dedup_reply(daemon, msg, texts):
@@ -4253,6 +4297,8 @@ def process(daemon, msg):
     try:
         if texts:
             texts = _apply_owner_name(texts)
+            # 跨会话复读断路器：模型退化时会把同一段话发给多个会话
+            texts = _global_dup_filter(texts, msg)
             # 语音回复：插件「语音回复」开启且命中策略时，本条改发语音
             # （失败自动回退文字，绝不因语音故障丢回复）
             try:

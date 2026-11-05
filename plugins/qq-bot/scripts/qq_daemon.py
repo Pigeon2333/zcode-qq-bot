@@ -1272,9 +1272,12 @@ class Daemon:
 
     # ---------- 发送 ----------
 
-    def send_record(self, chat_type, chat_id, file_path):
+    def send_record(self, chat_type, chat_id, file_path, text=""):
         """发送语音文件（mp3/wav/silk；NapCat 收到后自动转 QQ 语音格式）。
-        文件必须位于数据目录 cache/tts 之下（TTS 引擎输出目录）。"""
+        文件必须位于数据目录 cache/tts 之下（TTS 引擎输出目录）。
+        text = 这条语音实际说的话，写入会话历史用。只发语音（不带文字版）时
+        如果不记这句话，历史里只剩「[语音]」——模型看不到自己说过什么，
+        去重守卫失效、追聊 nudge 以为上一轮没回答，会反复生成同一段内容。"""
         p = os.path.realpath(os.path.abspath(str(file_path)))
         ext = os.path.splitext(p)[1].lower()
         if ext not in AUDIO_EXTS:
@@ -1288,7 +1291,7 @@ class Daemon:
         if not self._rate_ok(chat_key):
             raise RuntimeError("触发每分钟限流，请稍后再发")
         job = {"chat_type": chat_type, "chat_id": chat_id, "kind": "record",
-               "file": p, "text": "", "delay": 0}
+               "file": p, "text": str(text or "")[:2000], "delay": 0}
         self.send_queue.append(job)
         threading.Thread(target=self._drain_send_queue, daemon=True).start()
         return {"queued": 1}
@@ -1670,7 +1673,7 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
                 return self._reply(200, {"ok": True, **res})
             if u.path == "/send-record":
                 res = d.send_record(body["chat_type"], body["chat_id"],
-                                    body["file"])
+                                    body["file"], body.get("text") or "")
                 return self._reply(200, {"ok": True, **res})
             if u.path == "/send-file":
                 res = d.send_file(body["chat_type"], body["chat_id"],

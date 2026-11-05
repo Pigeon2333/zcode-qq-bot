@@ -83,14 +83,16 @@ class PluginAPI:
             raise ValueError("chat_type 必须是 group/private")
         return daemon.send_image(chat_type, str(chat_id), file_path, caption=caption)
 
-    def send_voice(self, chat_type, chat_id, file_path):
-        """以机器人身份发语音（文件须在数据目录 cache/tts 之下）。"""
+    def send_voice(self, chat_type, chat_id, file_path, text=""):
+        """以机器人身份发语音（文件须在数据目录 cache/tts 之下）。
+        text = 这条语音说的话（可选，写进会话历史，模型才知道自己说了什么）。"""
         daemon = self._host.daemon
         if daemon is None:
             raise RuntimeError("发送通道未就绪")
         if chat_type not in ("group", "private"):
             raise ValueError("chat_type 必须是 group/private")
-        return daemon.send_record(chat_type, str(chat_id), file_path)
+        return daemon.send_record(chat_type, str(chat_id), file_path,
+                                  text=str(text or ""))
 
     def on_tick(self, fn):
         self._host.hooks.setdefault(self.name, {})["tick"] = fn
@@ -472,7 +474,7 @@ def uninstall(name):
 # 市场清单文件名带版本：release 资产 CDN 缓存≈永久，clobber 同名文件更新后
 # 用户拿到的仍是旧字节——清单内容有变必须换新文件名（market-v3、v4…）
 DEFAULT_MARKET_URL = ("https://github.com/Pigeon2333/zcode-qq-bot/"
-                      "releases/download/plugins/market-v16.json")
+                      "releases/download/plugins/market-v17.json")
 _MARKET_MIRRORS = ("https://gh-proxy.com/" + DEFAULT_MARKET_URL,)
 
 
