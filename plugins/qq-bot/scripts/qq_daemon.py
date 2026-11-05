@@ -503,6 +503,21 @@ def _forward_flattened_text(lines):
     return ("[合并转发记录，%d条]\n%s" % (len(lines), "\n".join(lines)))[:1200]
 
 
+# 经典 QQ 表情 id→名称（OneBot face 段；社区通用表，0-66 为公认核心段，
+# 后段各家有出入，认不出就落到 [QQ表情#id] 占位——用户实测：表情内容全丢
+# 会让模型以为对方"发了个图没看清内容"）
+_QQ_FACE_NAMES = [
+    "微笑", "撇嘴", "色", "发呆", "得意", "流泪", "害羞", "闭嘴", "睡", "大哭",
+    "尴尬", "发怒", "调皮", "呲牙", "惊讶", "难过", "酷", "冷汗", "抓狂", "吐",
+    "偷笑", "可爱", "白眼", "傲慢", "饥饿", "困", "惊恐", "流汗", "憨笑", "悠闲",
+    "奋斗", "咒骂", "疑问", "嘘", "晕", "折磨", "衰", "骷髅", "敲打", "再见",
+    "擦汗", "抠鼻", "拇指", "委屈", "快哭了", "阴险", "亲亲", "吓", "可怜",
+    "菜刀", "西瓜", "啤酒", "篮球", "乒乓", "咖啡", "饭", "猪头", "玫瑰",
+    "凋谢", "嘴唇", "爱心", "心碎", "蛋糕", "音乐", "太阳", "月亮", "赞",
+    "握手", "胜利", "抱拳", "勾引", "拳头", "差劲",
+]
+
+
 def extract_message_info(segments, self_id):
     info = {
         "text": "",
@@ -569,6 +584,27 @@ def extract_message_info(segments, self_id):
             info["reply_id"] = str(d.get("id", ""))
         elif t == "face":
             info["face_count"] += 1
+            # QQ 经典表情转文字：优先实现自带文本，其次查表，最后占位
+            # （此前只计数、内容全丢——模型以为对方发了张看不清的图）
+            ft = str(d.get("text") or "").strip()
+            if not ft:
+                try:
+                    fid = int(str(d.get("id", "")).strip() or -1)
+                    ft = "[%s]" % _QQ_FACE_NAMES[fid] \
+                        if 0 <= fid < len(_QQ_FACE_NAMES) else ""
+                except (TypeError, ValueError):
+                    ft = ""
+                if not ft:
+                    ft = "[QQ表情#%s]" % str(d.get("id", "?"))
+            elif not ft.startswith("["):
+                ft = "[%s]" % ft.strip("[]")
+            texts.append(ft)
+        elif t == "mface":
+            # 商城表情包/动图：本质是图——给视觉通道看 + 文字打标记
+            mu = str(d.get("url") or "")
+            if mu:
+                info["image_urls"].append(mu)
+            texts.append("[表情包]")
         elif t == "record":
             info["record"] = True
     info["text"] = "".join(texts).strip()
