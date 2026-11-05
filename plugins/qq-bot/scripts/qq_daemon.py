@@ -1049,12 +1049,19 @@ class Daemon:
         data = self._call_action(action, params, timeout=120)
         return {"ok": True, "data": data}
 
+    _AI_NAME_RE = re.compile(
+        r"(?i)(?<![a-z0-9])(ai|a\.i|bot|gpt|deepseek|claude|gemini|glm|kimi|qwen"
+        r"|通义|千问|文心|豆包|智谱|moonshot|llm|大模型|人工智能|机器人|assistant)(?![a-z0-9])")
+
     def _botloop_hit(self, chat_type, chat_id, sender_id,
-                     min_partner=4, min_mine=3):
-        """AI 互聊节奏检测：同一发送者 120s 内 ≥min_partner 条、
-        且本机器人 180s 内已回 ≥min_mine 条——高概率是两个 AI 在互相接话。
-        默认阈值(4/3)用于首次试探；cleared 后的「不配合」升级要求更高(6/5)，
-        避免真人被问过一次后又高速聊天就被静默。"""
+                     sender_name="", min_partner=5, min_mine=3):
+        """AI 互聊检测（多信号，用户实测反馈：回复快的真人会被误判）。
+        三条触发线（满足其一才试探，"回得快"本身不再是充分条件）：
+          ① 硬量：partner ≥8 且 mine ≥4——互刷量级拉满，昵称/节奏都不用看
+          ② 昵称线：partner ≥5 且 mine ≥3 且群昵称带 AI 特征词（仅辅助，不定论）
+          ③ 节奏线：partner ≥6 且 mine ≥3 且发送间隔机械规律
+            （≥4 个间隔的变异系数 <0.35；人类打字忽快忽慢，AI 接近匀速）
+        cleared 后的「不配合」升级门槛更高（7/5），避免真人被问一次就被静默。"""
         cfg = self._reply_config()
         if not cfg.get("botloop_guard_enabled", True):
             return False
@@ -1062,13 +1069,26 @@ class Daemon:
         now = now_ts()
         with self.lock:
             recs = list(self.mem_history.get(key, []) or [])
-        partner = sum(1 for r in recs
-                      if str(r.get("sender_id")) == str(sender_id)
-                      and not r.get("is_bot") and now - r.get("ts", 0) <= 120)
-        mine = sum(1 for r in recs if r.get("is_bot") and now - r.get("ts", 0) <= 180)
-        return partner >= min_partner and mine >= min_mine
+        pts = sorted(r.get("ts", 0) for r in recs
+                     if str(r.get("sender_id")) == str(sender_id)
+                     and not r.get("is_bot") and now - r.get("ts", 0) <= 150)
+        mine = sum(1 for r in recs if r.get("is_bot") and now - r.get("ts", 0) <= 240)
+        partner = len(pts)
+        if partner >= 8 and mine >= 4:
+            return True
+        if partner >= min_partner and mine >= min_mine \
+                and sender_name and self._AI_NAME_RE.search(str(sender_name)):
+            return True
+        if partner >= max(min_partner, 6) and mine >= min_mine and len(pts) >= 4:
+            gaps = [b - a for a, b in zip(pts, pts[1:])]
+            mean = sum(gaps) / len(gaps)
+            if mean > 0:
+                var = sum((g - mean) ** 2 for g in gaps) / len(gaps)
+                if (var ** 0.5) / mean < 0.35:
+                    return True
+        return False
 
-    def _botloop_gate(self, chat_type, chat_id, sender_id):
+    def _botloop_gate(self, chat_type, chat_id, sender_id, sender_name=""):
         """互聊检测状态机（所有群触发路径共用门，含 @ / 引用回复）：
         None=不拦截；返回 (True,"botloop_probe")=让 agent 发人设化试探；
         (True,"botloop_verify")=对方已回答，交给 agent 判定；
@@ -1097,8 +1117,8 @@ class Daemon:
                     # 刚问过：正常聊，但若对方完全无视提问、又持续高频互引
                     # （相隔 >2 分钟算新的一轮），累计 2 轮即冷处理 30 分钟——
                     # AI 不会正面回答「你是不是AI」却会继续刷，真人被问通常会回应。
-                    if self._botloop_hit(chat_type, chat_id, sender_id,
-                                         6, 5) \
+                    if self._botloop_hit(chat_type, chat_id, sender_id, sender_name,
+                                         7, 5) \
                             and now - st.get("last_hit", 0) > 120:
                         st["last_hit"] = now
                         st["hits"] = int(st.get("hits", 0)) + 1
@@ -1112,7 +1132,7 @@ class Daemon:
                             return False, "botloop"
                     return None                  # 刚问过，正常放行
                 del self._botloop[bkey]
-        if self._botloop_hit(chat_type, chat_id, sender_id):
+        if self._botloop_hit(chat_type, chat_id, sender_id, sender_name):
             self._botloop[bkey] = {"phase": "probe", "ts": now}
             out("AGENT_LOG {\"msg\": \"botloop_probe\", \"chat\": %s, \"sender\": %s}"
                 % (json.dumps(str(chat_id)), json.dumps(str(sender_id))))
@@ -1149,7 +1169,8 @@ class Daemon:
         # AI 互聊检测：放在所有触发路径之前——另一个 AI 会用「引用回复/@机器人」
         # 绕过闲聊概率，只挂在 chat_random 上时形同虚设（实测两个 AI 互引聊了 5 分钟）。
         # 节奏未命中时返回 None，对正常聊天零影响。
-        gate = self._botloop_gate(chat_type, chat_id, info.get("sender_id", ""))
+        gate = self._botloop_gate(chat_type, chat_id, info.get("sender_id", ""),
+                                  info.get("sender_name", ""))
         if gate:
             return gate
         if info["at_me"] and self.cfg.get("mention_trigger", True):

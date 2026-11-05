@@ -656,6 +656,14 @@ def call_glm_with_fallback(messages, text_ctx=""):
                 # 把思考挤成空回复、并截掉回复尾部的 [记忆] 标记行（朋友案例：
                 # 一整天零记忆 + 大量静默）。用户设大值时也尊重（可超默认 4096）。
                 mt = max(1500 if mt > 600 else 600, min(_mo, 32768))
+                # 小输出预算 + 高档思考 = 思考挤占正文，产出截断乱码（实测：
+                # "配音稿说明"式胡话）——预算 ≤400 时强制降到 low 档
+                if _mo <= 400 and isinstance(th, dict):
+                    tv = th.get("thinking")
+                    if isinstance(tv, dict) and tv.get("type") == "enabled" \
+                            and str(tv.get("level", "")).lower() != "low":
+                        tv["level"] = "low"
+                        mt = max(mt, 1500)
             status, data = glm_chat(model, messages, key=kv,
                                     extra_body={**th, "max_tokens": mt})
             if status == 400 and "不支持关闭思考" in str(
@@ -2556,6 +2564,8 @@ def _voice_rule():
             return ("你有发语音消息的能力！当对方明确要求你「发语音/念给我听/说出来/语音回复/用语音说」"
                     "时，这条回复**必须**在末尾单独一行输出 [语音] 标记——系统会自动把这条回复转为语音发送。"
                     "这不是建议而是要求：对方说了要语音你就一定要加标记。"
+                    "注意：[语音] 只是发送方式，**正文照常按人设说话**——正文就是要念出口的那句话，"
+                    "绝对不要写「以下是音频内容/转录/配音稿/请注意这不是真实音频」之类的任何说明。"
                     "只有在没有明确要求但语境确实很适合语音时（长段朗读、唱歌等）才酌情使用；"
                     "被问「你会发语音吗」时大方承认会\n")
     except Exception:
@@ -2711,6 +2721,37 @@ def _content_keywords(text):
 _ECHO_LINE_RE = re.compile(r"^([^:：\n]{1,20})[:：]\s*(.*)$", re.M)
 # 强脏话（「我操」排除 我操作/我操控 等正常词）；人设（妈妈系等）绝不骂脏话
 _PROFANITY_RE = re.compile(r"我操(?!作|控|盘|心)|卧槽|操你|草你|他妈的|傻逼|傻b|nmsl", re.I)
+
+# 连贯性守卫：模型退化输出的两类指纹
+# ① meta 说明混进正文（模型把自己当"配音/转录工具"时的标志性自述）
+_COH_META_RE = re.compile(
+    r"并非真实的?(音频|语音|转录)|音频(转录|转写)|根据(您|你)提供的(描述|文字|性语言)"
+    r"|作为一个(AI|人工智能|语言模型)|我只是(一个)?(AI|语言模型|程序)"
+    r"|无法真正(发出|播放|生成|提供)(声音|语音|音频)|配音(文稿|文案|稿件?)(?![^，。]{0,6}(?:来|吧))", re.I)
+# ② 乱码式机械复读：任意 ≥5 字片段出现 ≥3 次
+def _coherence_issue(texts):
+    """返回 (是否异常, 原因摘要)。异常输出绝不能发送/入历史。"""
+    for t in texts or []:
+        s = str(t or "")
+        if not s:
+            continue
+        m = _COH_META_RE.search(s)
+        if m:
+            return True, "meta:" + m.group(0)[:24]
+        # 语气词/纯表情刷屏（哈哈哈哈哈哈、666666、????）是正常人类行为，跳过
+        core = re.sub(r"[哈嘿哦嗯？\?！!~～。.,，\s0-9a-zA-Z]", "", s)
+        if len(core) < 12:
+            continue
+        grams = {}
+        for k in range(len(s) - 4):
+            g = s[k:k + 5]
+            if re.search(r"[\u4e00-\u9fff\w]{5}", g):
+                grams[g] = grams.get(g, 0) + 1
+        if grams:
+            g, n = max(grams.items(), key=lambda kv: kv[1])
+            if n >= 3:
+                return True, "repeat:" + g
+    return False, ""
 
 # 跨会话复读断路器：模型退化时会把同一段胡话分别发给不同会话（单会话去重
 # 守卫只看本会话历史，拦不住）。这里记最近 30 分钟任何会话说过的话，
@@ -4230,6 +4271,35 @@ def process(daemon, msg):
         out("AGENT_WAIT msg_id=%s chat=%s/%s (对方话没说完，先等)"
             % (msg["id"], msg["chat_type"], msg["chat_id"]))
         return
+    # 连贯性守卫：thinking 档/小预算模型偶尔输出「配音稿说明」式乱码
+    # （"这段文字是根据您提供的描述编写的，并非真实的音频转录"）或短语
+    # 机械复读——丢弃并带纠错指令重试一次，仍乱码就本轮不回（绝不把乱码
+    # 发出去后又被自己记进历史继续污染后续回复）。
+    _bad, _why = _coherence_issue(texts)
+    if _bad:
+        out("AGENT_COHERENCE_DROP msg_id=%s why=%.24s chat=%s/%s"
+            % (msg["id"], _why, msg["chat_type"], msg["chat_id"]))
+        try:
+            retry_msgs = messages + [
+                {"role": "user", "content":
+                 "（系统提示：你上一条输出出现了异常内容（%s），已被系统拦下没有发出。"
+                 "请完全抛开那段内容，用正常口语重新回应这条消息——像群里的真人那样说话，"
+                 "不要任何说明文字、不要重复同样的短语。）" % _why}]
+            _mc, reply_c = call_glm_with_fallback(retry_msgs, "")
+            tc, sc, mc, dc, gc = parse_reply(reply_c)
+            if tc and tc != "WAIT" and not _coherence_issue(tc)[0]:
+                texts, stickers, memo, draw, sendgrp = tc, sc, mc, dc, gc
+            else:
+                texts = []
+        except Exception as _ce:
+            out("AGENT_COHERENCE_RETRY_FAIL %r" % _ce)
+            texts = []
+        if not texts and not stickers:
+            daemon.ack([msg["id"]])
+            RT.count_processed()
+            out("AGENT_COHERENCE_SKIP msg_id=%s chat=%s/%s (重试后仍异常，跳过)"
+                % (msg["id"], msg["chat_type"], msg["chat_id"]))
+            return
     # [画: 描述] 标记补触发（模型听懂了画图意图而正则没拦到时）
     if draw and is_owner(msg) and feature_enabled("draw_enabled"):
         out("AGENT_DRAW_MARK msg_id=%s desc=%.40s" % (msg["id"], draw))
