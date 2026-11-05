@@ -172,7 +172,7 @@ async function voiceVoicesLoad(){
  const box=document.getElementById('v-vlist');const m=document.getElementById('v-vlmsg');
  if(!box)return;
  m&&(m.textContent='拉取中…');
- const r=await api('/api/voice/voices').catch(()=>({ok:false,error:'请求失败'}));
+ const r=await api('/api/voice/voices',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>({ok:false,error:'请求失败'}));
  if(m)m.textContent='';
  if(!r||r.ok===false){box.innerHTML='拉取失败：'+esc((r&&r.error)||'');return}
  const vs=r.voices||[];
