@@ -2683,7 +2683,7 @@ function vGsvCardTeaser(){
  const box=document.getElementById('gsv-setup');box&&(box.style.display='block');
  const env=document.getElementById('gsv-env');
  try{
-  const r=await api('/api/voice/gsv/env');
+  const r=await api('/api/voice/gsv/env',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
   if(r&&r.ok){
    env.innerHTML=r.has_nvidia
     ?('✓ 检测到 '+esc(r.gpu)+'（显存 '+(r.vram_mb||0)+'MB）'+(r.ok?' —— 可以安装。':' —— 显存偏小，可用但偶尔会回退。'))
