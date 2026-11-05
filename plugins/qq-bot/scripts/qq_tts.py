@@ -131,9 +131,9 @@ def _cleanup_old(keep=12):
 
 
 def _post_audio_speech(base_url, key, model, voice, text, timeout=90,
-                       send_format=True):
+                       audio_format="mp3"):
     """POST <base>/audio/speech → 音频字节。base_url 只允许 https 域名。
-    send_format=False 时不发 response_format（智谱 TTS 不支持该参数，报 1214）。"""
+    audio_format: 传 None 则不发 response_format（默认 mp3）。"""
     import http.client
     import urllib.parse
     base = str(base_url or "").strip()
@@ -145,8 +145,8 @@ def _post_audio_speech(base_url, key, model, voice, text, timeout=90,
     if u.scheme != "https" or not u.hostname:
         raise RuntimeError("接口地址非法（必须 https 域名）")
     payload = {"model": str(model), "input": str(text), "voice": str(voice)}
-    if send_format:
-        payload["response_format"] = "mp3"
+    if audio_format:
+        payload["response_format"] = audio_format
     conn = http.client.HTTPSConnection(u.hostname, u.port or 443, timeout=timeout)
     conn.request("POST", u.path + ("?" + u.query if u.query else ""),
                  body=json.dumps(payload).encode("utf-8"),
@@ -204,12 +204,8 @@ def synthesize(text, cfg):
         if not key:
             raise RuntimeError("未找到智谱 API Key（模型管理里配置，或在语音设置里单独填）")
         data = _post_audio_speech("https://open.bigmodel.cn/api/paas/v4/",
-                                  key, "cogtts", voice, text,
-                                  send_format=False)  # 智谱不支持 response_format
-        # 智谱返回 raw PCM（16bit LE 16kHz）——包 WAV 头才能被播放器/NapCat 识别
-        if len(data) > 8 and data[:4] != b"RIFF" and data[:3] != b"ID3" \
-                and data[:1] != b"\xff":
-            data = _pcm_to_wav(data)
+                                   key, "cogtts", voice, text,
+                                   audio_format="wav")  # 智谱支持 wav（mp3 报 1214）
     elif provider == "siliconflow":
         key = str(cfg.get("sf_key", "")).strip()
         if not key:
