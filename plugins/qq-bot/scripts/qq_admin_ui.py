@@ -3365,6 +3365,10 @@ def proxy_post(host, port, path, body, token="", timeout=30):
                      headers=headers)
         resp = conn.getresponse()
         return json.loads(resp.read().decode("utf-8"))
+    except ConnectionRefusedError:
+        # 机器人服务没起来（用户截图反馈：原始报错看不懂）——给人话
+        return {"ok": False,
+                "error": "机器人服务未启动：请到「状态」页点「启动机器人」后再试"}
     except Exception as e:
         return {"ok": False, "error": repr(e)}
     finally:

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """每日热点速览插件：定时（可关，默认开）/手动立刻总结当日热点；历史分天存档，
-插件页可查看与删除。"""
+插件页可查看与删除，支持自动清理 N 天前的旧记录。"""
 
 import json
 import os
@@ -22,12 +22,55 @@ def register(api):
     api.route("set_auto", lambda args: _set_auto(api, bool((args or {}).get("enabled"))))
     api.route("set_auto_time", lambda args: _set_auto_time(
         api, (args or {}).get("hh"), (args or {}).get("mm")))
+    api.route("set_clean_days", lambda args: _set_clean_days(
+        api, (args or {}).get("days")))
     api.route("load_auto", lambda args: {"ok": True,
                                          "auto_enabled": bool(api.load("auto_enabled", True)),
                                          "hh": int(api.load("auto_hh", 3)),
-                                         "mm": int(api.load("auto_mm", 0))})
+                                         "mm": int(api.load("auto_mm", 0)),
+                                         "clean_days": _clean_days(api)})
     api.inject_context(_line)
+    _clean_history(api)          # 启动即清一次（配合自动清理天数）
     api.log("ready")
+
+
+def _clean_days(api):
+    try:
+        return max(0, min(3650, int(api.load("clean_days", 0))))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _set_clean_days(api, days):
+    try:
+        n = max(0, min(3650, int(days)))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "天数格式非法（0-3650，0=不清理）"}
+    api.store("clean_days", n)
+    removed = _clean_history(api)
+    return {"ok": True, "clean_days": n, "removed": removed}
+
+
+def _clean_history(api):
+    """删除 clean_days 天前的历史存档；返回删除的文件数。0=禁用不清。"""
+    n = _clean_days(api)
+    if n <= 0 or not os.path.isdir(HIST_DIR):
+        return 0
+    cutoff = time.time() - n * 86400
+    removed = 0
+    for f in os.listdir(HIST_DIR):
+        if not f.endswith(".json"):
+            continue
+        p = os.path.join(HIST_DIR, f)
+        try:
+            if os.path.getmtime(p) < cutoff:
+                os.remove(p)
+                removed += 1
+        except OSError:
+            continue
+    if removed:
+        api.log("auto-clean removed %d old hot records (>%dd)" % (removed, n))
+    return removed
 
 
 def _auto_check(api):
@@ -73,6 +116,7 @@ def _refresh(api):
         pathlib.Path(os.path.join(HIST_DIR, today + ".json")).write_text(
             json.dumps(rec, ensure_ascii=False), encoding="utf-8")
         api.log("brief ok %d chars" % len(text))
+        _clean_history(api)      # 顺手清一次过期记录
         return {"ok": True, "date": today, "text": rec["text"]}
     except OSError as e:
         return {"ok": False, "error": repr(e)}

@@ -19,7 +19,8 @@ async function hotBriefPage(d){
  +'<label class="k">时间 <input type="time" id="hb-time" value="03:00" onchange="hbSetTime(this.value)"></label>'
  +'<span class="k" id="hb-msg"></span></div>'
  +'<div class="k" style="margin-top:6px;font-size:12px">'+autoHint+'</div></div>'
- +'<div class="card"><div class="k" style="margin-bottom:6px"><b>历史记录</b>（分天存档，可回看/删除）</div>'
+ +'<div class="card"><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px"><b>历史记录</b><span class="k">（分天存档，可回看/删除）</span>'
+ +'<span style="margin-left:auto;display:flex;gap:6px;align-items:center" class="k">自动清理 <input type="number" id="hb-clean" min="0" max="3650" step="1" style="width:58px" title="每天自动删除 N 天前的旧记录；0=不清理"> 天前的记录（0=不清理）</span></div>'
  +(rows||'<div class="k">暂无历史记录</div>')+'</div>';
  setTimeout(async()=>{
   const st=await api('/api/plugins/call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'hot_brief',method:'load_auto'})}).catch(()=>null);
@@ -28,7 +29,17 @@ async function hotBriefPage(d){
   el&&(el.onchange=()=>hbSetAuto(el.checked));
   const tm=document.getElementById('hb-time');
   if(tm&&st&&st.ok)tm.value=String(st.hh).padStart(2,'0')+':'+String(st.mm).padStart(2,'0');
+  const cl=document.getElementById('hb-clean');
+  if(cl&&st&&st.ok)cl.value=st.clean_days||0;
+  cl&&(cl.onchange=()=>hbSetClean(cl.value));
  },0);
+}
+async function hbSetClean(v){
+ const n=parseInt(v)||0;
+ const r=await api('/api/plugins/call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'hot_brief',method:'set_clean_days',args:{days:n}})}).catch(()=>({ok:false}));
+ if(!r.ok){toast('保存失败：'+(r.error||''),false);return}
+ toast(r.removed>0?('已保存：自动清理 '+r.clean_days+' 天前记录（本次清了 '+r.removed+' 条旧记录）'):('已保存：自动清理 '+r.clean_days+' 天前记录'));
+ load();
 }
 async function hbRefresh(){
  const m=document.getElementById('hb-msg');m&&(m.textContent='总结中…（搜索约几秒）');
