@@ -15,7 +15,8 @@ async function hotBriefPage(d){
  +(curText?'<div class="k" style="white-space:pre-wrap;font-size:12.5px">'+esc(curText.slice(0,600))+'</div>':'<div class="k">今天还没总结过——点下面按钮立刻来一份。</div>')
  +'<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
  +'<button class="act" style="margin:0" onclick="hbRefresh()">立刻总结当前热点</button>'
- +'<label class="k"><input type="checkbox" id="hb-auto"> 每 6 小时自动总结</label>'
+ +'<label class="k"><input type="checkbox" id="hb-auto"> 每天定时自动总结</label>'
+ +'<label class="k">时间 <input type="time" id="hb-time" value="03:00" onchange="hbSetTime(this.value)"></label>'
  +'<span class="k" id="hb-msg"></span></div>'
  +'<div class="k" style="margin-top:6px;font-size:12px">'+autoHint+'</div></div>'
  +'<div class="card"><div class="k" style="margin-bottom:6px"><b>历史记录</b>（分天存档，可回看/删除）</div>'
@@ -25,6 +26,8 @@ async function hotBriefPage(d){
   const el=document.getElementById('hb-auto');
   if(el&&st&&st.ok)el.checked=st.auto_enabled!==false;
   el&&(el.onchange=()=>hbSetAuto(el.checked));
+  const tm=document.getElementById('hb-time');
+  if(tm&&st&&st.ok)tm.value=String(st.hh).padStart(2,'0')+':'+String(st.mm).padStart(2,'0');
  },0);
 }
 async function hbRefresh(){
@@ -36,6 +39,12 @@ async function hbRefresh(){
 async function hbSetAuto(on){
  await api('/api/plugins/call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'hot_brief',method:'set_auto',args:{enabled:on}})});
  toast('定时总结已'+(on?'开启':'关闭'));
+}
+async function hbSetTime(v){
+ if(!v)return;
+ const parts=v.split(':');
+ const r=await api('/api/plugins/call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'hot_brief',method:'set_auto_time',args:{hh:parseInt(parts[0])||0,mm:parseInt(parts[1])||0}})}).catch(()=>({ok:false}));
+ toast(r.ok?('自动总结时间已设为 '+r.hh+':'+String(r.mm).padStart(2,'0')):'保存失败');
 }
 async function hbView(date){
  const r=await api('/api/plugins/call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'hot_brief',method:'get_day',args:{date}})}).catch(()=>({ok:false}));

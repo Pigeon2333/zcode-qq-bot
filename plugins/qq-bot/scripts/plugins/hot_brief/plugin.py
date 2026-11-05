@@ -14,17 +14,42 @@ _MAX = 400
 
 
 def register(api):
-    if api.load("auto_enabled", True):
-        api.on_tick(api.every(360, lambda d: _refresh(api)))
+    api.on_tick(api.every(1, lambda d: _auto_check(api)))   # 每分钟检查到点
     api.route("refresh_now", lambda args: _refresh(api))
     api.route("history", lambda args: _history_list())
     api.route("get_day", lambda args: _get_day(str((args or {}).get("date") or "")))
     api.route("delete_day", lambda args: _delete_day(str((args or {}).get("date") or "")))
     api.route("set_auto", lambda args: _set_auto(api, bool((args or {}).get("enabled"))))
+    api.route("set_auto_time", lambda args: _set_auto_time(
+        api, (args or {}).get("hh"), (args or {}).get("mm")))
     api.route("load_auto", lambda args: {"ok": True,
-                                         "auto_enabled": bool(api.load("auto_enabled", True))})
+                                         "auto_enabled": bool(api.load("auto_enabled", True)),
+                                         "hh": int(api.load("auto_hh", 3)),
+                                         "mm": int(api.load("auto_mm", 0))})
     api.inject_context(_line)
     api.log("ready")
+
+
+def _auto_check(api):
+    """到点自动总结：每天在配置的 时:分 之后跑一次（错过开机则启动后补跑）。"""
+    if not api.load("auto_enabled", True):
+        return
+    try:
+        hh = max(0, min(23, int(api.load("auto_hh", 3))))
+        mm = max(0, min(59, int(api.load("auto_mm", 0))))
+    except (TypeError, ValueError):
+        hh, mm = 3, 0
+    lt = time.localtime()
+    now_min = lt.tm_hour * 60 + lt.tm_min
+    tgt_min = hh * 60 + mm
+    if now_min < tgt_min:
+        return
+    today = time.strftime("%Y-%m-%d")
+    if api.load("last_auto_day", "") == today:
+        return
+    api.store("last_auto_day", today)
+    api.log("auto refresh @%02d:%02d" % (hh, mm))
+    _refresh(api)
 
 
 def _search_text():
@@ -94,6 +119,17 @@ def _delete_day(date):
 def _set_auto(api, enabled):
     api.store("auto_enabled", bool(enabled))
     return {"ok": True, "auto_enabled": bool(enabled)}
+
+
+def _set_auto_time(api, hh, mm):
+    try:
+        hh_i = max(0, min(23, int(hh)))
+        mm_i = max(0, min(59, int(mm)))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "时间格式非法"}
+    api.store("auto_hh", hh_i)
+    api.store("auto_mm", mm_i)
+    return {"ok": True, "hh": hh_i, "mm": mm_i}
 
 
 def _line(chat_type, chat_id):
