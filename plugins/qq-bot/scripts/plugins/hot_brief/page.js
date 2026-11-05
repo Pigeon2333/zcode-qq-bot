@@ -19,6 +19,12 @@ async function hotBriefPage(d){
  +'<label class="k">时间 <input type="time" id="hb-time" value="03:00" onchange="hbSetTime(this.value)"></label>'
  +'<span class="k" id="hb-msg"></span></div>'
  +'<div class="k" style="margin-top:6px;font-size:12px">'+autoHint+'</div></div>'
+ +'<div class="card"><div class="k" style="margin-bottom:6px"><b>热点来源</b>（搜什么由你定）</div>'
+ +'<div class="k" style="margin-bottom:6px">搜索关键词，用「、」分隔最多 3 组（如：今日热点新闻、微博热搜榜、科技新闻）。总结时先按这些关键词搜索，再由 AI 提炼成真正的热点事件清单（去掉聚合站导航/广告条目）。</div>'
+ +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+ +'<input id="hb-query" placeholder="留空 = 默认（今日热点新闻 头条）" style="flex:1;min-width:260px">'
+ +'<button class="act" style="margin:0" onclick="hbSetQuery()">保存来源</button>'
+ +'<span class="k" id="hb-qmsg"></span></div></div>'
  +'<div class="card"><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px"><b>历史记录</b><span class="k">（分天存档，可回看/删除）</span>'
  +'<span style="margin-left:auto;display:flex;gap:6px;align-items:center" class="k">自动清理 <input type="number" id="hb-clean" min="0" max="3650" step="1" style="width:58px" title="每天自动删除 N 天前的旧记录；0=不清理"> 天前的记录（0=不清理）</span></div>'
  +(rows||'<div class="k">暂无历史记录</div>')+'</div>';
@@ -32,6 +38,8 @@ async function hotBriefPage(d){
   const cl=document.getElementById('hb-clean');
   if(cl&&st&&st.ok)cl.value=st.clean_days||0;
   cl&&(cl.onchange=()=>hbSetClean(cl.value));
+  const q=document.getElementById('hb-query');
+  if(q&&st&&st.ok)q.value=st.query||'';
  },0);
 }
 async function hbSetClean(v){
@@ -39,13 +47,13 @@ async function hbSetClean(v){
  const r=await api('/api/plugins/call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'hot_brief',method:'set_clean_days',args:{days:n}})}).catch(()=>({ok:false}));
  if(!r.ok){toast('保存失败：'+(r.error||''),false);return}
  toast(r.removed>0?('已保存：自动清理 '+r.clean_days+' 天前记录（本次清了 '+r.removed+' 条旧记录）'):('已保存：自动清理 '+r.clean_days+' 天前记录'));
- load();
+ plPage('hot_brief');
 }
 async function hbRefresh(){
- const m=document.getElementById('hb-msg');m&&(m.textContent='总结中…（搜索约几秒）');
+ const m=document.getElementById('hb-msg');m&&(m.textContent='总结中…（搜索+提炼约 10-30 秒）');
  const r=await api('/api/plugins/call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'hot_brief',method:'refresh_now'})}).catch(()=>({ok:false}));
  if(m)m.textContent=r.ok?'✓ 已更新今日速览':'失败：'+(r.error||'');
- if(r.ok)load();
+ if(r.ok)plPage('hot_brief');
 }
 async function hbSetAuto(on){
  await api('/api/plugins/call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'hot_brief',method:'set_auto',args:{enabled:on}})});
@@ -65,5 +73,11 @@ async function hbView(date){
 async function hbDel(date){
  if(!await dlgConfirm({title:'删除 '+date+' 的记录？',body:'删除后无法恢复（当日速览不受影响，明天还会生成新的）',danger:true,okText:'删除'}))return;
  await api('/api/plugins/call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'hot_brief',method:'delete_day',args:{date}})});
- toast('已删除');load();
+ toast('已删除');plPage('hot_brief');
+}
+async function hbSetQuery(){
+ const q=(document.getElementById('hb-query').value||'').trim();
+ const r=await api('/api/plugins/call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'hot_brief',method:'set_query',args:{query:q}})}).catch(()=>({ok:false}));
+ if(!r||r.ok===false){toast('保存失败：'+((r&&r.error)||''),false);return}
+ toast(q?('热点来源已保存：'+q):'已恢复默认来源关键词（今日热点新闻 头条）');
 }

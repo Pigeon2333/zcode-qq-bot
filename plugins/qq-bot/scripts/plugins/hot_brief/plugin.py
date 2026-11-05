@@ -24,11 +24,13 @@ def register(api):
         api, (args or {}).get("hh"), (args or {}).get("mm")))
     api.route("set_clean_days", lambda args: _set_clean_days(
         api, (args or {}).get("days")))
+    api.route("set_query", lambda args: _set_query(api, (args or {}).get("query")))
     api.route("load_auto", lambda args: {"ok": True,
                                          "auto_enabled": bool(api.load("auto_enabled", True)),
                                          "hh": int(api.load("auto_hh", 3)),
                                          "mm": int(api.load("auto_mm", 0)),
-                                         "clean_days": _clean_days(api)})
+                                         "clean_days": _clean_days(api),
+                                         "query": str(api.load("query", "") or "")})
     api.inject_context(_line)
     _clean_history(api)          # 启动即清一次（配合自动清理天数）
     api.log("ready")
@@ -95,17 +97,67 @@ def _auto_check(api):
     _refresh(api)
 
 
-def _search_text():
+def _search_text(api):
+    """按用户配置的来源关键词搜索（、/,/分隔，最多 3 组），合并结果。
+    用户反馈：默认只搜"今日热点新闻 头条"拿到的多是聚合站导航描述，
+    不是真热点——所以来源可配 + 下一步 LLM 提炼。"""
     try:
         import qq_bot_agent as A
-        res, _backend = A.search_web("今日热点新闻 头条")
-        return str(res or "").strip()
     except Exception as e:
         return "搜索失败：%r" % (e,)
+    raw = str(api.load("query", "") or "").strip() or "今日热点新闻 头条"
+    queries = [q.strip() for q in raw.replace("，", "、").replace(",", "、").split("、")
+               if q.strip()][:3] or ["今日热点新闻 头条"]
+    parts = []
+    for q in queries:
+        try:
+            res, _backend = A.search_web(q)
+            res = str(res or "").strip()
+            if res:
+                parts.append("【%s】\n%s" % (q, res))
+        except Exception as e:
+            parts.append("【%s】搜索失败：%r" % (q, e))
+    return "\n\n".join(parts) if parts else "搜索失败：无结果"
+
+
+_SUM_SYS = ("你是新闻编辑。下面是按若干关键词搜到的网页结果（标题+摘要+网址）。"
+            "其中很多是聚合站/导航页/官网介绍，不是新闻本身。"
+            "请提炼出**今天真正的热点事件**："
+            "- 挑 5-10 条有实质内容的（谁/什么事/为什么值得关注），"
+            "- 每条一行，格式「- 事件名：一句话要点」，"
+            "- 忽略网站导航、聚合页介绍、广告、无实义条目，"
+            "- 不要网址、不要来源网站名、不要“某网站称”，"
+            "- 直接输出清单，不要开场白。如果结果里实在没有实质热点，"
+            "就挑信息量最大的几条原样保留要点。")
+
+
+def _refine(api, raw_text):
+    """LLM 提炼：把搜索结果洗成真热点清单；失败原样回退（绝不因提炼挂掉丢速览）。
+    提炼后再过一道机械兜底：带网址/导航站/广告词的行丢弃（防模型偷懒照抄）。"""
+    try:
+        import re as _re
+        import qq_bot_agent as A
+        msgs = [{"role": "system", "content": _SUM_SYS},
+                {"role": "user", "content": str(raw_text)[:4000]}]
+        _m, reply = A.call_glm_with_fallback(msgs, "")
+        reply = str(reply or "").strip()
+        lines = [ln.strip() for ln in reply.splitlines() if ln.strip()]
+        lines = [ln for ln in lines if ln.startswith("-") or ln.startswith("•")]
+        junk = _re.compile(
+            r"(?:https?://|www\.|[\w\-]+\.(?:com|cn|net|today|org)(?![\w])"
+            r"|聚合|导航|热榜榜|榜单聚合|一网打尽|注册|促销|优惠|下载|"
+            r"通用信息平台|致力于连接|实时榜|当前排名)")
+        lines = [ln for ln in lines if not junk.search(ln)]
+        if len(lines) >= 3:
+            return "\n".join(lines)
+    except Exception:
+        pass
+    return raw_text
 
 
 def _refresh(api):
-    text = _search_text()
+    raw = _search_text(api)
+    text = _refine(api, raw) if raw and "搜索失败" not in raw[:20] else raw
     today = time.strftime("%Y-%m-%d")
     rec = {"date": today, "text": text[:_MAX + 200], "ts": time.time()}
     try:
@@ -117,7 +169,8 @@ def _refresh(api):
             json.dumps(rec, ensure_ascii=False), encoding="utf-8")
         api.log("brief ok %d chars" % len(text))
         _clean_history(api)      # 顺手清一次过期记录
-        return {"ok": True, "date": today, "text": rec["text"]}
+        return {"ok": True, "date": today, "text": rec["text"],
+                "refined": text is not raw}
     except OSError as e:
         return {"ok": False, "error": repr(e)}
 
@@ -158,6 +211,12 @@ def _delete_day(date):
         return {"ok": True}
     except OSError as e:
         return {"ok": False, "error": repr(e)}
+
+
+def _set_query(api, query):
+    q = str(query or "").strip()[:200]
+    api.store("query", q)      # 空串=恢复默认关键词
+    return {"ok": True, "query": q}
 
 
 def _set_auto(api, enabled):
