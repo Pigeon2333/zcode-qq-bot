@@ -66,7 +66,7 @@ function voiceProvChange(){
   +'<input id="v-vname" placeholder="音色名（如 爱音）" style="width:130px">'
   +'<button class="act" style="margin:0" onclick="voiceClone()">开始克隆</button></div>'
   +'<input id="v-sample" placeholder="强烈建议填：这段音频里说的话（填了能大幅避免合成时冒出样本原文）" style="width:100%;margin-top:6px">'
-  +'<div class="k" id="v-cmsg" style="margin-top:6px">支持 mp4/mov/mp3/m4a/wav；页面自动截取所选片段转 16kHz 单声道 WAV 再上传（智谱限 3-30 秒、≤10MB）。克隆与合成都计费。⚠ 选一段「只说一件事」的清晰片段并填上原文——不填原文时，合成偶发会把样本里的话复现出来。</div></div>'
+  +'<div class="k" id="v-cmsg" style="margin-top:6px">支持 mp4/mov/mp3/m4a/wav；页面自动截取所选片段转 16kHz 单声道 WAV 再上传（智谱限 3-30 秒、≤10MB）。克隆与合成都计费。<b>⚠ 样本语言要一致</b>：要她说中文，请选<b>中文原声</b>片段（日文配音样本合成中文会发音混杂、像胡言乱语）；选「只说一件事」的清晰片段并填上原文。</div></div>'
   +'<div style="grid-column:1/-1;border:1px dashed var(--line);border-radius:8px;padding:10px">'
   +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px"><b>已克隆音色</b>'
   +'<button class="act ghost" style="margin:0;padding:3px 10px;font-size:12px" onclick="voiceVoicesLoad()">刷新列表</button>'
