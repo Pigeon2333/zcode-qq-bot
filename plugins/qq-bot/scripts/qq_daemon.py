@@ -646,6 +646,7 @@ class Daemon:
         self.quiet_until = 0.0  # 安静模式截止时间戳（0=关闭；@/回复不受影响）
         self._botloop = {}      # AI 互聊状态机：chat|id|sender → {phase, ts/until}
         self._peer_talk = {}    # 群友对话中标记：chat_id → 最后一次群友间@/引用的时间
+        self._out_dedup = {}    # 出站去重："chat_key\norm_text" → ts（防任何机制重发同文）
         self.ws_last_ok = time.time()  # 动作通道最近一次成功响应
         self._group_names = None       # {group_id: group_name} 缓存
         self._group_names_ts = 0.0
@@ -1106,14 +1107,16 @@ class Daemon:
         r"|通义|千问|文心|豆包|智谱|moonshot|llm|大模型|人工智能|机器人|assistant)(?![a-z0-9])")
 
     def _botloop_hit(self, chat_type, chat_id, sender_id,
-                     sender_name="", min_partner=5, min_mine=3):
-        """AI 互聊检测（多信号，用户实测反馈：回复快的真人会被误判）。
-        三条触发线（满足其一才试探，"回得快"本身不再是充分条件）：
-          ① 硬量：partner ≥8 且 mine ≥4——互刷量级拉满，昵称/节奏都不用看
-          ② 昵称线：partner ≥5 且 mine ≥3 且群昵称带 AI 特征词（仅辅助，不定论）
-          ③ 节奏线：partner ≥6 且 mine ≥3 且发送间隔机械规律
-            （≥4 个间隔的变异系数 <0.35；人类打字忽快忽慢，AI 接近匀速）
-        cleared 后的「不配合」升级门槛更高（7/5），避免真人被问一次就被静默。"""
+                     sender_name="", min_partner=7, min_mine=4):
+        """AI 互聊检测（多信号，用户实测两次放宽：回复快的真人会被误判——
+        曾把 100 秒连发 8 条倾诉的真人判成 AI）。三条触发线满足其一才试探，
+        "回得快/连发多条"本身不再是充分条件：
+          ① 硬量：partner ≥12 且 mine ≥6——真 AI 互刷是分钟级高速乒乓，
+            人类倾诉/抢话（8-10 条/150s）不该触发
+          ② 昵称线：partner ≥7 且 mine ≥4 且群昵称带 AI 特征词（仅辅助，不定论）
+          ③ 节奏线：partner ≥10 且 mine ≥4 且发送间隔机械规律
+            （≥4 个间隔的变异系数 <0.30；人类打字忽快忽慢，AI 接近匀速）
+        cleared 后的「不配合」升级门槛更高（10/6），避免真人被问一次就被静默。"""
         cfg = self._reply_config()
         if not cfg.get("botloop_guard_enabled", True):
             return False
@@ -1126,17 +1129,17 @@ class Daemon:
                      and not r.get("is_bot") and now - r.get("ts", 0) <= 150)
         mine = sum(1 for r in recs if r.get("is_bot") and now - r.get("ts", 0) <= 240)
         partner = len(pts)
-        if partner >= 8 and mine >= 4:
+        if partner >= 12 and mine >= 6:
             return True
         if partner >= min_partner and mine >= min_mine \
                 and sender_name and self._AI_NAME_RE.search(str(sender_name)):
             return True
-        if partner >= max(min_partner, 6) and mine >= min_mine and len(pts) >= 4:
+        if partner >= max(min_partner, 10) and mine >= min_mine and len(pts) >= 4:
             gaps = [b - a for a, b in zip(pts, pts[1:])]
             mean = sum(gaps) / len(gaps)
             if mean > 0:
                 var = sum((g - mean) ** 2 for g in gaps) / len(gaps)
-                if (var ** 0.5) / mean < 0.35:
+                if (var ** 0.5) / mean < 0.30:
                     return True
         return False
 
@@ -1170,7 +1173,7 @@ class Daemon:
                     # （相隔 >2 分钟算新的一轮），累计 2 轮即冷处理 30 分钟——
                     # AI 不会正面回答「你是不是AI」却会继续刷，真人被问通常会回应。
                     if self._botloop_hit(chat_type, chat_id, sender_id, sender_name,
-                                         7, 5) \
+                                         10, 6) \
                             and now - st.get("last_hit", 0) > 120:
                         st["last_hit"] = now
                         st["hits"] = int(st.get("hits", 0)) + 1
@@ -1387,6 +1390,9 @@ class Daemon:
         chat_key = "%s_%s" % (chat_type, chat_id)
         if not self._rate_ok(chat_key):
             raise RuntimeError("触发每分钟限流，请稍后再发")
+        if not self._out_dup_ok(chat_key + ":voice", text):
+            out("SEND_DUP_DROP chat=%s kind=record text=%.40s" % (chat_key, text))
+            return {"queued": 0, "dedup": True}
         job = {"chat_type": chat_type, "chat_id": chat_id, "kind": "record",
                "file": p, "text": str(text or "")[:2000], "delay": 0}
         self.send_queue.append(job)
@@ -1404,6 +1410,25 @@ class Daemon:
             ts_list.append(now)
             return True
 
+    def _out_dup_ok(self, chat_key, text):
+        """出站同文去重（保险层）：同一会话 300 秒内发过完全相同的文本（去空白
+        后 ≥10 字）→ 拒发。任何机制（队列重放/双重确认/上层 bug）导致的重复
+        都在这道闸拦下；正常对话不会在 5 分钟内逐字重复一条长文。"""
+        norm = re.sub(r"\s+", "", str(text or ""))
+        if len(norm) < 10:
+            return True
+        key = chat_key + "\n" + norm
+        now = time.time()
+        with self.lock:
+            ts = self._out_dedup.get(key, 0.0)
+            if now - ts < 300:
+                return False
+            self._out_dedup[key] = now
+            if len(self._out_dedup) > 800:
+                for kk in list(self._out_dedup.keys())[:400]:
+                    del self._out_dedup[kk]
+        return True
+
     def send_texts(self, chat_type, chat_id, texts, reply_message_id=None):
         if not isinstance(texts, list) or not texts:
             raise ValueError("texts 必须是非空数组")
@@ -1415,6 +1440,9 @@ class Daemon:
         n = 0
         for i, t in enumerate(texts[:8]):
             t = str(t)
+            if not self._out_dup_ok(chat_key, t):
+                out("SEND_DUP_DROP chat=%s text=%.40s" % (chat_key, t))
+                continue
             if i == 0:
                 delay = 0
             else:
