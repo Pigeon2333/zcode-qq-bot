@@ -160,6 +160,22 @@ def _post_audio_speech(base_url, key, model, voice, text, timeout=90,
     return data
 
 
+def _pcm_to_wav(pcm, sample_rate=16000, channels=1, bits=16):
+    """raw PCM → WAV 字节（44 字节头 + PCM 数据）。"""
+    import struct
+    byte_rate = sample_rate * channels * bits // 8
+    block_align = channels * bits // 8
+    data_size = len(pcm)
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF", 36 + data_size, b"WAVE",
+        b"fmt ", 16,
+        1,  # PCM
+        channels, sample_rate, byte_rate, block_align, bits,
+        b"data", data_size)
+    return header + pcm
+
+
 def _synth_edge(text, cfg):
     import asyncio
     import edge_tts
@@ -190,6 +206,10 @@ def synthesize(text, cfg):
         data = _post_audio_speech("https://open.bigmodel.cn/api/paas/v4/",
                                   key, "cogtts", voice, text,
                                   send_format=False)  # 智谱不支持 response_format
+        # 智谱返回 raw PCM（16bit LE 16kHz）——包 WAV 头才能被播放器/NapCat 识别
+        if len(data) > 8 and data[:4] != b"RIFF" and data[:3] != b"ID3" \
+                and data[:1] != b"\xff":
+            data = _pcm_to_wav(data)
     elif provider == "siliconflow":
         key = str(cfg.get("sf_key", "")).strip()
         if not key:
@@ -205,6 +225,9 @@ def synthesize(text, cfg):
     else:
         raise RuntimeError("未知供应商: %s" % provider)
     out = _out_path()
+    # WAV 格式用 .wav 扩展名（NapCat/Audio 元素按扩展名识别格式）
+    if data[:4] == b"RIFF":
+        out = out.with_suffix(".wav")
     out.write_bytes(data)
     return out
 

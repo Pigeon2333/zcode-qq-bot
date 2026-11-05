@@ -5223,8 +5223,11 @@ class UiHandler(BaseHTTPRequestHandler):
                     p.unlink()
                 except OSError:
                     pass
+                # 检测格式返回正确 MIME（WAV vs MP3）
+                is_wav = data[:4] == b"RIFF"
+                mime = "audio/wav" if is_wav else "audio/mpeg"
                 return self._reply(200, {"ok": True, "size": len(data),
-                    "audio": "data:audio/mpeg;base64," + base64.b64encode(data).decode()})
+                    "audio": "data:%s;base64," % mime + base64.b64encode(data).decode()})
             except Exception as e:
                 return self._reply(200, {"ok": False, "error": str(e)[:300]})
         if u.path == "/api/lark/config":

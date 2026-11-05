@@ -78,9 +78,15 @@ function voiceCollect(){
   keywords:document.getElementById('v-kw').value.split(/[、,，]/).map(x=>x.trim()).filter(Boolean),
   prob:(parseFloat(document.getElementById('v-prob').value)||0)/100};
  const g=id=>{const el=document.getElementById(id);return el?el.value:''};
- v.edge_voice=g('v-ev');v.zhipu_voice=g('v-zv');v.zhipu_speaker_id=g('v-zsid');v.zhipu_key=g('v-zkey');
- v.sf_key=g('v-sfk');v.sf_model=g('v-sfm');v.sf_voice=g('v-sfv');
- v.custom_base=g('v-cb');v.custom_key=g('v-ck');v.custom_model=g('v-cm');v.custom_voice=g('v-cv');
+ v.edge_voice=g('v-ev');v.zhipu_voice=g('v-zv');v.zhipu_speaker_id=g('v-sid')||g('v-zsid');
+ // Key fallback：表单字段可能还没渲染（首次加载 zhipu 表单区时序问题），
+ // 读不到就用已保存的配置值（用户已保存过 Key 的话）
+ v.zhipu_key=g('v-zkey')||((_VM.config||{}).zhipu_key||'');
+ v.sf_key=g('v-sfk')||((_VM.config||{}).sf_key||'');
+ v.sf_model=g('v-sfm');v.sf_voice=g('v-sfv');
+ v.custom_base=g('v-cb')||((_VM.config||{}).custom_base||'');
+ v.custom_key=g('v-ck')||((_VM.config||{}).custom_key||'');
+ v.custom_model=g('v-cm');v.custom_voice=g('v-cv');
  return v}
 async function voiceSave(){
  const r=await api('/api/voice/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voice:voiceCollect()})}).catch(()=>({ok:false,error:'请求失败'}));
