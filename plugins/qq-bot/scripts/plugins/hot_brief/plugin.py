@@ -98,16 +98,16 @@ def _auto_check(api):
 
 
 def _search_text(api):
-    """按用户配置的来源关键词搜索（、/,/分隔，最多 3 组），合并结果。
-    用户反馈：默认只搜"今日热点新闻 头条"拿到的多是聚合站导航描述，
-    不是真热点——所以来源可配 + 下一步 LLM 提炼。"""
+    """按用户配置的来源关键词搜索（、/,/分隔，最多 3 组），合并结果。"""
     try:
         import qq_bot_agent as A
     except Exception as e:
         return "搜索失败：%r" % (e,)
-    raw = str(api.load("query", "") or "").strip() or "今日热点新闻 头条"
+    raw = str(api.load("query", "") or "").strip()
+    if not raw:
+        return ""          # 未配置自定义关键词时跳过搜索（默认来源=热榜直抓）
     queries = [q.strip() for q in raw.replace("，", "、").replace(",", "、").split("、")
-               if q.strip()][:3] or ["今日热点新闻 头条"]
+               if q.strip()][:3]
     parts = []
     for q in queries:
         try:
@@ -117,47 +117,144 @@ def _search_text(api):
                 parts.append("【%s】\n%s" % (q, res))
         except Exception as e:
             parts.append("【%s】搜索失败：%r" % (q, e))
-    return "\n\n".join(parts) if parts else "搜索失败：无结果"
+    return "\n\n".join(parts) if parts else ""
 
 
-_SUM_SYS = ("你是新闻编辑。下面是按若干关键词搜到的网页结果（标题+摘要+网址）。"
-            "其中很多是聚合站/导航页/官网介绍，不是新闻本身。"
-            "请提炼出**今天真正的热点事件**："
-            "- 挑 5-10 条有实质内容的（谁/什么事/为什么值得关注），"
-            "- 每条一行，格式「- 事件名：一句话要点」，"
-            "- 忽略网站导航、聚合页介绍、广告、无实义条目，"
-            "- 不要网址、不要来源网站名、不要“某网站称”，"
-            "- 直接输出清单，不要开场白。如果结果里实在没有实质热点，"
-            "就挑信息量最大的几条原样保留要点。")
+def _collect(api):
+    """默认来源=微博热搜+百度热搜直抓；用户配置了关键词再叠加搜索结果。
+    榜单全挂时回退纯搜索（未配置关键词则报错提示）。"""
+    rows, errs = [], []
+    for name, fn in (("微博热搜", _fetch_weibo), ("百度热搜", _fetch_baidu)):
+        try:
+            items = fn()
+            if items:
+                rows.append("【%s】\n%s" % (name, "\n".join("- " + x for x in items)))
+        except Exception as e:
+            errs.append("%s(%r)" % (name, e))
+    search = _search_text(api)
+    if search and "搜索失败" not in search[:20]:
+        rows.append(search)
+    if rows:
+        return "\n\n".join(rows), errs
+    if search:
+        return search, errs
+    raise RuntimeError("热榜抓取失败(%s)且未配置搜索关键词；"
+                       "可在插件页「热点来源」填搜索关键词作备用来源"
+                       % "、".join(errs) or "未知")
+
+
+_SUM_SYS = ("你是新闻编辑。输入是热榜词条（微博热搜/百度热搜等）和网页搜索结果。"
+            "网页结果里很多是聚合站/导航页/官网介绍，不是新闻本身。"
+            "请整理出**今天真正的热点**："
+            "- 挑 5-10 条有实质内容的，每条一行，格式「- 事件名：一句话要点」"
+            "- 忽略网站导航、聚合页介绍、广告、无实义条目"
+            "- 不要网址、不要来源网站名"
+            "- 热榜词条只有标题没有详情时，保留词条本身即可，**不要编造细节**"
+            "- 直接输出清单，不要开场白、不要附注说明。如果所有条目都没有实质内容，"
+            "就输出「- 今天暂无可靠热点」")
+
+
+def _UA():
+    return ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            " (KHTML, like Gecko) Chrome/126.0 Safari/537.36")
+
+
+def _fetch_weibo(timeout=12):
+    """微博热搜（官方接口 weibo.com/ajax/side/hotSearch，公开 JSON）。"""
+    import http.client
+    conn = http.client.HTTPSConnection("weibo.com", 443, timeout=timeout)
+    conn.request("GET", "/ajax/side/hotSearch", headers={
+        "User-Agent": _UA(), "Accept": "application/json",
+        "Referer": "https://weibo.com/hot/search"})
+    r = conn.getresponse()
+    data = r.read()
+    conn.close()
+    if r.status != 200:
+        raise RuntimeError("HTTP %d" % r.status)
+    d = json.loads(data.decode("utf-8", "replace"))
+    items = ((d.get("data") or {}).get("realtime")) or []
+    out = []
+    for it in items[:15]:
+        w = str(it.get("word") or it.get("note") or "").strip()
+        if w:
+            out.append(w)
+    return out
+
+
+def _fetch_baidu(timeout=12):
+    """百度热搜（top.baidu.com/board 页面内嵌 JSON）。"""
+    import http.client
+    import re as _re
+    conn = http.client.HTTPSConnection("top.baidu.com", 443, timeout=timeout)
+    conn.request("GET", "/board?tab=realtime", headers={"User-Agent": _UA()})
+    r = conn.getresponse()
+    data = r.read()
+    conn.close()
+    if r.status != 200:
+        raise RuntimeError("HTTP %d" % r.status)
+    html = data.decode("utf-8", "replace")
+    m = _re.search(r"<!--s-data:(.*?)-->", html, _re.S)
+    if not m:
+        raise RuntimeError("页面结构变了（没找到内嵌数据）")
+    d = json.loads(m.group(1))
+    cards = ((d.get("data") or {}).get("cards")) or []
+    out = []
+    for card in cards:
+        for it in (card.get("content") or [])[:15]:
+            w = str(it.get("word") or "").strip()
+            desc = _re.sub(r"\s+", " ", str(it.get("desc") or "")).strip()
+            if w:
+                out.append(w + ("：" + desc[:50] if desc else ""))
+        if out:
+            break
+    return out
 
 
 def _refine(api, raw_text):
-    """LLM 提炼：把搜索结果洗成真热点清单；失败原样回退（绝不因提炼挂掉丢速览）。
-    提炼后再过一道机械兜底：带网址/导航站/广告词的行丢弃（防模型偷懒照抄）。"""
+    """LLM 提炼：把榜单/搜索结果洗成真热点清单；失败原样回退（绝不因提炼挂掉丢速览）。
+    提炼后再过一道机械兜底：带网址/导航站/广告词的行丢弃（防模型偷懒照抄）。
+    模型偶发 429/超时会静默失败——重试一次并把原因写进插件日志。"""
+    import re as _re
+    import time as _t
     try:
-        import re as _re
         import qq_bot_agent as A
-        msgs = [{"role": "system", "content": _SUM_SYS},
-                {"role": "user", "content": str(raw_text)[:4000]}]
-        _m, reply = A.call_glm_with_fallback(msgs, "")
-        reply = str(reply or "").strip()
-        lines = [ln.strip() for ln in reply.splitlines() if ln.strip()]
-        lines = [ln for ln in lines if ln.startswith("-") or ln.startswith("•")]
-        junk = _re.compile(
-            r"(?:https?://|www\.|[\w\-]+\.(?:com|cn|net|today|org)(?![\w])"
-            r"|聚合|导航|热榜榜|榜单聚合|一网打尽|注册|促销|优惠|下载|"
-            r"通用信息平台|致力于连接|实时榜|当前排名)")
-        lines = [ln for ln in lines if not junk.search(ln)]
-        if len(lines) >= 3:
-            return "\n".join(lines)
-    except Exception:
-        pass
+    except Exception as e:
+        if api:
+            api.log("refine unavailable %r" % e)
+        return raw_text
+    msgs = [{"role": "system", "content": _SUM_SYS},
+            {"role": "user", "content": str(raw_text)[:4000]}]
+    junk = _re.compile(
+        r"(?:https?://|www\.|[\w\-]+\.(?:com|cn|net|today|org)(?![\w])"
+        r"|聚合|导航|热榜榜|榜单聚合|一网打尽|注册|促销|优惠|下载|"
+        r"通用信息平台|致力于连接|实时榜|当前排名)")
+    for attempt in (1, 2):
+        lines = []
+        try:
+            _m, reply = A.call_glm_with_fallback(msgs, "")
+            reply = str(reply or "").strip()
+            lines = [ln.strip() for ln in reply.splitlines() if ln.strip()]
+            lines = [ln for ln in lines if ln.startswith("-") or ln.startswith("•")]
+            lines = [ln for ln in lines if not junk.search(ln)]
+            if len(lines) >= 3:
+                return "\n".join(lines)
+            if api:
+                api.log("refine attempt %d: only %d clean lines, retry" % (attempt, len(lines)))
+        except Exception as e:
+            if api:
+                api.log("refine attempt %d fail %r" % (attempt, e))
+        _t.sleep(2)
     return raw_text
 
 
 def _refresh(api):
-    raw = _search_text(api)
-    text = _refine(api, raw) if raw and "搜索失败" not in raw[:20] else raw
+    try:
+        raw, _errs = _collect(api)
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:300]}
+    if not raw or "搜索失败" in raw[:20]:
+        return {"ok": False, "error": "没有可用的热点来源"}
+    text = _refine(api, raw)
     today = time.strftime("%Y-%m-%d")
     rec = {"date": today, "text": text[:_MAX + 200], "ts": time.time()}
     try:
