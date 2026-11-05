@@ -4247,9 +4247,12 @@ def process(daemon, msg):
             # （失败自动回退文字，绝不因语音故障丢回复）
             try:
                 import qq_tts as _TTS
-                if _TTS.should_voice(msg) or (voice_ask and _TTS.voice_cfg().get("enabled")):
+                _sv = _TTS.should_voice(msg)
+                if _sv or (voice_ask and _TTS.voice_cfg().get("enabled")):
+                    out("AGENT_VOICE_TRY should_voice=%s voice_ask=%s" % (_sv, voice_ask))
                     sent_v = _TTS.send_voice(None, msg["chat_type"],
                                              msg["chat_id"], texts)
+                    out("AGENT_VOICE_RESULT sent=%s" % sent_v)
                     if sent_v:
                         sent_desc.append("voice:%d" % len(texts))
                         if not _TTS.voice_with_text():
