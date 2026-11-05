@@ -2308,9 +2308,14 @@ def build_messages(daemon, msg, ctx_k=32):
         # 历史 带 QQ：模型标注 [记忆@QQ] 时需要知道每句话是谁说的
         # 用户（非 bot）的话少截断——刚说过的事实被截丢会导致"刚说完就忘"
         cap = (120 if not h.get("is_bot") else c_hist)
-        hist_lines.append("%s(QQ:%s): %s" % (
+        # "- " 行首符 + 每行独立说话人：实测不给格式说明时模型会把相邻
+        # 不同人的话当成同一个人说的（"吃萨莉亚"+"弹幕游戏"被合并回复）
+        hist_lines.append("- %s(QQ:%s): %s" % (
             name, h.get("sender_id", "?"), str(h.get("text", ""))[:cap]))
     hist_block = "\n".join(hist_lines[-n_hist:]) if hist_lines else "（暂无）"
+    hist_note = ("（上面每行开头的名字就是这句话的说话人——不同名字=不同的几个人，"
+                 "相邻两行很可能是不同的人；回复前先分清哪句是谁说的，"
+                 "不要把不同人的话当成一个人说的来回应）")
 
     rt = msg.get("reply_to") or None
     rt_text = str(msg.get("reply_text") or "").strip()
@@ -2331,10 +2336,10 @@ def build_messages(daemon, msg, ctx_k=32):
             lead = "%s（@的是QQ:%s，不是你）说：" % (speaker, msg["at_users"][0])
         else:
             lead = "%s 说：" % speaker
-        content = "【当前场景：群聊（群号 %s，群内所有人可见你发的消息）| 最近对话】\n%s\n\n【现在】%s%s%s" % (
-            msg["chat_name"], hist_block, lead,
+        content = ("【当前场景：群聊（群号 %s，群内所有人可见你发的消息）| 最近对话】\n%s\n%s\n\n【现在】%s%s%s" % (
+            msg["chat_name"], hist_block, hist_note, lead,
             msg["text"] or "（发了一张图/表情）",
-            ("\n【被引用的原文】" + rt_text) if rt_text else "")
+            ("\n【被引用的原文】" + rt_text) if rt_text else ""))
     else:
         # 私聊：告诉模型它在哪些群（否则它以为"活动范围只有当前聊天"，
         # 主人让它去群里说话时会拒绝）；群名拉不到时只给群号
@@ -2342,9 +2347,9 @@ def build_messages(daemon, msg, ctx_k=32):
             groups_line = _owner_groups_line(daemon)
         except Exception:
             groups_line = "（群信息暂不可用）"
-        content = ("【当前场景：私聊（一对一对话，仅对方可见）| 最近对话】\n%s\n\n"
+        content = ("【当前场景：私聊（一对一对话，仅对方可见）| 最近对话】\n%s\n%s\n\n"
                    "【你在这些群（群号（群名））：%s】\n\n【现在】对方(QQ:%s)对你说：%s%s"
-                   % (hist_block, groups_line, msg["sender_id"],
+                   % (hist_block, hist_note, groups_line, msg["sender_id"],
                       msg["text"] or "（发了一张图/表情）",
                       ("\n【被引用的原文】" + rt_text) if rt_text else ""))
 
@@ -2718,7 +2723,10 @@ def _content_keywords(text):
     return set(list(out)[:48])
 
 
-_ECHO_LINE_RE = re.compile(r"^([^:：\n]{1,20})[:：]\s*(.*)$", re.M)
+# 历史行格式「- 名字(QQ:xxx): 内容」——模型照抄历史行/触发行时都要能识别剔除
+_ECHO_LINE_RE = re.compile(
+    r"^(?:[-·>]\s*)?([^:：\n()]{1,20}?)\s*(?:\(QQ[^)]*\))?\s*(?:@你)?\s*"
+    r"(?:说|回复[^:：]{0,12})?\s*[:：]\s*(.*)$", re.M)
 # 强脏话（「我操」排除 我操作/我操控 等正常词）；人设（妈妈系等）绝不骂脏话
 _PROFANITY_RE = re.compile(r"我操(?!作|控|盘|心)|卧槽|操你|草你|他妈的|傻逼|傻b|nmsl", re.I)
 
@@ -2977,8 +2985,8 @@ def _proactive_compose(daemon, chat_type, chat_id):
     _ti = C.tz_now_info()
     tstr = "%s %s %s（%s）" % (_ti["iso"], _ti["weekday"], _ti["clock12"], _ti["clock24"])
     hist = daemon.history(chat_type, chat_id, limit=14)
-    lines = ["%s(QQ:%s): %s" % ("你" if h.get("is_bot") else str(h.get("sender_name", "?")),
-                                h.get("sender_id", "?"), str(h.get("text", ""))[:100])
+    lines = ["- %s(QQ:%s): %s" % ("你" if h.get("is_bot") else str(h.get("sender_name", "?")),
+                                  h.get("sender_id", "?"), str(h.get("text", ""))[:100])
              for h in hist]
     hist_block = "\n".join(lines[-12:]) or "（暂无）"
     label = "群 %s" % chat_id if chat_type == "group" else "私聊对象(QQ:%s)" % chat_id
