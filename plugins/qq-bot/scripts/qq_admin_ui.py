@@ -2272,10 +2272,21 @@ async function vPlugins(){
  window._mktMap=mkt;
  const cats=[...new Set(all.map(p=>p.category||'其他'))].sort();
  const shown=all.filter(p=>!_plCat||p.category===_plCat);
+ // 语义化版本比较：市场版本必须【大于】已装版本才提示更新——
+ // 只判「不同」会把降级当更新（实测：装了 1.2.4 后市场清单还是 1.2.3，
+ // 显示「更新到 v1.2.3」点了真回退）
+ function verGt(a,b){
+  const pa=String(a||'').split('.'),pb=String(b||'').split('.');
+  for(let i=0;i<Math.max(pa.length,pb.length);i++){
+   const x=parseInt(pa[i]||'0')||0,y=parseInt(pb[i]||'0')||0;
+   if(x!==y)return x>y;
+  }
+  return false;
+ }
  const rows=shown.map(p=>{
   const on=!!p.enabled;
   const m=mkt[p.name];
-  const hasUpd=m&&m.version&&p.version&&(m.version!==p.version);
+  const hasUpd=m&&m.version&&p.version&&verGt(m.version,p.version);
   const st='<label style="display:flex;gap:6px;align-items:center;flex:none"><input type="checkbox" '+(on?'checked':'')+' onchange="plToggle(\''+esc(p.name)+'\',this.checked)"> '+(on?'已启用':'已停用')+'</label>';
   const setBtn=(p.page||p.settings&&p.settings.length)?'<button class="act" style="margin:0;padding:5px 16px;font-size:12.5px" onclick="plPage(\''+esc(p.name)+'\')">⚙ 设置</button>':'';
   const uninstall=p.builtin?'':'<button class="act ghost danger" style="margin:0;padding:5px 12px;font-size:12px" onclick="plUninstall(\''+esc(p.name)+'\')">卸载</button>';
