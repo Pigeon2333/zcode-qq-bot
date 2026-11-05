@@ -2301,7 +2301,13 @@ def build_messages(daemon, msg, ctx_k=32):
     rt_text = str(msg.get("reply_text") or "").strip()
     if msg["chat_type"] == "group":
         speaker = "%s(QQ:%s)" % (msg["sender_name"], msg["sender_id"])
-        if msg.get("at_me"):
+        # 被@列表：at_me 时保留其他人名（群友让她"跟XX聊"需知道XX是谁）
+        others = [str(q) for q in (msg.get("at_users") or [])
+                  if str(q) != str(msg.get("bot_qq") or "3126940548")]
+        if msg.get("at_me") and others:
+            lead = ("%s @你" % speaker) + (
+                "和QQ:%s" % ",".join(others)) + "说："
+        elif msg.get("at_me"):
             lead = "%s @你说：" % speaker
         elif rt:
             lead = "%s 回复%s的消息「%s」说：" % (

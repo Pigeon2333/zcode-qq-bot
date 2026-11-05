@@ -244,20 +244,29 @@ def voice_with_text():
 
 def send_voice(daemon, chat_type, chat_id, texts):
     """把 texts（1-N 段）逐段合成语音发送。成功段数>0 返回 True。
-    daemon 参数已弃用（保持签名兼容）：发送走插件宿主的 api.send_voice
-    （内部仍连 daemon 发送队列，但引擎不再直接持有 daemon 对象）。"""
+    daemon 参数兼容旧调用方；优先从 agent 的 PLUGIN_HOST 拿 daemon。"""
     ok = 0
-    sender = None
-    try:
-        import qq_plugins as _qp
-        host = getattr(_qp, "_ACTIVE_HOST", None)
-        sender = host.daemon if host else None
-    except Exception:
-        sender = daemon   # 兜底：旧调用方显式传入
+    sender = daemon
+    if sender is None:
+        try:
+            import qq_plugins as _qp
+            host = getattr(_qp, "_ACTIVE_HOST", None)
+            if host and getattr(host, "daemon", None):
+                sender = host.daemon
+        except Exception:
+            pass
+    if sender is None:
+        try:
+            import qq_bot_agent as _A
+            sender = _A.PLUGIN_HOST.daemon
+        except Exception:
+            pass
+    if sender is None:
+        return False
     for t in (texts or [])[:3]:
         try:
             mp3 = synthesize(t, voice_cfg())
-            res = sender.send_record(chat_type, chat_id, str(mp3)) if sender else None
+            res = sender.send_record(chat_type, chat_id, str(mp3))
             if res:
                 ok += 1
             try:
