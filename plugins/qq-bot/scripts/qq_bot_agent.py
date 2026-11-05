@@ -2533,6 +2533,9 @@ _MEMO_QQ_RE = re.compile(r"(\d{5,12})")
 # 泄漏给用户了。发送前再剥一遍任何残留标记。
 _MEMO_LEAK_RE = re.compile(r"\[记忆(@[^\]\n]{0,60})?\]")
 _WAIT_LEAK_RE = re.compile(r"\[\s*WAIT\s*(:\s*\d{1,3})?\s*\]", re.I)
+# [SKIP] 的中文变体——模型偶尔不照指令输出英文标记而是写中文（用户实测泄露 [跳过]）
+_SKIP_CN_RE = re.compile(r"\[\s*(?:跳过|不说|不发|沉默|SKIP)\s*\]", re.I)
+_SKIP_LEAK_RE = re.compile(r"\[\s*(?:跳过|不说|不发|沉默)[^\]\n]{0,10}\]", re.I)
 # [画: 描述] / [DRAW: desc] —— 模型自主补触发画图的标记（描述可跨行/较长，提取后剥离）
 _DRAW_MARK_RE = re.compile(r"\[\s*(?:画|DRAW)\s*[:：]\s*([^\]]{1,300}?)\s*\]",
                            re.I | re.S)
@@ -2635,11 +2638,12 @@ def _owner_groups_line(daemon):
 
 def parse_reply(text):
     # 所有 return 必须同形（5 元组）：texts/stickers/memo/draw/sendgrp
-    if "[SKIP]" in text.upper().replace(" ", ""):
+    if "[SKIP]" in text.upper().replace(" ", "") or _SKIP_CN_RE.search(text):
         return None, [], None, None, None
     if "[WAIT]" in text.upper().replace(" ", "") and wait_gate_enabled():
         return "WAIT", [], None, None, None
     text = _WAIT_LEAK_RE.sub("", text)  # 等说完关闭/漏写时兜底剥离，绝不泄漏给用户
+    text = _SKIP_LEAK_RE.sub("", text)  # 中文 SKIP 变体（跳过/不说/不发/沉默）兜底剥离
     # [画: 描述] 标记：模型自主补触发画图（系统没自动识别但主人明显想画时）
     dm = _DRAW_MARK_RE.search(text)
     draw = re.sub(r"\s+", " ", dm.group(1)).strip()[:100] if dm else None
