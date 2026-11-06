@@ -2649,7 +2649,8 @@ function voiceProvChange(){
   +'<div id="v-csave" style="display:none;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px;padding-top:8px;border-top:1px solid var(--line)">'
   +'<span class="k">✓ 克隆成功——试听没问题就起名保存：</span>'
   +'<input id="v-vname" placeholder="音色名（如 爱音）" style="width:130px">'
-  +'<button class="act" style="margin:0" onclick="zvCloneSave()">④ 保存到音色列表</button></div></div>'}
+  +'<button class="act" style="margin:0" onclick="zvCloneSave()">④ 保存到音色列表</button>'
+  +'<button class="act ghost danger" style="margin:0" onclick="zvCloneDiscard()">放弃重来</button></div></div>'}
  else if(k==='siliconflow'){box.innerHTML='<div style="display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:10px">'
   +'<div><div class="k" style="margin-bottom:4px">硅基流动 API Key</div><input id="v-sfk" type="password" value="'+esc(String(c.sf_key||''))+'" onchange="voiceFieldSave({sf_key:this.value.trim()},\'硅基流动 Key 已保存（即时生效）\')"></div>'
   +'<div><div class="k" style="margin-bottom:4px">模型</div><select id="v-sfm" onchange="voiceFieldSave({sf_model:this.value},\'模型已保存（即时生效）\')">'+sfMOptsHtml()+'</select></div>'
@@ -2829,6 +2830,14 @@ async function voiceClone(){
  if(sv)sv.style.display='flex';
  const ne=document.getElementById('v-vname');if(ne)ne.focus();
 }
+async function zvCloneDiscard(){
+ __ZVSID=null;
+ const sv=document.getElementById('v-csave');if(sv)sv.style.display='none';
+ const au=document.getElementById('v-audio');if(au){try{au.pause()}catch(e){}au.style.display='none';au.removeAttribute('src')}
+ const f=document.getElementById('v-file');if(f)f.value='';
+ const n=document.getElementById('v-vname');if(n)n.value='';
+ const msg=document.getElementById('v-cmsg');if(msg)msg.textContent='已放弃本次克隆（不保存、不扣保存额度）。重新选文件或调起始/时长，再点② 开始克隆（会再次按智谱计费）。';
+}
 async function zvCloneSave(){
  const msg=document.getElementById('v-cmsg');
  const name=(document.getElementById('v-vname').value||'').trim();
@@ -2897,7 +2906,8 @@ function vGsvCardInstalled(m,g){
  +'<input type="file" id="v-gfile" accept="audio/*,video/*" style="flex:1;min-width:180px">'
  +'<label class="k">起始 <input id="v-gstart" type="number" min="0" step="1" value="0" style="width:58px"> 秒</label>'
  +'<label class="k">时长 <input id="v-gdur" type="number" min="3" max="10" step="1" value="8" style="width:52px"> 秒</label>'
- +'<button class="act ghost" style="margin:0" onclick="gsvVoiceTry()">② 开始克隆</button></div>'
+ +'<button class="act ghost" style="margin:0" onclick="gsvVoiceTry()">② 开始克隆</button>'
+ +'<button class="act ghost danger" style="margin:0" onclick="gsvVoiceReset()">重来</button></div>'
  +'<input id="v-gptext" placeholder="强烈建议填：这段音频里说的话（语言要与上方参考语言一致）" style="width:100%;margin-top:6px">'
  +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px">'
  +'<input id="v-gname" placeholder="④ 满意后填音色名（如 安和昴）" style="flex:1;min-width:150px">'
@@ -2961,13 +2971,20 @@ async function gsvVoiceTrim(){
 }
 async function gsvVoiceTry(){
  const msg=document.getElementById('v-gmsg');
- if(!__GSVWAV && !await gsvVoiceTrim())return;
+ if(!await gsvVoiceTrim())return;   // 每次都用当前文件+起始/时长重新截取（曾因复用缓存导致调参数无效）
  msg.textContent='② 截取完成，本地合成试听中…（引擎约几秒）';
  const r=await api('/api/voice/gsv/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({audio:__GSVWAV,prompt_text:document.getElementById('v-gptext').value,prompt_lang:document.getElementById('v-gplang').value,text:'你好呀，我是你的语音小助手，听听这个声音怎么样？'})}).catch(()=>({ok:false,error:'请求失败'}));
  if(!r||r.ok===false){msg.textContent='克隆/试听失败：'+((r&&r.error)||'');return}
  const au=document.getElementById('v-audio');
  au.src=r.audio;au.style.display='block';au.play().catch(()=>{});
  msg.textContent='✓ 克隆完成，③ 试听播放中（上方播放器可反复听）。满意就 ④ 填音色名保存；不满意调起始/时长或换片段再点②。';
+}
+function gsvVoiceReset(){
+ __GSVWAV=null;
+ const f=document.getElementById('v-gfile');if(f)f.value='';
+ const au=document.getElementById('v-audio');if(au){try{au.pause()}catch(e){}au.style.display='none';au.removeAttribute('src')}
+ const n=document.getElementById('v-gname');if(n)n.value='';
+ const msg=document.getElementById('v-gmsg');if(msg)msg.textContent='已清空本次克隆。重新选文件（或同一文件调起始/时长）再点② 开始克隆。';
 }
 async function gsvVoiceSave(){
  const msg=document.getElementById('v-gmsg');

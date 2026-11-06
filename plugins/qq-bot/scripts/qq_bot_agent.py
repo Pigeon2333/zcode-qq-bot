@@ -367,8 +367,46 @@ class DaemonClient:
         r = self._request("GET", q)
         return list(reversed(r.get("items", []))) if r.get("ok") else []
 
+    # 出站时间前缀清洗：模型偶尔把历史行的 [时:分] 元数据格式模仿进正文
+    # （提示词拦不住模仿，2026-11-06 主动消息实测带 [21:05] 前缀）。括号包
+    # 时间的开头绝不自然语言；裸 "21:05 +分隔+还有内容" 也是元数据回显。
+    # 整条恰好只是时间（"21:05"）保留——那是对方问时间的正当回答。
+    _BARE_TIME_RE = re.compile(r"^\s*\d{1,2}[:：]\d{2}[\s,，、:：-]+")
+
+    @classmethod
+    def _strip_time_prefix(cls, t):
+        s = str(t or "")
+        if not s:
+            return s
+        stripped = False
+        for _ in range(3):
+            # 括号包裹的时间前缀（[21:05] / 【21：05】 / （21:05））
+            m = re.match(r"^[\s\[［（(【]+\d{1,2}\s*[:：]\s*\d{2}\s*(?:分)?[\s\]］）)】]+", s)
+            if m:
+                s = s[m.end():]
+                stripped = True
+                continue
+            # 裸时间 + 分隔符，且后面还有正文（纯时间回答不动）
+            m2 = cls._BARE_TIME_RE.match(s)
+            if m2 and s[m2.end():].strip():
+                s = s[m2.end():]
+                stripped = True
+                continue
+            break
+        return (s.lstrip(" ,，、:：-") if stripped else s), stripped
+
     def send(self, chat_type, chat_id, texts, reply_message_id=None):
-        body = {"chat_type": chat_type, "chat_id": chat_id, "texts": texts}
+        if isinstance(texts, str):
+            texts = [texts]
+        clean = []
+        did = False
+        for t in (texts or []):
+            t2, hit = self._strip_time_prefix(t)
+            did = did or hit
+            clean.append(t2)
+        if did:
+            out("OUT_TIME_PREFIX_STRIPPED chat=%s/%s" % (chat_type, chat_id))
+        body = {"chat_type": chat_type, "chat_id": chat_id, "texts": clean}
         if reply_message_id:
             body["reply_message_id"] = str(reply_message_id)
         return self._request("POST", "/send", body)
