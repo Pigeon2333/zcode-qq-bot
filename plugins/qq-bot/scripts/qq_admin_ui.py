@@ -1524,7 +1524,7 @@ async function vFile(kind){
    const shown=all.slice((pg-1)*per,pg*per);
    const notesHtml=all.length
     ?('<div class="k" style="margin-top:8px">'+shown.map(n=>'- '+esc(n)).join('<br>')+'</div>'
-      +(pages>1?'<div style="display:flex;gap:8px;align-items:center;margin-top:6px"><button class="act ghost" style="margin:0;padding:2px 10px;font-size:12px" onclick="evPage(\''+esc(p.name)+'\','+(pg-1)+')" '+(pg<=1?'disabled':'')+'>上一页</button><span class="k">第 '+pg+'/'+pages+' 页（共 '+all.length+' 条，提示词只用最新 12 条）</span><button class="act ghost" style="margin:0;padding:2px 10px;font-size:12px" onclick="evPage(\''+esc(p.name)+'\','+(pg+1)+')" '+(pg>=pages?'disabled':'')+'>下一页</button></div>':''))
+      +(pages>1?'<div style="display:flex;gap:8px;align-items:center;margin-top:6px"><button class="act ghost" style="margin:0;padding:2px 10px;font-size:12px" onclick="evPage(\''+esc(p.name)+'\','+(pg-1)+')" '+(pg<=1?'disabled':'')+'>上一页</button><span class="k">第 '+pg+'/'+pages+' 页（共 '+all.length+' 条，注入最新 '+inj+' 条）</span><button class="act ghost" style="margin:0;padding:2px 10px;font-size:12px" onclick="evPage(\''+esc(p.name)+'\','+(pg+1)+')" '+(pg>=pages?'disabled':'')+'>下一页</button></div>':''))
     :'<div class="k" style="margin-top:6px">（尚无积累：机器人每 6 次回复会自动从群聊中提炼 1-2 条风格观察）</div>';
    const clearBtn=all.length
     ?'<button class="act ghost" style="color:var(--err)" data-pname="'+esc(p.name)+'" onclick="clearEvolved(this.dataset.pname)">清空</button>'
@@ -1537,20 +1537,24 @@ async function vFile(kind){
     +'</div>'+notesHtml+'</div>';
   }).join('');
   const mx=ev.max_notes||30;
-  evHtml='<div class="card"><div class="k">自进化风格（绑定人设：机器人聊天中自动积累表达经验，注入到对应人设的提示词；可随时开关/清空，与人设卡叠加生效）'
-   +'<span style="margin-left:8px">保留上限 <input type="number" min="30" max="300" step="10" value="'+mx+'" style="width:64px" onchange="saveEvMax(this.value)"> 条（30–300；只影响存档保留与回看，提示词始终只用最新 12 条，调高不增加每条回复的 token；上限满了自动挤掉最旧的）</span></div>'
+  const inj=ev.inject_notes||12;
+  const injTok=Math.round(inj*35);
+  evHtml='<div class="card"><div class="k">自进化风格（绑定人设：机器人聊天中自动积累表达经验，注入到对应人设的提示词；可随时开关/清空，与人设卡叠加生效）<br>'
+   +'保留上限 <input type="number" min="30" max="300" step="10" value="'+mx+'" style="width:64px" onchange="saveEvMax(this.value)"> 条（30–300；只影响存档保留与回看，上限满了自动挤掉最旧的）　'
+   +'注入 <input type="number" min="4" max="40" step="1" value="'+inj+'" style="width:56px" onchange="saveEvInj(this.value)"> 条（4–40）</div>'
+   +'<div class="k" style="margin-top:4px">⚠ <b>注入条数直接影响消耗</b>：每条观察 ≈35 token，注入 '+inj+' 条 ≈ '+injTok+' token/条回复。调高=她带着更多积累说话（语气更稳定），但每次回复都更贵、更慢；过多的旧观察也可能和当前话题不搭。调低则反之。改完即时生效。</div>'
    +'<div style="margin-top:10px">'+(rows||'<i class="k">暂无人设</i>')+'</div></div>';
  }
- $('#view').innerHTML=head('说话风格卡（0.5.10 起按人设独立：每张人设可以有自己的语言底子；全局风格叠加到所有人设，与自进化叠加生效）')+saveHint('风格卡内容需点「保存」按钮生效（只保存当前选中目标）；未保存的修改以蓝色边框标记，切换目标会提示。')
-  +`<div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-   <b>编辑目标</b><select id="stsel">${(window._stTargets||[]).map(t=>'<option value="'+esc(t.id)+'">'+esc(t.label)+(t.has_own?' ✓':'')+'</option>').join('')}</select>
+ $('#view').innerHTML=head('说话风格卡（0.5.10 起按人设独立：每张人设可以有自己的语言底子；全局风格叠加到所有人设，与自进化叠加生效）')+saveHint('风格卡内容需点「保存」按钮生效（只保存当前选中目标）；未保存的修改以蓝色边框标记，切换目标会提示。')+evHtml+
+  `<div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+   <b>编辑目标</b><select id="stsel">${(window._stTargets||[]).map(t=>'<option value="'+esc(t.id)+'" '+(t.id===window._stSel?'selected':'')+'>'+esc(t.label)+(t.has_own?' ✓':'')+'</option>').join('')}</select>
    <span class="k" id="ststate"></span>
    <span style="margin-left:auto;display:flex;gap:6px">
     <button class="act ghost" onclick="stDup()">复制风格到…</button>
     <button class="act ghost" onclick="stClear()">清空此目标风格</button></span></div>
   <div class="k" style="margin-top:4px">「✓」= 该目标已有自己的风格卡；无 ✓ 的目标回退到全局风格（旧版的单一风格文件也按全局风格处理）。「复制风格到…」方便以某份风格为底本调试。</div>
   <textarea id="fedit" style="margin-top:10px" oninput="dirtyOn(this,'bsavef')">${esc(d.text||'')}</textarea>
-  <div><button class="act" id="bsavef" data-kind="${kind}" disabled onclick="saveFile(this.dataset.kind)">保存「<span id="stsave-name">${esc((window._stTargets||[])[0]||{}).label||''}</span>」的风格卡</button></div></div>`;
+  <div><button class="act" id="bsavef" data-kind="${kind}" disabled onclick="saveFile(this.dataset.kind)">保存「<span id="stsave-name">${esc((((window._stTargets||[]).find(t=>t.id===window._stSel))||{}).label||'')}</span>」的风格卡</button></div></div>`;
  // 目标切换：未保存守卫 + 加载该目标文本
  const stsel=$('#stsel');
  let _stPrev=stsel.value;
@@ -1582,6 +1586,11 @@ function evPage(name,pg){window['_evPg_'+name]=pg;load()}
 async function saveEvMax(v){
  const n=Math.max(30,Math.min(300,parseInt(v)||30));
  await saveKV('/api/app-config',{evolved_max_notes:n},'自进化保留上限已设为 '+n+' 条（即时生效；只影响存档，不影响每条回复的 token）');
+ load();
+}
+async function saveEvInj(v){
+ const n=Math.max(4,Math.min(40,parseInt(v)||12));
+ await saveKV('/api/app-config',{evolved_inject_notes:n},'自进化注入条数已设为 '+n+' 条（即时生效，约 '+Math.round(n*35)+' token/条回复）');
  load();
 }
 async function clearEvolved(name){if(!await dlgConfirm({title:'清空风格观察',body:'清空「'+name+'」的全部风格观察？',okText:'清空',danger:true}))return;await api('/api/evolved/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});toast('已清空');load()}
@@ -4136,9 +4145,13 @@ class UiHandler(BaseHTTPRequestHandler):
                 maxn = max(30, min(300, int(cfg2.get("evolved_max_notes") or 30)))
             except (TypeError, ValueError):
                 maxn = 30
+            try:
+                inj = max(4, min(40, int(cfg2.get("evolved_inject_notes") or 12)))
+            except (TypeError, ValueError):
+                inj = 12
             return self._reply(200, {"ok": True, "personas": rows,
                                      "max_notes": maxn,
-                                     "inject_per_reply": 12})
+                                     "inject_notes": inj})
         if u.path == "/api/file":
             kind = q.get("kind")
             if kind == "persona":

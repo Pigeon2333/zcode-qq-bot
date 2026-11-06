@@ -55,6 +55,7 @@ DEFAULT_CONFIG = {
     "backup_keep_days": 30,    # 备份保留天数（超过自动清理）
     "backup_keep_copies": 30,  # 每个备份保留份数（超过自动清理最旧的）
     "evolved_max_notes": 30,   # 自进化观察每人设保留上限（30-300；只影响存档）
+    "evolved_inject_notes": 12,  # 自进化注入提示词条数（4-40；直接影响每条回复 token）
     "timezone": "Asia/Shanghai",  # 机器人时区（IANA 名，影响 AI 感知的时间）
     "device_ctrl_enabled": False,  # 设备操控（高危，默认关）
     "device_ctrl_2fa": True,       # 设备操控动态授权码（每次需验证）

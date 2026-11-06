@@ -1742,6 +1742,17 @@ def _evolve_max_notes():
         return 30
 
 
+def _evolved_inject_n():
+    """自进化注入条数（app_config.evolved_inject_notes，4-40；默认 12）。
+    直接决定每条回复的提示词大小：每条观察 ≤60 字 ≈ 35 token，
+    默认 12 条 ≈ 0.4k token；调到 40 ≈ 1.4k token/条回复。"""
+    try:
+        cfg = C.load_app_config()
+        return max(4, min(40, int(cfg.get("evolved_inject_notes") or 12)))
+    except (TypeError, ValueError, AttributeError):
+        return 12
+
+
 def evolved_notes(persona):
     """读某人设的自进化风格观察：{"enabled": bool, "notes": [...]}。"""
     data = load_json_const(EVOLVED_PATH, {})
@@ -2400,7 +2411,7 @@ def build_messages(daemon, msg, ctx_k=32):
     evolved_block = ""
     if ev["enabled"] and ev["notes"]:
         evolved_block = ("\n\n## 自进化风格观察（你在真实聊天中积累的经验，"
-                         "指导以后怎么说更自然）\n" + "\n".join("- %s" % n for n in ev["notes"][-12:]))
+                         "指导以后怎么说更自然）\n" + "\n".join("- %s" % n for n in ev["notes"][-_evolved_inject_n():]))
     skip_block = ""
     if msg.get("trigger_reason") == "chat_random":
         anti = chat_anti_interrupt_enabled()
@@ -3163,7 +3174,7 @@ def _proactive_compose(daemon, chat_type, chat_id):
     persona = str(coll_raw.get(persona_name, "")).strip() if persona_name else ""
     style = composed_style(persona_name)
     ev = evolved_notes(persona_name) if persona_name else {"enabled": False, "notes": []}
-    evolved_block = ("\n\n## 自进化风格观察\n" + "\n".join("- %s" % n for n in ev["notes"][-12:])
+    evolved_block = ("\n\n## 自进化风格观察\n" + "\n".join("- %s" % n for n in ev["notes"][-_evolved_inject_n():])
                      if ev["enabled"] and ev["notes"] else "")
     mem_scope, mem_id = (("group", chat_id) if chat_type == "group"
                          else ("contact", chat_id))
@@ -3688,7 +3699,7 @@ def _persona_stack_text(route=None):
         parts.append("## 说话风格卡（严格模仿语言风格，不改变身份）\n%s" % style)
     ev = evolved_notes(active_name) if active_name else {"enabled": False, "notes": []}
     if ev["enabled"] and ev["notes"]:
-        parts.append("## 自进化风格观察\n" + "\n".join("- %s" % n for n in ev["notes"][-10:]))
+        parts.append("## 自进化风格观察\n" + "\n".join("- %s" % n for n in ev["notes"][-_evolved_inject_n():]))
     try:
         parts.append(C.tz_now_info()["line"])
     except Exception:
