@@ -395,6 +395,16 @@ class DaemonClient:
             break
         return (s.lstrip(" ,，、:：-") if stripped else s), stripped
 
+    def observe(self, since=0):
+        """全量观察队列增量拉取（daemon /observe；插件 on_observe 钩子数据源）。"""
+        try:
+            r = self._request("GET", "/observe?since=%d" % int(since), timeout=8)
+            if r.get("ok"):
+                return int(r.get("seq") or 0), list(r.get("items") or [])
+        except Exception:
+            pass
+        return None, []
+
     def send(self, chat_type, chat_id, texts, reply_message_id=None):
         if isinstance(texts, str):
             texts = [texts]
@@ -2201,6 +2211,35 @@ def _nudge_compose(daemon, chat_type, chat_id):
         return ""  # 群聊判定不开口（tick 会标记本轮已处理，不反复重试）
     texts, _st, _memo, _draw, _sg = parse_reply(text)
     return (texts or [""])[0][:200]
+
+
+_OBS_PUMP = {"seq": 0, "ts": 0.0, "init": False}
+
+
+def _observe_pump(daemon):
+    """把 daemon 全量观察队列泵给插件 on_observe 钩子（旁观学习类数据源）。
+    没有插件注册观察时零开销；间隔 ≥3 秒拉一次，异常静默（下轮重试）。"""
+    if not PLUGIN_HOST.has_observers():
+        return
+    now = time.time()
+    if now - _OBS_PUMP["ts"] < 3:
+        return
+    _OBS_PUMP["ts"] = now
+    if not _OBS_PUMP["init"]:
+        # 首次只对齐水位线（不回放历史——学习从现在开始观察）
+        seq, _items = daemon.observe(10 ** 9)
+        if seq is not None:
+            _OBS_PUMP["seq"] = seq
+        _OBS_PUMP["init"] = True
+        return
+    seq, items = daemon.observe(_OBS_PUMP["seq"])
+    if seq is None:
+        return
+    if seq < _OBS_PUMP["seq"]:
+        _OBS_PUMP["seq"] = seq    # daemon 重启（seq 回零）：重新对齐，丢一段可接受
+    for it in items:
+        PLUGIN_HOST.observe_all(it)
+    _OBS_PUMP["seq"] = max(_OBS_PUMP["seq"], seq)
 
 
 def _nudge_tick(daemon):
@@ -5084,6 +5123,10 @@ def main():
             if sched_hold:
                 time.sleep(30)  # 定时暂停中：30s 检查一次，零 LLM 零 token
                 continue
+            try:
+                _observe_pump(daemon)
+            except Exception as _oe:
+                out("AGENT_OBSERVE_PUMP_FAIL %r" % _oe)
             if not snap["paused"]:
                 items = daemon.inbox_triggered()
                 for msg in items:

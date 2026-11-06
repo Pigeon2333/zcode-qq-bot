@@ -630,6 +630,8 @@ class Daemon:
         self.send_queue = deque()
         self._drain_lock = threading.Lock()
         self.mem_history = defaultdict(lambda: deque(maxlen=800))
+        self._observe = []       # 观察队列（全量消息环形；/observe 端点按 seq 增量拉）
+        self._obs_seq = 0
         self.login = {"user_id": None, "nickname": ""}
         self._wl_cache = None
         self._wl_sig = object()  # 首次必加载（与 None/任何 sig 不等）
@@ -910,6 +912,23 @@ class Daemon:
             if triggered:
                 self.stats["triggered"] += 1
             self._mem_push(item, ev.get("message_id"), is_bot=False)
+        # 观察队列：全量消息（含未触发/非白名单群）供插件旁观学习
+        # （on_observe 钩子的数据源；环形上限防内存膨胀，agent 按 seq 拉取）
+        with self.lock:
+            self._obs_seq += 1
+            self._observe.append({
+                "seq": self._obs_seq,
+                "ts": item.get("ts") or time.time(),
+                "chat_type": item.get("chat_type"),
+                "chat_id": item.get("chat_id"),
+                "chat_name": str(item.get("chat_name") or ""),
+                "sender_id": item.get("sender_id"),
+                "sender_name": str(item.get("sender_name") or ""),
+                "text": str(item.get("text") or "")[:120],
+                "triggered": bool(item.get("triggered")),
+            })
+            if len(self._observe) > 2000:
+                del self._observe[:len(self._observe) - 2000]
         out("AGENT_EVENT " + json.dumps(item, ensure_ascii=False))
 
     def _mem_push(self, item, message_id, is_bot, text=None, n_images=0):
@@ -1753,6 +1772,17 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
                     q.get("chat_type", "group"), q.get("chat_id", ""),
                     limit=int(q.get("limit", 30)))
                 return self._reply(200, {"ok": True, "items": recs})
+            if u.path == "/observe":
+                # 观察队列增量拉取（插件旁观学习用）：since 之后的消息按 seq 返回
+                try:
+                    since = int(q.get("since", 0))
+                except (TypeError, ValueError):
+                    since = 0
+                with self.daemon.lock:
+                    items = [dict(x) for x in self.daemon._observe if x["seq"] > since]
+                    cur_seq = self.daemon._obs_seq
+                return self._reply(200, {"ok": True, "seq": cur_seq,
+                                         "items": items[:400]})
             return self._reply(404, {"ok": False, "error": "unknown path %s" % u.path})
         except Exception as e:
             return self._reply(400, {"ok": False, "error": repr(e)})

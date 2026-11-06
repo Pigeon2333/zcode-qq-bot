@@ -106,6 +106,13 @@ class PluginAPI:
         只读观察——不要在里面对该消息发回复；耗时拉取自行开线程。"""
         self._host.hooks.setdefault(self.name, {})["on_message"] = fn
 
+    def on_observe(self, fn):
+        """注册全量观察器：fn(msg) 收到**每一条**群/私聊消息（含未触发、
+        非白名单群的）——旁观类插件（如语气风格学习）的数据源。
+        msg 为精简 dict（seq/ts/chat_type/chat_id/chat_name/sender_id/
+        sender_name/text≤120 字/triggered）。只读，禁止回复。"""
+        self._host.hooks.setdefault(self.name, {})["observe"] = fn
+
     def setting(self, key, default=None):
         return self._host.setting(self.name, key, default)
 
@@ -349,6 +356,21 @@ class PluginHost:
                 fn(msg)
             except Exception as e:
                 self.log("PLUGIN_ONMSG_FAIL %s %r" % (name, e))
+
+    def has_observers(self):
+        """是否有插件注册了全量观察（没有则 agent 跳过 /observe 拉取，零开销）。"""
+        return any(h.get("observe") for h in self.hooks.values())
+
+    def observe_all(self, msg):
+        """把全量观察消息广播给声明了 on_observe 的插件（只读；单个异常不影响）。"""
+        for name in list(self.hooks.keys()):
+            fn = self.hooks[name].get("observe")
+            if not fn:
+                continue
+            try:
+                fn(msg)
+            except Exception as e:
+                self.log("PLUGIN_OBSERVE_FAIL %s %r" % (name, e))
 
     def load_all_if_changed(self):
         """热加载触发：state 文件变化 OR 插件目录集合变化（新装/卸载插件文件
