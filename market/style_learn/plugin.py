@@ -63,20 +63,20 @@ def _cfg(api):
     c.setdefault("blacklist", [])
     c.setdefault("groups", [])              # 学习群（独立于消息白名单）
     c.setdefault("learn_min", _LEARN_MIN)
-    c.setdefault("scope", "all")            # 喂给哪些人设：all=全部 / persona=指定列表
+    c.setdefault("scope", "all")            # 喂给谁：all=全部人设 / persona=指定列表 / global=挂全局通用设定
     c.setdefault("personas", [])            # scope=persona 时生效的人设名列表
     return c
 
 
 def _persona_names():
-    """当前人设合集的全部人设名 + 全局通用设定文本（供页面选择喂给谁）。"""
+    """人设卡名单（原始 collection：跳过 _ 开头键）；供「喂给谁」勾选。"""
     try:
-        import qq_bot_agent as A
-        coll, _active = A.load_persona_collection()
-        names = sorted(k for k in coll.keys()
-                       if not k.startswith("_") and str(coll.get(k) or "").strip())
-        return {"ok": True, "personas": names, "active": _active or "",
-                "global": str(coll.get("global", "") or "")}
+        import qq_style_store as _SS
+        data = _SS._load_coll()
+        names = sorted(k for k in data.keys()
+                       if not k.startswith("_") and str(data.get(k) or "").strip())
+        return {"ok": True, "personas": names,
+                "active": str(data.get("_active", "") or "")}
     except Exception as e:
         return {"ok": False, "error": repr(e)}
 
@@ -100,7 +100,7 @@ def _save_cfg(api, args):
     except (TypeError, ValueError):
         c["learn_min"] = _LEARN_MIN
     scope = str(args.get("scope") or "all")
-    c["scope"] = scope if scope in ("all", "persona") else "all"
+    c["scope"] = scope if scope in ("all", "persona", "global") else "all"
     c["personas"] = [str(x).strip()[:40] for x in (args.get("personas") or [])
                      if str(x).strip()][:20]
     api.store("cfg", c)
@@ -283,19 +283,24 @@ def _inject(api, chat_type, chat_id, **kw):
         return ""
     if str(chat_id) not in c.get("groups", []):
         return ""
-    # scope 过滤：persona=只喂给指定人设（其他人格看不到）；all=全部（含全局）
-    if str(c.get("scope") or "all") == "persona":
+    # scope 三档：
+    #   all     = 所有人格都注入（含以后新建的）
+    #   persona = 仅勾选的人设被激活时注入（其他人设完全看不到）
+    #   global  = 挂在「全局通用设定」名下——全局底子所有人格共享，效果与
+    #             all 相同（含以后新建的），语义上是加在通用底子上而非逐个人设
+    scope = str(c.get("scope") or "all")
+    if scope == "persona":
         allowed = [str(x) for x in (c.get("personas") or [])]
-        cur_active = ""
         try:
-            import qq_bot_agent as A
-            coll, cur_active = A.load_persona_collection()
+            import qq_style_store as _SS
+            cur_active = str(_SS._load_coll().get("_active", "") or "")
         except Exception:
-            coll, cur_active = {}, ""
-        # 命中条件：激活人设在允许列表；或「全局通用设定」在允许列表
-        # （喂给全局=所有人格都收到——影响所有人设的说话质感，页面有提醒）
-        if cur_active not in allowed and "_global_" not in allowed:
+            cur_active = ""
+        if cur_active not in allowed:
             return ""
+    elif scope == "global":
+        pass          # 全局底子：无条件（与 all 行为一致，语义不同）
+    # all：无条件
     for r in api.load("records", []):
         if str(r.get("gid")) == str(chat_id):
             traits = str(r.get("traits") or "").strip()[:320]

@@ -25,11 +25,12 @@ async function styleLearnPage(d){
   +'<label style="display:block;margin:4px 0"><input type="radio" name="slmode" value="blacklist" '+(cfg.mode==='blacklist'?'checked':'')+' onchange="slMode()"> 黑名单之外——学习除这些人的所有群友</label>'
   +'<div id="sl-blacklist-row" class="dimmed" style="margin:4px 0 4px 24px"><input id="sl-blacklist" placeholder="QQ 号，逗号/换行分隔（可排除群里的其他 AI）" style="width:100%" value="'+esc((cfg.blacklist||[]).join(', '))+'"></div></div>'
 
-  +'<div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--line)"><div class="k" style="margin-bottom:4px"><b>喂给谁</b>（活人感参考注入谁的上下文）</div>'
-  +'<label style="display:block;margin:4px 0"><input type="radio" name="slscope" value="all" '+(cfg.scope!=='persona'?'checked':'')+' onchange="slScope()"> 全部人设——所有人格都收到这份参考</label>'
-  +'<div class="k" id="sl-scope-warn" style="margin:2px 0 4px 24px;color:var(--warn)"></div>'
-  +'<label style="display:block;margin:4px 0"><input type="radio" name="slscope" value="persona" '+(cfg.scope==='persona'?'checked':'')+' onchange="slScope()"> 仅指定人设（其他人设不受影响）</label>'
-  +'<div id="sl-personas-row" class="dimmed" style="margin:4px 0 4px 24px"><div id="sl-plist" class="k">加载人设列表…</div></div></div>'
+  +'<div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--line)"><div class="k" style="margin-bottom:4px"><b>喂给谁</b>（活人感参考注入谁的上下文——三选一）</div>'
+  +'<label style="display:block;margin:4px 0"><input type="radio" name="slscope" value="all" '+(cfg.scope==='all'||!cfg.scope?'checked':'')+' onchange="slScope()"> <b>全部人设</b>——所有人格都收到这份参考（含以后新建的）</label>'
+  +'<label style="display:block;margin:4px 0"><input type="radio" name="slscope" value="persona" '+(cfg.scope==='persona'?'checked':'')+' onchange="slScope()"> <b>仅指定人设</b>——从下面的人设卡里勾选，其他人设完全不受影响</label>'
+  +'<div id="sl-personas-row" class="dimmed" style="margin:4px 0 4px 24px"><div id="sl-plist" class="k">加载人设列表…</div></div>'
+  +'<label style="display:block;margin:4px 0"><input type="radio" name="slscope" value="global" '+(cfg.scope==='global'?'checked':'')+' onchange="slScope()"> <b>仅全局通用设定</b>——挂在全局底子上，所有人格共享（效果同「全部人设」，语义上是通用底子的一部分，人设切换不影响）</label>'
+  +'<div class="k" style="margin-top:4px">与「精简上下文」不冲突：这份参考属于人设/风格类提示（永不裁剪），精简只裁聊天历史和记忆；每个群最多注入一条且硬上限 320 字（约 190 token），不会撑爆上下文。</div></div>'
 
   +'<div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--line)"><div class="k" style="margin-bottom:4px"><b>学习群</b>（独立于群消息白名单——可以让机器人去没配置说话的群只旁观学习）</div>'
   +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input id="sl-groups" placeholder="群号，逗号/换行分隔" style="flex:1;min-width:240px" value="'+esc((cfg.groups||[]).join(', '))+'">'
@@ -82,17 +83,14 @@ async function styleLearnPage(d){
   };
   if(window._SL_WL){paint(window._SL_WL);return}
   PC('wl_groups').then(function(r){window._SL_WL=r;paint(r)});
-  // 人设列表（喂给谁）：勾选式多选
+  // 人设卡列表（喂给谁）：勾选式多选（只列人设卡；全局是平级 radio 不在此列）
   PC('persona_names').then(function(r){
    var box=document.getElementById('sl-plist');if(!box)return;
    if(!r||!r.ok){box.textContent='人设列表读取失败';return}
    var chosen=(cfg.personas||[]);
-   var items=[];
-   if(r.global)items.push({n:'_global_',t:'🌐 全局通用设定'});
-   (r.personas||[]).forEach(function(n){items.push({n:n,t:n+(n===r.active?'（当前激活）':'')})});
-   box.innerHTML=items.map(function(it){
-    return '<label style="display:inline-flex;gap:5px;align-items:center;margin:3px 10px 3px 0"><input type="checkbox" class="sl-pc" value="'+esc(it.n)+'" '+(chosen.indexOf(it.n)>=0?'checked':'')+'> '+esc(it.t)+'</label>';
-   }).join('')||'（还没有任何人设）';
+   box.innerHTML=(r.personas||[]).map(function(n){
+    return '<label style="display:inline-flex;gap:5px;align-items:center;margin:3px 10px 3px 0"><input type="checkbox" class="sl-pc" value="'+esc(n)+'" '+(chosen.indexOf(n)>=0?'checked':'')+'> '+esc(n)+(n===r.active?'（当前激活）':'')+'</label>';
+   }).join('')||'（还没有任何人设卡——先到「人设」页创建）';
   });
  },0);
  return html;
@@ -106,9 +104,8 @@ function slMode(){
 }
 function slScope(){
  var s=(document.querySelector('input[name="slscope"]:checked')||{}).value||'all';
- var row=document.getElementById('sl-personas-row'),warn=document.getElementById('sl-scope-warn');
+ var row=document.getElementById('sl-personas-row');
  if(row)row.classList.toggle('dimmed',s!=='persona');
- if(warn)warn.textContent=(s==='all')?'⚠ 喂给全部人设 = 这份参考会进入每个人格的说话质感（包括你以后新建的）；想精细化控制就选「仅指定人设」。':'';
 }
 async function slSave(){
  var msg=document.getElementById('sl-msg');msg.textContent='保存中…';
