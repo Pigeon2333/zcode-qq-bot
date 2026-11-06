@@ -1506,12 +1506,12 @@ async function vFile(kind){
  let d=await api('/api/file?kind='+kind);
  const ev=await api('/api/evolved');
  if(kind==='style'){
-  const st=await api('/api/style/targets').catch(()=>({targets:[]}));
+  const st=await api('/api/style/targets',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>({targets:[]}));
   window._stTargets=(st.targets||[]);
   const sel=window._stSel||(st.active&&window._stTargets||[]).length?window._stSel:null;
   // 初始读选中目标的文本（默认当前激活人设；无则全局）
   const initial=window._stSel||st.active||'_global_';
-  const tr=await api('/api/style/read?target='+encodeURIComponent(initial)).catch(()=>({text:''}));
+  const tr=await api('/api/style/read',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({target:initial})}).catch(()=>({text:''}));
   d={text:tr.text||''};
   window._stSel=initial;
  }
@@ -1557,7 +1557,7 @@ async function vFile(kind){
  stsel.onchange=async()=>{
   if($('#fedit').classList.contains('dirty')&&!await dlgConfirm({title:'未保存的修改',body:'当前风格卡有未保存的修改，放弃并切换目标？',okText:'放弃并切换',danger:true})){stsel.value=_stPrev;return}
   _stPrev=stsel.value;
-  const r=await api('/api/style/read?target='+encodeURIComponent(stsel.value));
+  const r=await api('/api/style/read',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({target:stsel.value})});
   $('#fedit').value=r.text||'';$('#fedit').classList.remove('dirty');$('#bsavef').disabled=true;
   $('#stsave-name').textContent=(window._stTargets||[]).find(t=>t.id===stsel.value)?.label||stsel.value;
  };
@@ -6162,7 +6162,7 @@ class UiHandler(BaseHTTPRequestHandler):
                                      "active": str(coll.get("_active", "") or "")})
         if u.path == "/api/style/read":
             import qq_style_store as _SS
-            t = str(urllib.parse.parse_qs(u.query).get("target", ["_global_"])[0])
+            t = str(body.get("target") or "_global_")
             if t == "_global_":
                 txt = _SS.global_style()
             else:
