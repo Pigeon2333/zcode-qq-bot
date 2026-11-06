@@ -491,15 +491,45 @@ def clone_zhipu_voice(key, wav_bytes, voice_name, sample_text="", preview_text="
       1) POST /api/paas/v4/files  multipart，purpose=voice-clone-input → file_id
       2) POST /api/paas/v4/voice/clone {model, voice_name, file_id, input[, text]}
     限制：样本 ≤10MB，建议 3-30 秒人声；样本 WAV 由设置页在浏览器里截好再传上来。
+    key 支持传单个或候选列表（zhipu_keys）：1113 余额类错误自动换下一个 Key；
+    1234「网络错误」/HTTP 5xx 先同 Key 重试一次再换（实测平台偶发 500）。
     """
     import http.client
-    if not str(key or "").strip():
+    keys = [str(k).strip() for k in (key if isinstance(key, (list, tuple)) else [key])
+            if str(k or "").strip()]
+    if not keys:
         raise RuntimeError("未找到智谱 API Key")
     if not wav_bytes or wav_bytes[:4] != b"RIFF":
         raise RuntimeError("样本必须是 WAV 音频")
     if len(wav_bytes) > 10 * 1024 * 1024:
         raise RuntimeError("样本超过 10MB，请缩短时长后重试")
-    key = str(key).strip()
+
+    last_err = None
+    for ki, k in enumerate(keys):
+        for attempt in (1, 2):   # 1234/5xx 同 Key 立即重试一次
+            try:
+                return _zhipu_clone_once(k, wav_bytes, voice_name,
+                                         sample_text, preview_text)
+            except RuntimeError as e:
+                s = str(e)
+                last_err = e
+                _balance = ("1113" in s or "余额不足" in s or "资源包" in s)
+                _transient = ("1234" in s or "网络错误" in s
+                              or "HTTP 5" in s or "HTTP 500" in s)
+                if _balance:
+                    break   # 这个 Key 没额度，直接换下一个
+                if _transient and attempt == 1:
+                    time.sleep(2.0)
+                    continue
+                raise
+        if ki < len(keys) - 1:
+            continue
+    raise last_err or RuntimeError("没有可用的智谱语音 Key（克隆）")
+
+
+def _zhipu_clone_once(key, wav_bytes, voice_name, sample_text, preview_text):
+    """单 Key 一次完整克隆（上传 → /voice/clone，含 1214 同名自动改名）。"""
+    import http.client
     boundary = "----qqbot" + secrets.token_hex(8)
     head = ("--%s\r\nContent-Disposition: form-data; name=\"purpose\"\r\n\r\n"
             "voice-clone-input\r\n"

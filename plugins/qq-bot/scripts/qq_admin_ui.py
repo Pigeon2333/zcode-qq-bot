@@ -2540,53 +2540,17 @@ function wxChatImpPage(d,p){return chatImpPage(Object.assign({},d,{source:'wx',l
 let _VM=null;
 // 插件页契约：page 函数接收宿主预取的 data、返回 HTML 字符串；
 // 不允许自写 #view（会把宿主注入的「← 返回插件列表」按钮冲掉）
-function voicePage(d){
- _VM=(d&&d.providers)?d:(_VM||{config:{}});
- const P=_VM.providers||{};
- const c=_VM.config||{};
- const prov=Object.keys(P);
- const cur=c.provider||'edge';
- const vopts=prov.map(k=>'<option value="'+k+'" '+(k===cur?'selected':'')+'>'+esc(P[k].label)+'</option>').join('');
- const edgeOpts=(_VM.edge_voices||[]).map(v=>'<option value="'+esc(v[1])+'" '+(v[1]===(c.edge_voice||'zh-CN-XiaoxiaoNeural')?'selected':'')+'>'+esc(v[0])+'</option>').join('');
- const zzOpts=(_VM.zhipu_voices||[]).map(v=>'<option value="'+esc(v[1])+'" '+(v[1]===(c.zhipu_voice||'tongtong')?'selected':'')+'>'+esc(v[0])+'</option>').join('');
- const sfMOpts=(_VM.sf_models||[]).map(v=>'<option value="'+esc(v[1])+'" '+(v[1]===(c.sf_model||'FunAudioLLM/cosyvoice2-0.5B')?'selected':'')+'>'+esc(v[0])+'</option>').join('');
- const sfVOpts=(_VM.sf_voices||[]).map(v=>'<option value="'+esc(v)+'" '+(v===(c.sf_voice||'anna')?'selected':'')+'>'+esc(v)+'</option>').join('');
- const mode=String(c.mode||'keyword');
- const kw=(c.keywords||[]).join('、');
- const html='<div class="k" style="margin-bottom:10px">让机器人开口说话：语音内容跟人设走，只是换成语音发送。配置即时生效。</div>'+
- '<div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><b>开关与策略</b><span class="badge" style="background:var(--tint);color:var(--dim)">语音内容跟人设走，只换发送形式</span></div>'
- +'<label class="master"><input type="checkbox" id="v-on" '+(c.enabled?'checked':'')+' onchange=""> <b>启用语音回复</b><div class="k" style="margin-top:3px">开启后按下面的策略把部分/全部回复改用语音发送；合成失败自动回退发文字，不会丢回复</div></label>'
- +'<div style="display:flex;gap:14px;margin-top:8px;flex-wrap:wrap">'
- +'<label><input type="checkbox" id="v-priv" '+(c.private_enabled!==false?'checked':'')+'> 私聊启用</label>'
- +'<label><input type="checkbox" id="v-grp" '+(c.group_enabled?'checked':'')+'> 群聊启用</label>'
- +'<label title="勾上=同一条回复发两个版本（先语音后同样内容的文字）；不勾=只发语音"><input type="checkbox" id="v-wt" '+(c.with_text?'checked':'')+'> 命中语音时同时发文字版</label></div>'
- +'<div class="k" style="margin-top:10px">触发方式</div>'
- +'<div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:4px">'
- +'<label><input type="radio" name="vmode" value="keyword" '+(mode==='keyword'?'checked':'')+'> 对方消息含触发词时</label>'
- +'<label><input type="radio" name="vmode" value="always" '+(mode==='always'?'checked':'')+'> 所有回复都用语音</label>'
- +'<label><input type="radio" name="vmode" value="mixed" '+(mode==='mixed'?'checked':'')+'> 触发词必语音，其余按概率</label></div>'
- +'<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">'
- +'<input id="v-kw" value="'+esc(kw)+'" placeholder="触发词，用、分隔（如：念一下、发语音）" style="flex:1;min-width:220px">'
- +'<label class="k">语音概率 <input id="v-prob" type="number" min="0" max="100" step="5" value="'+esc(String(Math.round((c.prob||0)*100)))+'" style="width:64px"> %</label><span class="k">（触发词必语音；其余消息按此概率语音回复）</span></div>'
- +'<div style="margin-top:10px"><button class="act" style="margin:0" onclick="voiceSave()">保存设置</button><span class="k" id="v-ok" style="margin-left:8px"></span></div></div>'
- +'<div class="card"><div class="k" style="margin-bottom:8px"><b>语音来源与音色</b>（供应商可随时换，互不影响）</div>'
- +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="k">供应商</span><select id="v-prov" onchange="voiceProvChange()">'+vopts+'</select></div>'
- +'<div class="k" id="v-bill" style="margin-top:8px;padding:8px;border:1px solid var(--line);border-radius:8px"></div>'
- +'<div id="v-provbox" style="margin-top:10px"></div>'
- +'<div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap">'
- +'<input id="v-ptext" value="你好呀，我是你的语音小助手，听听这个声音怎么样？" style="flex:1;min-width:240px">'
- +'<button class="act ghost" style="margin:0" onclick="voicePreview()">试听（用当前表单配置）</button></div>'
- +'<audio id="v-audio" controls style="margin-top:8px;width:100%;display:none"></audio>'
- +'<div class="k" id="v-pmsg" style="margin-top:6px"></div></div>'
- +'<div class="card"><div class="k"><b>计费说明</b>（各家语音合成的收费情况，选前看清楚）</div>'
- +prov.map(k=>'<div style="margin-top:8px"><b>'+esc(P[k].label)+'</b><div class="k" style="margin-top:3px">'+esc(P[k].billing)+'</div></div>').join('')
- +'<div class="k" style="margin-top:10px">克隆专属音色（智谱，收费）：供应商切到智谱，在「克隆新音色」上传 3 秒以上人声样本——克隆、试听、命名保存全在本页完成，保存后与预设音色同列管理。</div></div>';
- // 必须在 return 之前调度（写在 return 后是死代码，永远不会执行——
- // 「首次进入智谱设置区空白、要切走再切回来才出现」就是它）
- setTimeout(voiceProvChange,0);
- return html;
-}
+// （旧的 voicePage 整页构建已删：vVoice/vVoiceCards 重构后成为死代码，
+//  曾因其残留的 v-prov 重复 id 干扰批量修改）
 function voiceBill(){const P=_VM.providers||{};const k=document.getElementById('v-prov').value;const el=document.getElementById('v-bill');el.textContent=P[k]?P[k].billing:''}
+// 配置字段即改即存（该卡所有字段共用；Key/目录/端口/音色类填完失焦自动保存）
+async function voiceFieldSave(extra,note){
+ const v=Object.assign(voiceCollect(),extra||{});
+ const r=await api('/api/voice/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voice:v})}).catch(()=>({ok:false,error:'请求失败'}));
+ if(!r||r.ok===false){toast('保存失败：'+((r&&r.error)||''),false);return}
+ if(r.config)_VM.config=r.config;
+ toast(note||'已保存（即时生效）');
+}
 function voiceProvChange(){
  voiceBill();
  const c=_VM.config||{};const k=document.getElementById('v-prov').value;
@@ -2598,10 +2562,10 @@ function voiceProvChange(){
   box.innerHTML='<div class="k" style="margin-bottom:6px">音色（本地音色列表；合成完全免费，引擎需在下方引擎卡里保持启动）</div>'
   +'<select id="v-gvid" onchange="gsvVoiceUse(this.value)">'+(opts||'<option value="">（还没有本地音色——去下方引擎卡「克隆新音色」）</option>')+'</select>'
   +'<div class="k" style="margin-top:6px">列表为空时去引擎卡克隆一个；选中即给机器人用（也可在下方列表里切换）。</div>'}
- else if(k==='edge'){box.innerHTML='<div class="k" style="margin-bottom:4px">音色（微软公共接口，免费）</div><select id="v-ev">'+edgeOptsHtml()+'</select>'}
+ else if(k==='edge'){box.innerHTML='<div class="k" style="margin-bottom:4px">音色（微软公共接口，免费）</div><select id="v-ev" onchange="voiceFieldSave({edge_voice:this.value},'Edge 音色已保存（即时生效）')">'+edgeOptsHtml()+'</select>'}
  else if(k==='zhipu'){
   box.innerHTML='<div class="k" style="margin-bottom:4px">智谱 API Key（留空 = 复用模型管理里的智谱 Key）</div>'
-  +'<input id="v-zkey" type="password" value="'+esc(String(c.zhipu_key||''))+'" placeholder="留空自动复用" style="max-width:420px">'
+  +'<input id="v-zkey" type="password" value="'+esc(String(c.zhipu_key||''))+'" placeholder="留空自动复用" style="max-width:420px" onchange="voiceFieldSave({zhipu_key:this.value.trim()},'智谱 Key 已保存（即时生效；留空=复用模型管理的智谱 Key）')">'
   +'<input type="hidden" id="v-zv" value="'+esc(String(c.zhipu_voice||'tongtong'))+'">'
   +'<input type="hidden" id="v-zid" value="'+esc(String(c.zhipu_speaker_id||''))+'">'
   +'<div id="zv-list" style="margin-top:12px"></div>'
@@ -2619,14 +2583,14 @@ function voiceProvChange(){
   +'<input id="v-vname" placeholder="音色名（如 爱音）" style="width:130px">'
   +'<button class="act" style="margin:0" onclick="zvCloneSave()">④ 保存到音色列表</button></div></div>'}
  else if(k==='siliconflow'){box.innerHTML='<div style="display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:10px">'
-  +'<div><div class="k" style="margin-bottom:4px">硅基流动 API Key</div><input id="v-sfk" type="password" value="'+esc(String(c.sf_key||''))+'"></div>'
-  +'<div><div class="k" style="margin-bottom:4px">模型</div><select id="v-sfm">'+sfMOptsHtml()+'</select></div>'
-  +'<div><div class="k" style="margin-bottom:4px">音色</div><select id="v-sfv">'+sfVOptsHtml()+'</select></div></div>'}
+  +'<div><div class="k" style="margin-bottom:4px">硅基流动 API Key</div><input id="v-sfk" type="password" value="'+esc(String(c.sf_key||''))+'" onchange="voiceFieldSave({sf_key:this.value.trim()},'硅基流动 Key 已保存（即时生效）')"></div>'
+  +'<div><div class="k" style="margin-bottom:4px">模型</div><select id="v-sfm" onchange="voiceFieldSave({sf_model:this.value},'模型已保存（即时生效）')">'+sfMOptsHtml()+'</select></div>'
+  +'<div><div class="k" style="margin-bottom:4px">音色</div><select id="v-sfv" onchange="voiceFieldSave({sf_voice:this.value},'音色已保存（即时生效）')">'+sfVOptsHtml()+'</select></div></div>'}
  else{box.innerHTML='<div style="display:grid;grid-template-columns:1.6fr 1fr 1fr 1fr;gap:10px">'
-  +'<div><div class="k" style="margin-bottom:4px">接口地址（https，含 /v1/）</div><input id="v-cb" value="'+esc(String(c.custom_base||''))+'" placeholder="https://api.openai.com/v1/"></div>'
-  +'<div><div class="k" style="margin-bottom:4px">API Key</div><input id="v-ck" type="password" value="'+esc(String(c.custom_key||''))+'"></div>'
-  +'<div><div class="k" style="margin-bottom:4px">模型</div><input id="v-cm" value="'+esc(String(c.custom_model||'tts-1'))+'"></div>'
-  +'<div><div class="k" style="margin-bottom:4px">音色</div><input id="v-cv" value="'+esc(String(c.custom_voice||'alloy'))+'"></div></div>'}
+  +'<div><div class="k" style="margin-bottom:4px">接口地址（https，含 /v1/）</div><input id="v-cb" value="'+esc(String(c.custom_base||''))+'" placeholder="https://api.openai.com/v1/" onchange="voiceFieldSave({custom_base:this.value.trim()},'接口地址已保存（即时生效）')"></div>'
+  +'<div><div class="k" style="margin-bottom:4px">API Key</div><input id="v-ck" type="password" value="'+esc(String(c.custom_key||''))+'" onchange="voiceFieldSave({custom_key:this.value.trim()},'Key 已保存（即时生效）')"></div>'
+  +'<div><div class="k" style="margin-bottom:4px">模型</div><input id="v-cm" value="'+esc(String(c.custom_model||'tts-1'))+'" onchange="voiceFieldSave({custom_model:this.value.trim()},'模型已保存（即时生效）')"></div>'
+  +'<div><div class="k" style="margin-bottom:4px">音色</div><input id="v-cv" value="'+esc(String(c.custom_voice||'alloy'))+'" onchange="voiceFieldSave({custom_voice:this.value.trim()},'音色已保存（即时生效）')"></div></div>'}
  // 引擎卡折叠：只在 GPT-SoVITS 供应商下展开
  const gwrap=document.getElementById('gsv-card-wrap');
  if(gwrap)gwrap.style.display=(k==='gsv')?'':'none';
@@ -2847,12 +2811,12 @@ function vGsvCardInstalled(m,g){
   +'<label style="margin-left:8px"><input type="checkbox" id="v-gauto" '+(c.gsv_autostart?'checked':'')+' onchange="gsvAutoSet(this.checked)"> 随应用自动启动引擎</label>'
   +(c.gsv_autostart?'<span class="k">（已开启）</span>':'')+'</div>'
   +'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:10px">'
-  +'<div><div class="k" style="margin-bottom:4px">参考语言（参考音频说的语言）</div><select id="v-gplang">'
+  +'<div><div class="k" style="margin-bottom:4px">参考语言（参考音频说的语言）</div><select id="v-gplang" onchange="voiceFieldSave({gsv_prompt_lang:this.value},'参考语言已保存（即时生效）')">'
   +'<option value="zh"'+((c.gsv_prompt_lang||'zh')==='zh'?' selected':'')+'>中文</option>'
   +'<option value="ja"'+((c.gsv_prompt_lang)==='ja'?' selected':'')+'>日文</option>'
   +'<option value="en"'+((c.gsv_prompt_lang)==='en'?' selected':'')+'>英文</option></select></div>'
-  +'<div><div class="k" style="margin-bottom:4px">整合包目录（默认自动探测 E:\\GPTSoVITS）</div><input id="v-gdir" value="'+esc(String(c.gsv_dir||''))+'" placeholder="留空自动探测"></div>'
-  +'<div><div class="k" style="margin-bottom:4px">端口</div><input id="v-gport" value="'+esc(String(c.gsv_port||'9880'))+'"></div></div>'
+  +'<div><div class="k" style="margin-bottom:4px">整合包目录（默认自动探测 E:\\GPTSoVITS）</div><input id="v-gdir" value="'+esc(String(c.gsv_dir||''))+'" placeholder="留空自动探测" onchange="voiceFieldSave({gsv_dir:this.value.trim()},'整合包目录已保存')"></div>'
+  +'<div><div class="k" style="margin-bottom:4px">端口</div><input id="v-gport" value="'+esc(String(c.gsv_port||'9880'))+'" onchange="voiceFieldSave({gsv_port:this.value.trim()},'端口已保存（重启引擎后生效）')"></div></div>'
  +'<div style="margin-top:10px;border:1px dashed var(--line);border-radius:8px;padding:10px">'
  +'<div class="k" style="margin-bottom:6px"><b>克隆新音色</b> · ① 选文件 → ② 开始克隆 → ③ 试听 → ④ 命名保存（完全免费）</div>'
  +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
@@ -2983,7 +2947,7 @@ function vVoiceCards(m,g){
  const gsvCard=(g.dir_ok?vGsvCardInstalled(m,g):vGsvCardTeaser());
  // 顺序：开关策略 → 语音来源与音色 → 本地引擎（非 gsv 供应商时折叠）→ 计费说明（垫底）
  const provCard='<div class="card"><div class="k" style="margin-bottom:8px"><b>语音来源与音色</b>（供应商可随时换，互不影响）</div>'
- +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="k">供应商</span><select id="v-prov" onchange="voiceProvChange()">'+vopts+'</select></div>'
+ +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="k">供应商</span><select id="v-prov" onchange="voiceProvChange();voiceFieldSave(null,'语音来源已保存（即时生效）')">'+vopts+'</select></div>'
  +'<div class="k" id="v-bill" style="margin-top:8px;padding:8px;border:1px solid var(--line);border-radius:8px"></div>'
  +'<div id="v-provbox" style="margin-top:10px"></div>'
  +'<div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap">'
@@ -5830,7 +5794,7 @@ class UiHandler(BaseHTTPRequestHandler):
                 cfg["zhipu_key"] = str(v["zhipu_key"])[:128]
             try:
                 vid, ofid, used = _T.clone_zhipu_voice(
-                    _T.zhipu_key(cfg), wav, name,
+                    _T.zhipu_keys(cfg), wav, name,
                     str(body.get("sample_text") or "")[:300],
                     str(body.get("preview_text") or "")[:120])
             except Exception as e:
