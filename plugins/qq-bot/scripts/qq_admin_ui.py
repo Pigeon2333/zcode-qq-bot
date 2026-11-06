@@ -291,6 +291,14 @@ def _wd_check_once():
     return healthy, detail
 
 
+def _svc_out(line):
+    """UI 服务进程的结构化日志（stdout 由启动方重定向到服务日志文件）。
+    注意：qq_admin_ui 不 import qq_daemon（那边是 daemon 进程的东西）——
+    _gsv_autostart 曾误调 daemon 的 out() → NameError 被双层 except 吞掉，
+    自启动线程无声死亡（配置开着也从没真正拉起过引擎）。"""
+    print("[%s] %s" % (time.strftime("%H:%M:%S"), line), flush=True)
+
+
 def _gsv_autostart():
     """应用启动时可选拉起本地语音引擎（voice.gsv_autostart，默认关）。
     模型加载阻塞最多 2 分钟，独立线程不拖慢 UI 服务。"""
@@ -303,12 +311,13 @@ def _gsv_autostart():
         st = _T.gsv_status(cfg)
         if st.get("running"):
             return
-        out("GSV_AUTOSTART launching engine…")
+        _svc_out("GSV_AUTOSTART launching engine…")
         r = _T.gsv_start(cfg)
-        out("GSV_AUTOSTART %s" % ("ok" if r.get("ok") else "fail: %s" % r.get("error", "")))
+        _svc_out("GSV_AUTOSTART %s"
+                 % ("ok" if r.get("ok") else "fail: %s" % r.get("error", "")))
     except Exception as e:
         try:
-            out("GSV_AUTOSTART error %r" % e)
+            _svc_out("GSV_AUTOSTART error %r" % e)
         except Exception:
             pass
 
