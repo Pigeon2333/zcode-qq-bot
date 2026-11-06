@@ -528,7 +528,7 @@ select.mini,input.mini{padding:4px 8px;font-size:12.5px}
 </main>
 </div>
 <div id="toast"></div>
-<div id="splash"><div class="mark">Z/</div><div class="nm">ZCode QQ机器人</div><div class="bar"><i></i></div></div>
+<div id="splash"><div class="mark">Z/</div><div class="nm">ZCode QQ机器人</div><div class="bar"><i></i></div><div class="k" id="splash-step" style="font-size:12.5px;letter-spacing:.3px;min-height:18px"></div></div>
 <script>
 const $=s=>document.querySelector(s);
 let TAB='status';
@@ -585,6 +585,26 @@ async function api(p,opts){
  if(!UI_TOKEN){uiShowUnlock();throw new Error('locked')}
  opts=opts||{};opts.headers=Object.assign({},opts.headers||{},{'X-UI-Token':UI_TOKEN});
  const r=await fetch(p,opts);return r.json()}
+/* ---- 开屏预热 + 页面错误上报 ----
+   _PW：开屏动画期间真加载的数据（url→json），首个消费者取走即删——
+   进应用后对应页面不再重复请求（本地插件列表/语音元信息这类原本每次
+   进页都要等的数据）。页面 JS 崩溃/闪屏卡住会 POST /api/client-error
+   落到服务日志，卡加载类问题不再靠猜。 */
+window._PW={};
+function pwTake(url){const v=window._PW[url];if(v!==undefined)delete window._PW[url];return v}
+async function pwApi(url,fb){
+ const hit=pwTake(url);
+ if(hit!==undefined&&hit!==null)return hit;
+ try{return await api(url)}catch(e){return fb}}
+function clErr(kind,detail){
+ try{
+  const t=UI_TOKEN||localStorage.getItem('zbtk')||new URLSearchParams(location.search).get('tk')||'';
+  fetch('/api/client-error',{method:'POST',headers:{'Content-Type':'application/json','X-UI-Token':t},
+   body:JSON.stringify({kind:String(kind||'?'),detail:String(detail||'').slice(0,500)})}).catch(()=>{});
+ }catch(e){}}
+window.addEventListener('error',function(ev){
+ clErr('js_error',(ev.message||'')+' @'+((ev.filename||'').split('/').pop()||'')+':'+(ev.lineno||0));
+});
 async function uiUnlockWith(t){ // 桌面窗口兜底：带令牌重载并记住
  if(!t)return;
  localStorage.setItem('zbtk',t);location.href='/?tk='+encodeURIComponent(t)}
@@ -605,12 +625,51 @@ async function load(){try{if(TAB==='status')await vStatus();else if(TAB==='runlo
 document.querySelectorAll('#nav button').forEach(b=>b.onclick=async()=>{if(!await dirtyGuard())return;document.querySelectorAll('#nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');TAB=b.dataset.t;if(TAB!=='runlog'&&_runlogTimer){clearInterval(_runlogTimer);_runlogTimer=null}if(TAB!=='devctrl'&&_devCodeTimer){clearInterval(_devCodeTimer);_devCodeTimer=null}if(TAB!=='status'&&_ncTokTimer){clearInterval(_ncTokTimer);_ncTokTimer=null}skeleton();load()});
 const _urlTab=new URLSearchParams(location.search).get('tab');
 if(_urlTab&&TITLES[_urlTab]){TAB=_urlTab;document.querySelectorAll('#nav button').forEach(x=>x.classList.toggle('on',x.dataset.t===_urlTab));}
-/* 启动闪屏：每次新窗口首播，UI 自愈刷新（reload）不重播 */
+/* 启动闪屏：每次新窗口首播，UI 自愈刷新（reload）不重播。
+   动画期间真加载各页数据（_PW 预热，进页即用不再等）+ 底部显示当前步骤；
+   任何一步挂死 10 秒强制放行并上报，绝不挡在门口。 */
 (function(){
  const s=document.getElementById('splash');if(!s)return;
  if(sessionStorage.getItem('splashed')){s.remove();return}
  sessionStorage.setItem('splashed','1');
- setTimeout(()=>{s.classList.add('off');setTimeout(()=>s.remove(),380)},980)
+ const label=document.getElementById('splash-step');
+ const bar=document.querySelector('#splash .bar i');
+ if(bar){bar.style.animation='none';bar.style.width='6%'}
+ function setBar(p){if(bar)bar.style.width=Math.round(4+p*96)+'%'}
+ function step(t){if(label)label.textContent=t}
+ let entered=false;
+ function enter(){
+  if(entered)return;entered=true;
+  step('就绪');
+  s.classList.add('off');setTimeout(()=>s.remove(),380);
+ }
+ const t0=Date.now();
+ const tasks=[
+  ['/api/power/status','正在连接机器人服务…',3000],
+  ['/api/plugins','正在加载插件列表…',6000],
+  ['/api/voice/meta','正在准备语音设置…',6000],
+  ['/api/plugins/market','正在预热插件市场…',5000],
+ ];
+ function withTimeout(p,ms){
+  return Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),ms))]);
+ }
+ (async()=>{
+  for(let i=0;i<tasks.length;i++){
+   const [url,txt,ms]=tasks[i];
+   step(txt);
+   try{window._PW[url]=await withTimeout(api(url).catch(()=>null),ms)}
+   catch(e){window._PW[url]=null}
+   setBar((i+1)/tasks.length);
+  }
+  clErr('splash_ok','预热完成 '+((Date.now()-t0)/1000).toFixed(1)+'s');
+  enter();
+ })();
+ setTimeout(()=>{
+  if(!entered){
+   clErr('splash_stuck','闪屏 10 秒未完成强制放行');
+   enter();
+  }
+ },10000);
 })();
 const _sysDark=window.matchMedia('(prefers-color-scheme: dark)');
 const _themeIco={auto:'&#9681;',light:'&#9728;',dark:'&#9789;'};
@@ -652,7 +711,7 @@ function bootCardHtml(b){
 }
 async function refreshBootCard(){
  try{
-  const b=await api('/api/power/status');
+  const b=await pwApi('/api/power/status',{});
   const el=document.getElementById('bootcard');
   if(el){
    el.outerHTML=bootCardHtml(b);
@@ -672,7 +731,7 @@ async function vStatus(){
  const [d,a,b,c,wd,vi,qc]=await Promise.all([
   api('/api/daemon-status').catch(()=>({ok:false})),
   api('/api/agent-status').catch(()=>({ok:false})),
-  api('/api/power/status').catch(()=>({})),
+  pwApi('/api/power/status',{}).catch(()=>({})),
   api('/api/app-config').catch(()=>({})),
   api('/api/watchdog').catch(()=>({enabled:false})),
   api('/api/app-info').catch(()=>({})),
@@ -2323,8 +2382,8 @@ function plCatBar(cats,cur,fn){
 async function vPlugins(){
  if(_plTab==='market'){await vMarket();return}
  const [r,mk]=await Promise.all([
-  api('/api/plugins').catch(()=>({plugins:[]})),
-  api('/api/plugins/market').catch(()=>({ok:false}))]);
+  pwApi('/api/plugins',{plugins:[]}),
+  pwApi('/api/plugins/market',{ok:false})]);
  const all=r.plugins||[];
  const mkt={};((mk&&mk.plugins)||[]).forEach(p=>{mkt[p.name]=p});
  window._mktMap=mkt;
@@ -2571,10 +2630,10 @@ function voiceProvChange(){
   box.innerHTML='<div class="k" style="margin-bottom:6px">音色（本地音色列表；合成完全免费，引擎需在下方引擎卡里保持启动）</div>'
   +'<select id="v-gvid" onchange="gsvVoiceUse(this.value)">'+(opts||'<option value="">（还没有本地音色——去下方引擎卡「克隆新音色」）</option>')+'</select>'
   +'<div class="k" style="margin-top:6px">列表为空时去引擎卡克隆一个；选中即给机器人用（也可在下方列表里切换）。</div>'}
- else if(k==='edge'){box.innerHTML='<div class="k" style="margin-bottom:4px">音色（微软公共接口，免费）</div><select id="v-ev" onchange="voiceFieldSave({edge_voice:this.value},'Edge 音色已保存（即时生效）')">'+edgeOptsHtml()+'</select>'}
+ else if(k==='edge'){box.innerHTML='<div class="k" style="margin-bottom:4px">音色（微软公共接口，免费）</div><select id="v-ev" onchange="voiceFieldSave({edge_voice:this.value},\'Edge 音色已保存（即时生效）\')">'+edgeOptsHtml()+'</select>'}
  else if(k==='zhipu'){
   box.innerHTML='<div class="k" style="margin-bottom:4px">智谱 API Key（留空 = 复用模型管理里的智谱 Key）</div>'
-  +'<input id="v-zkey" type="password" value="'+esc(String(c.zhipu_key||''))+'" placeholder="留空自动复用" style="max-width:420px" onchange="voiceFieldSave({zhipu_key:this.value.trim()},'智谱 Key 已保存（即时生效；留空=复用模型管理的智谱 Key）')">'
+  +'<input id="v-zkey" type="password" value="'+esc(String(c.zhipu_key||''))+'" placeholder="留空自动复用" style="max-width:420px" onchange="voiceFieldSave({zhipu_key:this.value.trim()},\'智谱 Key 已保存（即时生效；留空=复用模型管理的智谱 Key）\')">'
   +'<input type="hidden" id="v-zv" value="'+esc(String(c.zhipu_voice||'tongtong'))+'">'
   +'<input type="hidden" id="v-zid" value="'+esc(String(c.zhipu_speaker_id||''))+'">'
   +'<div id="zv-list" style="margin-top:12px"></div>'
@@ -2592,14 +2651,14 @@ function voiceProvChange(){
   +'<input id="v-vname" placeholder="音色名（如 爱音）" style="width:130px">'
   +'<button class="act" style="margin:0" onclick="zvCloneSave()">④ 保存到音色列表</button></div></div>'}
  else if(k==='siliconflow'){box.innerHTML='<div style="display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:10px">'
-  +'<div><div class="k" style="margin-bottom:4px">硅基流动 API Key</div><input id="v-sfk" type="password" value="'+esc(String(c.sf_key||''))+'" onchange="voiceFieldSave({sf_key:this.value.trim()},'硅基流动 Key 已保存（即时生效）')"></div>'
-  +'<div><div class="k" style="margin-bottom:4px">模型</div><select id="v-sfm" onchange="voiceFieldSave({sf_model:this.value},'模型已保存（即时生效）')">'+sfMOptsHtml()+'</select></div>'
-  +'<div><div class="k" style="margin-bottom:4px">音色</div><select id="v-sfv" onchange="voiceFieldSave({sf_voice:this.value},'音色已保存（即时生效）')">'+sfVOptsHtml()+'</select></div></div>'}
+  +'<div><div class="k" style="margin-bottom:4px">硅基流动 API Key</div><input id="v-sfk" type="password" value="'+esc(String(c.sf_key||''))+'" onchange="voiceFieldSave({sf_key:this.value.trim()},\'硅基流动 Key 已保存（即时生效）\')"></div>'
+  +'<div><div class="k" style="margin-bottom:4px">模型</div><select id="v-sfm" onchange="voiceFieldSave({sf_model:this.value},\'模型已保存（即时生效）\')">'+sfMOptsHtml()+'</select></div>'
+  +'<div><div class="k" style="margin-bottom:4px">音色</div><select id="v-sfv" onchange="voiceFieldSave({sf_voice:this.value},\'音色已保存（即时生效）\')">'+sfVOptsHtml()+'</select></div></div>'}
  else{box.innerHTML='<div style="display:grid;grid-template-columns:1.6fr 1fr 1fr 1fr;gap:10px">'
-  +'<div><div class="k" style="margin-bottom:4px">接口地址（https，含 /v1/）</div><input id="v-cb" value="'+esc(String(c.custom_base||''))+'" placeholder="https://api.openai.com/v1/" onchange="voiceFieldSave({custom_base:this.value.trim()},'接口地址已保存（即时生效）')"></div>'
-  +'<div><div class="k" style="margin-bottom:4px">API Key</div><input id="v-ck" type="password" value="'+esc(String(c.custom_key||''))+'" onchange="voiceFieldSave({custom_key:this.value.trim()},'Key 已保存（即时生效）')"></div>'
-  +'<div><div class="k" style="margin-bottom:4px">模型</div><input id="v-cm" value="'+esc(String(c.custom_model||'tts-1'))+'" onchange="voiceFieldSave({custom_model:this.value.trim()},'模型已保存（即时生效）')"></div>'
-  +'<div><div class="k" style="margin-bottom:4px">音色</div><input id="v-cv" value="'+esc(String(c.custom_voice||'alloy'))+'" onchange="voiceFieldSave({custom_voice:this.value.trim()},'音色已保存（即时生效）')"></div></div>'}
+  +'<div><div class="k" style="margin-bottom:4px">接口地址（https，含 /v1/）</div><input id="v-cb" value="'+esc(String(c.custom_base||''))+'" placeholder="https://api.openai.com/v1/" onchange="voiceFieldSave({custom_base:this.value.trim()},\'接口地址已保存（即时生效）\')"></div>'
+  +'<div><div class="k" style="margin-bottom:4px">API Key</div><input id="v-ck" type="password" value="'+esc(String(c.custom_key||''))+'" onchange="voiceFieldSave({custom_key:this.value.trim()},\'Key 已保存（即时生效）\')"></div>'
+  +'<div><div class="k" style="margin-bottom:4px">模型</div><input id="v-cm" value="'+esc(String(c.custom_model||'tts-1'))+'" onchange="voiceFieldSave({custom_model:this.value.trim()},\'模型已保存（即时生效）\')"></div>'
+  +'<div><div class="k" style="margin-bottom:4px">音色</div><input id="v-cv" value="'+esc(String(c.custom_voice||'alloy'))+'" onchange="voiceFieldSave({custom_voice:this.value.trim()},\'音色已保存（即时生效）\')"></div></div>'}
  // 引擎卡折叠：只在 GPT-SoVITS 供应商下展开
  const gwrap=document.getElementById('gsv-card-wrap');
  if(gwrap)gwrap.style.display=(k==='gsv')?'':'none';
@@ -2825,12 +2884,12 @@ function vGsvCardInstalled(m,g){
   +'<label style="margin-left:8px"><input type="checkbox" id="v-gauto" '+(c.gsv_autostart?'checked':'')+' onchange="gsvAutoSet(this.checked)"> 随应用自动启动引擎</label>'
   +(c.gsv_autostart?'<span class="k">（已开启）</span>':'')+'</div>'
   +'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:10px">'
-  +'<div><div class="k" style="margin-bottom:4px">参考语言（参考音频说的语言）</div><select id="v-gplang" onchange="voiceFieldSave({gsv_prompt_lang:this.value},'参考语言已保存（即时生效）')">'
+  +'<div><div class="k" style="margin-bottom:4px">参考语言（参考音频说的语言）</div><select id="v-gplang" onchange="voiceFieldSave({gsv_prompt_lang:this.value},\'参考语言已保存（即时生效）\')">'
   +'<option value="zh"'+((c.gsv_prompt_lang||'zh')==='zh'?' selected':'')+'>中文</option>'
   +'<option value="ja"'+((c.gsv_prompt_lang)==='ja'?' selected':'')+'>日文</option>'
   +'<option value="en"'+((c.gsv_prompt_lang)==='en'?' selected':'')+'>英文</option></select></div>'
-  +'<div><div class="k" style="margin-bottom:4px">整合包目录（默认自动探测 E:\\GPTSoVITS）</div><input id="v-gdir" value="'+esc(String(c.gsv_dir||''))+'" placeholder="留空自动探测" onchange="voiceFieldSave({gsv_dir:this.value.trim()},'整合包目录已保存')"></div>'
-  +'<div><div class="k" style="margin-bottom:4px">端口</div><input id="v-gport" value="'+esc(String(c.gsv_port||'9880'))+'" onchange="voiceFieldSave({gsv_port:this.value.trim()},'端口已保存（重启引擎后生效）')"></div></div>'
+  +'<div><div class="k" style="margin-bottom:4px">整合包目录（默认自动探测 E:\\GPTSoVITS）</div><input id="v-gdir" value="'+esc(String(c.gsv_dir||''))+'" placeholder="留空自动探测" onchange="voiceFieldSave({gsv_dir:this.value.trim()},\'整合包目录已保存\')"></div>'
+  +'<div><div class="k" style="margin-bottom:4px">端口</div><input id="v-gport" value="'+esc(String(c.gsv_port||'9880'))+'" onchange="voiceFieldSave({gsv_port:this.value.trim()},\'端口已保存（重启引擎后生效）\')"></div></div>'
  +'<div style="margin-top:10px;border:1px dashed var(--line);border-radius:8px;padding:10px">'
  +'<div class="k" style="margin-bottom:6px"><b>克隆新音色</b> · ① 选文件 → ② 开始克隆 → ③ 试听 → ④ 命名保存（完全免费）</div>'
  +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
@@ -2943,7 +3002,7 @@ async function gsvVoiceDel(id,name){
 }
 let _VM2OLD=null;
 async function vVoice(){
- const m=await api('/api/voice/meta').catch(()=>({ok:false}));
+ const m=await pwApi('/api/voice/meta',{ok:false});
  if(!m||m.ok===false){$('#view').innerHTML=head('语音引擎数据加载失败，刷新重试')+'<div class="card">加载失败：'+esc((m&&m.error)||'')+'</div>';return}
  _VM2=m;_VM=m;   // _VM 同步：voiceProvChange/voiceCollect 等共用函数读它
  const g=m.gsv||{};
@@ -2961,7 +3020,7 @@ function vVoiceCards(m,g){
  const gsvCard=(g.dir_ok?vGsvCardInstalled(m,g):vGsvCardTeaser());
  // 顺序：开关策略 → 语音来源与音色 → 本地引擎（非 gsv 供应商时折叠）→ 计费说明（垫底）
  const provCard='<div class="card"><div class="k" style="margin-bottom:8px"><b>语音来源与音色</b>（供应商可随时换，互不影响）</div>'
- +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="k">供应商</span><select id="v-prov" onchange="voiceProvChange();voiceFieldSave(null,'语音来源已保存（即时生效）')">'+vopts+'</select></div>'
+ +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="k">供应商</span><select id="v-prov" onchange="voiceProvChange();voiceFieldSave(null,\'语音来源已保存（即时生效）\')">'+vopts+'</select></div>'
  +'<div class="k" id="v-bill" style="margin-top:8px;padding:8px;border:1px solid var(--line);border-radius:8px"></div>'
  +'<div id="v-provbox" style="margin-top:10px"></div>'
  +'<div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap">'
@@ -5828,6 +5887,13 @@ class UiHandler(BaseHTTPRequestHandler):
             return self._reply(200, {"ok": True, "voice_id": vid,
                                      "voice_name_used": used,
                                      "output_file_id": ofid})
+        if u.path == "/api/client-error":
+            # 页面 JS 错误/闪屏卡住上报：只落服务日志（stdout→日志文件），
+            # 让「卡加载/白屏」类问题有第一现场，不再靠猜
+            print("[CLIENT_ERR] %s %s" % (str(body.get("kind") or "?")[:30],
+                                          str(body.get("detail") or "")[:400]),
+                  flush=True)
+            return self._reply(200, {"ok": True})
         if u.path == "/api/voice/zvoice-save":
             # 保存克隆音色到列表（统一克隆流程第 ④ 步：试听满意后命名保存）
             import qq_tts as _T
