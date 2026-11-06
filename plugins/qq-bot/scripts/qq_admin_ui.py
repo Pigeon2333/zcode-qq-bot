@@ -2580,7 +2580,7 @@ function voicePage(d){
  +'<div class="k" id="v-pmsg" style="margin-top:6px"></div></div>'
  +'<div class="card"><div class="k"><b>计费说明</b>（各家语音合成的收费情况，选前看清楚）</div>'
  +prov.map(k=>'<div style="margin-top:8px"><b>'+esc(P[k].label)+'</b><div class="k" style="margin-top:3px">'+esc(P[k].billing)+'</div></div>').join('')
- +'<div class="k" style="margin-top:10px">克隆专属音色（智谱，收费）：在 bigmodel.cn 控制台或开放平台用 3 秒以上人声样本创建复刻音色，把得到的 speaker_id 填到智谱栏即可——之后所有语音都用这个音色。</div></div>';
+ +'<div class="k" style="margin-top:10px">克隆专属音色（智谱，收费）：供应商切到智谱，在「克隆新音色」上传 3 秒以上人声样本——克隆、试听、命名保存全在本页完成，保存后与预设音色同列管理。</div></div>';
  // 必须在 return 之前调度（写在 return 后是死代码，永远不会执行——
  // 「首次进入智谱设置区空白、要切走再切回来才出现」就是它）
  setTimeout(voiceProvChange,0);
@@ -2596,26 +2596,28 @@ function voiceProvChange(){
   const cur=String(((_VM.config)||{}).gsv_voice_id||'');
   const opts=vs.map(v=>'<option value="'+esc(v.id)+'" '+(v.id===cur?'selected':'')+'>'+esc(v.name||v.id)+(v.id===cur?'（使用中）':'')+'</option>').join('');
   box.innerHTML='<div class="k" style="margin-bottom:6px">音色（本地音色列表；合成完全免费，引擎需在下方引擎卡里保持启动）</div>'
-  +'<select id="v-gvid">'+(opts||'<option value="">（还没有本地音色——去下方引擎卡「克隆新音色」）</option>')+'</select>'
-  +'<div class="k" style="margin-top:6px">列表为空时去引擎卡克隆一个；选中的音色即时生效。</div>'
-  +'<input id="v-gref" type="hidden" value="'+esc(String(((_VM.config)||{}).gsv_ref_wav||''))+'">'
-  +'<input id="v-gptext" type="hidden" value="'+esc(String(((_VM.config)||{}).gsv_prompt_text||''))+'">'}
+  +'<select id="v-gvid" onchange="gsvVoiceUse(this.value)">'+(opts||'<option value="">（还没有本地音色——去下方引擎卡「克隆新音色」）</option>')+'</select>'
+  +'<div class="k" style="margin-top:6px">列表为空时去引擎卡克隆一个；选中即给机器人用（也可在下方列表里切换）。</div>'}
  else if(k==='edge'){box.innerHTML='<div class="k" style="margin-bottom:4px">音色（微软公共接口，免费）</div><select id="v-ev">'+edgeOptsHtml()+'</select>'}
- else if(k==='zhipu'){box.innerHTML='<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'
-  +'<div><div class="k" style="margin-bottom:4px">预设音色</div><select id="v-zv">'+zzOptsHtml()+'</select></div>'
-  +'<div><div class="k" style="margin-bottom:4px">克隆音色 speaker_id（填了优先生效）</div><input id="v-zsid" value="'+esc(String(c.zhipu_speaker_id||''))+'" placeholder="复刻得到的 speaker_id"></div>'
-  +'<div style="grid-column:1/-1"><div class="k" style="margin-bottom:4px">智谱 API Key（留空 = 复用模型管理里的智谱 Key）</div><input id="v-zkey" type="password" value="'+esc(String(c.zhipu_key||''))+'" placeholder="留空自动复用"></div>'
-  +'<div style="grid-column:1/-1"><div class="k" style="margin-bottom:6px"><b>我的克隆音色</b>（克隆完成后自动入列；点「启用」填入 speaker_id）</div><div id="zv-list" class="k">加载中…</div></div>'
-  +'<div style="grid-column:1/-1;border:1px dashed var(--line);border-radius:8px;padding:10px">'
-  +'<div class="k" style="margin-bottom:6px"><b>一键克隆音色</b> · 选文件 → 自动截取 → 上传克隆 → 自动填入 → 试听</div>'
+ else if(k==='zhipu'){
+  box.innerHTML='<div class="k" style="margin-bottom:4px">智谱 API Key（留空 = 复用模型管理里的智谱 Key）</div>'
+  +'<input id="v-zkey" type="password" value="'+esc(String(c.zhipu_key||''))+'" placeholder="留空自动复用" style="max-width:420px">'
+  +'<input type="hidden" id="v-zv" value="'+esc(String(c.zhipu_voice||'tongtong'))+'">'
+  +'<input type="hidden" id="v-zid" value="'+esc(String(c.zhipu_speaker_id||''))+'">'
+  +'<div id="zv-list" style="margin-top:12px"></div>'
+  +'<div style="margin-top:12px;border:1px dashed var(--line);border-radius:8px;padding:10px">'
+  +'<div class="k" style="margin-bottom:6px"><b>克隆新音色</b> · ① 选文件 → ② 开始克隆 → ③ 试听 → ④ 命名保存（克隆与合成都按智谱计费）</div>'
   +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
   +'<input type="file" id="v-file" accept="audio/*,video/*" style="flex:1;min-width:180px">'
   +'<label class="k">起始 <input id="v-start" type="number" min="0" step="1" value="0" style="width:58px"> 秒</label>'
   +'<label class="k">时长 <input id="v-dur" type="number" min="3" max="30" step="1" value="12" style="width:52px"> 秒</label>'
-  +'<input id="v-vname" placeholder="音色名（如 爱音）" style="width:130px">'
-  +'<button class="act" style="margin:0" onclick="voiceClone()">开始克隆</button></div>'
+  +'<button class="act" style="margin:0" onclick="voiceClone()">② 开始克隆</button></div>'
   +'<input id="v-sample" placeholder="可选：这段音频里说的话（填了克隆更像）" style="width:100%;margin-top:6px">'
-  +'<div class="k" id="v-cmsg" style="margin-top:6px">支持 mp4/mov/mp3/m4a/wav；页面自动截取所选片段转 16kHz 单声道 WAV 再上传（智谱限 3-30 秒、≤10MB）。克隆与合成都计费。</div></div></div>'}
+  +'<div class="k" id="v-cmsg" style="margin-top:6px">支持 mp4/mov/mp3/m4a/wav；自动截取所选片段转 16kHz 单声道 WAV 上传（智谱限 3-30 秒、≤10MB）。</div>'
+  +'<div id="v-csave" style="display:none;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px;padding-top:8px;border-top:1px solid var(--line)">'
+  +'<span class="k">✓ 克隆成功——试听没问题就起名保存：</span>'
+  +'<input id="v-vname" placeholder="音色名（如 爱音）" style="width:130px">'
+  +'<button class="act" style="margin:0" onclick="zvCloneSave()">④ 保存到音色列表</button></div></div>'}
  else if(k==='siliconflow'){box.innerHTML='<div style="display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:10px">'
   +'<div><div class="k" style="margin-bottom:4px">硅基流动 API Key</div><input id="v-sfk" type="password" value="'+esc(String(c.sf_key||''))+'"></div>'
   +'<div><div class="k" style="margin-bottom:4px">模型</div><select id="v-sfm">'+sfMOptsHtml()+'</select></div>'
@@ -2633,32 +2635,57 @@ function voiceProvChange(){
  zvRender();
 }
 function edgeOptsHtml(){return(_VM.edge_voices||[]).map(v=>'<option value="'+esc(v[1])+'" '+(v[1]===((_VM.config||{}).edge_voice||'zh-CN-XiaoxiaoNeural')?'selected':'')+'>'+esc(v[0])+'</option>').join('')}
-// 智谱克隆音色列表：渲染/启用/删除（读 _VM.config.zhipu_saved_voices）
+// 智谱音色列表（统一：预设 + 克隆都在一个列表；使用中高亮不消失）
 function zvRender(){
  const box=document.getElementById('zv-list');
  if(!box)return;
- const vs=(_VM.config||{}).zhipu_saved_voices||[];
- const cur=String(((_VM.config)||{}).zhipu_speaker_id||'');
- if(!vs.length){box.innerHTML='（还没有——上面「一键克隆」一个，完成后自动入列）';return}
- box.innerHTML=vs.map(v=>'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:5px 0;padding:7px;border:1px solid var(--line);border-radius:6px">'
-  +'<b>'+esc(v.name||'(未命名)')+'</b>'
-  +(v.speaker_id===cur?'<span class="badge" style="background:#e6f7e6;color:#1a7f37">使用中</span>':'')
-  +'<span class="k mono" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(v.speaker_id)+'">'+esc(String(v.speaker_id).slice(0,18))+'…</span>'
-  +'<button class="act ghost" style="margin:0;padding:3px 10px;font-size:12px" onclick="zvUse(\''+esc(v.speaker_id)+'\',\''+esc(v.name||v.speaker_id)+'\')">启用</button>'
-  +'<button class="act ghost danger" style="margin:0;padding:3px 10px;font-size:12px" onclick="zvDel(\''+esc(v.speaker_id)+'\',\''+esc(v.name||v.speaker_id)+'\')">移除</button></div>').join('')
-  +'<div class="k" style="margin-top:6px">「移除」只删本地列表条目；平台侧音色可在 bigmodel.cn 控制台管理。</div>';
+ const c=_VM.config||{};
+ const curSid=String(c.zhipu_speaker_id||'');
+ const curPre=String(c.zhipu_voice||'tongtong');
+ const useClone=!!curSid;
+ const clones=c.zhipu_saved_voices||[];
+ const rows=[];
+ (_VM.zhipu_voices||[]).forEach(p=>{rows.push({name:p[0],tag:'预设',val:p[1],active:!useClone&&p[1]===curPre,clone:false})});
+ clones.forEach(v=>{rows.push({name:v.name||'(未命名)',tag:'克隆',sid:String(v.speaker_id||''),active:useClone&&String(v.speaker_id)===curSid,clone:true})});
+ box.innerHTML='<div class="k" style="margin-bottom:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b style="font-size:15px">音色列表</b>'
+  +'<span class="badge" style="background:var(--tint);color:var(--dim)">预设 '+rows.filter(r=>!r.clone).length+' · 克隆 '+clones.length+'</span>'
+  +'<span class="k">点「启用」给机器人用，使用中的音色会高亮标记</span></div>'
+  +'<div style="display:grid;gap:6px">'+rows.map(r=>
+   '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 10px;border:1.5px solid '+(r.active?'#1a7f37':'var(--line)')+';border-radius:8px;background:'+(r.active?'#f0faf0':'transparent')+'">'
+   +'<b style="min-width:56px">'+esc(r.name)+'</b>'
+   +'<span class="badge" style="'+(r.clone?'background:#fff4e0;color:#b25e09':'background:var(--tint);color:var(--dim)')+'">'+r.tag+'</span>'
+   +(r.active?'<span class="badge" style="background:#1a7f37;color:#fff">✓ 使用中</span>':'')
+   +(r.clone&&r.sid?'<span class="k mono" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:170px" title="'+esc(r.sid)+'">'+esc(r.sid.slice(0,16))+'…</span>':'')
+   +'<span style="margin-left:auto;display:flex;gap:6px">'
+   +'<button class="act ghost" style="margin:0;padding:3px 10px;font-size:12px" onclick="zvPreview(\''+esc(r.clone?r.sid:'')+'\',\''+esc(r.clone?'':r.val)+'\')">试听</button>'
+   +(r.active?'':'<button class="act" style="margin:0;padding:3px 12px;font-size:12px" onclick="zvUse(\''+esc(r.clone?r.sid:r.val)+'\','+(r.clone?'true':'false')+',\''+esc(r.name)+'\')">启用</button>')
+   +(r.clone?'<button class="act ghost danger" style="margin:0;padding:3px 10px;font-size:12px" onclick="zvDel(\''+esc(r.sid)+'\',\''+esc(r.name)+'\')">移除</button>':'')
+   +'</span></div>').join('')+'</div>'
+  +'<div class="k" style="margin-top:6px">「移除」只删本地列表条目；平台侧音色在 bigmodel.cn 控制台管理。预设不删、随官方更新。</div>';
 }
-async function zvUse(sid,name){
- const sid_el=document.getElementById('v-zsid');if(sid_el)sid_el.value=sid;
- const r=await api('/api/voice/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voice:Object.assign(voiceCollect(),{zhipu_speaker_id:sid})})}).catch(()=>({ok:false,error:'请求失败'}));
+async function zvUse(id,isClone,name){
+ const zv=document.getElementById('v-zv'),zid=document.getElementById('v-zid');
+ if(isClone){if(zid)zid.value=id;}
+ else{if(zv)zv.value=id;if(zid)zid.value='';}
+ const r=await api('/api/voice/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voice:Object.assign(voiceCollect(),{zhipu_voice:(zv?zv.value:((_VM.config||{}).zhipu_voice||'tongtong')),zhipu_speaker_id:(zid?zid.value:'')})})}).catch(()=>({ok:false,error:'请求失败'}));
  if(!r||r.ok===false){toast('启用失败：'+((r&&r.error)||''),false);return}
  if(r.config)_VM.config=r.config;
- toast('已启用「'+name+'」');
+ toast('已启用「'+name+'」——机器人语音现在用这个音色');
  zvRender();
+}
+async function zvPreview(sid,pval){
+ toast('合成试听中…（按智谱计费）');
+ const vv={provider:'zhipu'};
+ if(sid)vv.zhipu_speaker_id=sid;else vv.zhipu_voice=pval;
+ const r=await api('/api/voice/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voice:vv,text:'你好呀，我是你的语音小助手，听听这个声音怎么样？'})}).catch(()=>({ok:false,error:'请求失败'}));
+ if(!r||r.ok===false){toast('试听失败：'+((r&&r.error)||''),false);return}
+ const au=document.getElementById('v-audio');
+ au.src=r.audio;au.style.display='block';au.play().catch(()=>{});
 }
 async function zvDel(sid,name){
  if(!await dlgConfirm({title:'从列表移除「'+name+'」？',body:'仅删除本地列表条目，不影响智谱平台侧的音色。',danger:true,okText:'移除'}))return;
- await api('/api/voice/zvoice-del',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({speaker_id:sid})});
+ await api('/api/voice/zvoice-del',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({speaker_id:sid})}).catch(()=>({}));
+ if(_VM.config)_VM.config.zhipu_saved_voices=((_VM.config.zhipu_saved_voices)||[]).filter(v=>String(v.speaker_id)!==sid);
  toast('已移除「'+name+'」');
  zvRender();
 }
@@ -2675,18 +2702,25 @@ function voiceCollect(){
   keywords:document.getElementById('v-kw').value.split(/[、,，]/).map(x=>x.trim()).filter(Boolean),
   prob:(parseFloat(document.getElementById('v-prob').value)||0)/100};
  const g=id=>{const el=document.getElementById(id);return el?el.value:''};
- v.edge_voice=g('v-ev');v.zhipu_voice=g('v-zv');v.zhipu_speaker_id=g('v-sid')||g('v-zsid');
+ // 跨供应商字段：当前供应商的表单不存在时沿用已存配置——切到别家再
+ // 「保存设置」不该把这家选好的音色/Key 清掉（曾把 edge/zhipu 音色抹回默认）
+ const gv=(id,cfgKey,dft)=>{const el=document.getElementById(id);return el?el.value:String(((_VM.config||{})[cfgKey])??dft??'')};
+ v.edge_voice=gv('v-ev','edge_voice','zh-CN-XiaoxiaoNeural');
+ v.zhipu_voice=gv('v-zv','zhipu_voice','tongtong');
+ v.zhipu_speaker_id=gv('v-zid','zhipu_speaker_id','');
  // Key fallback：表单字段可能还没渲染（首次加载 zhipu 表单区时序问题），
  // 读不到就用已保存的配置值（用户已保存过 Key 的话）
  v.zhipu_key=g('v-zkey')||((_VM.config||{}).zhipu_key||'');
  v.sf_key=g('v-sfk')||((_VM.config||{}).sf_key||'');
- v.sf_model=g('v-sfm');v.sf_voice=g('v-sfv');
+ v.sf_model=gv('v-sfm','sf_model','FunAudioLLM/cosyvoice2-0.5B');
+ v.sf_voice=gv('v-sfv','sf_voice','anna');
  v.custom_base=g('v-cb')||((_VM.config||{}).custom_base||'');
  v.custom_key=g('v-ck')||((_VM.config||{}).custom_key||'');
- v.custom_model=g('v-cm');v.custom_voice=g('v-cv');
- v.gsv_dir=g('v-gdir');v.gsv_port=g('v-gport');
- v.gsv_voice_id=g('v-gvid')||((_VM.config||{}).gsv_voice_id||'');
- v.gsv_ref_wav=g('v-gref');v.gsv_prompt_text=g('v-gptext');v.gsv_prompt_lang=g('v-gplang');
+ v.custom_model=gv('v-cm','custom_model','tts-1');
+ v.custom_voice=gv('v-cv','custom_voice','alloy');
+ v.gsv_dir=gv('v-gdir','gsv_dir','');v.gsv_port=gv('v-gport','gsv_port','9880');
+ v.gsv_voice_id=gv('v-gvid','gsv_voice_id','');
+ v.gsv_ref_wav=gv('v-gref','gsv_ref_wav','');v.gsv_prompt_text=gv('v-gptext','gsv_prompt_text','');v.gsv_prompt_lang=gv('v-gplang','gsv_prompt_lang','zh');
  return v}
 async function voiceSave(){
  const r=await api('/api/voice/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voice:voiceCollect()})}).catch(()=>({ok:false,error:'请求失败'}));
@@ -2719,15 +2753,14 @@ function vcWav(ab,start,dur){
    res(new Uint8Array(buf));
   }).catch(rej);
  })}
+let __ZVSID=null;   // 刚克隆成功、待命名保存的智谱音色 speaker_id
 async function voiceClone(){
  const msg=document.getElementById('v-cmsg');
  const f=(document.getElementById('v-file').files||[])[0];
- if(!f){msg.textContent='先选一个音频或视频文件';return}
+ if(!f){msg.textContent='① 先选一个音频或视频文件';return}
  if(f.size>120*1024*1024){msg.textContent='文件太大（超过 120MB），请先剪出 10-30 秒再上传';return}
  const start=Math.max(0,parseFloat(document.getElementById('v-start').value)||0);
  const dur=Math.min(30,Math.max(3,parseFloat(document.getElementById('v-dur').value)||12));
- const name=(document.getElementById('v-vname').value||'').trim();
- if(!name){msg.textContent='给这个音色起个名字（如 爱音）';return}
  msg.textContent='① 解码音频中…（长视频需要几秒）';
  let wav;
  try{
@@ -2738,15 +2771,39 @@ async function voiceClone(){
   if(ac.close)ac.close();
   if(!ab||!ab.duration){msg.textContent='解码失败：浏览器读不出这段音频';return}
   if(ab.duration<start+1){msg.textContent='起始位置超出音频时长（该文件约 '+Math.round(ab.duration)+' 秒）';return}
-  msg.textContent='② 截取 '+dur+' 秒并转 WAV…';
+  msg.textContent='① 截取 '+dur+' 秒并转 WAV…';
   wav=await vcWav(ab,start,dur);
  }catch(e){msg.textContent='音频解码失败：'+((e&&e.message)||e)+'。换 mp3/wav/m4a 试试，或先用工具剪一段。';return}
- msg.textContent='③ 上传并克隆中…（约 10-30 秒，按智谱计费）';
- const r=await api('/api/voice/clone',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voice:voiceCollect(),audio:vcB64(wav),voice_name:name,sample_text:document.getElementById('v-sample').value,preview_text:'你好呀，我是你的语音助手，听听这个声音怎么样？'})}).catch(()=>({ok:false,error:'请求失败（克隆需要 0.4.12 及以上版本的应用）'}));
+ msg.textContent='② 上传并克隆中…（约 10-30 秒，按智谱计费）';
+ const r=await api('/api/voice/clone',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voice:voiceCollect(),audio:vcB64(wav),sample_text:document.getElementById('v-sample').value,preview_text:'你好呀，我是你的语音小助手，听听这个声音怎么样？'})}).catch(()=>({ok:false,error:'请求失败'}));
  if(!r||r.ok===false){msg.textContent='克隆失败：'+((r&&r.error)||'未知错误');return}
- const sid=document.getElementById('v-zsid');if(sid)sid.value=r.voice_id;
- msg.textContent='✓ 克隆完成（'+r.voice_id+'），已填入并保存。点上面「试听」听听效果。';
- await voiceSave();
+ __ZVSID=r.voice_id;
+ msg.textContent='✓ 克隆成功，③ 正在用新音色合成试听…';
+ const pr=await api('/api/voice/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voice:{provider:'zhipu',zhipu_speaker_id:__ZVSID},text:'你好呀，我是你的语音小助手，听听这个声音怎么样？'})}).catch(()=>({ok:false}));
+ if(pr&&pr.ok!==false){
+  const au=document.getElementById('v-audio');
+  au.src=pr.audio;au.style.display='block';au.play().catch(()=>{});
+  msg.textContent='✓ 克隆完成，试听播放中（上方播放器可反复听）。满意就 ④ 起名保存；不满意调起始/时长重新克隆（会再次计费）。';
+ }else{
+  msg.textContent='✓ 克隆完成（试听失败：'+((pr&&pr.error)||'网络问题')+'）。可稍后在音色列表里试听，或直接 ④ 起名保存。';
+ }
+ const sv=document.getElementById('v-csave');
+ if(sv)sv.style.display='flex';
+ const ne=document.getElementById('v-vname');if(ne)ne.focus();
+}
+async function zvCloneSave(){
+ const msg=document.getElementById('v-cmsg');
+ const name=(document.getElementById('v-vname').value||'').trim();
+ if(!__ZVSID){msg.textContent='先②开始克隆，成功后再保存';return}
+ if(!name){msg.textContent='④ 先填音色名再保存';return}
+ const r=await api('/api/voice/zvoice-save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,speaker_id:__ZVSID})}).catch(()=>({ok:false,error:'请求失败'}));
+ if(!r||r.ok===false){msg.textContent='保存失败：'+((r&&r.error)||'');return}
+ __ZVSID=null;
+ const sv=document.getElementById('v-csave');if(sv)sv.style.display='none';
+ const m=await api('/api/voice/meta').catch(()=>null);
+ if(m&&m.ok!==false&&m.config)_VM.config=m.config;
+ msg.textContent='✓ 已保存「'+name+'」到音色列表。在列表里「启用」即可给机器人用。';
+ zvRender();
 }
 // ---------------- 语音消息页（0.5.0 内置；原语音回复插件功能整体搬迁至此） ----------------
 let _VM2=null;
@@ -2796,20 +2853,20 @@ function vGsvCardInstalled(m,g){
   +'<option value="en"'+((c.gsv_prompt_lang)==='en'?' selected':'')+'>英文</option></select></div>'
   +'<div><div class="k" style="margin-bottom:4px">整合包目录（默认自动探测 E:\\GPTSoVITS）</div><input id="v-gdir" value="'+esc(String(c.gsv_dir||''))+'" placeholder="留空自动探测"></div>'
   +'<div><div class="k" style="margin-bottom:4px">端口</div><input id="v-gport" value="'+esc(String(c.gsv_port||'9880'))+'"></div></div>'
-  +'<div style="margin-top:10px;border:1px dashed var(--line);border-radius:8px;padding:10px">'
-  +'<div class="k" style="margin-bottom:6px"><b>克隆新音色</b> · 选文件 → 截取 → <b>试听</b> → 满意再命名保存（完全免费）</div>'
-  +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
-  +'<input type="file" id="v-gfile" accept="audio/*,video/*" style="flex:1;min-width:180px">'
-  +'<label class="k">起始 <input id="v-gstart" type="number" min="0" step="1" value="0" style="width:58px"> 秒</label>'
-  +'<label class="k">时长 <input id="v-gdur" type="number" min="3" max="10" step="1" value="8" style="width:52px"> 秒</label></div>'
-  +'<input id="v-gptext" placeholder="强烈建议填：这段音频里说的话（语言要与上方参考语言一致）" style="width:100%;margin-top:6px">'
-  +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px">'
-  +'<button class="act ghost" style="margin:0" onclick="gsvVoiceTry()">① 试听效果</button>'
-  +'<input id="v-gname" placeholder="② 满意后填音色名（如 安和昴）" style="flex:1;min-width:150px">'
-  +'<button class="act" style="margin:0" onclick="gsvVoiceSave()">③ 保存到音色列表</button></div>'
-  +'<div class="k" id="v-gmsg" style="margin-top:6px">⚠ 参考音频限 <b>3-10 秒</b>（引擎硬限制——零样本克隆取一小段最代表音色的即可，更长不是更好；大量素材想利用需走微调训练）。样本语言要与参考语言一致。</div></div>'
-  +'<div style="margin-top:10px"><div class="k" style="margin-bottom:6px"><b>本地音色列表</b>（选中=给机器人用；合成免费）</div><div id="gsv-vlist" class="k">加载中…</div></div>'
-  +'</div>';
+ +'<div style="margin-top:10px;border:1px dashed var(--line);border-radius:8px;padding:10px">'
+ +'<div class="k" style="margin-bottom:6px"><b>克隆新音色</b> · ① 选文件 → ② 开始克隆 → ③ 试听 → ④ 命名保存（完全免费）</div>'
+ +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+ +'<input type="file" id="v-gfile" accept="audio/*,video/*" style="flex:1;min-width:180px">'
+ +'<label class="k">起始 <input id="v-gstart" type="number" min="0" step="1" value="0" style="width:58px"> 秒</label>'
+ +'<label class="k">时长 <input id="v-gdur" type="number" min="3" max="10" step="1" value="8" style="width:52px"> 秒</label>'
+ +'<button class="act ghost" style="margin:0" onclick="gsvVoiceTry()">② 开始克隆</button></div>'
+ +'<input id="v-gptext" placeholder="强烈建议填：这段音频里说的话（语言要与上方参考语言一致）" style="width:100%;margin-top:6px">'
+ +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px">'
+ +'<input id="v-gname" placeholder="④ 满意后填音色名（如 安和昴）" style="flex:1;min-width:150px">'
+ +'<button class="act" style="margin:0" onclick="gsvVoiceSave()">④ 保存到音色列表</button></div>'
+ +'<div class="k" id="v-gmsg" style="margin-top:6px">⚠ 参考音频限 <b>3-10 秒</b>（引擎硬限制——零样本克隆取一小段最代表音色的即可，更长不是更好；大量素材想利用需走微调训练）。样本语言要与参考语言一致。③ 试听=点②后自动合成播放，可反复听。</div></div>'
+ +'<div style="margin-top:10px"><div class="k" style="margin-bottom:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b style="font-size:15px">音色列表</b><span class="k">（克隆保存的音色都在这；点「启用」给机器人用，使用中高亮）</span></div><div id="gsv-vlist"></div></div>'
+ +'</div>';
 }
 async function gsvAutoSet(on){
  on=!!on;
@@ -2827,16 +2884,17 @@ async function gsvVoicesLoad(){
  const m=await api('/api/voice/meta').catch(()=>({ok:false}));
  const vs=(m&&m.gsv_voices)||[];
  const cur=((m&&m.config)||{}).gsv_voice_id||'';
- if(!vs.length){box.innerHTML='（还没有本地音色——上面克隆一个）';return}
- box.innerHTML=vs.map(v=>'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:5px 0;padding:7px;border:1px solid var(--line);border-radius:6px">'
-  +'<b>'+esc(v.name||'(未命名)')+'</b>'
-  +(v.id===cur?'<span class="badge" style="background:#e6f7e6;color:#1a7f37">使用中</span>':'')
+ if(!vs.length){box.innerHTML='<div class="k" style="padding:8px;border:1px dashed var(--line);border-radius:8px">（还没有本地音色——上面「克隆新音色」做一个，完全免费）</div>';return}
+ box.innerHTML='<div style="display:grid;gap:6px">'+vs.map(v=>'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 10px;border:1.5px solid '+(v.id===cur?'#1a7f37':'var(--line)')+';border-radius:8px;background:'+(v.id===cur?'#f0faf0':'transparent')+'">'
+  +'<b style="min-width:56px">'+esc(v.name||'(未命名)')+'</b>'
+  +(v.id===cur?'<span class="badge" style="background:#1a7f37;color:#fff">✓ 使用中</span>':'')
   +(v.dur?'<span class="k">参考 '+v.dur+'s</span>':'')
   +(v.warn?'<span class="k" style="color:#b42318">⚠ '+esc(v.warn)+'</span>':'')
   +'<span class="k" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(v.prompt_text||'（未填原文）')+'</span>'
+  +'<span style="margin-left:auto;display:flex;gap:6px">'
   +'<button class="act ghost" style="margin:0;padding:3px 10px;font-size:12px" onclick="gsvVoicePreview(\''+esc(v.id)+'\')">试听</button>'
-  +'<button class="act ghost" style="margin:0;padding:3px 10px;font-size:12px" onclick="gsvVoiceUse(\''+esc(v.id)+'\')">启用</button>'
-  +'<button class="act ghost danger" style="margin:0;padding:3px 10px;font-size:12px" onclick="gsvVoiceDel(\''+esc(v.id)+'\',\''+esc(v.name||v.id)+'\')">删除</button></div>').join('')
+  +(v.id===cur?'':'<button class="act" style="margin:0;padding:3px 12px;font-size:12px" onclick="gsvVoiceUse(\''+esc(v.id)+'\')">启用</button>')
+  +'<button class="act ghost danger" style="margin:0;padding:3px 10px;font-size:12px" onclick="gsvVoiceDel(\''+esc(v.id)+'\',\''+esc(v.name||v.id)+'\')">删除</button></span></div>').join('')+'</div>'
   +'<div class="k" style="margin-top:6px">删除不可恢复；删「使用中」的音色机器人自动退回其他来源。</div>';
 }
 let __GSVWAV=null;   // 已截取待保存的参考音频（b64）；试听→满意→保存三段共用
@@ -2866,12 +2924,12 @@ async function gsvVoiceTrim(){
 async function gsvVoiceTry(){
  const msg=document.getElementById('v-gmsg');
  if(!__GSVWAV && !await gsvVoiceTrim())return;
- msg.textContent='③ 本地合成试听中…（引擎约几秒）';
+ msg.textContent='② 截取完成，本地合成试听中…（引擎约几秒）';
  const r=await api('/api/voice/gsv/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({audio:__GSVWAV,prompt_text:document.getElementById('v-gptext').value,prompt_lang:document.getElementById('v-gplang').value,text:'你好呀，我是你的语音小助手，听听这个声音怎么样？'})}).catch(()=>({ok:false,error:'请求失败'}));
- if(!r||r.ok===false){msg.textContent='试听失败：'+((r&&r.error)||'');return}
+ if(!r||r.ok===false){msg.textContent='克隆/试听失败：'+((r&&r.error)||'');return}
  const au=document.getElementById('v-audio');
  au.src=r.audio;au.style.display='block';au.play().catch(()=>{});
- msg.textContent='✓ 试听完成（'+((r.size||0)/1024).toFixed(0)+' KB）。满意就填音色名点「③ 保存到音色列表」；不满意调起始/时长或换片段再点①。';
+ msg.textContent='✓ 克隆完成，③ 试听播放中（上方播放器可反复听）。满意就 ④ 填音色名保存；不满意调起始/时长或换片段再点②。';
 }
 async function gsvVoiceSave(){
  const msg=document.getElementById('v-gmsg');
@@ -2893,6 +2951,7 @@ async function gsvVoicePreview(id){
  au.src=r.audio;au.style.display='block';au.play().catch(()=>{});
 }
 async function gsvVoiceUse(id){
+ if(!id)return;   // 空占位项（还没有本地音色）
  const r=await api('/api/voice/gsv/voice-use',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})}).catch(()=>({ok:false,error:'请求失败'}));
  if(!r||r.ok===false){toast('启用失败：'+((r&&r.error)||''),false);return}
  toast('已启用「'+(r.name||id)+'」——机器人语音现在用这个音色');
@@ -5634,6 +5693,17 @@ class UiHandler(BaseHTTPRequestHandler):
                     for x in (v.get("zhipu_saved_voices") or [])[:12]
                     if isinstance(x, dict) and str(x.get("speaker_id") or "").strip()][:12],
             }
+            # 表单只采自己页面的字段：POST 未携带的既有键原样保留
+            # （gsv_autostart / zhipu_saved_voices 由专用端点维护——曾因整体
+            # 替换被「保存设置」抹回 False/空，自启动失效、克隆音色列表清空）
+            _cur = _T.voice_cfg()
+            for _k, _val in _cur.items():
+                if _k not in clean:
+                    clean[_k] = _val
+            if "gsv_autostart" not in v:
+                clean["gsv_autostart"] = bool(_cur.get("gsv_autostart"))
+            if "zhipu_saved_voices" not in v:
+                clean["zhipu_saved_voices"] = _cur.get("zhipu_saved_voices") or []
             _T.save_voice_cfg(clean)
             return self._reply(200, {"ok": True, "config": _T.voice_cfg()})
         if u.path == "/api/voice/preview":
@@ -5740,14 +5810,14 @@ class UiHandler(BaseHTTPRequestHandler):
             return self._reply(200, {"ok": True, "size": len(data),
                 "audio": "data:audio/wav;base64," + _b64.b64encode(data).decode()})
         if u.path == "/api/voice/clone":
-            # 一键克隆：设置页在浏览器里截好 3-30 秒 WAV（base64）传上来，
-            # 这里上传智谱 → /voice/clone → 返回 voice id，页面自动填入并保存
+            # 克隆：设置页在浏览器里截好 3-30 秒 WAV（base64）传上来，
+            # 上传智谱 → /voice/clone → 返回 speaker_id。统一克隆流程
+            # （上传→克隆→试听→命名保存）里名字留到「保存」步再起——
+            # voice_name 缺省时平台会用默认名，本地列表不入列（等 zvoice-save）
             import base64 as _b64
             import qq_tts as _T
             v = body.get("voice") if isinstance(body.get("voice"), dict) else {}
-            name = str(body.get("voice_name") or "").strip()[:40]
-            if not name:
-                return self._reply(200, {"ok": False, "error": "先给这个音色起个名字"})
+            name = str(body.get("voice_name") or "").strip()[:40] or "我的克隆音色"
             raw = str(body.get("audio") or "")
             if not raw or len(raw) > 20 * 1024 * 1024:
                 return self._reply(200, {"ok": False, "error": "音频为空或过大（上限约 15MB）"})
@@ -5765,19 +5835,37 @@ class UiHandler(BaseHTTPRequestHandler):
                     str(body.get("preview_text") or "")[:120])
             except Exception as e:
                 return self._reply(200, {"ok": False, "error": str(e)[:300]})
-            # 克隆成功 → 自动存入智谱克隆音色列表（列表可见/可切换/可删）
-            try:
-                cfg2 = dict(_T.voice_cfg())
-                lst = [x for x in (cfg2.get("zhipu_saved_voices") or [])
-                       if str(x.get("speaker_id")) != vid]
-                lst.insert(0, {"name": used, "speaker_id": vid})
-                cfg2["zhipu_saved_voices"] = lst[:12]
-                _T.save_voice_cfg(cfg2)
-            except Exception:
-                pass
+            # 仅当调用方显式传了名字（旧流程兼容）才自动入列；新流程由
+            # 「保存到音色列表」走 zvoice-save，列表条目用用户起的名字
+            if str(body.get("voice_name") or "").strip():
+                try:
+                    cfg2 = dict(_T.voice_cfg())
+                    lst = [x for x in (cfg2.get("zhipu_saved_voices") or [])
+                           if str(x.get("speaker_id")) != vid]
+                    lst.insert(0, {"name": used, "speaker_id": vid})
+                    cfg2["zhipu_saved_voices"] = lst[:12]
+                    _T.save_voice_cfg(cfg2)
+                except Exception:
+                    pass
             return self._reply(200, {"ok": True, "voice_id": vid,
                                      "voice_name_used": used,
                                      "output_file_id": ofid})
+        if u.path == "/api/voice/zvoice-save":
+            # 保存克隆音色到列表（统一克隆流程第 ④ 步：试听满意后命名保存）
+            import qq_tts as _T
+            sid = str(body.get("speaker_id") or "").strip()[:64]
+            name = str(body.get("name") or "").strip()[:40]
+            if not sid:
+                return self._reply(200, {"ok": False, "error": "缺少 speaker_id（先完成克隆）"})
+            if not name:
+                return self._reply(200, {"ok": False, "error": "先给这个音色起个名字"})
+            cfg = dict(_T.voice_cfg())
+            lst = [x for x in (cfg.get("zhipu_saved_voices") or [])
+                   if str(x.get("speaker_id")) != sid]
+            lst.insert(0, {"name": name, "speaker_id": sid})
+            cfg["zhipu_saved_voices"] = lst[:12]
+            _T.save_voice_cfg(cfg)
+            return self._reply(200, {"ok": True, "name": name})
         if u.path == "/api/voice/zvoice-del":
             # 删除智谱克隆音色列表条目（仅本地记录，不动平台侧音色）
             import qq_tts as _T

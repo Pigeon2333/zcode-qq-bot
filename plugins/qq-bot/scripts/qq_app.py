@@ -353,6 +353,15 @@ def main():
                 w.show()
             except Exception:
                 pass
+        try:
+            import ctypes
+            u32 = ctypes.windll.user32
+            hwnd = u32.FindWindowW(None, APP_NAME)
+            if hwnd:
+                u32.ShowWindow(hwnd, 5)  # SW_SHOW
+                u32.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
 
     threading.Thread(target=_wake_listener, args=(_show_all_windows,),
                      daemon=True).start()
@@ -361,6 +370,7 @@ def main():
     def on_closing():
         cfg_now = C.load_app_config()
         action = str(cfg_now.get("close_action", "tray"))
+        print("on_closing: action=%s" % action, flush=True)
         if action == "tray":
             if _start_tray():
                 return False  # 隐藏到托盘，应用继续运行
@@ -400,6 +410,23 @@ def main():
 _tray_started = {"flag": False}
 
 
+def _hide_windows_win32():
+    """Win32 直隐藏主窗口（pywebview hide 在 FormClosing 线程内偶发失效的兜底）。
+    已隐藏时是 no-op；返回是否执行了隐藏。用户实测：点 X 后托盘起了但窗口
+    仍可见——w.hide() 的异常被 except 吞掉且不生效，点 X 等于什么都没发生。"""
+    try:
+        import ctypes
+        u32 = ctypes.windll.user32
+        hwnd = u32.FindWindowW(None, APP_NAME)
+        if hwnd and u32.IsWindowVisible(hwnd):
+            u32.ShowWindow(hwnd, 0)  # SW_HIDE
+            print("win32 hide: 窗口已隐藏 (hwnd=%s)" % hwnd, flush=True)
+            return True
+    except Exception as e:
+        print("win32 hide fail: %r" % e, flush=True)
+    return False
+
+
 def _start_tray():
     """启动系统托盘（幂等）。成功返回 True，失败返回 False（调用方不得隐藏窗口）。"""
     if _tray_started["flag"]:
@@ -417,6 +444,16 @@ def _start_tray():
                     w.show()
                 except Exception:
                     pass
+            # Win32 确保可见（对已显示窗口是 no-op；修 pywebview show 静默失效）
+            try:
+                import ctypes
+                u32 = ctypes.windll.user32
+                hwnd = u32.FindWindowW(None, APP_NAME)
+                if hwnd:
+                    u32.ShowWindow(hwnd, 5)  # SW_SHOW
+                    u32.SetForegroundWindow(hwnd)
+            except Exception:
+                pass
 
         tray = pystray.Icon(
             "ZCodeQQBot", img, APP_NAME,
@@ -433,8 +470,11 @@ def _start_tray():
         for w in webview.windows:
             try:
                 w.hide()
-            except Exception:
-                pass
+            except Exception as e:
+                print("pywebview hide fail: %r" % e, flush=True)
+        # 兜底：上面成没成，只要窗口还可见就 Win32 直接隐藏——
+        # 点 X 必须有反应（要么进托盘要么退出），绝不能「什么都没发生」
+        _hide_windows_win32()
         return True
     except Exception as e:
         print("tray unavailable: %r" % e, flush=True)
