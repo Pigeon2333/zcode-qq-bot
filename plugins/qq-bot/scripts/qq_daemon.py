@@ -1273,6 +1273,14 @@ class Daemon:
         # 等此人静默 gap 秒后下一条自然走正常触发，上下文也更完整）
         if self._is_bursting(chat_type, chat_id, info.get("sender_id", "")):
             return False, "burst_wait"
+        # 看图模式 all_prob：所有图都识——带图消息绕过闲聊概率直接送达 agent，
+        # 识图后由 agent 按 vision_prob 掷点决定插不插话（识图与概率解耦；
+        # 暂停/安静/互聊/别人对话/连发中等防护都在上面已拦，此处只放行普通裸图）
+        if info.get("image_urls"):
+            rc = self._reply_config()
+            if rc.get("vision_enabled") and \
+                    str(rc.get("vision_mode") or "all") == "all_prob":
+                return True, "chat_random"
         mode = cfg["reply_mode"]
         # 高峰降耗生效时：关键词/闲聊主动插话全部压制为标准模式（@/回复不受影响）
         if mode in ("keyword", "chat") and econ_active(self._reply_config()):

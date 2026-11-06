@@ -795,12 +795,24 @@ def vision_enabled():
 
 
 def vision_mode():
-    """看图模式：all=所有图都识（默认）；ask=明确要求才识
-    （@/回复机器人 → 直接识图；其余裸图 → 由轻量判定 gate 决定是否
-    看图+插话——用户反馈：所有图都识导致插话概率虚高、无关图硬回复显傻）。
-    gate 提示已含「非要求看图就别看」的判定条件。"""
+    """看图模式三档：all=所有图都识（识不识跟着群触发概率走）；
+    all_prob=所有图都识（图必看，识图后按 vision_prob 单独决定插不插话）；
+    ask=仅明确要求才识图（@/回复/点名看图）。
+    （all 全识显突兀、ask 全不识变笨——选民证只凭"我们领证啦"文字被当成
+    结婚证，用户要求加中间档：看是真看，说不说另算。）"""
     cfg = load_json_const(REPLY_CONFIG_PATH, {})
-    return str(cfg.get("vision_mode") or "all")
+    v = str(cfg.get("vision_mode") or "all")
+    return v if v in ("all", "all_prob", "ask") else "all"
+
+
+def vision_prob():
+    """all_prob 档：识图后的插话概率（0-1，默认 0.3；@/回复不受限）。"""
+    cfg = load_json_const(REPLY_CONFIG_PATH, {})
+    try:
+        v = float(cfg.get("vision_prob", 0.3))
+    except (TypeError, ValueError):
+        v = 0.3
+    return min(1.0, max(0.0, v))
 
 
 
@@ -1929,6 +1941,13 @@ def _interrupt_gate(daemon, msg, persona_name):
     hist_block = "\n".join(lines[-10:]) or "（暂无）"
     now_line = str(msg.get("text") or "（图/表情）")[:80]
     nl = chr(10)
+    # 带图规则只在 ask 档注入：ask 档裸图不该看；all 档图片跟普通消息一样
+    # 按话题判定（否则 gate 把图全拦了，"所有图都识"名存实亡）；
+    # all_prob 档带图消息根本不走 gate
+    _img_rule = ""
+    if vision_enabled() and vision_mode() == "ask":
+        _img_rule = ("带图的消息：只有对方明确要求你看图（看这张/这是什么图/帮我分析）"
+                     "或图与你强相关时才输出 Y；只是随手发图没人叫你看 → 输出 N。" + nl)
     system = (
         "你是QQ群AI机器人「%s」的插话判定器。下面是群最近对话，最后一条【现在】"
         "不是对你说的，你在随机旁观。判断这个话题值不值得「%s」接一句话：" + nl +
@@ -1937,8 +1956,7 @@ def _interrupt_gate(daemon, msg, persona_name):
         "重点识别「群友俩在对话」：最近几行里有两三个不同的人名在短句往来"
         "（尤其「没」「告诉我」「你倒是说啊」这类省略主语的接话短句），"
         "说明他们在聊自己的事——哪怕话题有趣也输出 N。" + nl +
-        "带图的消息：只有对方明确要求你看图（看这张/这是什么图/帮我分析）"
-        "或图与你强相关时才输出 Y；只是随手发图没人叫你看 → 输出 N。" + nl +
+        _img_rule +
         "宁可 N。只输出 Y 或 N，不要其他任何字。") % (persona_name, persona_name)
     user = ("【最近对话】" + nl + "%s" + nl + nl + "【现在】%s") % (hist_block, now_line)
     try:
@@ -4249,8 +4267,11 @@ def process(daemon, msg):
             return
     # 旁观(chat_random)两段式判定（精简上下文开启时）：先轻量判定值不值得开口，
     # 通过才走全量提示词生成回复——回复质量不受影响；开关关闭则直接全量流程
+    # all_prob 档的带图消息跳过 gate：图必看，插话与否交给识图后的概率
+    _vmode = vision_mode() if vision_enabled() else ""
     if msg.get("trigger_reason") == "chat_random" and chat_anti_interrupt_enabled() \
-            and lean_ctx_on():
+            and lean_ctx_on() \
+            and not (_vmode == "all_prob" and msg.get("image_urls")):
         _pcoll, _pname = load_persona_collection()
         if _interrupt_gate(daemon, msg, _pname or "智谱娘"):
             daemon.ack([msg["id"]])
@@ -4282,12 +4303,10 @@ def process(daemon, msg):
     reply = None
     model = None
     # 视觉分支：开关开启 + 消息带图 + 已配视觉模型；失败降级文本链
-    # 看图模式 vision_mode：all=所有图都识；ask=明确要求才识
-    # （@/回复机器人 → 直接识；chat_random 裸图 → 交给轻量 gate 判定，
-    #   gate 拦下则本次不识图，文字链正常走——用户反馈：识图信息量大
-    #   → 闲聊判定倾向"有趣"→无关图也插话显傻）
+    # 看图模式 vision_mode：all=所有图都识；all_prob=所有图都识+识图后按
+    # 概率决定插话；ask=仅明确要求才识（@/回复机器人 → 任何档都直接识）
     _vision_go = vision_enabled() and msg.get("image_urls") and (
-        vision_mode() == "all"
+        _vmode in ("all", "all_prob")
         or msg.get("trigger_reason") in ("at", "reply_to_bot"))
     if _vision_go:
         try:
@@ -4295,6 +4314,23 @@ def process(daemon, msg):
         except Exception as e:
             out("AGENT_VISION_FALLBACK %r" % e)
             reply = None
+    # all_prob 档：图是真看了，回不回按单独概率掷点；看图失败/概率未中 →
+    # 沉默跳过（绝不走纯文本链瞎猜图的内容——那正是"选民证被当结婚证"的来源）
+    if _vision_go and _vmode == "all_prob" and \
+            msg.get("trigger_reason") not in ("at", "reply_to_bot"):
+        if reply is None:
+            daemon.ack([msg["id"]])
+            RT.count_processed()
+            out("AGENT_VISION_FAIL_SKIP msg_id=%s chat=%s/%s (all_prob 看图失败，不猜)"
+                % (msg["id"], msg["chat_type"], msg["chat_id"]))
+            return
+        import random as _rnd
+        if _rnd.random() >= vision_prob():
+            daemon.ack([msg["id"]])
+            RT.count_processed()
+            out("AGENT_VISION_PROB_SKIP msg_id=%s chat=%s/%s (all_prob 概率未中 %.0f%%)"
+                % (msg["id"], msg["chat_type"], msg["chat_id"], vision_prob() * 100))
+            return
     if reply is None:
         last_err = None
         for _ in range(2):

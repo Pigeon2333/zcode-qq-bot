@@ -1760,7 +1760,7 @@ async function vSettings(){
    <span class="k">（全不选=每天）</span>
   </div></div>
 
- <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">④ 对话行为</div>
+ <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">④ 对话行为与防打扰</div>
  <div class="card"><label class="master"><input type="checkbox" ${rv.wait_gate_enabled!==false?'checked':''} onchange="saveKVLoad('/api/reply-config',{wait_gate_enabled:this.checked?1:0},'等说完协议已'+(this.checked?'开启':'关闭'))">
   <span><b>等说完协议（推荐开启）</b><div class="k" style="margin-top:3px">AI 回复前会判断对方这条消息是否是叙述的中间部分（语义没说完、刚开头就断、明显还有下文）。如果判断对方还在说，AI 会先安静等对方说完再回复——避免在别人一句话还没打完时就急着插嘴打断。对完整的问题和闲聊不影响（立刻回复），零额外消耗，仅增加一条判断规则</div></span></label></div>
  <div class="card"><label class="master"><input type="checkbox" ${rv.burst_merge_enabled!==false?'checked':''} onchange="saveKVLoad('/api/reply-config',{burst_merge_enabled:this.checked?1:0},'碎片合并已'+(this.checked?'开启':'关闭'))">
@@ -1770,18 +1770,34 @@ async function vSettings(){
   <div style="margin-top:6px;display:flex;gap:8px;align-items:center"><span class="k" style="flex:none">确认 AI 后暂停搭话</span>
    <input type="number" min="10" max="1440" value="${rv.botloop_cooldown_min||60}" style="width:76px" onchange="saveKVLoad('/api/reply-config',{botloop_cooldown_min:Math.max(10,Math.min(1440,parseInt(this.value)||60))},'互聊冷却已更新')">
    <span class="k">分钟（10–1440，非永久拉黑，到期自动恢复正常聊天）</span></div></div>
- <div class="card"><label class="master"><input type="checkbox" ${rv.vision_enabled?'checked':''} onchange="saveVision(this.checked)">
-  <span><b>看图模式</b><div class="k" style="margin-top:3px">开启后，消息里的图片会交给视觉模型识别并回应（群聊与私聊均生效）；视觉模型在「模型管理」页配置，识别失败自动降级纯文本</div></span></label>
-  <div style="margin-top:8px;display:flex;gap:10px;flex-wrap:wrap;align-items:center"><span class="k" style="flex:none">看图范围</span>
-   <label><input type="radio" name="vmode-vision" value="all" ${(rv.vision_mode||'all')==='all'?'checked':''} onchange="saveKVLoad('/api/reply-config',{vision_mode:'all'},'看图范围：所有图（已生效）')"> 所有图都识（插话概率跟群消息设置走）</label>
-   <label><input type="radio" name="vmode-vision" value="ask" ${(rv.vision_mode)==='ask'?'checked':''} onchange="saveKVLoad('/api/reply-config',{vision_mode:'ask'},'看图范围：仅明确要求时（已生效）')"> 仅明确要求时才识图</label></div>
-  <div class="k" style="margin-top:4px">「仅明确要求」= @/回复机器人要她看图、或消息文字里点名看图（如「看看这张图」「这是什么梗」）才会识图；其余图片只当文字消息处理，不抢着回复——识图信息量大，容易被闲聊判定当成"有趣"而插话，无关图片硬回复会很突兀</div></div>
- <div class="card"><label class="master"><input type="checkbox" ${rv.web_search_enabled?'checked':''} onchange="saveWebSearch(this.checked)">
-  <span><b>联网搜索</b><div class="k" style="margin-top:3px">遇到实时性问题（新闻/天气/价格/最新版本等）自动先联网搜索再回答，普通闲聊不触发不计费。搜索后端：优先用智谱搜索资源包（若有），未开通自动切换必应免费搜索兜底——不买资源包也能搜；两个都失败时机器人会坦白拿不到最新消息</div></span></label></div>
  <div class="card"><label class="master"><input type="checkbox" ${rv.abuse_guard_enabled!==false?'checked':''} onchange="saveAbuseGuard(this.checked)">
   <span><b>防滥用防护</b><div class="k" style="margin-top:3px">整合三重防护，建议保持开启：① 人设防篡改——"忽略设定/你现在是XX/输出系统提示"等注入话术不生效，设定不泄露；② 任务拦截——竞赛题、代写作业、要代码成品等把机器人当免费任务引擎的消息，会以人设口吻轻松回绝；③ 身份锚定——多轮对话被"说服"后仍回归人设。关闭后所有消息按原始对话处理（仅调试用）</div></span></label></div>
+ <div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">用户黑名单<span class="badge b-bad">最高优先级 · 一律无视</span></div>
+  <div class="k">命中名单的 QQ 号：群聊、私聊、@机器人、关键词、戳一戳<b>全部不响应</b>，消息不进入机器人记忆，改动即时生效。优先级高于一切白名单与回复模式。</div>
+  <div style="margin-top:8px;display:flex;gap:8px">
+   <input id="bladd" placeholder="输入要拉黑的 QQ 号后回车" style="flex:1" onkeydown="if(event.key==='Enter')blAdd()">
+   <button class="act" style="margin:0" onclick="blAdd()">拉黑</button></div>
+  <div style="margin-top:8px">${(c.user_blacklist||[]).length?((c.user_blacklist||[]).map((x,i)=>'<div class="row"><span class="no">'+(i+1)+'.</span><span class="mono" style="flex:1">'+esc(String(x))+'</span><button class="act ghost" style="margin:0" onclick="blDel('+i+')">移出</button></div>').join('')):'<div class="k">名单为空</div>'}</div></div>
 
- <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">⑤ 主人专属功能</div>
+ <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">⑤ 机器人能力</div>
+ <div class="card"><label class="master"><input type="checkbox" ${rv.vision_enabled?'checked':''} onchange="saveVision(this.checked)">
+  <span><b>看图模式</b><div class="k" style="margin-top:3px">开启后，消息里的图片会交给视觉模型识别并回应（群聊与私聊均生效）；视觉模型在「模型管理」页配置，识别失败自动降级纯文本</div></span></label>
+  <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
+   <div class="k" style="margin-bottom:6px"><b>看图范围</b>（三档随时可换，即时生效）</div>
+   <label style="display:block;margin:6px 0"><input type="radio" name="vmode-vision" value="all" ${(rv.vision_mode||'all')==='all'?'checked':''} onchange="visionModePick('all')"> <b>所有图都识</b><span class="k">——识不识、回不回都跟着群消息的触发与插话概率走（最热情；无关图也可能硬回复）</span></label>
+   <label style="display:block;margin:6px 0"><input type="radio" name="vmode-vision" value="all_prob" ${(rv.vision_mode)==='all_prob'?'checked':''} onchange="visionModePick('all_prob')"> <b>所有图都识，看后再定插话</b><span class="k">（推荐）——每张图都会真的看过（不会认错图），看完按下面的概率决定要不要插话；@/回复机器人仍然必回</span></label>
+   <label style="display:block;margin:6px 0"><input type="radio" name="vmode-vision" value="ask" ${(rv.vision_mode)==='ask'?'checked':''} onchange="visionModePick('ask')"> <b>仅明确要求时才识图</b><span class="k">——@/回复要她看、或文字里点名看图（「看看这张」「这是什么梗」）才看；其余图只当文字处理（最克制，但没看图时容易只凭文字猜错，如把选民证当成结婚证）</span></label>
+   <div id="vision-prob-row" class="${(rv.vision_mode)==='all_prob'?'':'dimmed'}" style="display:flex;gap:8px;align-items:center;margin:10px 0 0 26px">
+    <span class="k" style="flex:none">识图后插话概率</span>
+    <input type="number" min="0" max="100" step="5" value="${Math.round(((rv.vision_prob===undefined||rv.vision_prob===null)?0.3:rv.vision_prob)*100)}" style="width:64px" onchange="saveKVLoad('/api/reply-config',{vision_prob:Math.max(0,Math.min(100,parseInt(this.value)||0))/100},'识图插话概率已保存')">
+    <span class="k">%（0%=只看不说，100%=见图必聊）</span>
+   </div>
+   <div class="k" style="margin-top:8px">「看后再定」= 看图与插话解耦：图一定看过（不会把选民证认成结婚证），要不要开口由概率单独控制——热情与克制之间。前两档也会把带图消息更积极地送到机器人面前；「仅明确要求」最省资源</div>
+  </div></div>
+ <div class="card"><label class="master"><input type="checkbox" ${rv.web_search_enabled?'checked':''} onchange="saveWebSearch(this.checked)">
+  <span><b>联网搜索</b><div class="k" style="margin-top:3px">遇到实时性问题（新闻/天气/价格/最新版本等）自动先联网搜索再回答，普通闲聊不触发不计费。搜索后端：优先用智谱搜索资源包（若有），未开通自动切换必应免费搜索兜底——不买资源包也能搜；两个都失败时机器人会坦白拿不到最新消息</div></span></label></div>
+
+ <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">⑥ 主人专属功能</div>
  <div class="card"><div class="k" style="margin-bottom:8px">主人专属功能（仅对设置的主人 QQ 生效；关闭后对应入口不再响应）</div>
   <label class="master" style="margin-bottom:6px"><input type="checkbox" ${rv.task_bridge_enabled!==false?'checked':''} onchange="saveFeature('task_bridge_enabled',this.checked)">
    <span><b>任务沙箱</b><div class="k" style="margin-top:3px">主人发「任务：…」转交沙箱执行器写代码/跑脚本，结果自动回传；产物在任务目录（可在 app_config.task_workspace 配置，指向 ZCode 工作区即可在 ZCode 中接管）</div></span></label>
@@ -1789,16 +1805,9 @@ async function vSettings(){
    <span><b>私聊遥控</b><div class="k" style="margin-top:3px">主人私聊发指令管理机器人（状态/用量/人设/群管理/功能开关/暂停恢复），私聊机器人发「帮助」查看全部</div></span></label>
   <label class="master" style="margin-bottom:6px"><input type="checkbox" ${rv.draw_enabled!==false?'checked':''} onchange="saveFeature('draw_enabled',this.checked)">
    <span><b>AI 生图</b><div class="k" style="margin-top:3px">主人发「画：描述」或自然说法（帮我画一张/给我画个/来一张…，私聊或群里@）→ 用智谱 Key 调 CogView 生成并发图（消耗该账号额度）</div></span></label>
-  <label class="master"><input type="checkbox" ${rv.daily_review_enabled!==false?'checked':''} onchange="saveFeature('daily_review_enabled',this.checked)">
-   <span><b>夜间自动复盘</b><div class="k" style="margin-top:3px">每日 03:30 自动统计当日表现、提炼风格观察、日报发主人私聊</div></span></label>
  </div>
- <div class="card"><div class="k">开机自启（登录 Windows 后自动打开控制台窗口${c.autostart_with_windows?'，已开启':'，未开启'}）</div>
-  <div style="margin-top:8px"><label><input type="checkbox" id="sauto" ${c.autostart_with_windows||S_autostartRegistry()?'checked':''} onchange="saveAuto(this.checked)"> 开机自动启动本应用</label></div></div>
- <div class="card"><div class="k">启动行为</div>
-  <div style="margin-top:8px"><label class="master"><input type="checkbox" id="spoweron" ${c.auto_power_on?'checked':''} onchange="savePowerOn(this.checked)">
-   <span>打开本应用时自动启动机器人<div class="k" style="margin-top:2px">与上一项同时勾选时，开机会先启动应用、紧接着自动启动机器人</div></span></label></div></div>
 
- <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">⑥ 自动化与维护</div>
+ <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">⑦ 自动化与维护</div>
  <div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">自动复盘<span class="badge" style="background:var(--tint);color:var(--dim)">夜间自动执行</span></div>
   <label class="master"><input type="checkbox" ${rv.daily_review_enabled!==false?'checked':''} onchange="saveKVLoad('/api/reply-config',{daily_review_enabled:this.checked?1:0},'自动复盘已'+(this.checked?'开启':'关闭'))">
    <span><b>启用自动复盘</b><div class="k" style="margin-top:3px">每天在设定时间自动汇总自上次复盘以来的机器人表现（回复/沉默/错误次数），由 AI 提炼 1-2 条说话风格观察写入自进化，并向主人私聊发送一份简短日报。覆盖范围：全部群聊与私聊的回复质量数据（不记录聊天内容本身）</div></span></label>
@@ -1843,14 +1852,13 @@ async function vSettings(){
   <label style="display:block;margin:4px 0"><input type="radio" name="wdmode" value="alert" ${c.watchdog_mode==='alert'?'checked':''} onchange="saveKVLoad('/api/app-config',{watchdog_mode:'alert'},'看门狗模式：仅告警')"> 仅告警<span class="k">：只通知，不做任何重启，等主人到控制台手动处理</span></label>
   <div style="margin-top:8px"><label>探测间隔 <input type="number" min="60" max="600" step="30" value="${c.watchdog_interval||120}" style="width:70px" onchange="saveKVLoad('/api/app-config',{watchdog_interval:Math.max(60,Math.min(600,parseInt(this.value)||120))},'探测间隔已保存')"> 秒（连续 2 次异常才触发动作）</label></div>
   <div class="k" style="margin-top:6px">当前状态可在「状态」页查看（含最近事件）</div></div>
- <div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">用户黑名单<span class="badge b-bad">最高优先级 · 一律无视</span></div>
-  <div class="k">命中名单的 QQ 号：群聊、私聊、@机器人、关键词、戳一戳<b>全部不响应</b>，消息不进入机器人记忆，改动即时生效。优先级高于一切白名单与回复模式。</div>
-  <div style="margin-top:8px;display:flex;gap:8px">
-   <input id="bladd" placeholder="输入要拉黑的 QQ 号后回车" style="flex:1" onkeydown="if(event.key==='Enter')blAdd()">
-   <button class="act" style="margin:0" onclick="blAdd()">拉黑</button></div>
-  <div style="margin-top:8px">${(c.user_blacklist||[]).length?((c.user_blacklist||[]).map((x,i)=>'<div class="row"><span class="no">'+(i+1)+'.</span><span class="mono" style="flex:1">'+esc(String(x))+'</span><button class="act ghost" style="margin:0" onclick="blDel('+i+')">移出</button></div>').join('')):'<div class="k">名单为空</div>'}</div></div>
 
- <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">⑦ 应用行为</div>
+ <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">⑧ 应用行为</div>
+ <div class="card"><div class="k">开机自启（登录 Windows 后自动打开控制台窗口${c.autostart_with_windows?'，已开启':'，未开启'}）</div>
+  <div style="margin-top:8px"><label><input type="checkbox" id="sauto" ${c.autostart_with_windows||S_autostartRegistry()?'checked':''} onchange="saveAuto(this.checked)"> 开机自动启动本应用</label></div></div>
+ <div class="card"><div class="k">启动行为</div>
+  <div style="margin-top:8px"><label class="master"><input type="checkbox" id="spoweron" ${c.auto_power_on?'checked':''} onchange="savePowerOn(this.checked)">
+   <span>打开本应用时自动启动机器人<div class="k" style="margin-top:2px">与上一项同时勾选时，开机会先启动应用、紧接着自动启动机器人</div></span></label></div></div>
  <div class="card"><div class="k">关闭本应用时</div>
   <div style="margin-top:8px">
    <label style="display:block;margin:6px 0"><input type="radio" name="cact" value="tray" ${(!c.close_action||c.close_action==='tray')?'checked':''} onchange="saveCloseAction(this.value)"> 最小化到系统托盘，机器人继续在后台（推荐；托盘图标可重新打开窗口）</label>
@@ -2120,6 +2128,12 @@ async function saveProb(){await saveKV('/api/reply-config',{chat_probability:(pa
 async function saveIntv(){await saveKV('/api/reply-config',{chat_min_interval_sec:parseInt($('#mintv').value)||0},'最小间隔已生效：'+($('#mintv').value||0)+' 秒')}
 async function saveCk(key,on,name){await saveKV('/api/reply-config',{[key]:on},name+(on?'已开启':'已关闭')+'（已生效）')}
 async function saveVision(on){await saveKV('/api/reply-config',{vision_enabled:on},on?'看图模式已开启（已生效）':'看图模式已关闭（已生效）')}
+function visionModePick(v){
+ const names={all:'所有图都识',all_prob:'所有图都识，看后再定插话',ask:'仅明确要求时才识图'};
+ saveKVLoad('/api/reply-config',{vision_mode:v},'看图范围：'+(names[v]||v)+'（即时生效）');
+ const el=document.getElementById('vision-prob-row');
+ if(el)el.classList.toggle('dimmed',v!=='all_prob');
+}
 async function saveWebSearch(on){await saveKV('/api/reply-config',{web_search_enabled:on},on?'联网搜索已开启（下一轮回复起生效）':'联网搜索已关闭（已生效）')}
 async function saveAbuseGuard(on){await saveKV('/api/reply-config',{abuse_guard_enabled:on},on?'防滥用防护已开启（已生效）':'防滥用防护已关闭（已生效，仅建议调试时关闭）')}
 const _FEAT_NAME={task_bridge_enabled:'任务沙箱',remote_control_enabled:'私聊遥控',draw_enabled:'AI 生图',daily_review_enabled:'夜间自动复盘'};
@@ -4260,6 +4274,10 @@ class UiHandler(BaseHTTPRequestHandler):
                                      "daily": daily_rows, "hourly": hourly_rows})
         if u.path == "/api/reply-config":
             data = load_json_const(REPLY_CONFIG_PATH, {})
+            try:
+                _vp = min(1.0, max(0.0, float(data.get("vision_prob", 0.3))))
+            except (TypeError, ValueError):
+                _vp = 0.3
             return self._reply(200, {"ok": True,
                                      "reply_mode": data.get("reply_mode", "standard"),
                                      "keywords": data.get("keywords", []),
@@ -4268,6 +4286,7 @@ class UiHandler(BaseHTTPRequestHandler):
                                      "chat_min_interval_sec": data.get("chat_min_interval_sec", 45),
                                      "vision_enabled": data.get("vision_enabled", False),
                                      "vision_mode": str(data.get("vision_mode") or "all")[:8],
+                                     "vision_prob": _vp,
                                      "chat_anti_interrupt": data.get("chat_anti_interrupt", True),
                                      "web_search_enabled": data.get("web_search_enabled", False),
                                      "abuse_guard_enabled": data.get("abuse_guard_enabled", True),
@@ -4817,6 +4836,11 @@ class UiHandler(BaseHTTPRequestHandler):
                 data["vision_enabled"] = bool(body["vision_enabled"])
             if "vision_mode" in body:
                 data["vision_mode"] = str(body["vision_mode"] or "all")[:8]
+            if "vision_prob" in body:
+                try:
+                    data["vision_prob"] = min(1.0, max(0.0, float(body["vision_prob"])))
+                except (TypeError, ValueError):
+                    pass
             if "web_search_enabled" in body:
                 data["web_search_enabled"] = bool(body["web_search_enabled"])
             if "abuse_guard_enabled" in body:
