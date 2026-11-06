@@ -1923,8 +1923,9 @@ def _interrupt_gate(daemon, msg, persona_name):
     通过 → False（走完整回复，质量不受影响）；拦截 → True（静默跳过）。
     仅 ~500 token，替代此前每次旁观都用全量提示词（人设+记忆+表情菜单）。"""
     hist = daemon.history(msg["chat_type"], msg["chat_id"], limit=10)
-    lines = ["%s: %s" % ("你" if h.get("is_bot") else str(h.get("sender_name", "?")),
-                         str(h.get("text", ""))[:80]) for h in hist]
+    lines = ["[%s] %s: %s" % (_hhmm(h.get("ts")),
+                              "你" if h.get("is_bot") else str(h.get("sender_name", "?")),
+                              str(h.get("text", ""))[:80]) for h in hist]
     hist_block = "\n".join(lines[-10:]) or "（暂无）"
     now_line = str(msg.get("text") or "（图/表情）")[:80]
     nl = chr(10)
@@ -2066,23 +2067,41 @@ def _nudge_group_allowed(cid):
     return not (ov.get("paused") or ov.get("proactive") is False)
 
 
+def _hhmm(ts):
+    """历史行时间戳（HH:MM）：模型据此分清昨夜/今早/刚刚——
+    实测不带时间时模型会把几小时前乃至昨晚的旧话题当成"正在聊"，
+    中午主动发言却说"今晚早点休息"。"""
+    try:
+        return time.strftime("%H:%M", time.localtime(float(ts)))
+    except (TypeError, ValueError):
+        return "??:??"
+
+
+_HIST_TIME_NOTE = ("（每行开头[时:分]是那句话的真实发送时间——"
+                   "几小时前甚至昨晚的旧消息不是「刚刚发生」的，"
+                   "别把旧话题当成现在正在聊的内容）")
+
+
 def _nudge_compose(daemon, chat_type, chat_id):
     """生成一句追问：人设全栈（按会话路由）+ 最近对话 → 一句话。
     非预制模板——每次由模型依据人设、记忆风格和对话停在哪决定说什么；
     提示词只给判断框架（对话停在哪→对应追法），禁止引导通用套话。"""
     hist = daemon.history(chat_type, chat_id, limit=8)
-    # 客户端返回最旧在前；取最新几条拼对话（末尾=最新）
+    # 客户端返回最旧在前；取最新几条拼对话（末尾=最新），行首[时:分]=真实发送时间
+    _ti = C.tz_now_info()
+    _tnow = ("【当前真实时间：%s %s（24小时制 %s）】%s"
+             % (_ti["iso"], _ti["weekday"], _ti["clock24"], _HIST_TIME_NOTE))
     lines = []
     for h in hist:
         who = "你" if h.get("is_bot") else str(h.get("sender_name", "?"))
-        lines.append("%s: %s" % (who, str(h.get("text", ""))[:80]))
+        lines.append("[%s] %s: %s" % (_hhmm(h.get("ts")), who, str(h.get("text", ""))[:80]))
     recent = lines[-6:]
     if chat_type == "group":
         # 群聊语境：多对多，"没人接话"≠"对方没回你"，冷场是常态——
         # 判定必须远比私聊保守，多数情况选择不开口（输出 [不发]）
-        sys_p = (_persona_stack_text((chat_type, chat_id)) +
+        sys_p = (_persona_stack_text((chat_type, chat_id)) + "\n" + _tnow +
                  "\n\n## 场景\n这是群聊。你刚在群里说完话，之后没人接"
-                 "（最近记录如下，末尾最新，说话人已标注）：\n"
+                 "（最近记录如下，末尾最新）：\n"
                  + "\n".join(recent) +
                  "\n\n群里冷场很正常，大多数时候不该开口。只有当你刚说的那句"
                  "明显是问某个人、接某个人的话、或抛出的具体问题/邀约没人接，"
@@ -2093,11 +2112,14 @@ def _nudge_compose(daemon, chat_type, chat_id):
                  "要发言时只输出这一句话本身（人设的口吻、词汇和称呼）。")
         user_p = "群里没人接话，按上面的判断决定追不追。"
     else:
-        my_last = next((l.split(": ", 1)[-1] for l in reversed(recent)
-                        if l.startswith("你: ")), "")
-        their_last = next((l.split(": ", 1)[-1] for l in reversed(recent)
-                           if not l.startswith("你: ")), "")
-        sys_p = (_persona_stack_text((chat_type, chat_id)) +
+        # recent 行形如 "[HH:MM] 你: 文本"——先剥时间戳前缀再认说话人
+        def _line_body(l):
+            return l.split("] ", 1)[-1]
+        my_last = next((_line_body(l).split(": ", 1)[-1] for l in reversed(recent)
+                        if _line_body(l).startswith("你: ")), "")
+        their_last = next((_line_body(l).split(": ", 1)[-1] for l in reversed(recent)
+                           if not _line_body(l).startswith("你: ")), "")
+        sys_p = (_persona_stack_text((chat_type, chat_id)) + "\n" + _tnow +
                  "\n\n## 场景\n你刚说完一句话，对方几分钟没回（最近对话如下，末尾最新）：\n"
                  + "\n".join(recent) +
                  "\n\n你说的最后一句是：「%s」\n对方说的最后一句是：「%s」\n\n"
@@ -2324,14 +2346,15 @@ def build_messages(daemon, msg, ctx_k=32):
         # 历史 带 QQ：模型标注 [记忆@QQ] 时需要知道每句话是谁说的
         # 用户（非 bot）的话少截断——刚说过的事实被截丢会导致"刚说完就忘"
         cap = (120 if not h.get("is_bot") else c_hist)
-        # "- " 行首符 + 每行独立说话人：实测不给格式说明时模型会把相邻
-        # 不同人的话当成同一个人说的（"吃萨莉亚"+"弹幕游戏"被合并回复）
-        hist_lines.append("- %s(QQ:%s): %s" % (
-            name, h.get("sender_id", "?"), str(h.get("text", ""))[:cap]))
+        # "- [时:分] " 行首符 + 每行独立说话人：实测不给格式说明时模型会把相邻
+        # 不同人的话当成同一个人说的（"吃萨莉亚"+"弹幕游戏"被合并回复）；
+        # 时间戳防旧话题被当成"正在聊"（中午说"今晚早点休息"事故）
+        hist_lines.append("- [%s] %s(QQ:%s): %s" % (
+            _hhmm(h.get("ts")), name, h.get("sender_id", "?"), str(h.get("text", ""))[:cap]))
     hist_block = "\n".join(hist_lines[-n_hist:]) if hist_lines else "（暂无）"
-    hist_note = ("（上面每行开头的名字就是这句话的说话人——不同名字=不同的几个人，"
+    hist_note = ("（每行[时:分]后面的名字就是这句话的说话人——不同名字=不同的几个人，"
                  "相邻两行很可能是不同的人；回复前先分清哪句是谁说的，"
-                 "不要把不同人的话当成一个人说的来回应）"
+                 "不要把不同人的话当成一个人说的来回应）" + _HIST_TIME_NOTE +
                  "\n（对话关系判断：如果最近的对话是其他群友在互相说话"
                  "——互相@、互相引用、或短句接龙且当前这条不是对你说的，"
                  "就当没看见，输出 [跳过]，绝不对别人的对话插嘴；"
@@ -3005,8 +3028,9 @@ def _proactive_compose(daemon, chat_type, chat_id):
     _ti = C.tz_now_info()
     tstr = "%s %s %s（%s）" % (_ti["iso"], _ti["weekday"], _ti["clock12"], _ti["clock24"])
     hist = daemon.history(chat_type, chat_id, limit=14)
-    lines = ["- %s(QQ:%s): %s" % ("你" if h.get("is_bot") else str(h.get("sender_name", "?")),
-                                  h.get("sender_id", "?"), str(h.get("text", ""))[:100])
+    lines = ["- [%s] %s(QQ:%s): %s" % (_hhmm(h.get("ts")),
+                                       "你" if h.get("is_bot") else str(h.get("sender_name", "?")),
+                                       h.get("sender_id", "?"), str(h.get("text", ""))[:100])
              for h in hist]
     hist_block = "\n".join(lines[-12:]) or "（暂无）"
     label = "群 %s" % chat_id if chat_type == "group" else "私聊对象(QQ:%s)" % chat_id
@@ -3026,13 +3050,15 @@ def _proactive_compose(daemon, chat_type, chat_id):
         "## 本次任务（主动发消息）\n"
         "现在是 %s。这不是回复——你要主动在%s开个话头或说句话：结合最近对话、"
         "你的记忆和当前时间（深夜/清早就不该打扰，输出 [SKIP]；饭点可以聊聊吃的；"
-        "对方之前提过的事可以关心一句），输出一句自然、简短、贴合人设的话，"
+        "对方之前提过的事可以关心一句）。%s"
+        "上午/中午绝不说\"今晚/早点休息\"，深夜绝不说\"早上好\"。"
+        "输出一句自然、简短、贴合人设的话，"
         "不要复读之前说过的内容。如果没有合适的话可说，只输出 [SKIP]。"
         % (global_base or "（无）", persona or "（无）",
            ("\n\n## 说话风格卡\n" + style) if style else "",
            evolved_block, mem_block,
            ((naming_lines() + "\n\n") if naming_lines() else ""),
-           tstr, label))
+           tstr, label, _HIST_TIME_NOTE))
     content = ("【%s | 最近对话】\n%s\n%s\n%s\n\n【现在】请你主动发一条消息。"
                % (label, hist_block,
                   _zcode_context_line(chat_type, chat_id),
