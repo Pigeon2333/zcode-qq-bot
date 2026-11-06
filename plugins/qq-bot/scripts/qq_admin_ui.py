@@ -1547,12 +1547,12 @@ async function vFile(kind){
  }
  $('#view').innerHTML=head('说话风格卡（0.5.10 起按人设独立：每张人设可以有自己的语言底子；全局风格叠加到所有人设，与自进化叠加生效）')+saveHint('风格卡内容需点「保存」按钮生效（只保存当前选中目标）；未保存的修改以蓝色边框标记，切换目标会提示。')+evHtml+
   `<div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-   <b>编辑目标</b><select id="stsel">${(window._stTargets||[]).map(t=>'<option value="'+esc(t.id)+'" '+(t.id===window._stSel?'selected':'')+'>'+esc(t.label)+(t.has_own?' ✓':'')+'</option>').join('')}</select>
+   <b>编辑目标</b><select id="stsel">${(window._stTargets||[]).map(t=>'<option value="'+esc(t.id)+'" '+(t.id===window._stSel?'selected':'')+'>'+esc(t.label)+(t.has_card?' ✓卡':'')+(t.evolved?' ✦自进化'+t.ev_count:'')+'</option>').join('')}</select>
    <span class="k" id="ststate"></span>
    <span style="margin-left:auto;display:flex;gap:6px">
     <button class="act ghost" onclick="stDup()">复制风格到…</button>
     <button class="act ghost" onclick="stClear()">清空此目标风格</button></span></div>
-  <div class="k" style="margin-top:4px">「✓」= 该目标已有自己的风格卡；无 ✓ 的目标回退到全局风格（旧版的单一风格文件也按全局风格处理）。「复制风格到…」方便以某份风格为底本调试。</div>
+  <div class="k" style="margin-top:4px">标记含义：「✓卡」= 该目标有自己的<b>风格卡</b>（下面文本框，留空=回退全局风格）；「✦自进化」= 该目标积累了<b>自进化观察</b>（上方卡片，独立于风格卡叠加生效，在自进化卡里管理）。两者可以同时有。</div>
   <textarea id="fedit" style="margin-top:10px" oninput="dirtyOn(this,'bsavef')">${esc(d.text||'')}</textarea>
   <div><button class="act" id="bsavef" data-kind="${kind}" disabled onclick="saveFile(this.dataset.kind)">保存「<span id="stsave-name">${esc((((window._stTargets||[]).find(t=>t.id===window._stSel))||{}).label||'')}</span>」的风格卡</button></div></div>`;
  // 目标切换：未保存守卫 + 加载该目标文本
@@ -6160,17 +6160,31 @@ class UiHandler(BaseHTTPRequestHandler):
             return self._reply(200, {"ok": True})
         if u.path == "/api/style/targets":
             # 风格目标列表 + 各目标当前文本（风格卡页用）
+            # has_own = 有风格内容（专属风格卡 **或** 自进化观察）——用户视角
+            # 这页统称"风格"，有 30 条自进化却无 ✓ 会被理解为"没风格"
             import qq_style_store as _SS
             coll = _SS._load_coll()
+            ev_data = load_json_const(EVOLVED_PATH, {})
             targets = []
             for t, label in _SS.style_targets(coll):
                 if t == "_global_":
                     txt = _SS.global_style()
+                    has_ev = any(
+                        isinstance(v, dict) and v.get("notes")
+                        for v in (ev_data.values() if isinstance(ev_data, dict) else []))
+                    ev_n = sum(len(v.get("notes") or []) for v in
+                               (ev_data.values() if isinstance(ev_data, dict) else [])
+                               if isinstance(v, dict))
                 else:
                     v = _SS.persona_style(t)
                     txt = v if v is not None else ""
+                    entry = ev_data.get(t) if isinstance(ev_data, dict) else None
+                    has_ev = bool(isinstance(entry, dict) and entry.get("notes"))
+                    ev_n = len(entry.get("notes") or []) if isinstance(entry, dict) else 0
                 targets.append({"id": t, "label": label,
-                                "has_own": bool(str(txt or "").strip())})
+                                "has_own": bool(str(txt or "").strip()) or has_ev,
+                                "has_card": bool(str(txt or "").strip()),
+                                "evolved": has_ev, "ev_count": ev_n})
             return self._reply(200, {"ok": True, "targets": targets,
                                      "active": str(coll.get("_active", "") or "")})
         if u.path == "/api/style/read":
