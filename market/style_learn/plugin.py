@@ -46,6 +46,9 @@ def register(api):
     api.route("learn_now", lambda args: _learn_now(api, args or {}))
     api.route("status", lambda args: _status(api))
     api.route("persona_names", lambda args: _persona_names())
+    api.route("dbg", lambda args: {"name": repr(getattr(api, "name", None)),
+                                   "type": type(getattr(api, "name", None)).__name__,
+                                   "host_type": type(api).__name__})
     _restore(api)
     api.log("ready")
 
@@ -305,6 +308,13 @@ def _inject(api, chat_type, chat_id, **kw):
         if str(r.get("gid")) == str(chat_id):
             traits = str(r.get("traits") or "").strip()[:320]
             if traits:
+                # 注入实锤日志：回复现场 grep 这行即证明生效（用户可自查）
+                try:
+                    api.log("INJECT chat=%s/%s chars=%d traits=%d行"
+                            % (chat_type, chat_id, len(traits),
+                               len(traits.splitlines())))
+                except Exception:
+                    pass
                 return ("\n\n## 活人感参考（学自本群群友的真实聊天习惯——是说话质感的"
                         "参考，让你知道真人怎么说话；**不是模仿任何人**，绝不照抄"
                         "句式或堆砌口头禅，融合进你自己的语气）\n" + traits)

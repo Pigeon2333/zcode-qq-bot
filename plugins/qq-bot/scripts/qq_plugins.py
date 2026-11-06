@@ -159,7 +159,11 @@ class PluginHost:
         import qq_common as C
         d = pathlib.Path(C.DATA_DIR) / "plugins_data"
         d.mkdir(parents=True, exist_ok=True)
-        return d / ("%s.json" % _safe_name(name))
+        # 净化（不是校验！_safe_name 是布尔校验器，曾被误用成文件名
+        # → 所有插件数据全写进 True.json，hot_brief/style_learn 混写）
+        import re as _re
+        safe = _re.sub(r"[^A-Za-z0-9_-]", "_", str(name or "").strip())[:40]
+        return d / ("%s.json" % (safe or "unknown"))
 
     def data_store(self, name, key, value):
         with PluginHost._DATA_LOCK:
