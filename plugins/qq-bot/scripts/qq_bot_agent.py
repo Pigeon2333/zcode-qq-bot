@@ -794,6 +794,17 @@ def vision_enabled():
     return bool(cfg.get("vision_enabled", False))
 
 
+def vision_mode():
+    """看图模式：all=所有图都识（默认）；ask=明确要求才识
+    （@/回复机器人 → 直接识图；其余裸图 → 由轻量判定 gate 决定是否
+    看图+插话——用户反馈：所有图都识导致插话概率虚高、无关图硬回复显傻）。
+    gate 提示已含「非要求看图就别看」的判定条件。"""
+    cfg = load_json_const(REPLY_CONFIG_PATH, {})
+    return str(cfg.get("vision_mode") or "all")
+
+
+
+
 def web_search_enabled():
     """联网搜索开关（reply_config.json，管理 UI 维护；默认关闭）。"""
     cfg = load_json_const(REPLY_CONFIG_PATH, {})
@@ -1925,6 +1936,8 @@ def _interrupt_gate(daemon, msg, persona_name):
         "重点识别「群友俩在对话」：最近几行里有两三个不同的人名在短句往来"
         "（尤其「没」「告诉我」「你倒是说啊」这类省略主语的接话短句），"
         "说明他们在聊自己的事——哪怕话题有趣也输出 N。" + nl +
+        "带图的消息：只有对方明确要求你看图（看这张/这是什么图/帮我分析）"
+        "或图与你强相关时才输出 Y；只是随手发图没人叫你看 → 输出 N。" + nl +
         "宁可 N。只输出 Y 或 N，不要其他任何字。") % (persona_name, persona_name)
     user = ("【最近对话】" + nl + "%s" + nl + nl + "【现在】%s") % (hist_block, now_line)
     try:
@@ -4243,7 +4256,14 @@ def process(daemon, msg):
     reply = None
     model = None
     # 视觉分支：开关开启 + 消息带图 + 已配视觉模型；失败降级文本链
-    if vision_enabled() and msg.get("image_urls"):
+    # 看图模式 vision_mode：all=所有图都识；ask=明确要求才识
+    # （@/回复机器人 → 直接识；chat_random 裸图 → 交给轻量 gate 判定，
+    #   gate 拦下则本次不识图，文字链正常走——用户反馈：识图信息量大
+    #   → 闲聊判定倾向"有趣"→无关图也插话显傻）
+    _vision_go = vision_enabled() and msg.get("image_urls") and (
+        vision_mode() == "all"
+        or msg.get("trigger_reason") in ("at", "reply_to_bot"))
+    if _vision_go:
         try:
             model, reply = call_vision(messages, msg["image_urls"])
         except Exception as e:

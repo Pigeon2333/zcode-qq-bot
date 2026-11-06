@@ -1771,7 +1771,11 @@ async function vSettings(){
    <input type="number" min="10" max="1440" value="${rv.botloop_cooldown_min||60}" style="width:76px" onchange="saveKVLoad('/api/reply-config',{botloop_cooldown_min:Math.max(10,Math.min(1440,parseInt(this.value)||60))},'互聊冷却已更新')">
    <span class="k">分钟（10–1440，非永久拉黑，到期自动恢复正常聊天）</span></div></div>
  <div class="card"><label class="master"><input type="checkbox" ${rv.vision_enabled?'checked':''} onchange="saveVision(this.checked)">
-  <span><b>看图模式</b><div class="k" style="margin-top:3px">开启后，消息里的图片会交给视觉模型识别并回应（群聊与私聊均生效）；视觉模型在「模型管理」页配置，识别失败自动降级纯文本</div></span></label></div>
+  <span><b>看图模式</b><div class="k" style="margin-top:3px">开启后，消息里的图片会交给视觉模型识别并回应（群聊与私聊均生效）；视觉模型在「模型管理」页配置，识别失败自动降级纯文本</div></span></label>
+  <div style="margin-top:8px;display:flex;gap:10px;flex-wrap:wrap;align-items:center"><span class="k" style="flex:none">看图范围</span>
+   <label><input type="radio" name="vmode-vision" value="all" ${(rv.vision_mode||'all')==='all'?'checked':''} onchange="saveKVLoad('/api/reply-config',{vision_mode:'all'},'看图范围：所有图（已生效）')"> 所有图都识（插话概率跟群消息设置走）</label>
+   <label><input type="radio" name="vmode-vision" value="ask" ${(rv.vision_mode)==='ask'?'checked':''} onchange="saveKVLoad('/api/reply-config',{vision_mode:'ask'},'看图范围：仅明确要求时（已生效）')"> 仅明确要求时才识图</label></div>
+  <div class="k" style="margin-top:4px">「仅明确要求」= @/回复机器人要她看图、或消息文字里点名看图（如「看看这张图」「这是什么梗」）才会识图；其余图片只当文字消息处理，不抢着回复——识图信息量大，容易被闲聊判定当成"有趣"而插话，无关图片硬回复会很突兀</div></div>
  <div class="card"><label class="master"><input type="checkbox" ${rv.web_search_enabled?'checked':''} onchange="saveWebSearch(this.checked)">
   <span><b>联网搜索</b><div class="k" style="margin-top:3px">遇到实时性问题（新闻/天气/价格/最新版本等）自动先联网搜索再回答，普通闲聊不触发不计费。搜索后端：优先用智谱搜索资源包（若有），未开通自动切换必应免费搜索兜底——不买资源包也能搜；两个都失败时机器人会坦白拿不到最新消息</div></span></label></div>
  <div class="card"><label class="master"><input type="checkbox" ${rv.abuse_guard_enabled!==false?'checked':''} onchange="saveAbuseGuard(this.checked)">
@@ -4253,6 +4257,7 @@ class UiHandler(BaseHTTPRequestHandler):
                                      "chat_interesting": data.get("chat_interesting", True),
                                      "chat_min_interval_sec": data.get("chat_min_interval_sec", 45),
                                      "vision_enabled": data.get("vision_enabled", False),
+                                     "vision_mode": str(data.get("vision_mode") or "all")[:8],
                                      "chat_anti_interrupt": data.get("chat_anti_interrupt", True),
                                      "web_search_enabled": data.get("web_search_enabled", False),
                                      "abuse_guard_enabled": data.get("abuse_guard_enabled", True),
@@ -4800,6 +4805,8 @@ class UiHandler(BaseHTTPRequestHandler):
                 data["chat_interesting"] = bool(body["chat_interesting"])
             if "vision_enabled" in body:
                 data["vision_enabled"] = bool(body["vision_enabled"])
+            if "vision_mode" in body:
+                data["vision_mode"] = str(body["vision_mode"] or "all")[:8]
             if "web_search_enabled" in body:
                 data["web_search_enabled"] = bool(body["web_search_enabled"])
             if "abuse_guard_enabled" in body:
