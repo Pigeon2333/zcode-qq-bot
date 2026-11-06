@@ -2908,7 +2908,7 @@ function vVoiceCards(m,g){
  const mode=String(c.mode||'keyword');
  const kw=(c.keywords||[]).join('、');
  const gsvCard=(g.dir_ok?vGsvCardInstalled(m,g):vGsvCardTeaser());
- // 顺序：开关策略 → 语音来源与音色 → 本地引擎（非 gsv 供应商时折叠）
+ // 顺序：开关策略 → 语音来源与音色 → 本地引擎（非 gsv 供应商时折叠）→ 计费说明（垫底）
  const provCard='<div class="card"><div class="k" style="margin-bottom:8px"><b>语音来源与音色</b>（供应商可随时换，互不影响）</div>'
  +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="k">供应商</span><select id="v-prov" onchange="voiceProvChange()">'+vopts+'</select></div>'
  +'<div class="k" id="v-bill" style="margin-top:8px;padding:8px;border:1px solid var(--line);border-radius:8px"></div>'
@@ -2917,8 +2917,8 @@ function vVoiceCards(m,g){
  +'<input id="v-ptext" value="你好呀，我是你的语音小助手，听听这个声音怎么样？" style="flex:1;min-width:240px">'
  +'<button class="act ghost" style="margin:0" onclick="voicePreview()">试听（用当前表单配置）</button></div>'
  +'<audio id="v-audio" controls style="margin-top:8px;width:100%;display:none"></audio>'
- +'<div class="k" id="v-pmsg" style="margin-top:6px"></div></div>'
- +'<div class="card"><div class="k"><b>计费说明</b>（各家语音合成的收费情况，选前看清楚）</div>'
+ +'<div class="k" id="v-pmsg" style="margin-top:6px"></div></div>';
+ const billCard='<div class="card"><div class="k"><b>计费说明</b>（各家语音合成的收费情况，选前看清楚）</div>'
  +prov.map(k=>'<div style="margin-top:8px"><b>'+esc(P[k].label)+'</b><div class="k" style="margin-top:3px">'+esc(P[k].billing)+'</div></div>').join('')
  +'</div>';
  return '<div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><b>开关与策略</b><span class="badge" style="background:var(--tint);color:var(--dim)">语音内容跟人设走，只换发送形式</span></div>'
@@ -2939,6 +2939,7 @@ function vVoiceCards(m,g){
  +provCard
  +'<div id="gsv-card-wrap" style="display:'+(cur==='gsv'?'':'none')+'">'+gsvCard+'</div>'
  +'<div id="gsv-teaser-wrap" style="display:'+(cur==='gsv'?'none':'')+'">'+(g.dir_ok?'':gsvCard)+'</div>'
+ +billCard
  +'</div>';
 }
 async function gsvStart(){
