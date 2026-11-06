@@ -45,6 +45,7 @@ def register(api):
     api.route("estimate", lambda args: _estimate(api))
     api.route("learn_now", lambda args: _learn_now(api, args or {}))
     api.route("status", lambda args: _status(api))
+    api.route("persona_names", lambda args: _persona_names())
     _restore(api)
     api.log("ready")
 
@@ -62,7 +63,22 @@ def _cfg(api):
     c.setdefault("blacklist", [])
     c.setdefault("groups", [])              # 学习群（独立于消息白名单）
     c.setdefault("learn_min", _LEARN_MIN)
+    c.setdefault("scope", "all")            # 喂给哪些人设：all=全部 / persona=指定列表
+    c.setdefault("personas", [])            # scope=persona 时生效的人设名列表
     return c
+
+
+def _persona_names():
+    """当前人设合集的全部人设名 + 全局通用设定文本（供页面选择喂给谁）。"""
+    try:
+        import qq_bot_agent as A
+        coll, _active = A.load_persona_collection()
+        names = sorted(k for k in coll.keys()
+                       if not k.startswith("_") and str(coll.get(k) or "").strip())
+        return {"ok": True, "personas": names, "active": _active or "",
+                "global": str(coll.get("global", "") or "")}
+    except Exception as e:
+        return {"ok": False, "error": repr(e)}
 
 
 def _load_cfg(api):
@@ -83,6 +99,10 @@ def _save_cfg(api, args):
         c["learn_min"] = max(20, min(500, int(args.get("learn_min") or _LEARN_MIN)))
     except (TypeError, ValueError):
         c["learn_min"] = _LEARN_MIN
+    scope = str(args.get("scope") or "all")
+    c["scope"] = scope if scope in ("all", "persona") else "all"
+    c["personas"] = [str(x).strip()[:40] for x in (args.get("personas") or [])
+                     if str(x).strip()][:20]
     api.store("cfg", c)
     return {"ok": True, "cfg": c, "estimate": _estimate(api)}
 
@@ -263,6 +283,19 @@ def _inject(api, chat_type, chat_id, **kw):
         return ""
     if str(chat_id) not in c.get("groups", []):
         return ""
+    # scope 过滤：persona=只喂给指定人设（其他人格看不到）；all=全部（含全局）
+    if str(c.get("scope") or "all") == "persona":
+        allowed = [str(x) for x in (c.get("personas") or [])]
+        cur_active = ""
+        try:
+            import qq_bot_agent as A
+            coll, cur_active = A.load_persona_collection()
+        except Exception:
+            coll, cur_active = {}, ""
+        # 命中条件：激活人设在允许列表；或「全局通用设定」在允许列表
+        # （喂给全局=所有人格都收到——影响所有人设的说话质感，页面有提醒）
+        if cur_active not in allowed and "_global_" not in allowed:
+            return ""
     for r in api.load("records", []):
         if str(r.get("gid")) == str(chat_id):
             traits = str(r.get("traits") or "").strip()[:320]
@@ -286,7 +319,8 @@ def _estimate(api):
     with _LOCK:
         pending = {g: (b["new"] if (b := _BUF.get(g)) else 0) for g in c.get("groups", [])}
     return {"ok": True, "active_groups": len(active), "inject_tokens": inject_tokens,
-            "base_tokens": base, "pct": pct,
+            "base_tokens": base, "pct": pct, "scope": str(c.get("scope") or "all"),
+            "personas": c.get("personas") or [],
             "learn_cost_per_run": "约 1.0-1.5k token/次（每群每 3 小时至多一次）",
             "pending": pending}
 

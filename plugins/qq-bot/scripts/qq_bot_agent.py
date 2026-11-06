@@ -1728,7 +1728,18 @@ def vision_model():
 
 EVOLVED_PATH = os.path.join(DATA_DIR, "styles", "evolved.json")
 _EVOLVE_EVERY = 6       # 每 N 次成功回复触发一次风格提炼
-_EVOLVE_MAX_NOTES = 30  # 每个人设的观察条数上限
+_EVOLVE_MAX_NOTES = 30  # 默认上限（可在设置页调高到 300；提示词只注入最近 ≤12 条）
+
+
+def _evolve_max_notes():
+    """自进化上限（app_config.evolved_max_notes，30-300；默认 30）。
+    上限只影响存档保留多少条——注入提示词的永远是最新的 ≤12 条，
+    调高上限=保留更多历史观察（可回看），不会线性增加 token。"""
+    try:
+        cfg = C.load_app_config()
+        return max(30, min(300, int(cfg.get("evolved_max_notes") or 30)))
+    except (TypeError, ValueError, AttributeError):
+        return 30
 
 
 def evolved_notes(persona):
@@ -1761,11 +1772,31 @@ def evolved_append(persona, new_notes):
             if note and note not in existing:
                 existing.add(note)
                 entry["notes"].append({"ts": int(time.time()), "note": note})
-        entry["notes"] = entry["notes"][-_EVOLVE_MAX_NOTES:]
+        entry["notes"] = entry["notes"][-_evolve_max_notes():]
         tmp = pathlib.Path(EVOLVED_PATH + ".tmp")
         tmp.parent.mkdir(parents=True, exist_ok=True)
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(str(tmp), EVOLVED_PATH)
+
+
+def composed_style(persona_name):
+    """某人设生效的风格卡文本：per-persona 覆盖 + 全局风格叠加
+    （0.5.10 起风格卡按人设独立存储；无 per-persona 时回退旧全局文件）。"""
+    try:
+        import qq_style_store as _SS
+    except Exception:
+        return read_const(STYLE_PATH)
+    try:
+        parts = []
+        g = str(_SS.global_style() or "").strip()
+        if g:
+            parts.append(g)
+        p = _SS.persona_style(persona_name)
+        if p is not None and str(p).strip():
+            parts.append(str(p).strip())
+        return ("\n\n".join(parts)).strip()
+    except Exception:
+        return read_const(STYLE_PATH)
 
 
 def load_thinking_config():
@@ -2363,7 +2394,7 @@ def build_messages(daemon, msg, ctx_k=32):
     global_block = ""
     if global_base:
         global_block = "\n\n## 全局通用设定（无论人设如何切换都遵守）\n%s" % global_base
-    style = read_const(STYLE_PATH)
+    style = composed_style(active_name)
     style_block = ("\n\n## 说话风格卡（通用的语言底子；若与当前人设的性格冲突，以人设为准）\n" + style) if style else ""
     ev = evolved_notes(active_name) if active_name else {"enabled": False, "notes": []}
     evolved_block = ""
@@ -3130,7 +3161,7 @@ def _proactive_compose(daemon, chat_type, chat_id):
     global_base = data["global"]
     coll_raw = load_json_const(PERSONA_COLLECTION_PATH, {})
     persona = str(coll_raw.get(persona_name, "")).strip() if persona_name else ""
-    style = read_const(STYLE_PATH)
+    style = composed_style(persona_name)
     ev = evolved_notes(persona_name) if persona_name else {"enabled": False, "notes": []}
     evolved_block = ("\n\n## 自进化风格观察\n" + "\n".join("- %s" % n for n in ev["notes"][-12:])
                      if ev["enabled"] and ev["notes"] else "")
@@ -3652,7 +3683,7 @@ def _persona_stack_text(route=None):
     parts = ["【当前人设：%s】\n%s" % (active_name or "智谱娘", persona)]
     if pc.get("global"):
         parts.append("## 全局通用设定\n%s" % pc["global"])
-    style = read_const(STYLE_PATH)
+    style = composed_style(active_name)
     if style:
         parts.append("## 说话风格卡（严格模仿语言风格，不改变身份）\n%s" % style)
     ev = evolved_notes(active_name) if active_name else {"enabled": False, "notes": []}

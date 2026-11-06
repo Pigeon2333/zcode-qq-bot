@@ -1395,11 +1395,13 @@ async function vPersonas(){
    <select id="psel">${opts}</select>
    <button class="act ghost" onclick="switchPersona()">切换到此设</button>
    <button class="act ghost" onclick="renamePersona()">重命名</button>
+   <button class="act ghost" onclick="dupPersona()">创建副本</button>
    <button class="act ghost" onclick="newPersona()">新建</button>
    <button class="act ghost" onclick="personaImport()">导入…</button>
    <button class="act ghost" onclick="personaMigrate()">生成迁移指令</button>
    <button class="act ghost danger" onclick="delPersona()">删除</button>
   </div>
+  <div class="k" style="margin-top:6px">「创建副本」复制一份当前人设（含它的风格卡）为「原名 副本」——调人设/风格前先建一份，改坏了随时切回来。</div>
   <div class="k" style="margin-top:10px">人设内容（<span id="pname">${esc(d.active||'')}</span>）</div>
   <textarea id="pedit" style="margin-top:6px" oninput="dirtyOn(this,'bsavep')">${esc(d.text||'')}</textarea>
   <button class="act" id="bsavep" disabled onclick="savePersona()">保存当前编辑的人设</button></div>
@@ -1465,6 +1467,16 @@ async function renamePersona(){
  if(r.ok===false){toast(r.error||'重命名失败',false);return}
  toast('已重命名为「'+nn+'」'+((r.moved&&r.moved.length)?'（已同步：'+r.moved.join('、')+'）':''));load()}
 async function savePersona(){const n=$('#psel').value;const t=$('#pedit').value;const r=await saveKV('/api/personas/save',{name:n,text:t},'人设「'+n+'」已保存（即时生效）');if(r.ok!==false)dirtyOff('bsavep')}
+async function dupPersona(){
+ if(!await dirtyGuard())return;
+ const n=$('#psel').value;if(!n)return;
+ const nn=await dlgPrompt({title:'创建人设副本',body:'将「'+n+'」复制为（默认加「副本」后缀）：',value:n+' 副本',okText:'创建副本'});
+ if(!nn||nn===n)return;
+ const r=await api('/api/personas/dup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n,new_name:nn})});
+ if(r.ok===false){toast(r.error||'创建副本失败',false);return}
+ toast('已创建副本「'+nn+'」（含其风格卡）；在列表里选中即可切换使用');
+ load();
+}
 async function personaImport(){
  if(!await dirtyGuard())return;
  const p=await api('/api/personas/pick-import',{method:'POST'}).catch(()=>({file:''}));
@@ -1491,35 +1503,98 @@ async function personaMigrate(){
   try{await navigator.clipboard.writeText(ta.value);toast('已复制，去发给那边的 Agent 吧')}catch(e){document.execCommand('copy');toast('已复制')}
   }}
 async function vFile(kind){
- const d=await api('/api/file?kind='+kind);
+ let d=await api('/api/file?kind='+kind);
  const ev=await api('/api/evolved');
+ if(kind==='style'){
+  const st=await api('/api/style/targets').catch(()=>({targets:[]}));
+  window._stTargets=(st.targets||[]);
+  const sel=window._stSel||(st.active&&window._stTargets||[]).length?window._stSel:null;
+  // 初始读选中目标的文本（默认当前激活人设；无则全局）
+  const initial=window._stSel||st.active||'_global_';
+  const tr=await api('/api/style/read?target='+encodeURIComponent(initial)).catch(()=>({text:''}));
+  d={text:tr.text||''};
+  window._stSel=initial;
+ }
  let evHtml='';
  if(kind==='style'){
   const rows=(ev.personas||[]).map(p=>{
-   const notesHtml=p.notes&&p.notes.length
-    ?'<div class="k" style="margin-top:8px">'+p.notes.map(n=>'- '+esc(n)).join('<br>')+'</div>'
+   const all=(p.notes||[]);
+   const per=10, pages=Math.max(1,Math.ceil(all.length/per));
+   const pg=Math.min(window['_evPg_'+p.name]||1,pages);
+   const shown=all.slice((pg-1)*per,pg*per);
+   const notesHtml=all.length
+    ?('<div class="k" style="margin-top:8px">'+shown.map(n=>'- '+esc(n)).join('<br>')+'</div>'
+      +(pages>1?'<div style="display:flex;gap:8px;align-items:center;margin-top:6px"><button class="act ghost" style="margin:0;padding:2px 10px;font-size:12px" onclick="evPage(\''+esc(p.name)+'\','+(pg-1)+')" '+(pg<=1?'disabled':'')+'>上一页</button><span class="k">第 '+pg+'/'+pages+' 页（共 '+all.length+' 条，提示词只用最新 12 条）</span><button class="act ghost" style="margin:0;padding:2px 10px;font-size:12px" onclick="evPage(\''+esc(p.name)+'\','+(pg+1)+')" '+(pg>=pages?'disabled':'')+'>下一页</button></div>':''))
     :'<div class="k" style="margin-top:6px">（尚无积累：机器人每 6 次回复会自动从群聊中提炼 1-2 条风格观察）</div>';
-   const clearBtn=p.notes&&p.notes.length
+   const clearBtn=all.length
     ?'<button class="act ghost" style="color:var(--err)" data-pname="'+esc(p.name)+'" onclick="clearEvolved(this.dataset.pname)">清空</button>'
     :'';
    return '<div class="card">'
     +'<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
     +'<b>'+esc(p.name)+'</b>'+(p.active?'<span class="badge b-ok">当前人设</span>':'')
     +'<label><input type="checkbox" '+(p.enabled?'checked':'')+' data-pname="'+esc(p.name)+'" onchange="toggleEvolved(this.dataset.pname,this.checked)"> 启用自进化</label>'
-    +'<span class="k mono">'+(p.notes?p.notes.length:0)+' 条观察</span>'+clearBtn
+    +'<span class="k mono">'+all.length+' 条观察</span>'+clearBtn
     +'</div>'+notesHtml+'</div>';
   }).join('');
-  evHtml='<div class="card"><div class="k">自进化风格（绑定人设：机器人聊天中自动积累表达经验，注入到对应人设的提示词；可随时开关/清空，与人设卡叠加生效）</div>'
+  const mx=ev.max_notes||30;
+  evHtml='<div class="card"><div class="k">自进化风格（绑定人设：机器人聊天中自动积累表达经验，注入到对应人设的提示词；可随时开关/清空，与人设卡叠加生效）'
+   +'<span style="margin-left:8px">保留上限 <input type="number" min="30" max="300" step="10" value="'+mx+'" style="width:64px" onchange="saveEvMax(this.value)"> 条（30–300；只影响存档保留与回看，提示词始终只用最新 12 条，调高不增加每条回复的 token；上限满了自动挤掉最旧的）</span></div>'
    +'<div style="margin-top:10px">'+(rows||'<i class="k">暂无人设</i>')+'</div></div>';
  }
- $('#view').innerHTML=head('说话风格卡（模仿目标语言风格，留空=纯人设；与自进化叠加生效）')+saveHint('风格卡内容需点「保存」按钮生效（只保存本卡片）；未保存的修改以蓝色边框标记。')+evHtml+
- `<div class="card"><div class="k">${kind==='style'?'风格卡内容':'文件内容'}</div>
+ $('#view').innerHTML=head('说话风格卡（0.5.10 起按人设独立：每张人设可以有自己的语言底子；全局风格叠加到所有人设，与自进化叠加生效）')+saveHint('风格卡内容需点「保存」按钮生效（只保存当前选中目标）；未保存的修改以蓝色边框标记，切换目标会提示。')
+  +`<div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+   <b>编辑目标</b><select id="stsel">${(window._stTargets||[]).map(t=>'<option value="'+esc(t.id)+'">'+esc(t.label)+(t.has_own?' ✓':'')+'</option>').join('')}</select>
+   <span class="k" id="ststate"></span>
+   <span style="margin-left:auto;display:flex;gap:6px">
+    <button class="act ghost" onclick="stDup()">复制风格到…</button>
+    <button class="act ghost" onclick="stClear()">清空此目标风格</button></span></div>
+  <div class="k" style="margin-top:4px">「✓」= 该目标已有自己的风格卡；无 ✓ 的目标回退到全局风格（旧版的单一风格文件也按全局风格处理）。「复制风格到…」方便以某份风格为底本调试。</div>
   <textarea id="fedit" style="margin-top:10px" oninput="dirtyOn(this,'bsavef')">${esc(d.text||'')}</textarea>
-  <div><button class="act" id="bsavef" data-kind="${kind}" disabled onclick="saveFile(this.dataset.kind)">保存${kind==='style'?'风格卡':'文件内容'}</button></div></div>`;
+  <div><button class="act" id="bsavef" data-kind="${kind}" disabled onclick="saveFile(this.dataset.kind)">保存「<span id="stsave-name">${esc((window._stTargets||[])[0]||{}).label||''}</span>」的风格卡</button></div></div>`;
+ // 目标切换：未保存守卫 + 加载该目标文本
+ const stsel=$('#stsel');
+ let _stPrev=stsel.value;
+ stsel.onchange=async()=>{
+  if($('#fedit').classList.contains('dirty')&&!await dlgConfirm({title:'未保存的修改',body:'当前风格卡有未保存的修改，放弃并切换目标？',okText:'放弃并切换',danger:true})){stsel.value=_stPrev;return}
+  _stPrev=stsel.value;
+  const r=await api('/api/style/read?target='+encodeURIComponent(stsel.value));
+  $('#fedit').value=r.text||'';$('#fedit').classList.remove('dirty');$('#bsavef').disabled=true;
+  $('#stsave-name').textContent=(window._stTargets||[]).find(t=>t.id===stsel.value)?.label||stsel.value;
+ };
+}
+async function stDup(){
+ const from=$('#stsel').value;
+ const to=await dlgPrompt({title:'复制风格到…',body:'把「'+((window._stTargets||[]).find(t=>t.id===from)||{}).label+'」的风格卡复制到（输入目标名：人设名或 _global_）：',placeholder:'如：智谱娘·傲娇 或 _global_',okText:'复制'});
+ if(!to)return;
+ const r=await api('/api/style/dup-old',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({target:to})});
+ if(r.ok===false){toast(r.error||'复制失败',false);return}
+ toast('已复制到「'+to+'」（该目标此前为空时生效）；切换目标查看');
+ load();
+}
+async function stClear(){
+ const from=$('#stsel').value;
+ if(!await dlgConfirm({title:'清空「'+((window._stTargets||[]).find(t=>t.id===from)||{}).label+'」的风格卡？',body:'清空后该目标回退到全局风格（或无风格）。可先「复制风格到…」留底。',okText:'清空',danger:true}))return;
+ const r=await saveKV('/api/file?kind=style',{target:from,text:''},'已清空（回退全局/无风格）');
+ if(r.ok!==false){$('#fedit').value='';dirtyOff('bsavef')}
 }
 async function toggleEvolved(name,on){await api('/api/evolved/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,enabled:on})});toast('「'+name+'」自进化已'+(on?'启用':'停用')+'（已生效）');load()}
+function evPage(name,pg){window['_evPg_'+name]=pg;load()}
+async function saveEvMax(v){
+ const n=Math.max(30,Math.min(300,parseInt(v)||30));
+ await saveKV('/api/app-config',{evolved_max_notes:n},'自进化保留上限已设为 '+n+' 条（即时生效；只影响存档，不影响每条回复的 token）');
+ load();
+}
 async function clearEvolved(name){if(!await dlgConfirm({title:'清空风格观察',body:'清空「'+name+'」的全部风格观察？',okText:'清空',danger:true}))return;await api('/api/evolved/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});toast('已清空');load()}
-async function saveFile(kind){const t=$('#fedit').value;const r=await saveKV('/api/file?kind='+kind,{text:t},'已保存（agent 下一轮生效）');if(r.ok!==false)dirtyOff('bsavef')}
+async function saveFile(kind){
+ if(kind==='style'){
+  const t=$('#fedit').value;
+  const target=window._stSel||'_global_';
+  const label=((window._stTargets||[]).find(x=>x.id===target)||{}).label||target;
+  const r=await saveKV('/api/file?kind=style',{target:target,text:t},'「'+label+'」风格卡已保存（agent 下一轮生效）');
+  if(r.ok!==false){dirtyOff('bsavef');load()}
+  return;
+ }
+ const t=$('#fedit').value;const r=await saveKV('/api/file?kind='+kind,{text:t},'已保存（agent 下一轮生效）');if(r.ok!==false)dirtyOff('bsavef')}
 async function vDevCtrl(){
  const [c,code,fl]=await Promise.all([
   api('/api/app-config').catch(()=>({})),
@@ -1854,13 +1929,13 @@ async function vSettings(){
    <div class="k" style="margin-bottom:6px"><b>看图范围</b>（三档随时可换，即时生效）</div>
    <label style="display:block;margin:6px 0"><input type="radio" name="vmode-vision" value="all" ${(rv.vision_mode||'all')==='all'?'checked':''} onchange="visionModePick('all')"> <b>所有图都识</b><span class="k">——识不识、回不回都跟着群消息的触发与插话概率走（最热情；无关图也可能硬回复）</span></label>
    <label style="display:block;margin:6px 0"><input type="radio" name="vmode-vision" value="all_prob" ${(rv.vision_mode)==='all_prob'?'checked':''} onchange="visionModePick('all_prob')"> <b>所有图都识，看后再定插话</b><span class="k">（推荐）——每张图都会真的看过（不会认错图），看完按下面的概率决定要不要插话；@/回复机器人仍然必回</span></label>
-   <label style="display:block;margin:6px 0"><input type="radio" name="vmode-vision" value="ask" ${(rv.vision_mode)==='ask'?'checked':''} onchange="visionModePick('ask')"> <b>仅明确要求时才识图</b><span class="k">——@/回复要她看、或文字里点名看图（「看看这张」「这是什么梗」）才看；其余图只当文字处理（最克制，但没看图时容易只凭文字猜错，如把选民证当成结婚证）</span></label>
+   <label style="display:block;margin:6px 0"><input type="radio" name="vmode-vision" value="ask" ${(rv.vision_mode)==='ask'?'checked':''} onchange="visionModePick('ask')"> <b>仅明确要求时才识图</b><span class="k">——@/回复要她看、或文字里点名看图（「看看这张」「这是什么梗」）才看；其余图只当文字处理（最克制，也最省资源；没看图时她只凭文字理解，图文不符的话题可能接不准）</span></label>
    <div id="vision-prob-row" class="${(rv.vision_mode)==='all_prob'?'':'dimmed'}" style="display:flex;gap:8px;align-items:center;margin:10px 0 0 26px">
     <span class="k" style="flex:none">识图后插话概率</span>
     <input type="number" min="0" max="100" step="5" value="${Math.round(((rv.vision_prob===undefined||rv.vision_prob===null)?0.3:rv.vision_prob)*100)}" style="width:64px" onchange="saveKVLoad('/api/reply-config',{vision_prob:Math.max(0,Math.min(100,parseInt(this.value)||0))/100},'识图插话概率已保存')">
     <span class="k">%（0%=只看不说，100%=见图必聊）</span>
    </div>
-   <div class="k" style="margin-top:8px">「看后再定」= 看图与插话解耦：图一定看过（不会把选民证认成结婚证），要不要开口由概率单独控制——热情与克制之间。前两档也会把带图消息更积极地送到机器人面前；「仅明确要求」最省资源</div>
+   <div class="k" style="margin-top:8px">「看后再定」= 看图与插话解耦：每张图都会真的看过（内容理解准确），要不要开口由概率单独控制——在热情与克制之间。前两档也会把带图消息更积极地送到机器人面前；「仅明确要求」最省资源</div>
   </div></div>
  <div class="card"><label class="master"><input type="checkbox" ${rv.web_search_enabled?'checked':''} onchange="saveWebSearch(this.checked)">
   <span><b>联网搜索</b><div class="k" style="margin-top:3px">遇到实时性问题（新闻/天气/价格/最新版本等）自动先联网搜索再回答，普通闲聊不触发不计费。搜索后端：优先用智谱搜索资源包（若有），未开通自动切换必应免费搜索兜底——不买资源包也能搜；两个都失败时机器人会坦白拿不到最新消息</div></span></label></div>
@@ -4056,7 +4131,14 @@ class UiHandler(BaseHTTPRequestHandler):
                     rows.append({"name": str(name), "active": name == active,
                                  "enabled": bool(entry.get("enabled", True)) if isinstance(entry, dict) else True,
                                  "notes": notes})
-            return self._reply(200, {"ok": True, "personas": rows})
+            cfg2 = C.load_app_config()
+            try:
+                maxn = max(30, min(300, int(cfg2.get("evolved_max_notes") or 30)))
+            except (TypeError, ValueError):
+                maxn = 30
+            return self._reply(200, {"ok": True, "personas": rows,
+                                     "max_notes": maxn,
+                                     "inject_per_reply": 12})
         if u.path == "/api/file":
             kind = q.get("kind")
             if kind == "persona":
@@ -6057,9 +6139,51 @@ class UiHandler(BaseHTTPRequestHandler):
             if kind == "persona":
                 write_const(PERSONA_PATH, text)
             elif kind == "style":
-                write_const(STYLE_PATH, text)
+                # 0.5.10：风格卡按人设存储（target=人设名或 _global_）
+                import qq_style_store as _SS
+                _SS.set_style(str(body.get("target") or "_global_"), text)
             else:
                 return self._reply(400, {"ok": False, "error": "kind 必须是 persona|style"})
+            return self._reply(200, {"ok": True})
+        if u.path == "/api/style/targets":
+            # 风格目标列表 + 各目标当前文本（风格卡页用）
+            import qq_style_store as _SS
+            coll = _SS._load_coll()
+            targets = []
+            for t, label in _SS.style_targets(coll):
+                if t == "_global_":
+                    txt = _SS.global_style()
+                else:
+                    v = _SS.persona_style(t)
+                    txt = v if v is not None else ""
+                targets.append({"id": t, "label": label,
+                                "has_own": bool(str(txt or "").strip())})
+            return self._reply(200, {"ok": True, "targets": targets,
+                                     "active": str(coll.get("_active", "") or "")})
+        if u.path == "/api/style/read":
+            import qq_style_store as _SS
+            t = str(urllib.parse.parse_qs(u.query).get("target", ["_global_"])[0])
+            if t == "_global_":
+                txt = _SS.global_style()
+            else:
+                v = _SS.persona_style(t)
+                txt = v if v is not None else ""
+            return self._reply(200, {"ok": True, "text": str(txt or "")})
+        if u.path == "/api/style/dup-old":
+            # 把旧全局风格文件初始化到某目标（老用户首次分目标保存的引导）
+            import qq_style_store as _SS
+            t = str(body.get("target") or "").strip()
+            if not t:
+                return self._reply(400, {"ok": False, "error": "缺少 target"})
+            _SS.duplicate_style(t)
+            return self._reply(200, {"ok": True})
+        if u.path == "/api/personas/dup":
+            # 创建人设副本（含其 per-persona 风格）——污染可快速切回
+            import qq_style_store as _SS
+            ok2, err = _SS.duplicate_persona(str(body.get("name") or ""),
+                                             str(body.get("new_name") or ""))
+            if not ok2:
+                return self._reply(400, {"ok": False, "error": err})
             return self._reply(200, {"ok": True})
         if u.path in ("/api/keys/add", "/api/keys/del", "/api/keys/rename",
                       "/api/keys/primary"):

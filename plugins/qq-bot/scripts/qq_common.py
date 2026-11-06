@@ -54,6 +54,7 @@ DEFAULT_CONFIG = {
     "owner_bilibili_uid": "",  # 主人的 B 站 UID（B站插件站内私信分享目标；曾漏在白名单外导致存了读不到）
     "backup_keep_days": 30,    # 备份保留天数（超过自动清理）
     "backup_keep_copies": 30,  # 每个备份保留份数（超过自动清理最旧的）
+    "evolved_max_notes": 30,   # 自进化观察每人设保留上限（30-300；只影响存档）
     "timezone": "Asia/Shanghai",  # 机器人时区（IANA 名，影响 AI 感知的时间）
     "device_ctrl_enabled": False,  # 设备操控（高危，默认关）
     "device_ctrl_2fa": True,       # 设备操控动态授权码（每次需验证）
