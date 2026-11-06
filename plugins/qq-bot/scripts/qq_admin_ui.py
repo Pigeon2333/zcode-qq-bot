@@ -2810,10 +2810,11 @@ async function voiceClone(){
  const r=await api('/api/voice/clone',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voice:voiceCollect(),audio:vcB64(wav),sample_text:document.getElementById('v-sample').value,preview_text:'你好呀，我是你的语音小助手，听听这个声音怎么样？'})}).catch(()=>({ok:false,error:'请求失败'}));
  if(!r||r.ok===false){
   const e=String((r&&r.error)||'未知错误');
-  msg.textContent=(e.indexOf('1113')>=0||e.indexOf('余额')>=0)
-   ?'克隆失败：所有已配置的智谱 Key 都没有克隆额度（1113 余额不足）。可到 bigmodel.cn 充值后重试，或改用 GPT-SoVITS 本地引擎克隆（完全免费）——引擎卡就在本页下方。'
-   :'克隆失败：'+e;
-  return}
+  if(e.indexOf('1113')>=0||e.indexOf('余额')>=0){
+   msg.textContent='克隆失败：所有已配置的智谱 Key 都没有克隆额度（1113 余额不足）。可到 bigmodel.cn 充值后重试，或改用 GPT-SoVITS 本地引擎克隆（完全免费）——引擎卡就在本页下方。';return}
+  if(e.indexOf('1234')>=0||e.indexOf('网络错误')>=0||e.indexOf('HTTP 5')>=0){
+   msg.textContent='克隆失败：平台处理这段样本时出错（多为样本本身或平台抖动）。已自动换 Key 重试过——请换一段 3-30 秒的清晰人声（单一说话人、无背景音乐）再试；仍失败可稍后再试，或先用本地引擎克隆。';return}
+  msg.textContent='克隆失败：'+e;return}
  __ZVSID=r.voice_id;
  msg.textContent='✓ 克隆成功，③ 正在用新音色合成试听…';
  const pr=await api('/api/voice/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voice:{provider:'zhipu',zhipu_speaker_id:__ZVSID},text:'你好呀，我是你的语音小助手，听听这个声音怎么样？'})}).catch(()=>({ok:false}));

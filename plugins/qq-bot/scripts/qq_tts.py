@@ -506,24 +506,29 @@ def clone_zhipu_voice(key, wav_bytes, voice_name, sample_text="", preview_text="
 
     last_err = None
     for ki, k in enumerate(keys):
-        for attempt in (1, 2):   # 1234/5xx 同 Key 立即重试一次
+        for attempt in (1, 2):   # 1234/5xx 同 Key 隔 2 秒重试一次，仍败换下一个 Key
             try:
-                return _zhipu_clone_once(k, wav_bytes, voice_name,
-                                         sample_text, preview_text)
+                r = _zhipu_clone_once(k, wav_bytes, voice_name,
+                                      sample_text, preview_text)
+                if ki or attempt > 1:
+                    print("[ZHIPU_CLONE] ok key#%d attempt%d" % (ki, attempt),
+                          flush=True)
+                return r
             except RuntimeError as e:
                 s = str(e)
                 last_err = e
+                print("[ZHIPU_CLONE] fail key#%d attempt%d: %.160s"
+                      % (ki, attempt, s), flush=True)
                 _balance = ("1113" in s or "余额不足" in s or "资源包" in s)
                 _transient = ("1234" in s or "网络错误" in s
                               or "HTTP 5" in s or "HTTP 500" in s)
                 if _balance:
-                    break   # 这个 Key 没额度，直接换下一个
+                    break        # 这个 Key 没额度/权限，直接换下一个
                 if _transient and attempt == 1:
                     time.sleep(2.0)
                     continue
-                raise
-        if ki < len(keys) - 1:
-            continue
+                break           # 非余额非抖动（参数/样本类错误）或抖动二连败：换下一个 Key
+    # 所有 Key 都试完仍失败：报最后一次错误（1113/1234 等文案原样透出）
     raise last_err or RuntimeError("没有可用的智谱语音 Key（克隆）")
 
 
