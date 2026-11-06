@@ -687,6 +687,61 @@ def _wav_duration(data):
         return 0.0
 
 
+def _trim_lead_noise(data):
+    """智谱 GLM-TTS 输出偶发头部数秒低电平持续音（用户听感「嘟嘟声」，
+    克隆音色更常见）。50ms 窗逐窗算 RMS，自适应阈值定位首个持续语音块
+    （该窗超阈值且后续 0.5s 内至少还有 4 窗超阈值——容忍语音里的停顿），
+    起音前的噪声整段剪掉、留 0.1s 预垫；起音在开头 0.3s 内或整体近静音
+    时原样返回（对干净输出零影响）。只处理 16bit 单声道 PCM。"""
+    try:
+        import io as _io
+        import math as _math
+        import struct as _st
+        import wave as _w
+        w = _w.open(_io.BytesIO(data), "rb")
+        ch, sw, rate, n = (w.getnchannels(), w.getsampwidth(),
+                           w.getframerate(), w.getnframes())
+        if ch != 1 or sw != 2 or n < rate:  # 仅 16bit 单声道；<1s 不剪
+            w.close()
+            return data
+        frames = w.readframes(n)
+        w.close()
+        win = max(1, rate // 20)            # 50ms 窗
+        cnt = len(frames) // 2
+        vals = _st.unpack("%dh" % cnt, frames[:cnt * 2])
+        nwin = cnt // win
+        if nwin < 20:
+            return data
+        rms = []
+        for i in range(nwin):
+            seg = vals[i * win:(i + 1) * win]
+            rms.append(int(_math.sqrt(sum(x * x for x in seg) / len(seg))))
+        peak = max(rms)
+        if peak < 400:                      # 整体近静音，不动
+            return data
+        thr = max(350, int(peak * 0.30))
+        onset = None
+        for i in range(nwin - 10):
+            if rms[i] >= thr:
+                hits = sum(1 for v in rms[i + 1:i + 11] if v >= thr)
+                if hits >= 4:               # 后 0.5s 里还有实声=真起音
+                    onset = i
+                    break
+        if onset is None or onset <= 6:     # 起音在前 0.3s 内=无杂音
+            return data
+        cut = max(0, onset - 2) * win       # 留 0.1s 预垫
+        out = _io.BytesIO()
+        o = _w.open(out, "wb")
+        o.setnchannels(ch)
+        o.setsampwidth(sw)
+        o.setframerate(rate)
+        o.writeframes(frames[cut * 2:])
+        o.close()
+        return out.getvalue()
+    except Exception:
+        return data
+
+
 def synthesize(text, cfg):
     """合成 → 返回 mp3 路径；失败抛异常（调用方回退文字）。text 会被截断。"""
     text = str(text or "").strip().replace("\n", " ")[:_MAX_TEXT]
@@ -727,6 +782,9 @@ def synthesize(text, cfg):
                 raise
         if data is None:
             raise last_err or RuntimeError("没有可用的智谱语音 Key")
+        # 头部杂音修剪：智谱 GLM-TTS 输出偶发开头数秒低电平持续音（嘟嘟声，
+        # 实测克隆音色更常见、预设也有）——定位首个持续语音块，噪声段剪掉
+        data = _trim_lead_noise(data)
         # 克隆音色「样本复现」兜底（实测：6 字文本合成出 19 秒——模型把
         # 克隆样本里的原文混进输出）。合成时长超过文本预估 2 倍且当前用的
         # 是克隆音色时，改用预设音色重合成一次，保证内容可听
