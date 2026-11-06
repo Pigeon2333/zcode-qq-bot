@@ -2740,7 +2740,12 @@ async function voiceClone(){
  }catch(e){msg.textContent='音频解码失败：'+((e&&e.message)||e)+'。换 mp3/wav/m4a 试试，或先用工具剪一段。';return}
  msg.textContent='② 上传并克隆中…（约 10-30 秒，按智谱计费）';
  const r=await api('/api/voice/clone',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voice:voiceCollect(),audio:vcB64(wav),sample_text:document.getElementById('v-sample').value,preview_text:'你好呀，我是你的语音小助手，听听这个声音怎么样？'})}).catch(()=>({ok:false,error:'请求失败'}));
- if(!r||r.ok===false){msg.textContent='克隆失败：'+((r&&r.error)||'未知错误');return}
+ if(!r||r.ok===false){
+  const e=String((r&&r.error)||'未知错误');
+  msg.textContent=(e.indexOf('1113')>=0||e.indexOf('余额')>=0)
+   ?'克隆失败：所有已配置的智谱 Key 都没有克隆额度（1113 余额不足）。可到 bigmodel.cn 充值后重试，或改用 GPT-SoVITS 本地引擎克隆（完全免费）——引擎卡就在本页下方。'
+   :'克隆失败：'+e;
+  return}
  __ZVSID=r.voice_id;
  msg.textContent='✓ 克隆成功，③ 正在用新音色合成试听…';
  const pr=await api('/api/voice/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voice:{provider:'zhipu',zhipu_speaker_id:__ZVSID},text:'你好呀，我是你的语音小助手，听听这个声音怎么样？'})}).catch(()=>({ok:false}));
