@@ -2238,6 +2238,10 @@ def _nudge_compose(daemon, chat_type, chat_id):
                  "B 你向对方抛了问题或邀约，对方没接\n"
                  "C 话题自然聊完，双方都没欠话\n"
                  "D 对方话说到一半突然消失\n\n"
+                 "硬规则：你说的最后一句已经写在下面——新话头必须换话题，"
+                 "禁止与你最后一句同主题再说一遍（刚催过睡就绝不再催睡）；"
+                 "如果你的最后一句本身就是收尾语（晚安/去睡/拜拜类），"
+                 "说明对话已经结束，输出 [不发]。\n\n"
                  "按对应方式追一句（只输出这句话本身，用人设的口吻、词汇和称呼）：\n"
                  "A → 不催，多数情况安静等着；真要开口也只是人设式的一句轻关心，别提'没回我'\n"
                  "B → 围绕你抛的那个具体问题轻轻催一下，让对方好接话\n"
@@ -2284,6 +2288,12 @@ def _observe_pump(daemon):
     _OBS_PUMP["seq"] = max(_OBS_PUMP["seq"], seq)
 
 
+# 追聊收尾语：bot 最后一句是这些 = 对话已自然结束，绝不追
+_NUDGE_CLOSE_RE = re.compile(
+    r"晚安|去睡|睡吧|早点睡|早点休息|好好休息|休息吧|拜拜|回见|下次聊|"
+    r"不打扰|忙去吧|去吧|睡觉去|困了就")
+
+
 def _nudge_tick(daemon):
     """追聊节拍：每 20s 巡检一次。触发条件（全部满足）：
     ① 会话最近 1 小时有往来 ② 最后一条是机器人说的（对方没接）
@@ -2328,6 +2338,14 @@ def _nudge_tick(daemon):
             # 对方刚说话（或最后是对方）：重置该会话追问状态
             if _NUDGE_STATE.get(key, {}).get("strikes"):
                 _NUDGE_STATE[key] = {"strikes": 0, "last_ts": 0.0}
+            continue
+        # 对话收尾语后不追聊：晚安/去睡/拜拜类是明确的结束语——
+        # 追=没话找话+和自己刚说的话重复（用户实测：晚安后 2.5 分钟
+        # 又追一遍催睡，观感"前后割裂"）。跳过并按本轮已处理记账。
+        if _NUDGE_CLOSE_RE.search(str(last.get("text") or "")):
+            s = _NUDGE_STATE.setdefault(key, {"strikes": 0, "last_ts": 0.0})
+            s["last_ts"] = now
+            out("AGENT_NUDGE_SKIP chat=%s (last bot msg is a closing line)" % key)
             continue
         bot_ts = float(last.get("ts") or 0)
         if bot_ts <= 0:
