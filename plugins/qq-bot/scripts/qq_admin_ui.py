@@ -1517,6 +1517,8 @@ async function vFile(kind){
  }
  let evHtml='';
  if(kind==='style'){
+  const mx=ev.max_notes||30;
+  const inj=ev.inject_notes||12;
   const rows=(ev.personas||[]).map(p=>{
    const all=(p.notes||[]);
    const per=10, pages=Math.max(1,Math.ceil(all.length/per));
@@ -1536,8 +1538,6 @@ async function vFile(kind){
     +'<span class="k mono">'+all.length+' 条观察</span>'+clearBtn
     +'</div>'+notesHtml+'</div>';
   }).join('');
-  const mx=ev.max_notes||30;
-  const inj=ev.inject_notes||12;
   const injTok=Math.round(inj*35);
   evHtml='<div class="card"><div class="k">自进化风格（绑定人设：机器人聊天中自动积累表达经验，注入到对应人设的提示词；可随时开关/清空，与人设卡叠加生效）<br>'
    +'保留上限 <input type="number" min="30" max="300" step="10" value="'+mx+'" style="width:64px" onchange="saveEvMax(this.value)"> 条（30–300；只影响存档保留与回看，上限满了自动挤掉最旧的）　'
