@@ -2019,10 +2019,18 @@ async function upShow(info){
  if(!nt)return;
  const pend=Array.isArray(info.pending)&&info.pending.length?info.pending
   :(info.notes?[{ver:info.latest,notes:info.notes}]:[]);
+ // 轻量 Markdown：**加粗**、`代码`、行首"- "列表——release notes 常用
+ function mdLite(t){
+  let h=esc(t||'');
+  h=h.replace(/`([^`]+)`/g,'<code style="background:var(--tint);padding:1px 5px;border-radius:4px">$1</code>');
+  h=h.replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>');
+  h=h.replace(/^- /gm,'• ');
+  return h;
+ }
  nt.innerHTML=pend.length
   ?('更新内容（你错过的全部版本）：'+pend.map(p=>
      '<div style="margin-top:8px"><b>v'+esc(p.ver||'')+'</b>'+
-     '<div style="white-space:pre-wrap">'+esc(p.notes||'')+'</div></div>').join(''))
+     '<div style="white-space:pre-wrap">'+mdLite(p.notes||'')+'</div></div>').join(''))
   :'';}
 async function upCheck(){
  const st=document.getElementById('upstat');
@@ -2888,6 +2896,7 @@ async function vVoice(){
  if(!m||m.ok===false){$('#view').innerHTML=head('语音引擎数据加载失败，刷新重试')+'<div class="card">加载失败：'+esc((m&&m.error)||'')+'</div>';return}
  _VM2=m;_VM=m;   // _VM 同步：voiceProvChange/voiceCollect 等共用函数读它
  const g=m.gsv||{};
+ const provHtml=vVoiceCards(m,g);
  $('#view').innerHTML=head('让机器人开口说话：回复改发语音（内容跟人设走，只换发送形式）。')+provHtml;
  setTimeout(()=>{voiceProvChange();gsvVoicesLoad();zvRender();},0);
 }
