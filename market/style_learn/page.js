@@ -27,7 +27,7 @@ async function styleLearnPage(d){
 
   +'<div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--line)"><div class="k" style="margin-bottom:4px"><b>喂给谁</b>（活人感参考注入谁的上下文——三选一）</div>'
   +'<label style="display:block;margin:4px 0"><input type="radio" name="slscope" value="all" '+(cfg.scope==='all'||!cfg.scope?'checked':'')+' onchange="slScope()"> <b>全部人设</b>——所有人格都收到这份参考（含以后新建的）</label>'
-  +'<label style="display:block;margin:4px 0"><input type="radio" name="slscope" value="persona" '+(cfg.scope==='persona'?'checked':'')+' onchange="slScope()"> <b>仅指定人设</b>——从下面的人设卡里勾选，其他人设完全不受影响</label>'
+  +'<label style="display:block;margin:4px 0"><input type="radio" name="slscope" value="persona" '+(cfg.scope==='persona'?'checked':'')+' onchange="slScope()"> <b>仅指定人设</b>——勾选＝允许名单（可多选）：机器人当前激活的人设是名单中任一张时就注入，其余人设不受影响（一次回复只用一张人设，不会同时注入多张）</label>'
   +'<div id="sl-personas-row" class="dimmed" style="margin:4px 0 4px 24px"><div id="sl-plist" class="k">加载人设列表…</div></div>'
   +'<label style="display:block;margin:4px 0"><input type="radio" name="slscope" value="global" '+(cfg.scope==='global'?'checked':'')+' onchange="slScope()"> <b>仅全局通用设定</b>——挂在全局底子上，所有人格共享（效果同「全部人设」，语义上是通用底子的一部分，人设切换不影响）</label>'
   +'<div class="k" style="margin-top:4px">与「精简上下文」不冲突：这份参考属于人设/风格类提示（永不裁剪），精简只裁聊天历史和记忆；每个群最多注入一条且硬上限 320 字（约 190 token），不会撑爆上下文。</div></div>'
