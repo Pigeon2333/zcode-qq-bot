@@ -538,7 +538,7 @@ def _zhipu_clone_once(key, wav_bytes, voice_name, sample_text, preview_text):
             % (boundary, boundary)).encode("utf-8")
     tail = ("\r\n--%s--\r\n" % boundary).encode("utf-8")
     body = head + wav_bytes + tail
-    conn = http.client.HTTPSConnection("open.bigmodel.cn", 443, timeout=120)
+    conn = http.client.HTTPSConnection("open.bigmodel.cn", 443, timeout=60)
     conn.request("POST", "/api/paas/v4/files", body=body, headers={
         "Authorization": "Bearer " + key,
         "Content-Type": "multipart/form-data; boundary=" + boundary,
@@ -568,7 +568,7 @@ def _zhipu_clone_once(key, wav_bytes, voice_name, sample_text, preview_text):
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     used_name = payload["voice_name"]
     for attempt in (1, 2):
-        conn = http.client.HTTPSConnection("open.bigmodel.cn", 443, timeout=180)
+        conn = http.client.HTTPSConnection("open.bigmodel.cn", 443, timeout=90)
         conn.request("POST", "/api/paas/v4/voice/clone", body=data, headers={
             "Authorization": "Bearer " + key,
             "Content-Type": "application/json",

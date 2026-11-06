@@ -282,6 +282,11 @@ def _run_service(args):
 
 
 def main():
+    # WebView2 强制软件渲染：管理台是普通表单界面，不需要 GPU；实测
+    # GPT-SoVITS 引擎吃满显存时 WebView2 硬件渲染会被饿死——窗口冻结在
+    # 闪屏/半渲染状态、点 X 无反应、托盘退出缓慢（2026-11-06 用户实测）。
+    # 必须在 WebView2 环境创建前设置才生效。
+    os.environ.setdefault("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--disable-gpu")
     # windowed 打包没有控制台：先把 stdout/stderr 挂到 app.log，后续 print 不会炸
     _ensure_std_streams()
     # 构建产物自检：只验证 frozen 环境里 webview 能导入，不启动窗口/服务。
