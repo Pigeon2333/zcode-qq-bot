@@ -2182,7 +2182,7 @@ async function vMcp(){
  const zk=sv.filter(s=>s.source==='zcode'),cu=sv.filter(s=>s.source==='custom');
  const row=s=>{
   const t=_MCP_TEST[s.name];
-  const tbadge=s.supported?(s.type==='stdio'?'<span class="badge">stdio·机器人自起进程</span>':'<span class="badge">http·直连</span>'):'<span class="badge" style="background:#8a8a8a;color:#fff">SSE·暂不支持</span>';
+  const tbadge=s.supported?(s.type==='stdio'?'<span class="badge">stdio·机器人自起进程</span>':(s.type==='sse'?'<span class="badge">SSE·直连</span>':'<span class="badge">http·直连</span>')):'<span class="badge" style="background:#8a8a8a;color:#fff">暂不支持</span>';
   return '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 10px;border:1.5px solid '+(s.on?'#1a7f37':'var(--line)')+';border-radius:8px;background:'+(s.on?'#f0faf0':'transparent')+'">'
    +'<b style="min-width:70px">'+esc(s.name)+'</b>'+tbadge
    +'<span class="k" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(s.detail)+'</span>'
@@ -5128,8 +5128,8 @@ class UiHandler(BaseHTTPRequestHandler):
                 servers.append({
                     "name": s["name"], "source": s["source"], "type": s["type"],
                     "detail": detail,
-                    "supported": s["type"] in ("stdio", "http"),
-                    "on": _M.server_on(s["name"]) if s["type"] in ("stdio", "http") else False})
+                    "supported": s["type"] in ("stdio", "http", "sse"),
+                    "on": _M.server_on(s["name"]) if s["type"] in ("stdio", "http", "sse") else False})
             return self._reply(200, {"ok": True, "enabled": bool(cfg.get("enabled")),
                                      "servers": servers})
         if u.path == "/api/mcp/toggle":

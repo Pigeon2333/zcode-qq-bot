@@ -105,14 +105,14 @@ def ready():
     """agent 闸门：总开关开 + 至少一个已启用的可传输服务（stdio/http）。"""
     if not mcp_cfg().get("enabled"):
         return False
-    return any(server_on(s["name"]) and s["type"] in ("stdio", "http")
+    return any(server_on(s["name"]) and s["type"] in ("stdio", "http", "sse")
                for s in all_servers())
 
 
 def enabled_tool_servers():
     """已启用且传输支持的 (name, spec) 列表。"""
     return [(s["name"], s["spec"]) for s in all_servers()
-            if server_on(s["name"]) and s["type"] in ("stdio", "http")]
+            if server_on(s["name"]) and s["type"] in ("stdio", "http", "sse")]
 
 
 # ---------------- 客户端 ----------------
@@ -132,10 +132,26 @@ class McpClient:
         self._q = None
         self._wr = threading.Lock()
         self._sid = ""            # http 会话 id（服务器 Mcp-Session-Id 响应头）
+        self._sse_q = None        # sse 传输：响应从事件流回来（读线程→队列）
+        self._sse_post = ""       # sse 传输：握手拿到的 POST 消息端点
+        self._sse_alive = False
         self._tools = None
         self._bad = ""            # 不可用原因（上次失败）
 
     # ---- 底层收发 ----
+    @staticmethod
+    def _wait_id(box, rid, timeout):
+        """等队列里出现指定 id 的 JSON-RPC 响应（stdio/sse 共用）。"""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                obj = box.get(timeout=max(0.1, deadline - time.time()))
+            except queue.Empty:
+                break
+            if obj.get("id") == rid:
+                return obj
+        raise McpError("响应超时（%ds）" % timeout)
+
     def _next_id(self):
         return next(_ids)
 
@@ -179,19 +195,22 @@ class McpClient:
                 raise McpError("写管道失败（进程可能已退出）：%s" % e)
         if want_id is None:          # 通知：不等待响应
             return None
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            try:
-                line = self._q.get(timeout=max(0.1, deadline - time.time()))
-            except queue.Empty:
-                break
-            try:
-                obj = json.loads(line)
-            except ValueError:
-                continue
-            if obj.get("id") == want_id:
-                return obj
-        raise McpError("响应超时（%ds）" % timeout)
+        box = queue.Queue()          # 过滤转发：只留目标 id（丢弃通知/日志行）
+        obj = None
+        try:
+            while True:
+                line = self._q.get(timeout=max(0.1, timeout))
+                try:
+                    cand = json.loads(line)
+                except ValueError:
+                    continue
+                if cand.get("id") == want_id:
+                    obj = cand
+                    break
+                # 非目标消息（通知/别的请求）丢弃——单连接串行使用，不会错杀
+        except queue.Empty:
+            raise McpError("响应超时（%ds）" % timeout)
+        return obj
 
     def _http_post(self, payload, timeout, want_id=None):
         u = urllib.parse.urlsplit(str(self.spec.get("url") or ""))
@@ -249,6 +268,105 @@ class McpClient:
             raise McpError("批量响应里没有找到结果")
         return obj
 
+    # ---- SSE 旧传输（2024-11 规范：GET /sse 拿消息端点，POST 消息，
+    #      响应从事件流回来）——保持长连接由读线程维持 ----
+    def _sse_frame(self, ev, data, base):
+        if not data:
+            return
+        if ev == "endpoint" and not self._sse_post and data.strip().startswith("/"):
+            self._sse_post = urllib.parse.urljoin(base, data.strip())
+            return
+        try:
+            obj = json.loads(data)
+        except ValueError:
+            return
+        if isinstance(obj, dict) and self._sse_q is not None:
+            self._sse_q.put(obj)
+
+    def _sse_open(self):
+        if self._sse_alive and self._sse_post:
+            return
+        base = str(self.spec.get("url") or "")
+        u = urllib.parse.urlsplit(base)
+        if u.scheme not in ("http", "https"):
+            raise McpError("url 非法")
+        headers = {"Accept": "text/event-stream"}
+        for k, v in (self.spec.get("headers") or {}).items():
+            headers[str(k)] = str(v)
+        conn_cls = http.client.HTTPSConnection if u.scheme == "https" \
+            else http.client.HTTPConnection
+        host = u.hostname or "127.0.0.1"
+        port = u.port or (443 if u.scheme == "https" else 80)
+        path = u.path or "/"
+        if u.query:
+            path += "?" + u.query
+        conn = conn_cls(host, port, timeout=30)
+        try:
+            conn.request("GET", path, headers=headers)
+            resp = conn.getresponse()
+            if resp.status != 200:
+                body = resp.read(200).decode("utf-8", "replace")
+                conn.close()
+                raise McpError("SSE 连接 HTTP %d：%.120s" % (resp.status, body))
+        except McpError:
+            raise
+        except Exception as e:
+            raise McpError("SSE 连接失败：%s" % e)
+        self._sse_q = queue.Queue()
+        self._sse_alive = True
+        self._sse_post = ""
+
+        def _rd():
+            ev, data = "", []
+            try:
+                for raw in resp:
+                    ln = raw.decode("utf-8", "replace").rstrip("\r\n")
+                    if not ln:
+                        if ev or data:
+                            self._sse_frame(ev, "\n".join(data), base)
+                        ev, data = "", []
+                        continue
+                    if ln.startswith("event:"):
+                        ev = ln[6:].strip()
+                    elif ln.startswith("data:"):
+                        data.append(ln[5:].lstrip())
+            except Exception:
+                pass
+            finally:
+                self._sse_alive = False
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        threading.Thread(target=_rd, daemon=True).start()
+        deadline = time.time() + 12
+        while not self._sse_post and self._sse_alive and time.time() < deadline:
+            time.sleep(0.1)
+        if not self._sse_post:
+            raise McpError("SSE 握手超时（未收到 endpoint 事件；服务器是 SSE 传输吗？）")
+
+    def _sse_rw(self, payload, timeout, want_id=None):
+        self._sse_open()
+        post = self._sse_post
+        u = urllib.parse.urlsplit(post)
+        conn_cls = http.client.HTTPSConnection if u.scheme == "https" \
+            else http.client.HTTPConnection
+        conn = conn_cls(u.hostname or "127.0.0.1",
+                        u.port or (443 if u.scheme == "https" else 80), timeout=30)
+        try:
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            headers = {"Content-Type": "application/json",
+                       "Content-Length": str(len(body))}
+            path = u.path + ("?" + u.query if u.query else "")
+            conn.request("POST", path, body=body, headers=headers)
+            r = conn.getresponse()
+            r.read()          # SSE 传输通常回 202 空体；读干防止连接积压
+        finally:
+            conn.close()
+        if want_id is None:
+            return None
+        return self._wait_id(self._sse_q, want_id, timeout)
+
     def _rpc(self, method, params, timeout=_INIT_TIMEOUT):
         rid = self._next_id()
         payload = {"jsonrpc": "2.0", "id": rid, "method": method,
@@ -257,6 +375,8 @@ class McpClient:
             obj = self._stdio_rw(payload, timeout, want_id=rid)
         elif self.kind == "http":
             obj = self._http_post(payload, timeout, want_id=rid)
+        elif self.kind == "sse":
+            obj = self._sse_rw(payload, timeout, want_id=rid)
         else:
             raise McpError("不支持的传输类型：%s" % self.kind)
         if obj is None:
@@ -274,6 +394,11 @@ class McpClient:
                 self._http_post(payload, 8, want_id=None)
             except McpError:
                 pass      # 部分服务器对通知返回非 JSON，忽略
+        elif self.kind == "sse":
+            try:
+                self._sse_rw(payload, 8, want_id=None)
+            except McpError:
+                pass
 
     # ---- 生命周期 ----
     def ensure(self):
@@ -321,7 +446,7 @@ def get_client(name):
     if name in _CLIENTS:
         return _CLIENTS[name]
     for s in all_servers():
-        if s["name"] == name and s["type"] in ("stdio", "http"):
+        if s["name"] == name and s["type"] in ("stdio", "http", "sse"):
             c = McpClient(name, s["spec"])
             _CLIENTS[name] = c
             return c
@@ -376,9 +501,8 @@ def test_server(name, timeout=_INIT_TIMEOUT):
     for s in all_servers():
         if s["name"] == name:
             spec = s["spec"]
-            if s["type"] not in ("stdio", "http"):
-                return {"ok": False, "error": "暂不支持 %s 传输（SSE 旧传输 v1 未接）"
-                        % s["type"].upper()}
+            if s["type"] not in ("stdio", "http", "sse"):
+                return {"ok": False, "error": "暂不支持 %s 传输" % s["type"].upper()}
     if spec is None:
         return {"ok": False, "error": "服务器不存在"}
     c = McpClient(name, spec)
