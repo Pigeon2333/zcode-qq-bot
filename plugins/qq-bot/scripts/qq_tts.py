@@ -30,6 +30,9 @@ _GSV_DIR_CANDIDATES = [
     r"D:\GPTSoVITS\GPT-SoVITS-v3lora-20250228",
 ]
 _GSV_PORT = 9880
+_GSV_KEEPALIVE = {"last": 0.0}   # 上次保活合成时刻（防冷启动：引擎空闲后
+                                 # 批处理/CUDA 缓存被系统回收，首条回退 4-5s；
+                                 # 稳态 1.3-1.5s。间隔实测取 5 分钟）
 _GSV_PROC = {"p": None}      # runtime/python.exe 子进程句柄（仅本进程内有效）
 _GSV_VOICES_DIR = os.path.join(C.DATA_DIR, "gsv_voices")
 _GSV_VOICES_JSON = os.path.join(C.DATA_DIR, "gsv_voices.json")
@@ -227,15 +230,33 @@ def gsv_stop():
 
 
 def _gsv_request(text, ref, ptext, plang, cfg):
-    """调本地引擎 /tts → WAV 字节。"""
+    """调本地引擎 /tts → WAV 字节。
+
+    性能参数（cfg 可调，均有安全上限；实测 4060 Laptop 稳态 1.3-1.5s，
+    冷启动 4-5s——首条慢是引擎批处理/缓存预热，见 gsv_keepalive）：
+    - batch_size：分句批次（默认引擎值 1；调大可并行合成多句，4-8 常见）
+    - speed_factor：语速（1.0 正常，可 0.8-1.5）
+    - text_split_method：cut0=整段不切（短句最快）；cut5=按标点切（长文）"""
     import http.client
     from urllib.parse import quote
+    _c = cfg or {}
+    try:
+        batch = max(1, min(16, int(_c.get("gsv_batch_size") or 1)))
+    except (TypeError, ValueError):
+        batch = 1
+    try:
+        speed = max(0.5, min(2.5, float(_c.get("gsv_speed") or 1.0)))
+    except (TypeError, ValueError):
+        speed = 1.0
+    split = str(_c.get("gsv_split") or "cut0")[:8]
     params = {
         "text": str(text)[:_MAX_TEXT], "text_lang": "zh",
         "ref_audio_path": ref,
         "prompt_text": ptext,
         "prompt_lang": plang,
-        "text_split_method": "cut0",
+        "text_split_method": split,
+        "batch_size": batch,
+        "speed_factor": speed,
         "media_type": "wav", "streaming_mode": False,
     }
     qs = "&".join("%s=%s" % (k, quote(str(v))) for k, v in params.items())
@@ -273,6 +294,44 @@ def gsv_tts(text, cfg):
             ref = v["file"]
             ptext = str(v.get("prompt_text") or "")
             plang = str(v.get("prompt_lang") or "zh")
+    _GSV_KEEPALIVE["last"] = time.time()   # 正常合成即视为保活
+
+
+def gsv_keepalive_tick(cfg):
+    """防冷启动保活：引擎在跑但超过 5 分钟没合成过 → 用超短文本合成一次
+    （后台线程调用，失败静默）。首条慢 4-5s 是引擎批处理/CUDA 缓存被回收
+    后重新预热——保活让用户每次都吃到 1.3-1.5s 的稳态速度。显存代价约
+    数百 MB（引擎本身常驻 1.6-2GB）。"""
+    try:
+        if _GSV_KEEPALIVE.get("warming"):
+            return
+        now = time.time()
+        if now - float(_GSV_KEEPALIVE.get("last") or 0) < 300:
+            return
+        if not gsv_status(cfg).get("running"):
+            _GSV_KEEPALIVE["last"] = now     # 没在跑就不折腾（自启动逻辑管它）
+            return
+        _GSV_KEEPALIVE["warming"] = True
+        try:
+            ref, ptext, plang = "", "", "zh"
+            vid = str(cfg.get("gsv_voice_id") or "").strip()
+            if vid:
+                v = gsv_voice_get(vid)
+                if v and os.path.isfile(v.get("file") or ""):
+                    ref = v["file"]
+                    ptext = str(v.get("prompt_text") or "")
+                    plang = str(v.get("prompt_lang") or "zh")
+            if ref:
+                _gsv_request("嗯。", ref, ptext[:60], plang, cfg)
+                print("[%s] GSV_KEEPALIVE warmed up" % time.strftime("%H:%M:%S"), flush=True)
+        finally:
+            _GSV_KEEPALIVE["warming"] = False
+            _GSV_KEEPALIVE["last"] = time.time()
+    except Exception:
+        try:
+            _GSV_KEEPALIVE["warming"] = False
+        except Exception:
+            pass
     if not ref:
         ref = str(cfg.get("gsv_ref_wav") or "").strip()
         ptext = str(cfg.get("gsv_prompt_text") or "")

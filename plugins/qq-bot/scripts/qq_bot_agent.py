@@ -5242,6 +5242,12 @@ def main():
                 _observe_pump(daemon)
             except Exception as _oe:
                 out("AGENT_OBSERVE_PUMP_FAIL %r" % _oe)
+            # 本地语音引擎防冷启动保活（引擎在跑且空闲超 5 分钟才动作，其余零开销）
+            try:
+                import qq_tts as _T
+                _T.gsv_keepalive_tick(_T.voice_cfg())
+            except Exception:
+                pass
             if not snap["paused"]:
                 items = daemon.inbox_triggered()
                 for msg in items:

@@ -2872,6 +2872,10 @@ function voiceCollect(){
  v.custom_voice=gv('v-cv','custom_voice','alloy');
  v.gsv_dir=gv('v-gdir','gsv_dir','');v.gsv_port=gv('v-gport','gsv_port','9880');
  v.gsv_voice_id=gv('v-gvid','gsv_voice_id','');
+ v.gsv_batch_size=gv('v-gbatch','gsv_batch_size','1');
+ v.gsv_speed=gv('v-gspeed','gsv_speed','1');
+ v.gsv_split=gv('v-gsplit','gsv_split','cut0');
+ v.gsv_keepalive=document.getElementById('v-gkeep')?document.getElementById('v-gkeep').checked:((_VM.config||{}).gsv_keepalive!==false);
  v.gsv_ref_wav=gv('v-gref','gsv_ref_wav','');v.gsv_prompt_text=gv('v-gptext','gsv_prompt_text','');v.gsv_prompt_lang=gv('v-gplang','gsv_prompt_lang','zh');
  return v}
 async function voiceSave(){
@@ -3019,6 +3023,15 @@ function vGsvCardInstalled(m,g){
   +'<option value="en"'+((c.gsv_prompt_lang)==='en'?' selected':'')+'>英文</option></select></div>'
   +'<div><div class="k" style="margin-bottom:4px">整合包目录（默认自动探测 E:\\GPTSoVITS）</div><input id="v-gdir" value="'+esc(String(c.gsv_dir||''))+'" placeholder="留空自动探测" onchange="voiceFieldSave({gsv_dir:this.value.trim()},\'整合包目录已保存\')"></div>'
   +'<div><div class="k" style="margin-bottom:4px">端口</div><input id="v-gport" value="'+esc(String(c.gsv_port||'9880'))+'" onchange="voiceFieldSave({gsv_port:this.value.trim()},\'端口已保存（重启引擎后生效）\')"></div></div>'
+  +'<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)"><div class="k" style="margin-bottom:4px"><b>合成优化</b>（性能与听感微调；普通用户保持默认即可）<span class="badge" style="background:#fff4e0;color:#b25e09;margin-left:8px">实测稳态 1.3-1.5s/条</span></div>'
+  +'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:6px">'
+  +'<div><div class="k" style="margin-bottom:4px">合成批次 <input type="number" id="v-gbatch" min="1" max="16" value="'+esc(String(c.gsv_batch_size||1))+'" style="width:56px" onchange="voiceFieldSave({gsv_batch_size:Math.max(1,Math.min(16,parseInt(this.value)||1))},\'合成批次已保存\')"><span class="k">（1-16；长句切分后并行合成，调大更快、更吃显存，4060 建议 2-4）</span></div></div>'
+  +'<div><div class="k" style="margin-bottom:4px">语速 <input type="number" id="v-gspeed" min="0.5" max="2.5" step="0.05" value="'+esc(String(c.gsv_speed||1))+'" style="width:60px" onchange="voiceFieldSave({gsv_speed:Math.max(0.5,Math.min(2.5,parseFloat(this.value)||1))},\'语速已保存（即时生效）\')"><span class="k">（0.5-2.5，1=正常）</span></div></div>'
+  +'<div><div class="k" style="margin-bottom:4px">长文切分 <select id="v-gsplit" onchange="voiceFieldSave({gsv_split:this.value},\'切分方式已保存\')">'
+  +'<option value="cut0"'+((c.gsv_split||'cut0')==='cut0'?' selected':'')+'>不切分（短句最快）</option>'
+  +'<option value="cut5"'+((c.gsv_split)==='cut5'?' selected':'')+'>按标点切（长文更稳）</option>'
+  +'<option value="cut4"'+((c.gsv_split)==='cut4'?' selected':'')+'>中英符号切</option></select></div></div>'
+  +'<label class="master" style="margin-top:8px"><input type="checkbox" id="v-gkeep" '+(c.gsv_keepalive!==false?'checked':'')+' onchange="voiceFieldSave({gsv_keepalive:this.checked?1:0},\'防冷启动保活已\'+(this.checked?\'开启\':\'关闭\')+\'（即时生效）\')"> <b>防冷启动保活（推荐开启）</b><div class="k" style="margin-top:3px">引擎空闲超过 5 分钟，批处理/CUDA 缓存会被系统回收——下次合成第一条会慢 3 秒+。开启后每 5 分钟自动用一句超短文本热身（无声卡占用、显存代价数百 MB），让你每次发语音都吃到 1.3-1.5s 的稳态速度</div></label></div>'
  +'<div style="margin-top:10px;border:1px dashed var(--line);border-radius:8px;padding:10px">'
  +'<div class="k" style="margin-bottom:6px"><b>克隆新音色</b> · ① 选文件 → ② 开始克隆 → ③ 试听 → ④ 命名保存（完全免费）</div>'
  +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
@@ -5891,6 +5904,11 @@ class UiHandler(BaseHTTPRequestHandler):
                 "gsv_prompt_text": str(v.get("gsv_prompt_text") or "")[:300],
                 "gsv_prompt_lang": str(v.get("gsv_prompt_lang") or "zh")[:8],
                 "gsv_autostart": bool(v.get("gsv_autostart")),
+                # 合成优化（引擎参数；均 clamp 到安全范围）
+                "gsv_batch_size": max(1, min(16, (lambda x: int(x) if str(x or "").strip().isdigit() else 1)(v.get("gsv_batch_size")))),
+                "gsv_split": (str(v.get("gsv_split") or "cut0") if str(v.get("gsv_split") or "") in ("cut0", "cut4", "cut5") else "cut0"),
+                "gsv_keepalive": bool(v.get("gsv_keepalive", True)),
+                "gsv_speed": 1.0,  # 下方统一 clamp（float 解析放 dict 外更清晰）
                 # 智谱克隆音色列表（name + speaker_id）
                 "zhipu_saved_voices": [
                     {"name": str(x.get("name") or "")[:40],
@@ -5902,6 +5920,10 @@ class UiHandler(BaseHTTPRequestHandler):
             # （gsv_autostart / zhipu_saved_voices 由专用端点维护——曾因整体
             # 替换被「保存设置」抹回 False/空，自启动失效、克隆音色列表清空）
             _cur = _T.voice_cfg()
+            try:
+                clean["gsv_speed"] = min(2.5, max(0.5, float(clean.get("gsv_speed") or _cur.get("gsv_speed") or 1.0)))
+            except (TypeError, ValueError):
+                clean["gsv_speed"] = 1.0
             for _k, _val in _cur.items():
                 if _k not in clean:
                     clean[_k] = _val
