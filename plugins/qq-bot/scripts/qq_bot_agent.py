@@ -433,6 +433,15 @@ class DaemonClient:
         """安静模式：minutes>0 持续；0 取消（@/回复机器人不受影响）。"""
         return self._request("POST", "/quiet", {"minutes": float(minutes)})
 
+    def set_qq_status(self, kind):
+        """设置机器人 QQ 在线状态（kind 全集见 daemon QQ_STATUS_KINDS）。"""
+        return self._request("POST", "/qq-status", {"kind": str(kind)})
+
+    def set_typing(self, user_id, on=True):
+        """对方聊天栏显示/取消「正在输入…」（仅私聊）。"""
+        return self._request("POST", "/typing",
+                             {"user_id": str(user_id), "on": bool(on)})
+
     def send_image(self, chat_type, chat_id, file_path, caption="", wait=False,
                    allow_any=False):
         return self._request("POST", "/send-image", {

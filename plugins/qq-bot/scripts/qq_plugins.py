@@ -94,6 +94,28 @@ class PluginAPI:
         return daemon.send_record(chat_type, str(chat_id), file_path,
                                   text=str(text or ""))
 
+    def set_qq_status(self, kind):
+        """设置机器人 QQ 在线状态（0.5.11+ 宿主）。
+        kind：online 在线 / away 离开 / busy 忙碌 / dnd 请勿打扰 / qme Q我吧 /
+        invisible 隐身；扩展状态 sleep 睡觉中 / study 学习中 / work 搬砖中 /
+        fish 摸鱼中 / song 听歌中 / drama 追剧中 / stayup 熬夜中 / emo emo中 /
+        love 恋爱中 / boring 无聊中 / energy 元气满满 / lucky 好运锦鲤。"""
+        daemon = self._host.daemon
+        fn = getattr(daemon, "set_qq_status", None) if daemon else None
+        if fn is None:
+            return {"ok": False, "error": "需要 0.5.11 及以上版本的应用"}
+        r = fn(str(kind))
+        return {"ok": bool(r.get("ok")), "error": str(r.get("detail") or "")[:120]}
+
+    def set_typing(self, user_id, on=True):
+        """在对方（私聊）聊天栏显示/取消「正在输入…」（0.5.11+ 宿主）。"""
+        daemon = self._host.daemon
+        fn = getattr(daemon, "set_typing", None) if daemon else None
+        if fn is None:
+            return {"ok": False, "error": "需要 0.5.11 及以上版本的应用"}
+        r = fn(str(user_id), bool(on))
+        return {"ok": bool(r.get("ok")), "error": str(r.get("detail") or "")[:120]}
+
     def on_tick(self, fn):
         self._host.hooks.setdefault(self.name, {})["tick"] = fn
 

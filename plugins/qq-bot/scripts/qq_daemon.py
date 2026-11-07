@@ -1350,16 +1350,37 @@ class Daemon:
 
     # ---------- QQ 在线状态 ----------
 
+    # QQ 在线状态全集（NapCat set_online_status；官方文档状态列表）
+    # 基础状态 = status；扩展状态 = status 10 + ext_status（睡觉中/搬砖中…）
+    QQ_STATUS_KINDS = {
+        "online":    {"status": 10, "ext_status": 0,    "battery_status": 0},
+        "away":      {"status": 30, "ext_status": 0,    "battery_status": 0},
+        "busy":      {"status": 50, "ext_status": 0,    "battery_status": 0},
+        "dnd":       {"status": 70, "ext_status": 0,    "battery_status": 0},
+        "qme":       {"status": 60, "ext_status": 0,    "battery_status": 0},
+        "invisible": {"status": 40, "ext_status": 0,    "battery_status": 0},
+        "sleep":     {"status": 10, "ext_status": 1016, "battery_status": 0},
+        "study":     {"status": 10, "ext_status": 1018, "battery_status": 0},
+        "work":      {"status": 10, "ext_status": 2023, "battery_status": 0},
+        "fish":      {"status": 10, "ext_status": 1300, "battery_status": 0},
+        "song":      {"status": 10, "ext_status": 1028, "battery_status": 0},
+        "drama":     {"status": 10, "ext_status": 1021, "battery_status": 0},
+        "stayup":    {"status": 10, "ext_status": 1032, "battery_status": 0},
+        "emo":       {"status": 10, "ext_status": 1401, "battery_status": 0},
+        "love":      {"status": 10, "ext_status": 1051, "battery_status": 0},
+        "boring":    {"status": 10, "ext_status": 1060, "battery_status": 0},
+        "energy":    {"status": 10, "ext_status": 1058, "battery_status": 0},
+        "lucky":     {"status": 10, "ext_status": 1071, "battery_status": 0},
+    }
+
     def set_qq_status(self, kind):
-        """设置机器人 QQ 在线状态（NapCat set_online_status，
-        必填 status/ext_status/battery_status；在线=10 离开=30）。
-        kind: online=在线 | away=离开。返回 (ok, detail)。"""
-        params = {
-            "online": {"status": 10, "ext_status": 0, "battery_status": 0},
-            "away": {"status": 30, "ext_status": 0, "battery_status": 0},
-        }.get(kind)
+        """设置机器人 QQ 在线状态（NapCat set_online_status）。
+        kind: QQ_STATUS_KINDS 的键（online/away/busy/dnd/qme/invisible +
+        扩展状态 sleep/study/work/fish/song/drama/stayup/emo/love/boring/
+        energy/lucky）。返回 (ok, detail)。"""
+        params = self.QQ_STATUS_KINDS.get(str(kind or ""))
         if not params:
-            return False, "kind 非法"
+            return False, "kind 非法（可用：%s）" % "、".join(sorted(self.QQ_STATUS_KINDS))
         try:
             self._call_action("set_online_status", params, timeout=6)
             out("AGENT_LOG {\"msg\": \"qq_status\", \"kind\": %s}" % json.dumps(kind))
@@ -1369,6 +1390,17 @@ class Daemon:
             out("AGENT_LOG {\"msg\": \"qq_status_fail\", \"kind\": %s, \"detail\": %s}"
                 % (json.dumps(kind), json.dumps(detail, ensure_ascii=False)))
             return False, detail
+
+    def set_typing(self, user_id, on=True):
+        """在对方聊天栏显示/取消「对方正在输入…」（NapCat set_input_status；
+        仅私聊会话有效，群聊无此显示）。on=False 取消。返回 (ok, detail)。"""
+        try:
+            self._call_action("set_input_status",
+                              {"user_id": str(user_id),
+                               "event_type": 1 if on else 0}, timeout=6)
+            return True, "set_input_status"
+        except Exception as e:
+            return False, repr(e)[:120]
 
     def _auto_status(self, kind):
         """开关开启时异步设置状态（登录成功→在线；退出前→离开）。"""
@@ -1812,10 +1844,15 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
                 return self._reply(200, {"ok": True, "quiet_until": until})
             if u.path == "/qq-status":
                 kind = str(body.get("kind") or "").strip()
-                if kind not in ("online", "away"):
-                    return self._reply(400, {"ok": False, "error": "kind 必须是 online|away"})
                 ok, detail = d.set_qq_status(kind)
                 return self._reply(200, {"ok": ok, "kind": kind, "detail": detail})
+            if u.path == "/typing":
+                # 「对方正在输入…」指示器（仅私聊；event_type 1=输入中 0=取消）
+                uid = str(body.get("user_id") or "").strip()
+                if not uid.isdigit() or len(uid) < 5:
+                    return self._reply(400, {"ok": False, "error": "user_id 非法"})
+                ok, detail = d.set_typing(uid, bool(body.get("on", True)))
+                return self._reply(200, {"ok": ok, "detail": detail})
             if u.path == "/botloop":
                 # agent 判定回执：确认 AI → 冷却；否认 → 清除试探
                 return self._reply(200, d.botloop_report(

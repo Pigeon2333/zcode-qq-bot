@@ -1988,14 +1988,8 @@ async function vSettings(){
    <span class="k" id="cachetotal"></span></div></div>
  <div class="card"><div class="k" style="margin-bottom:8px">所在地天气感知</div>
   <div class="k">已插件化：城市与开关在「插件 → 所在地天气感知 → ⚙ 设置」里配置（留空 = 不感知）。之前在这里填过的城市会自动沿用。</div></div>
- <div class="card"><div class="k" style="margin-bottom:8px">QQ 在线状态</div>
-  <label class="master"><input type="checkbox" ${c.qq_status_auto?'checked':''} onchange="saveKVLoad('/api/app-config',{qq_status_auto:this.checked?1:0},'QQ 在线状态自动设置已'+(this.checked?'开启':'关闭'))">
-   <span><b>自动设置在线状态</b><div class="k" style="margin-top:3px">机器人上线登录成功后自动把 QQ 状态设为「在线」；手动停止机器人（状态页停止/全部停止）前自动设为「离开」，让群里的人一眼看出机器人是否在岗。依赖 NapCat 扩展能力，若你的 NapCat 版本不支持会记录失败到运行日志、不影响其他功能</div></span></label>
-  <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-   <span class="k">手动测试：</span>
-   <button class="act ghost" style="margin:0" onclick="setQQStatus('online')">设为在线</button>
-   <button class="act ghost" style="margin:0" onclick="setQQStatus('away')">设为离开</button>
-   <span class="k">（不管开关是否开启都可手动设置；QQ 客户端上即时可见）</span></div></div>
+ <div class="card"><div class="k" style="margin-bottom:8px">QQ 在线状态<span class="badge" style="background:var(--tint);color:var(--dim)">已插件化 · 能力更全</span></div>
+  <div class="k">已迁到「插件 → QQ 在线状态管理」：上下线自动 / 定时状态（睡觉中·搬砖中·摸鱼中等个性状态定时切换）/ 手动一键切换，三个能力各自开关。之前在这里设置过的「上下线自动」开关自动沿用。</div></div>
  <div class="card"><div class="k" style="margin-bottom:8px">NapCat 活性看门狗<span class="badge" style="background:var(--tint);color:var(--dim)">防消息推送静默失联</span></div>
   <label class="master"><input type="checkbox" ${c.watchdog_enabled!==false?'checked':''} onchange="saveKVLoad('/api/app-config',{watchdog_enabled:this.checked?1:0},'看门狗已'+(this.checked?'开启':'关闭'))">
    <span><b>启用看门狗</b><div class="k" style="margin-top:3px">定期探测 NapCat 消息通道是否真的活着（TCP 连着但对端不响应/不推事件的「半死」状态，控制台显示在线但机器人实际收不到消息）；探测到失联会在「状态」页告警并私聊通知主人</div></span></label>
@@ -2349,10 +2343,6 @@ async function setKeyProvider(id,prov){
   if(!base_url){load();return}}
  const r=await saveKV('/api/keys/rename',{id,provider:prov,base_url},'该 Key 供应商已改为 '+(prov==='zhipu'?'智谱':(prov==='deepseek'?'DeepSeek':'自定义')));
  if(r.ok!==false)load()}
-async function setQQStatus(kind){
- const r=await api('/api/qq-status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind})}).catch(()=>({ok:false,error:'请求失败'}));
- if(r.ok===false){toast('设置失败：'+(r.detail||r.error||''),false);return}
- toast('QQ 状态已设为'+(kind==='online'?'在线':'离开'))}
 async function delKey(id){
  if(!await dlgConfirm({title:'删除 Key',body:'删除该 Key？模型链中引用它的条目将被自动跳过（可随时重新添加并绑定）。',okText:'删除',danger:true}))return;
  const r=await saveKV('/api/keys/del',{id},'Key 已删除');
