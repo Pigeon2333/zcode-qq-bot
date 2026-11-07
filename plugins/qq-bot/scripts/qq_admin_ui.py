@@ -514,6 +514,7 @@ select.mini,input.mini{padding:4px 8px;font-size:12.5px}
   <button data-t="memory">记忆</button>
   <button data-t="stickers">表情包</button>
  <button data-t="devctrl">设备操控</button>
+  <button data-t="mcp">MCP 服务</button>
   <button data-t="zcode">ZCode 联动</button>
   <button data-t="plugins">插件</button>
   <button data-t="settings">设置</button>
@@ -621,7 +622,7 @@ function dirtyOn(el,btnId){el.classList.add('dirty');const b=document.getElement
 function dirtyOff(btnId){const b=document.getElementById(btnId);if(b)b.disabled=true;document.querySelectorAll('textarea.dirty,input.dirty').forEach(x=>x.classList.remove('dirty'))}
 async function dirtyGuard(){const d=document.querySelector('textarea.dirty,input.dirty');if(!d)return true;
  return await dlgConfirm({title:'有未保存的修改',body:'当前有未保存的修改（蓝色边框标记），离开将丢失。确定离开？',okText:'放弃修改',danger:true})}
-async function load(){try{if(TAB==='status')await vStatus();else if(TAB==='runlog')await vRunlog();else if(TAB==='models')await vModels();else if(TAB==='groups')await vGroups();else if(TAB==='private')await vPrivate();else if(TAB==='voice')await vVoice();else if(TAB==='persona')await vPersonas();else if(TAB==='style')await vFile('style');else if(TAB==='memory')await vMemory();else if(TAB==='stickers')await vStickers();else if(TAB==='devctrl')await vDevCtrl();else if(TAB==='zcode')await vZcode();else if(TAB==='plugins')await vPlugins();else if(TAB==='settings'){await vSettings();cacheReload();}else if(TAB==='about')await vAbout();}catch(e){$('#view').innerHTML='<div class="card">加载失败: '+esc(e)+'</div>'}}
+async function load(){try{if(TAB==='status')await vStatus();else if(TAB==='runlog')await vRunlog();else if(TAB==='models')await vModels();else if(TAB==='groups')await vGroups();else if(TAB==='private')await vPrivate();else if(TAB==='voice')await vVoice();else if(TAB==='persona')await vPersonas();else if(TAB==='style')await vFile('style');else if(TAB==='memory')await vMemory();else if(TAB==='stickers')await vStickers();else if(TAB==='devctrl')await vDevCtrl();else if(TAB==='mcp')await vMcp();else if(TAB==='zcode')await vZcode();else if(TAB==='plugins')await vPlugins();else if(TAB==='settings'){await vSettings();cacheReload();}else if(TAB==='about')await vAbout();}catch(e){$('#view').innerHTML='<div class="card">加载失败: '+esc(e)+'</div>'}}
 document.querySelectorAll('#nav button').forEach(b=>b.onclick=async()=>{if(!await dirtyGuard())return;document.querySelectorAll('#nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');TAB=b.dataset.t;if(TAB!=='runlog'&&_runlogTimer){clearInterval(_runlogTimer);_runlogTimer=null}if(TAB!=='devctrl'&&_devCodeTimer){clearInterval(_devCodeTimer);_devCodeTimer=null}if(TAB!=='status'&&_ncTokTimer){clearInterval(_ncTokTimer);_ncTokTimer=null}skeleton();load()});
 const _urlTab=new URLSearchParams(location.search).get('tab');
 if(_urlTab&&TITLES[_urlTab]){TAB=_urlTab;document.querySelectorAll('#nav button').forEach(x=>x.classList.toggle('on',x.dataset.t===_urlTab));}
@@ -2169,6 +2170,80 @@ async function doUninstall(){
  const r=await api('/api/uninstall',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode})}).catch(()=>({ok:false,error:'请求失败'}));
  if(r.ok===false||r.error){toast(r.error||'无法启动卸载',false);return}
  document.body.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100vh"><div class="card" style="max-width:440px"><h3>'+(mode==='wipe'?'正在彻底卸载…':'正在卸载…')+'</h3><div class="k" style="margin-top:8px">程序正在退出并清理文件，本窗口会自动关闭'+(mode==='wipe'?'，数据目录也将被删除':'（数据已保留在 ~/.zcode-qq-bot）')+'。</div></div></div>';
+}
+// ---- MCP 服务桥（内置：机器人作为 MCP 客户端；来源=ZCode 已装 + 自定义 http）----
+let _MCP_TEST={};   // name -> 测试结果 {ok,count,tools|error}
+async function vMcp(){
+ const m=await api('/api/mcp/meta').catch(()=>({ok:false,servers:[]}));
+ const on=!!m.enabled;
+ const sv=(m.servers||[]);
+ const zk=sv.filter(s=>s.source==='zcode'),cu=sv.filter(s=>s.source==='custom');
+ const row=s=>{
+  const t=_MCP_TEST[s.name];
+  const tbadge=s.supported?(s.type==='stdio'?'<span class="badge">stdio·机器人自起进程</span>':'<span class="badge">http·直连</span>'):'<span class="badge" style="background:#8a8a8a;color:#fff">SSE·暂不支持</span>';
+  return '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 10px;border:1.5px solid '+(s.on?'#1a7f37':'var(--line)')+';border-radius:8px;background:'+(s.on?'#f0faf0':'transparent')+'">'
+   +'<b style="min-width:70px">'+esc(s.name)+'</b>'+tbadge
+   +'<span class="k" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(s.detail)+'</span>'
+   +(s.on?'<span class="badge" style="background:#1a7f37;color:#fff">✓ 已启用</span>':'')
+   +'<span style="margin-left:auto;display:flex;gap:6px;align-items:center">'
+   +(s.supported?('<button class="act ghost" style="margin:0;padding:3px 10px;font-size:12px" onclick="mcpTest(\''+esc(s.name)+'\')">测试连接</button>'
+     +'<label class="k" style="margin:0;display:flex;gap:4px;align-items:center;font-size:12px"><input type="checkbox" '+(s.on?'checked':'')+' onchange="mcpToggleSrv(\''+esc(s.name)+'\',this.checked)"> 启用</label>'):'')
+   +(s.source==='custom'?'<button class="act ghost danger" style="margin:0;padding:3px 10px;font-size:12px" onclick="mcpDelCustom(\''+esc(s.name)+'\')">删除</button>':'')
+   +'</span></div>'
+   +(t?'<div class="k" style="margin:-2px 0 6px 18px;padding:6px 10px;border-left:2px solid '+(t.ok?'#1a7f37':'var(--err)')+';border-radius:4px;max-height:180px;overflow:auto">'
+      +(t.ok?('✓ 连接成功，'+t.count+' 个工具：'+(t.tools||[]).map(x=>'<div>· <b>'+esc(x.name)+'</b> '+esc(x.desc)+'</div>').join(''))
+        :('✗ '+esc(t.error)))+'</div>':'');
+ };
+ $('#view').innerHTML=head('让机器人调用 MCP 服务器上的外部工具（查资料、点外卖、控制设备…装什么有什么）')
+ +'<div class="card" style="border:1px solid '+(on?'var(--err)':'var(--border)')+'">'
+ +'<label class="master" style="margin-bottom:8px"><input type="checkbox" id="mcpon" '+(on?'checked':'')+' onchange="mcpToggleGlobal(this.checked)">'
+ +'<span><b>启用 MCP 工具桥</b><div class="k" style="margin-top:3px">⚠ 仅主人的消息可触发工具调用；每个服务还需单独启用（默认全关）。开启需二次确认。</div></span></label>'
+ +'<div class="k" style="line-height:1.8;margin-top:8px">用法：开启并启用服务后，在 QQ 里像聊天一样对机器人说需求（如「用 tracy 抓 5 秒性能」「帮我查下麦当劳有什么券」），它会自己决定调哪个工具、多步执行，再用平时的语气汇报结果。stdio 型服务由机器人自起进程（复用 ZCode 的安装，不重复装）；http 型直连同一实例。</div></div>'
+ +'<div class="card"><div class="k" style="margin-bottom:8px"><b>来自 ZCode</b>（读取 ~/.zcode/cli/config.json，' + (zk.length?('共 '+zk.length+' 个，启用即用——无需重复安装'):'未检测到') + '）</div>'
+ +(zk.length?'<div style="display:grid;gap:6px">'+zk.map(row).join('')+'</div>':'<div class="k">（未找到 ZCode 的 MCP 配置）</div>')+'</div>'
+ +'<div class="card"><div class="k" style="margin-bottom:8px"><b>自定义服务</b>（http 型；v1 暂不支持手动添加 stdio/SSE）</div>'
+ +(cu.length?'<div style="display:grid;gap:6px;margin-bottom:8px">'+cu.map(row).join('')+'</div>':'')
+ +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+ +'<input id="mcp-name" placeholder="服务名（如 myapi）" style="width:150px">'
+ +'<input id="mcp-url" placeholder="http(s)://服务器/mcp 地址" style="flex:1;min-width:220px">'
+ +'<input id="mcp-token" placeholder="鉴权 Token（可选）" style="width:160px">'
+ +'<button class="act" style="margin:0" onclick="mcpAddCustom()">添加</button></div></div>';
+}
+async function mcpToggleGlobal(on){
+ if(on&&!await dlgConfirm({title:'启用 MCP 工具桥？',body:'开启后主人在 QQ 里的消息可触发已启用服务的工具调用（外部服务行为不可控，请只启用信任的服务）。每个服务默认关闭，还需单独启用。',okText:'启用'})){const el=document.getElementById('mcpon');if(el)el.checked=false;return}
+ const r=await api('/api/mcp/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({global:true,on:!!on})}).catch(()=>({ok:false}));
+ if(!r||r.ok===false){toast('保存失败',false);return}
+ toast(on?'已启用总开关（还需启用具体服务）':'已关闭 MCP 工具桥');
+ vMcp();
+}
+async function mcpToggleSrv(name,on){
+ const r=await api('/api/mcp/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,on:!!on})}).catch(()=>({ok:false,error:'请求失败'}));
+ if(!r||r.ok===false){toast('操作失败：'+((r&&r.error)||''),false);vMcp();return}
+ toast(on?('已启用「'+name+'」——下一条主人消息起生效（工具索引约 1 分钟内刷新）'):'已停用「'+name+'」');
+ vMcp();
+}
+async function mcpTest(name){
+ toast('连接测试中…（stdio 型需拉起进程，约几秒）');
+ const r=await api('/api/mcp/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name})}).catch(()=>({ok:false,error:'请求失败'}));
+ _MCP_TEST[name]=r||{ok:false,error:'请求失败'};
+ toast(r&&r.ok?('✓ 连接成功，'+r.count+' 个工具'):'✗ '+((r&&r.error)||''),!!(r&&r.ok));
+ vMcp();
+}
+async function mcpAddCustom(){
+ const name=(document.getElementById('mcp-name').value||'').trim();
+ const url=(document.getElementById('mcp-url').value||'').trim();
+ const token=(document.getElementById('mcp-token').value||'').trim();
+ if(!name||!url){toast('服务名和地址都要填',false);return}
+ const r=await api('/api/mcp/add-custom',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,url:url,token:token})}).catch(()=>({ok:false,error:'请求失败'}));
+ if(!r||r.ok===false){toast('添加失败：'+((r&&r.error)||''),false);return}
+ toast('已添加「'+name+'」，测试连接后启用');
+ vMcp();
+}
+async function mcpDelCustom(name){
+ if(!await dlgConfirm({title:'删除自定义服务「'+name+'」？',body:'仅删除本应用里的配置，不影响 ZCode 或服务本身。',okText:'删除'}))return;
+ await api('/api/mcp/del-custom',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name})});
+ toast('已删除「'+name+'」');
+ vMcp();
 }
 async function vAbout(){
  const vi=await api('/api/app-info').catch(()=>({}));
@@ -5037,6 +5112,73 @@ class UiHandler(BaseHTTPRequestHandler):
         if not self._authed(u, q):
             return self._reply(401, {"ok": False, "error": "unauthorized"})
         body = self._body()
+        # ---- MCP 服务桥（内置；来源=ZCode 已装服务 + 自定义 http）----
+        if u.path == "/api/mcp/meta":
+            import qq_mcp as _M
+            cfg = _M.mcp_cfg()
+            servers = []
+            for s in _M.all_servers():
+                spec = s["spec"]
+                if s["type"] == "stdio":
+                    detail = os.path.basename(str(spec.get("command") or ""))[:80]
+                else:
+                    detail = str(spec.get("url") or "")[:120]
+                servers.append({
+                    "name": s["name"], "source": s["source"], "type": s["type"],
+                    "detail": detail,
+                    "supported": s["type"] in ("stdio", "http"),
+                    "on": _M.server_on(s["name"]) if s["type"] in ("stdio", "http") else False})
+            return self._reply(200, {"ok": True, "enabled": bool(cfg.get("enabled")),
+                                     "servers": servers})
+        if u.path == "/api/mcp/toggle":
+            import qq_mcp as _M
+            cfg = _M.mcp_cfg()
+            if body.get("global"):
+                cfg["enabled"] = bool(body.get("on"))
+            else:
+                name = str(body.get("name") or "")[:48]
+                if not any(s["name"] == name for s in _M.all_servers()):
+                    return self._reply(200, {"ok": False, "error": "服务器不存在"})
+                ent = dict(cfg["servers"].get(name) or {})
+                ent["on"] = bool(body.get("on"))
+                cfg["servers"][name] = ent
+                if not ent["on"]:
+                    _M.reset_client(name)   # 关闭即杀常驻子进程
+            _M.save_mcp_cfg(cfg)
+            return self._reply(200, {"ok": True})
+        if u.path == "/api/mcp/test":
+            import qq_mcp as _M
+            return self._reply(200, _M.test_server(str(body.get("name") or "")[:48]))
+        if u.path == "/api/mcp/add-custom":
+            import re as _re
+            import qq_mcp as _M
+            name = str(body.get("name") or "").strip()[:32]
+            url = str(body.get("url") or "").strip()[:300]
+            token = str(body.get("token") or "").strip()[:200]
+            if not _re.fullmatch(r"[A-Za-z0-9_\-.]{1,32}", name):
+                return self._reply(200, {"ok": False,
+                                         "error": "名称仅限 1-32 位字母/数字/-_."})
+            if not (url.startswith("http://") or url.startswith("https://")):
+                return self._reply(200, {"ok": False, "error": "url 需以 http(s):// 开头"})
+            cfg = _M.mcp_cfg()
+            if any(s["name"] == name for s in _M.all_servers()):
+                return self._reply(200, {"ok": False, "error": "与现有服务重名"})
+            ent = {"type": "http", "url": url}
+            if token:
+                ent["headers"] = {"Authorization": "Bearer " + token}
+            cfg["custom"][name] = ent
+            _M.save_mcp_cfg(cfg)
+            return self._reply(200, {"ok": True})
+        if u.path == "/api/mcp/del-custom":
+            import qq_mcp as _M
+            name = str(body.get("name") or "")[:48]
+            cfg = _M.mcp_cfg()
+            if name in (cfg.get("custom") or {}):
+                cfg["custom"].pop(name, None)
+                _M.reset_client(name)
+                _M.save_mcp_cfg(cfg)
+                return self._reply(200, {"ok": True})
+            return self._reply(200, {"ok": False, "error": "只能删除自定义服务"})
         if u.path == "/api/shutdown":
             # 桌面应用退出时用：先回执再退出本进程（daemon/agent 是独立进程，不受影响）
             self._reply(200, {"ok": True, "bye": True})
