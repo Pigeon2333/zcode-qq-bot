@@ -2533,20 +2533,22 @@ def build_messages(daemon, msg, ctx_k=32):
         ctx_k = float(ctx_k)
     except (TypeError, ValueError):
         ctx_k = 32
-    # 动态上下文预算（默认开，设置页可关）：注入量感知的双向自适应——
-    # 注入重（热点/风格/画像等大块头）→ 升到全量档多带历史消化大话题；
-    # 固定开销+注入逼近模型窗口 → 直接减历史保命（宁可少历史，
-    # 绝不截断注入与对话）。精简上下文关闭（全量档）时不需要动态。
+    # 动态上下文预算（默认开，设置页可关）：双向自适应，分两层——
+    # 升档（仅精简开启时）：注入重（热点/风格/画像等大块头）→ 升全量档
+    #   多带历史消化大话题；全量档（精简关闭）本就 14 条无需升。
+    # 降档守卫（任何档位都生效，含全量）：固定开销+注入逼近模型窗口 →
+    #   直接减历史保命（宁可少历史，绝不截断注入与对话）。
+    # 全量档（ctx_k=99 哨兵）的真实窗口未知，按 32k 保守假设评估。
     _aware_tok = int(len(_aware or "") / 1.7)
     _fix_tok = _aware_tok + int((len(persona_block or "") + len(global_block or "")
                                  + len(style_block or "") + len(evolved_block or "")
                                  + len(guard_block or "") + len(skip_block or "")) / 1.7)
     _shrink_hist = False
-    if lean_ctx_on() and ctx_k < 90 and dyn_ctx_enabled():
-        _win = max(4.0, float(ctx_k)) * 1000
-        if _aware_tok >= 250:
+    if dyn_ctx_enabled():
+        if lean_ctx_on() and ctx_k < 90 and _aware_tok >= 250:
             ctx_k = 90
             out("CTX_ADAPT up inject=%dtok -> full-grade hist14" % _aware_tok)
+        _win = 32000.0 if ctx_k >= 90 else max(4.0, float(ctx_k)) * 1000
         if _fix_tok > _win * 0.55:
             _shrink_hist = True
             out("CTX_ADAPT down fix=%dtok win=%.0fk -> shrink hist (protect window)"

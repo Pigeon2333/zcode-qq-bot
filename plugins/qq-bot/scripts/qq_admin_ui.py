@@ -1907,9 +1907,9 @@ async function vSettings(){
    <input id="apiproxy" value="${esc(String(c.api_proxy||''))}" style="width:240px" placeholder="http://127.0.0.1:7890（Clash 等本地代理）" onchange="saveKV('/api/app-config',{api_proxy:this.value.trim()},'API 代理已保存（即时生效；留空=直连）')">
    <span class="k">供 OpenAI / Grok / Gemini 等境外供应商出站用；国内供应商建议留空直连</span></div></div>
  <div class="card"><label class="master"><input type="checkbox" ${rv.lean_ctx_enabled!==false?'checked':''} onchange="saveLeanCtx(this.checked)">
-   <span><b>精简上下文（推荐开启）</b><div class="k" style="margin-top:3px">开启后：旁观消息先经约 0.5k token 的轻量判定决定是否开口（决定开口才用全量提示词生成），回复时按各模型的上下文档位裁剪历史与记忆——人设/风格/安全规则始终全量，回复质量不受影响。关闭后：每次调用都带完整系统提示与更多历史记忆（追求最佳表现，token 消耗大约 +50%~80%，旁观评估为主增量）</div></span></label>
-  <div class="${rv.lean_ctx_enabled!==false?'':'dimmed'}" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--line)"><label class="master"><input type="checkbox" ${rv.dyn_ctx_enabled!==false?'checked':''} onchange="saveKVLoad('/api/reply-config',{dyn_ctx_enabled:this.checked?1:0},'动态上下文预算已'+(this.checked?'开启':'关闭'))">
-   <span><b>动态上下文预算（推荐开启）</b><div class="k" style="margin-top:3px">在精简的基础上双向自适应：本条回复的注入量大（热点速览/风格参考/成员画像等大块头）时自动升一档——多带几条历史帮模型消化大话题；固定开销逼近模型窗口时反向降档——宁可少带历史也绝不截断注入与对话。普通聊天维持精简不动。运行日志可搜 CTX_ADAPT 看每次升降档</div></span></label></div></div>
+   <span><b>精简上下文（推荐开启）</b><div class="k" style="margin-top:3px">开启后：旁观消息先经约 0.5k token 的轻量判定决定是否开口（决定开口才用全量提示词生成），回复时按各模型的上下文档位裁剪历史与记忆——人设/风格/安全规则始终全量，回复质量不受影响。关闭后：每次调用都带完整系统提示与更多历史记忆（追求最佳表现，token 消耗大约 +50%~80%，旁观评估为主增量）</div></span></label></div>
+ <div class="card"><label class="master"><input type="checkbox" ${rv.dyn_ctx_enabled!==false?'checked':''} onchange="saveKVLoad('/api/reply-config',{dyn_ctx_enabled:this.checked?1:0},'动态上下文预算已'+(this.checked?'开启':'关闭'))">
+   <span><b>动态上下文预算（推荐开启）</b><div class="k" style="margin-top:3px">注入量感知的双向自适应，两层：<b>升档</b>（精简上下文开启时）——本条回复的注入量大（热点速览/风格参考/成员画像等大块头）自动升到全量档，多带几条历史帮模型消化大话题；<b>降档守卫</b>（任何档位都生效，含全量）——固定开销逼近模型窗口时反向减历史，宁可少带历史也绝不截断注入与对话。普通聊天维持精简不动。运行日志可搜 CTX_ADAPT 看每次决策</div></span></label></div>
  <div class="card"><div class="k" style="display:flex;gap:10px;align-items:center;margin-bottom:8px">高峰降耗
   ${rv.econ_active?'<span class="badge" style="background:var(--warn);color:#fff">降耗进行中</span>':'<span class="badge" style="background:var(--tint);color:var(--dim)">未生效</span>'}</div>
   <label class="master"><input type="checkbox" ${rv.econ_enabled?'checked':''} onchange="saveEcon('econ_enabled',this.checked)">
