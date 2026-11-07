@@ -3907,6 +3907,14 @@ _SYS_PROC_BLOCK = {"csrss.exe", "wininit.exe", "winlogon.exe", "services.exe",
                    "lsass.exe", "smss.exe", "svchost.exe", "explorer.exe",
                    "system", "registry"}
 
+# devctrl read 的敏感文件黑名单（P1：read 结果回喂模型——恶意文件内容
+# 可携带提示词注入驱动链式任意读/外发。黑名单挡凭证/密钥类最敏感目标；
+# 配合 2000 字回喂上限与 6 轮循环上限，链式攻击面已大幅收窄）
+_DEVCTRL_READ_DENY = re.compile(
+    r"(^|[\\/])(\.ssh|\.aws|\.gnupg|\.zcode|\.zcode-qq-bot)([\\/]|$)"
+    r"|(_history|credentials|\.env$|\.pem$|\.key$|id_rsa|token|secret"
+    r"|password|webview.*cache|Login Data|cookies\.sqlite)", re.I)
+
 
 def _devctrl_step(daemon, reply_to, action, arg):
     """执行单个设备动作，返回结果文本（发文件动作直接送达，其余文本回喂循环）。"""
@@ -3920,6 +3928,8 @@ def _devctrl_step(daemon, reply_to, action, arg):
         fp = arg[:260]
         if _is_protected(fp):
             return "read 拒绝：%s 在保护目录内" % fp
+        if _DEVCTRL_READ_DENY.search(fp):
+            return "read 拒绝：%s 属于敏感文件（密钥/凭据/浏览器数据），设备操控通道不读取" % fp
         try:
             content = open(fp, "r", encoding="utf-8", errors="replace").read(2000)
             return "read %s 前2000字：\n%s" % (fp, content)
@@ -3929,6 +3939,8 @@ def _devctrl_step(daemon, reply_to, action, arg):
         fp = arg[:260]
         if _is_protected(fp):
             return "send 拒绝：%s 在保护目录内" % fp
+        if _DEVCTRL_READ_DENY.search(fp):
+            return "send 拒绝：%s 属于敏感文件（密钥/凭据类），设备操控通道不发送" % fp
         if not os.path.isfile(fp):
             return "send 失败：文件不存在 %s（路径要原样复制 find 给的结果，别自己猜）" % fp
         try:

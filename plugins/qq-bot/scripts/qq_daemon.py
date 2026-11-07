@@ -1111,10 +1111,23 @@ class Daemon:
         # 最后一条距今 < gap 且倒数第二条距今 < gap*3 → 连发中
         return (now - ts_list[-1] < gap) and (now - ts_list[-2] < gap * 3)
 
-    def send_file(self, chat_type, chat_id, file_path):
-        """发送任意文件到私聊/群（NapCat upload_private_file/upload_group_file）。"""
+    def send_file(self, chat_type, chat_id, file_path, allow_any=False):
+        """发送文件到私聊/群（NapCat upload_private_file/upload_group_file）。
+        安全（P1 修复）：默认只允许数据目录内的文件；allow_any=True 仅限
+        设备操控通道（agent 侧已做主人鉴权+保护目录校验后才传）——与
+        send_image 的 allow_any 同一设计。扩展名黑名单挡可执行文件外传。"""
         import urllib.parse as _up
-        p = os.path.realpath(os.path.abspath(str(file_path)))
+        p = os.path.realpath(os.path.abspath(os.path.expanduser(str(file_path))))
+        if not allow_any:
+            data_root = os.path.realpath(DATA_DIR)
+            if not p.startswith(data_root.rstrip("\\/") + os.sep):
+                raise ValueError(
+                    "文件发送默认仅限数据目录 %s 之内（设备操控通道除外）: %s"
+                    % (data_root, p))
+        _bad_ext = (".exe", ".bat", ".cmd", ".ps1", ".msi", ".scr", ".com",
+                    ".pif", ".vbs", ".js", ".jse", ".wsf", ".lnk")
+        if os.path.splitext(p)[1].lower() in _bad_ext:
+            raise ValueError("拒绝发送可执行/脚本文件: %s" % os.path.basename(p))
         if not os.path.isfile(p):
             raise FileNotFoundError("文件不存在: %s" % p)
         if chat_type == "private":
@@ -1897,7 +1910,8 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
                 return self._reply(200, {"ok": True, **res})
             if u.path == "/send-file":
                 res = d.send_file(body["chat_type"], body["chat_id"],
-                                  body["file"])
+                                  body["file"],
+                                  allow_any=bool(body.get("allow_any")))
                 return self._reply(200, {"ok": True, **res})
             if u.path == "/test/inject":
                 d._dispatch_ws_event(body["event"])
