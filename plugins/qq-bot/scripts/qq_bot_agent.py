@@ -910,6 +910,13 @@ def lean_ctx_on():
     return cfg.get("lean_ctx_enabled", True)
 
 
+def dyn_ctx_enabled():
+    """动态上下文预算（默认开启）：注入重升档 / 窗口紧降档。
+    仅在精简上下文开启时有意义。"""
+    cfg = load_json_const(REPLY_CONFIG_PATH, {})
+    return cfg.get("dyn_ctx_enabled", True)
+
+
 def token_limit_state():
     """限额状态：(是否到达上限, 本窗口已用, 上限, 窗口小时)。
     窗口 = 最近 N 小时滚动求和（usage_log.jsonl 的 total_tokens）。"""
@@ -2474,6 +2481,32 @@ def build_messages(daemon, msg, ctx_k=32):
             "不要解题、不要输出代码/长答案/解题步骤，用人设的口吻一两句话轻松回绝"
             "（可以无奈、调皮、吐槽对方想白嫖AI劳动力），然后自然结束；"
             "不追问任务细节，不表示\"稍后帮你做\"。")
+    # 环境感知块（各自内部判定适用范围，不适用时返回空串=零 token 成本）。
+    # 【提前组装】原本在档位选择之后——动态上下文预算需要先知道注入量才能
+    # 选档（inject_heavy 升档/窗口紧降档）。on_message_all 广播提前无副作用。
+    _aware = ""
+    try:
+        # 消息观察钩子：在注入前广播给插件（bili_scroll 借此预取视频卡片等）
+        PLUGIN_HOST.on_message_all(msg)
+    except Exception:
+        pass
+    try:
+        _aware += _self_state_line(msg["chat_type"], msg["chat_id"])
+    except Exception:
+        pass
+    try:
+        _aware += PLUGIN_HOST.inject_all(msg["chat_type"], msg["chat_id"],
+                                         sender_id=msg.get("sender_id"),
+                                         sender_name=msg.get("sender_name"))
+    except Exception:
+        pass
+    try:
+        _aware += _member_profile_block(msg["chat_type"], msg["chat_id"],
+                                        msg.get("sender_id"), msg.get("sender_name"))
+    except Exception:
+        pass
+    if _aware:
+        _aware = "\n" + _aware.strip("\n") + "\n"
     if msg.get("trigger_reason") == "botloop_probe":
         guard_block = (
             "\n\n## 本次消息性质（互聊试探）\n"
@@ -2481,11 +2514,30 @@ def build_messages(daemon, msg, ctx_k=32):
             "（回复速度远超人类节奏）。本轮你只需要用人设的口吻、自然地好奇问一句"
             "对方是不是 AI/机器人（简短一句，符合人设即可），不要展开别的话题，"
             "不要自问自答。只问这一句。")
-    # 上下文档位：全量 ≥16k：hist10×80+记忆5/4；标准 8-16k：hist8×70+4/3；精简 <8k：hist6×60+3/2
+    # 上下文档位（注意：>=16 与 >=8 的 hist 都是 10——梯度在记忆与截断长度；
+    # 全量档 >=90 才是 14 条。动态预算据此设计：升档=直达全量档，降档=直接减历史）
     try:
         ctx_k = float(ctx_k)
     except (TypeError, ValueError):
         ctx_k = 32
+    # 动态上下文预算（默认开，设置页可关）：注入量感知的双向自适应——
+    # 注入重（热点/风格/画像等大块头）→ 升到全量档多带历史消化大话题；
+    # 固定开销+注入逼近模型窗口 → 直接减历史保命（宁可少历史，
+    # 绝不截断注入与对话）。精简上下文关闭（全量档）时不需要动态。
+    _aware_tok = int(len(_aware or "") / 1.7)
+    _fix_tok = _aware_tok + int((len(persona_block or "") + len(global_block or "")
+                                 + len(style_block or "") + len(evolved_block or "")
+                                 + len(guard_block or "") + len(skip_block or "")) / 1.7)
+    _shrink_hist = False
+    if lean_ctx_on() and ctx_k < 90 and dyn_ctx_enabled():
+        _win = max(4.0, float(ctx_k)) * 1000
+        if _aware_tok >= 250:
+            ctx_k = 90
+            out("CTX_ADAPT up inject=%dtok -> full-grade hist14" % _aware_tok)
+        if _fix_tok > _win * 0.55:
+            _shrink_hist = True
+            out("CTX_ADAPT down fix=%dtok win=%.0fk -> shrink hist (protect window)"
+                % (_fix_tok, _win / 1000))
     if ctx_k >= 90:      # 全量档（精简上下文关闭）：最完整历史与记忆
         n_hist, c_hist, n_gmem, n_cmem = 14, 100, 8, 6
     elif ctx_k >= 16:
@@ -2494,6 +2546,9 @@ def build_messages(daemon, msg, ctx_k=32):
         n_hist, c_hist, n_gmem, n_cmem = 10, 80, 4, 3
     else:
         n_hist, c_hist, n_gmem, n_cmem = 8, 80, 3, 2
+    if _shrink_hist:
+        n_hist = min(n_hist, 5)
+        n_gmem = min(n_gmem, 2)
 
     g_mem = memory_snippets("group", msg["chat_id"])
     c_mem = memory_snippets("contact", msg["sender_id"])
@@ -2649,31 +2704,7 @@ def build_messages(daemon, msg, ctx_k=32):
                   "仅供内部判断（见下方硬性规则「时刻保密」）——绝不把具体钟点说出口。"
                   % (_tinfo["iso"], _tinfo["weekday"], _tinfo["clock12"],
                      _tinfo["clock24"], _tinfo["tz"]))
-    # 环境感知块（各自内部判定适用范围，不适用时返回空串=零 token 成本）
-    _aware = ""
-    try:
-        # 消息观察钩子：在注入前广播给插件（bili_scroll 借此预取视频卡片等）
-        PLUGIN_HOST.on_message_all(msg)
-    except Exception:
-        pass
-    try:
-        _aware += _self_state_line(msg["chat_type"], msg["chat_id"])
-    except Exception:
-        pass
-        pass
-    try:
-        _aware += PLUGIN_HOST.inject_all(msg["chat_type"], msg["chat_id"],
-                                         sender_id=msg.get("sender_id"),
-                                         sender_name=msg.get("sender_name"))
-    except Exception:
-        pass
-    try:
-        _aware += _member_profile_block(msg["chat_type"], msg["chat_id"],
-                                        msg.get("sender_id"), msg.get("sender_name"))
-    except Exception:
-        pass
-    if _aware:
-        _aware = "\n" + _aware.strip("\n") + "\n"
+    # （_aware 环境感知块已提前到档位选择之前——动态上下文预算需要先知道注入量）
     system = (
         head_line + "\n" + _time_line + "\n"
         + (naming_lines() + "\n" if naming_lines() else "")
