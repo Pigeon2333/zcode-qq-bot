@@ -97,10 +97,10 @@ DEFAULT_CONFIG = {
 # 二次确认；group 键存 app_config.backup_excluded（被取消的组名列表）。
 BACKUP_GROUPS = [
     {"group": "persona", "label": "人设与风格", "critical": True,
-     "desc": "人设合集（含每人设风格卡）、通用风格卡、自进化观察——机器人的"
-             "「性格」本体，重建成本最高（长期积累），强烈建议备份",
+     "desc": "人设合集（含每人设风格卡）、通用风格卡、分对象人设路由、自进化"
+             "观察——机器人的「性格」本体，重建成本最高（长期积累），强烈建议备份",
      "files": ["personas/collection.json", "styles/current_style.md",
-               "styles/evolved.json"]},
+               "styles/evolved.json", "persona_routes.json"]},
     {"group": "memory", "label": "长期记忆", "critical": True,
      "desc": "机器人对群友/好友的记忆流水（谁说过什么、喜好等）——纯积累型"
              "数据，丢了无法再生，强烈建议备份",
@@ -110,14 +110,19 @@ BACKUP_GROUPS = [
      "files": ["group_reply_modes.json", "reply_config.json",
                "private_config.json", "group_whitelist.json",
                "model_chain.json", "app_config.json"]},
-    {"group": "voice", "label": "语音音色索引", "critical": False,
-     "desc": "克隆音色与微调模型索引（音频/模型本体体积原因不备份）；丢了"
-             "索引需重新克隆/导入",
-     "files": ["gsv_voices.json", "gsv_ft_models.json"]},
-    {"group": "misc", "label": "表情/任务/统计", "critical": False,
-     "desc": "表情包索引、设备操控流程、定时任务、用量流水、复盘游标——"
-             "丢了影响小或可再生",
-     "files": ["stickers.json", "device_ctrl_flow.json", "cron_tasks.json",
+    {"group": "voice", "label": "语音音色", "critical": False,
+     "desc": "克隆音色（索引+参考音频本体）、微调模型索引——音频本体很小"
+             "（约 1MB）会一起备；微调模型文件太大只备索引，丢了需重新导入",
+     "files": ["gsv_voices.json", "gsv_ft_models.json", "gsv_voices"]},
+    {"group": "plugins", "label": "插件与导入数据", "critical": False,
+     "desc": "插件启停/设置状态、各插件的私有数据（热点配置与历史、风格学习"
+             "的样本与记录）、聊天导入库——丢了插件数据清零、导入需重来",
+     "files": ["plugins_state.json", "plugins_data", "chat_import"]},
+    {"group": "misc", "label": "表情/成员画像/日报", "critical": False,
+     "desc": "表情包索引（图片本体体积原因不备）、成员画像、每日复盘日报、"
+             "设备操控流程、定时任务、用量流水——丢了影响小或可再生",
+     "files": ["stickers.json", "member_profiles.json", "daily_summaries",
+               "device_ctrl_flow.json", "cron_tasks.json",
                "proactive_state.json", "usage_log.jsonl", ".last_review_pos"]},
 ]
 

@@ -1086,11 +1086,12 @@ async function backupNow(){
  toast(r.ok?'备份完成（目录见运行日志 AGENT_BACKUP_OK）':'备份失败',r.ok!==false)}
 // ---- 备份范围勾选（重要类取消弹强提醒）----
 const BK_GROUPS=[
- {group:'persona',label:'人设与风格',critical:true,desc:'人设合集（含风格卡）+通用风格卡+自进化观察——机器人的性格本体，重建成本最高'},
+ {group:'persona',label:'人设与风格',critical:true,desc:'人设合集（含风格卡）+分对象路由+通用风格卡+自进化观察——机器人的性格本体，重建成本最高'},
  {group:'memory',label:'长期记忆',critical:true,desc:'对群友/好友的记忆——纯积累型数据，丢了无法再生'},
  {group:'config',label:'行为与开关配置',critical:false,desc:'回复模式/白名单/模型链/应用设置——丢了可手动重配'},
- {group:'voice',label:'语音音色索引',critical:false,desc:'克隆音色+微调模型索引——丢了需重新克隆/导入'},
- {group:'misc',label:'表情/任务/统计',critical:false,desc:'表情包索引/定时任务/用量流水——丢了影响小或可再生'}];
+ {group:'voice',label:'语音音色',critical:false,desc:'克隆音色（索引+音频本体）+微调模型索引——微调模型文件太大只备索引'},
+ {group:'plugins',label:'插件与导入数据',critical:false,desc:'插件启停与设置、各插件数据（热点历史/风格学习样本）、聊天导入库——丢了插件数据清零'},
+ {group:'misc',label:'表情/成员画像/日报',critical:false,desc:'表情索引（图片本体不备）/成员画像/每日复盘日报/定时任务——丢了影响小或可再生'}];
 async function bkGroupsRender(){
  const box=document.getElementById('bk-groups');
  if(!box)return;
@@ -4938,7 +4939,8 @@ class UiHandler(BaseHTTPRequestHandler):
                     if not sub.is_dir():
                         continue
                     n = sum(1 for f in C.backup_files_for(cfg)
-                            if (sub / os.path.basename(f)).is_file())
+                            if ((sub / os.path.basename(f)).is_file()
+                                or (sub / os.path.basename(f)).is_dir()))
                     if n:
                         items.append({"name": sub.name, "files": n,
                                       "mtime": sub.stat().st_mtime})
@@ -5163,9 +5165,19 @@ class UiHandler(BaseHTTPRequestHandler):
             restored, missing = [], []
             for rel in C.backup_files_for(cfg):
                 src = src_dir / os.path.basename(rel)
+                dst = pathlib.Path(os.path.join(DATA_DIR, rel))
+                if src.is_dir():
+                    # 目录恢复（gsv_voices/、plugins_data/ 等）：整树覆盖回来
+                    try:
+                        if dst.is_dir():
+                            shutil.rmtree(str(dst), ignore_errors=True)
+                        shutil.copytree(str(src), str(dst))
+                        restored.append(rel)
+                    except OSError:
+                        missing.append(rel)
+                    continue
                 if not src.is_file():
                     continue
-                dst = pathlib.Path(os.path.join(DATA_DIR, rel))
                 try:
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     text = src.read_text(encoding="utf-8")

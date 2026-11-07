@@ -5179,7 +5179,14 @@ def _backup_data():
         n = 0
         for name in names:
             src = os.path.join(DATA_DIR, name)
-            if os.path.isfile(src):
+            if os.path.isdir(src):
+                # 目录整体备份（如 gsv_voices/、plugins_data/、chat_import/）
+                dstf = os.path.join(bdir, os.path.basename(name))
+                if os.path.isdir(dstf):
+                    shutil.rmtree(dstf, ignore_errors=True)
+                shutil.copytree(src, dstf)
+                n += 1
+            elif os.path.isfile(src):
                 dstf = os.path.join(bdir, os.path.basename(name))
                 shutil.copy2(src, dstf)
                 n += 1
