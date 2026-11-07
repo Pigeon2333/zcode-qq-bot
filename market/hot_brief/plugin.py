@@ -10,11 +10,15 @@ DATA_DIR = os.environ.get("QQBOT_DATA_DIR") or os.path.join(
     os.path.expanduser("~"), ".zcode-qq-bot")
 BRIEF_PATH = os.path.join(DATA_DIR, "hot_brief.json")
 HIST_DIR = os.path.join(DATA_DIR, "hot_history")
-_MAX = 400
+# 注入截断上限（字符）。400 时 10+ 条的清单尾部整段被切（实测：模型收不到
+# 第 10 条之后的新闻，用户问"总结里明明有"的条目它真没见过）。800 字符
+# ≈ 470 token，覆盖 15+ 条完整清单；≈ 相对典型上下文 +10%
+_MAX = 800
 
 
 def register(api):
     api.on_tick(api.every(1, lambda d: _auto_check(api)))   # 每分钟检查到点
+    api.route("estimate", lambda args: _estimate())
     api.route("refresh_now", lambda args: _refresh(api))
     api.route("history", lambda args: _history_list())
     api.route("get_day", lambda args: _get_day(str((args or {}).get("date") or "")))
@@ -34,6 +38,21 @@ def register(api):
     api.inject_context(_line)
     _clean_history(api)          # 启动即清一次（配合自动清理天数）
     api.log("ready")
+
+
+def _estimate(_args=None):
+    """消耗预估（manifest cost_estimate.route）：今日速览注入每次回复的
+    token ≈ 字符/1.7；相对典型上下文 4500 token 的增幅百分比。"""
+    try:
+        import math as _m
+        with open(BRIEF_PATH, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        chars = len(str(d.get("text") or "")) if str(d.get("date") or "") == time.strftime("%Y-%m-%d") else 0
+    except (OSError, ValueError):
+        chars = 0
+    tok = int(_m.ceil(chars / 1.7))
+    return {"ok": True, "pct": round(tok * 100.0 / 4500, 1),
+            "note": "今日速览（%d 条）注入每条回复" % (chars and _m.ceil(chars / 30) or 0)}
 
 
 def _clean_days(api):
@@ -256,7 +275,8 @@ def _refresh(api):
         return {"ok": False, "error": "没有可用的热点来源"}
     text = _refine(api, raw)
     today = time.strftime("%Y-%m-%d")
-    rec = {"date": today, "text": text[:_MAX + 200], "ts": time.time()}
+    # 存档存完整清单（history 页是回看用途；注入侧由 _MAX 控制长度）
+    rec = {"date": today, "text": text[:4000], "ts": time.time()}
     try:
         pathlib = __import__("pathlib")
         pathlib.Path(BRIEF_PATH).write_text(json.dumps(rec, ensure_ascii=False),
