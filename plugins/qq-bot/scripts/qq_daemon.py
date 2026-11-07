@@ -885,6 +885,7 @@ class Daemon:
             self.seq += 1
             # 回复目标上下文：被回复的消息若还在内存历史里，取摘要给 agent 判定用
             reply_to = None
+            rt_fetch_id = ""      # 需要后台补查被引原文的消息 id
             if info["has_reply"] and info["reply_id"]:
                 for rec in reversed(self.mem_history.get(
                         "%s_%s" % (chat_type, chat_id), [])):
@@ -895,28 +896,12 @@ class Daemon:
                 # 兜底①：NapCat 的 reply 段常不带 content 预览、本地历史又只
                 # 覆盖最近消息——引用较早/跨天的消息时 reply_text 为空，
                 # 模型就"看不到"被引内容（用户实测：引用翻旧账它装瞎）。
-                # 用 OneBot get_msg 按 id 现查（本地 NapCat 毫秒级；失败静默）。
+                # 注意：事件处理跑在 ws 收线程上，这里绝不能同步 _call_action
+                # ——echo 回包要靠同一根线程分发，同步等=死等 15s 超时
+                # （首版就栽在这里：修复不生效还拖慢整条消息管线）。
+                # 改为标记，item 组装完丢后台线程补查后再入收件箱。
                 if not info.get("reply_text") or not reply_to:
-                    try:
-                        g = self._call_action(
-                            "get_msg", {"message_id": info["reply_id"]})
-                        if isinstance(g, dict):
-                            segs = g.get("message") or []
-                            if isinstance(segs, str):
-                                txt = re.sub(r"CQ:[a-zA-Z_]+\[[^\]]*\]", "", segs).strip()
-                            else:
-                                txt = " ".join(
-                                    str(s.get("text") or "")
-                                    for s in segs if isinstance(s, dict)
-                                    and s.get("type") == "text").strip()
-                            if txt:
-                                info["reply_text"] = txt[:120]
-                            if not reply_to:
-                                sn = ((g.get("sender") or {}).get("nickname")
-                                      or g.get("sender_name") or "")
-                                reply_to = {"sender_name": sn, "text": txt[:60]}
-                    except Exception:
-                        pass
+                    rt_fetch_id = info["reply_id"]
             item = {
                 "id": self.seq,
                 "ts": ev.get("time") or now_ts(),
@@ -939,7 +924,38 @@ class Daemon:
                 "has_record": info["record"],
                 "forward_lines": info.get("forward_lines") or [],
             }
-            self.inbox.append(item)
+            if rt_fetch_id:
+                # 后台线程补查被引原文（get_msg）→ 补进 item 再入收件箱；
+                # 本地 NapCat 毫秒级，agent 轮询周期（1-2s）内几乎总能赶上。
+                def _enrich_reply(it, mid):
+                    try:
+                        g = self._call_action("get_msg",
+                                              {"message_id": mid}, timeout=5)
+                        if isinstance(g, dict):
+                            segs = g.get("message") or []
+                            if isinstance(segs, str):
+                                txt = re.sub(r"CQ:[a-zA-Z_]+\[[^\]]*\]", "",
+                                             segs).strip()
+                            else:
+                                txt = " ".join(
+                                    str(s.get("text") or "")
+                                    for s in segs if isinstance(s, dict)
+                                    and s.get("type") == "text").strip()
+                            if txt:
+                                it["reply_text"] = txt[:120]
+                            if not it.get("reply_to"):
+                                sn = ((g.get("sender") or {}).get("nickname")
+                                      or g.get("sender_name") or "")
+                                it["reply_to"] = {"sender_name": sn,
+                                                  "text": txt[:60]}
+                    except Exception:
+                        pass
+                    finally:
+                        self.inbox.append(it)
+                threading.Thread(target=_enrich_reply, args=(item,),
+                                 daemon=True).start()
+            else:
+                self.inbox.append(item)
             self.stats["received"] += 1
             if triggered:
                 self.stats["triggered"] += 1
@@ -1832,6 +1848,17 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         pass
+
+    def handle_one_request(self):
+        # 兜底：调用方（UI/agent）中途断开是常态（页面刷新/轮询取消），
+        # BaseHTTPRequestHandler 默认把 WinError 10053 打成整段 traceback
+        # 灌进日志——用户看到"报错"其实是无害的连接中断（曾因此误判故障）。
+        try:
+            super().handle_one_request()
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            pass
+        except Exception:
+            pass
 
     @property
     def daemon(self):

@@ -2202,7 +2202,13 @@ async function vMcp(){
  +'<span><b>启用 MCP 工具桥</b><div class="k" style="margin-top:3px">⚠ 仅主人的消息可触发工具调用；每个服务还需单独启用（默认全关）。开启需二次确认。</div></span></label>'
  +'<div class="k" style="line-height:1.8;margin-top:8px">用法：开启并启用服务后，在 QQ 里像聊天一样对机器人说需求（如「用 tracy 抓 5 秒性能」「帮我查下麦当劳有什么券」），它会自己决定调哪个工具、多步执行，再用平时的语气汇报结果。stdio 型服务由机器人自起进程（复用 ZCode 的安装，不重复装）；http 型直连同一实例。</div></div>'
  +'<div class="card"><div class="k" style="margin-bottom:8px"><b>来自 ZCode</b>（读取 ~/.zcode/cli/config.json，' + (zk.length?('共 '+zk.length+' 个，启用即用——无需重复安装'):'未检测到') + '）</div>'
- +(zk.length?'<div style="display:grid;gap:6px">'+zk.map(row).join('')+'</div>':'<div class="k">（未找到 ZCode 的 MCP 配置）</div>')+'</div>'
+ +(zk.length?'<div style="display:grid;gap:6px">'+zk.map(row).join('')+'</div>'
+   :'<div class="k" style="padding:10px;border:1px dashed var(--line);border-radius:8px;line-height:1.9">'
+   +(m.zcode_installed
+     ?('✅ 检测到已安装 ZCode，但里面还没有 MCP 服务。去 ZCode 添加：<b>设置 → MCP → 添加服务器</b>（命令行型 stdio / 网络型 http 或 sse 都支持）。<br>添加完回到本页刷新即可——<b>ZCode 里装好的服务机器人直接用，不用重复安装</b>；也不要求 ZCode 保持运行（机器人读的是它的配置文件）。')
+     :('❌ 未检测到 ZCode。两条路任选：<br>① 安装 <b>ZCode</b>（智谱的 AI 编程助手）→ 在其 <b>设置 → MCP</b> 里添加服务 → 本页刷新即可共用（推荐：一次安装，ZCode 和机器人两边都能用）；<br>② 不装 ZCode 也行——直接在下方「自定义服务」添加 http 型 MCP 服务。'))
+   +'</div>')
+ +'<div class="k" style="margin-top:8px;color:var(--dim)">通用说明：机器人只读取 ZCode 的配置文件，<b>ZCode 关着也能用</b>；stdio 型服务由机器人自己拉起进程，http/sse 型直接连服务地址（服务本身要可达）。</div></div>'
  +'<div class="card"><div class="k" style="margin-bottom:8px"><b>自定义服务</b>（http 型；v1 暂不支持手动添加 stdio/SSE）</div>'
  +(cu.length?'<div style="display:grid;gap:6px;margin-bottom:8px">'+cu.map(row).join('')+'</div>':'')
  +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
@@ -5130,8 +5136,12 @@ class UiHandler(BaseHTTPRequestHandler):
                     "detail": detail,
                     "supported": s["type"] in ("stdio", "http", "sse"),
                     "on": _M.server_on(s["name"]) if s["type"] in ("stdio", "http", "sse") else False})
+            zk_n = len([s for s in servers if s["source"] == "zcode"])
             return self._reply(200, {"ok": True, "enabled": bool(cfg.get("enabled")),
-                                     "servers": servers})
+                                     "servers": servers,
+                                     "zcode_installed": bool(C.zcode_installed()),
+                                     "zcode_config_found": os.path.isfile(_M.ZCODE_CONFIG),
+                                     "zcode_mcp_count": zk_n})
         if u.path == "/api/mcp/toggle":
             import qq_mcp as _M
             cfg = _M.mcp_cfg()
