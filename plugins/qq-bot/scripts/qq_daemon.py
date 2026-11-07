@@ -53,6 +53,8 @@ DEFAULT_PRIVATE_CONFIG = {
     "enabled": False,        # 是否回应私信（默认关闭）
     "allow_all": True,       # 开启后：True=回复所有人；False=仅白名单
     "qq_whitelist": [],      # 私信白名单 QQ 号
+    "typing_enabled": False,  # 私聊回复前显示「对方正在输入…」（拟真）
+    "typing_seconds": 2,     # 显示时长秒（1-10）
 }
 
 
@@ -1585,6 +1587,19 @@ class Daemon:
 
     def _send_one(self, job):
         chat_type, chat_id = job["chat_type"], job["chat_id"]
+        # 私聊文字回复前显示「对方正在输入…」（拟真；仅文字，语音/图片不发）
+        if chat_type == "private" and job["kind"] == "text":
+            try:
+                pc = self._private_config()
+                if pc.get("typing_enabled"):
+                    secs = max(1, min(10, int(pc.get("typing_seconds") or 2)))
+                    ok_t, _d = self.set_typing(chat_id, True)
+                    if ok_t:
+                        out("TYPING_INDICATOR user=%s wait=%ds" % (chat_id, secs))
+                        time.sleep(secs)
+                        self.set_typing(chat_id, False)
+            except Exception:
+                pass
         segs = []
         if job.get("reply_to"):
             segs.append({"type": "reply", "data": {"id": job["reply_to"]}})

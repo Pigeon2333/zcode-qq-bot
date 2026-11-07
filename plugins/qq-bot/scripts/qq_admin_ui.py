@@ -1321,9 +1321,20 @@ async function vPrivate(){
  </div></div>
  <div class="card ${((on&&!all)?'':'dimmed')}"><div class="k">私信白名单（仅回复列表内 QQ 号的私信，改动即时生效${all?'；当前被上面的"回复所有人"覆盖，列表保留不丢':''}）</div>
   <div class="chain" style="margin-top:10px">${rows||'<i class="k">空（未配置任何 QQ，将无人可私聊触发）</i>'}</div>
-  <div style="margin-top:10px;display:flex;gap:8px"><input id="newpq" placeholder="QQ号，如 987654321" onkeydown="if(event.key==='Enter')addpq()"><button class="act" onclick="addpq()">添加</button></div></div>`;
+  <div style="margin-top:10px;display:flex;gap:8px"><input id="newpq" placeholder="QQ号，如 987654321" onkeydown="if(event.key==='Enter')addpq()"><button class="act" onclick="addpq()">添加</button></div></div>
+ <div class="card"><label class="master"><input type="checkbox" id="ptyping" ${c.typing_enabled?'checked':''} onchange="saveTyping()"> <b>「正在输入…」拟真</b><div class="k" style="margin-top:3px">私聊回复前，对方聊天栏会先显示「对方正在输入…」，像真人打字一样停顿几秒再发出（仅私聊有效，QQ 群聊无此显示）；显示时长建议 2-3 秒——太长像卡了，太短没意义</div></label>
+  <div class="${c.typing_enabled?'':'dimmed'}" style="display:flex;gap:8px;align-items:center;margin-top:8px">
+   <span class="k">显示时长</span><input type="number" id="ptype-sec" min="1" max="10" value="${c.typing_seconds||2}" style="width:60px" onchange="saveTyping()"><span class="k">秒（1–10）</span>
+   <span class="k" id="ptyping-msg"></span></div></div>`;
 }
 function getPQ(){return [...document.querySelectorAll('.chain input')].map(x=>x.value.trim()).filter(x=>/^\d{5,12}$/.test(x))}
+async function saveTyping(){
+ const body={typing_enabled:$('#ptyping').checked,
+             typing_seconds:parseInt($('#ptype-sec').value)||2};
+ const r=await api('/api/private-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+ const el=document.getElementById('ptyping-msg');
+ if(el)el.textContent=r.ok?'已保存 ✓（即时生效）':'保存失败';
+}
 async function savePrivate(){
  const body={enabled:$('#penabled').checked,allow_all:$('#pallowall').checked,qq_whitelist:getPQ()};
  const r=await api('/api/private-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -4098,7 +4109,9 @@ class UiHandler(BaseHTTPRequestHandler):
             return self._reply(200, {"ok": True,
                                      "enabled": bool(data.get("enabled", False)),
                                      "allow_all": bool(data.get("allow_all", True)),
-                                     "qq_whitelist": data.get("qq_whitelist", [])})
+                                     "qq_whitelist": data.get("qq_whitelist", []),
+                                     "typing_enabled": bool(data.get("typing_enabled", False)),
+                                     "typing_seconds": max(1, min(10, int(data.get("typing_seconds") or 2)))})
         if u.path == "/api/personas":
             data = load_json_const(PERSONA_COLLECTION_PATH, {})
             active = str(data.get("_active", ""))
@@ -5004,13 +5017,25 @@ class UiHandler(BaseHTTPRequestHandler):
                 data, ensure_ascii=False, indent=2))
             return self._reply(200, {"ok": True, "saved": clean})
         if u.path == "/api/private-config":
+            # 合并式保存（曾整文件覆盖——typing 键被白名单保存抹掉的坑）
+            cur = load_json_const(PRIVATE_CONFIG_PATH, {})
             wl = body.get("qq_whitelist")
-            if not isinstance(wl, list) or len(wl) > 100 or                     not all(isinstance(q, str) and q.strip().isdigit() for q in wl):
-                return self._reply(400, {"ok": False, "error": "qq_whitelist 必须是QQ号字符串数组(<=100)"})
-            write_const(PRIVATE_CONFIG_PATH, json.dumps(
-                {"enabled": bool(body.get("enabled", False)),
-                 "allow_all": bool(body.get("allow_all", True)),
-                 "qq_whitelist": [q.strip() for q in wl]}, ensure_ascii=False, indent=2))
+            if "qq_whitelist" in body:
+                if not isinstance(wl, list) or len(wl) > 100 or                     not all(isinstance(q, str) and q.strip().isdigit() for q in wl):
+                    return self._reply(400, {"ok": False, "error": "qq_whitelist 必须是QQ号字符串数组(<=100)"})
+                cur["qq_whitelist"] = [q.strip() for q in wl]
+            if "enabled" in body:
+                cur["enabled"] = bool(body.get("enabled"))
+            if "allow_all" in body:
+                cur["allow_all"] = bool(body.get("allow_all"))
+            if "typing_enabled" in body:
+                cur["typing_enabled"] = bool(body.get("typing_enabled"))
+            if "typing_seconds" in body:
+                try:
+                    cur["typing_seconds"] = max(1, min(10, int(body.get("typing_seconds") or 2)))
+                except (TypeError, ValueError):
+                    cur["typing_seconds"] = 2
+            write_const(PRIVATE_CONFIG_PATH, json.dumps(cur, ensure_ascii=False, indent=2))
             return self._reply(200, {"ok": True})
         if u.path == "/api/reply-config":
             data = load_json_const(REPLY_CONFIG_PATH, {})
