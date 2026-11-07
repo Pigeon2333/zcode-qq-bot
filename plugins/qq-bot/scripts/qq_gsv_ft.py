@@ -183,7 +183,9 @@ def ft_model_write_yaml(cfg, mid):
 
 
 def ft_model_use(cfg, mid):
-    """启用微调模型（写 yaml + 记配置 + 重启引擎加载）。mid 空=回退预设。"""
+    """启用微调模型（写 yaml + 记配置 + 重启引擎加载）。mid 空=回退预设。
+    容错：模型文件被外部删除/损坏 → gsv_start 失败 → 自动回退预设并清
+    配置重启，机器人语音恢复可用（绝不卡死在坏模型上）。"""
     r = ft_model_write_yaml(cfg, mid)
     if not r.get("ok"):
         return r
@@ -193,11 +195,37 @@ def ft_model_use(cfg, mid):
     save_voice_cfg(c)
     gsv_stop()
     st = gsv_start(c)
+    fallback = False
+    if mid and not st.get("ok"):
+        # 微调模型加载失败（文件被删/损坏）——回退预设保命
+        fallback = True
+        ft_model_write_yaml(cfg, "")
+        c2 = dict(c)
+        c2["gsv_ft_model"] = ""
+        save_voice_cfg(c2)
+        gsv_stop()
+        st2 = gsv_start(c2)
+        return {"ok": True, "fallback": True,
+                "name": (load_index().get(mid) or {}).get("name", mid),
+                "error": "模型加载失败（文件可能被删除或损坏），已自动回退预设模型，语音功能不受影响。引擎：" + str(st.get("error", ""))[:120],
+                "engine": {"ok": st2.get("ok"), "error": st2.get("error", "")}}
     m = load_index().get(mid) or {}
     return {"ok": True,
             "name": (m.get("name", "预设模型") if mid else "预设模型"),
             "engine": {"ok": st.get("ok"), "error": st.get("error", "")},
             "hint": "引擎正在重启加载模型（约 40-90 秒），就绪后即可合成"}
+
+
+def ft_health_check(cfg):
+    """索引 vs 磁盘一致性检查：列出指向已不存在目录的模型 id（UI 警示用）。"""
+    bad = []
+    for mid, m in load_index().items():
+        d = str(m.get("dir") or "")
+        if not d or not os.path.isdir(d) or \
+                not os.path.isfile(d + "/model.ckpt"):
+            bad.append({"id": mid, "name": m.get("name", ""),
+                        "active": str(voice_cfg().get("gsv_ft_model") or "") == mid})
+    return {"missing": bad}
 
 
 def ft_model_del(cfg, mid):

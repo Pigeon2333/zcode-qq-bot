@@ -103,9 +103,11 @@ BACKUP_FILES = [
     "device_ctrl_flow.json",    # 设备操控流程自定义
     "cron_tasks.json",          # 定时任务
     "proactive_state.json",     # 主动消息发送状态
-    "personas/collection.json", # 人设合集（含激活项）
+    "personas/collection.json", # 人设合集（含激活项；0.5.10 起含 per-persona 风格卡）
     "usage_log.jsonl",          # token 用量流水（统计）
     ".last_review_pos",         # 复盘增量游标（丢了仅多复盘一次）
+    "gsv_voices.json",          # 本地克隆音色索引（wav 在 gsv_voices/，体积原因只备索引）
+    "gsv_ft_models.json",       # 微调模型索引（模型文件在引擎目录，只备索引：恢复后缺失项 UI 有警示可清理）
 ]
 # 密钥类（api_keys.json / zhipu_api_key / token / ws_token）刻意不备份：备份目录
 # 可能被用户指向网盘同步盘，避免明文密钥外泄。

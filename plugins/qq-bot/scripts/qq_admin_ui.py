@@ -3114,8 +3114,10 @@ function vGsvCardInstalled(m,g){
  +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
  +'<input id="v-gname" placeholder="音色名（如 安和昴）" style="flex:1;min-width:150px">'
  +'<button class="act" style="margin:0" onclick="gsvVoiceSave()">保存到音色列表</button></div></div></div>'
- +'<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)"><div class="k" style="margin-bottom:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b>微调模型</b><span class="k">（社区训练的完整音色模型，效果优于零样本克隆；同一时刻只加载一个）</span><span style="margin-left:auto"><button class="act ghost" style="margin:0" onclick="ftImportPick()">＋ 导入微调模型</button></span></div>'
- +'<div id="gsv-ftlist" class="k">加载中…</div>'
+ +'<div style="margin-top:10px"><div class="card" style="border:1px solid var(--border);padding:10px">'
+ +'<div class="k" style="margin-bottom:4px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b style="font-size:15px">微调模型</b><span style="margin-left:auto"><button class="act ghost" style="margin:0" onclick="ftImportPick()">＋ 导入微调模型</button></span></div>'
+ +'<div class="k" style="margin-bottom:8px">社区训练好的完整声音模型（.ckpt+.pth）——音色和说话习惯都来自大量素材训练，<b>还原度最高</b>；适合长期使用的固定音色。同一时刻只能加载一个，切换需重启引擎。</div>'
+ +'<div id="gsv-ftlist">加载中…</div>'
  +'<div id="gsv-ftimport" style="display:none;margin-top:8px;padding-top:8px;border-top:1px dashed var(--line)">'
  +'<div class="k" style="margin-bottom:6px"><b>导入微调模型</b>（选包含 .ckpt + .pth 的文件夹——社区训练包原样即可；有 wav 参考音频会自动带上一条）</div>'
  +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
@@ -3124,8 +3126,11 @@ function vGsvCardInstalled(m,g){
  +'<input id="ft-name" placeholder="音色名（如 安和昴V2.5）" style="width:150px">'
  +'<button class="act" style="margin:0" onclick="ftImportGo()">导入</button>'
  +'<span class="k" id="ft-msg"></span></div>'
- +'<div class="k" style="margin-top:4px">导入只是复制文件；要点下方列表里的「启用」才会切换引擎模型（切换需重启引擎，约 40-90 秒）。</div></div></div>'
- +'<div style="margin-top:10px"><div class="k" style="margin-bottom:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b style="font-size:15px">音色列表</b><span class="k">（零样本克隆的音色；点「启用」给机器人用，使用中高亮）</span></div><div id="gsv-vlist"></div></div>'
+ +'<div class="k" style="margin-top:4px">导入只是复制文件；要点列表里的「启用」才会切换引擎模型（切换需重启引擎，约 40-90 秒）。</div></div></div>'
+ +'<div class="card" style="border:1px solid var(--border);padding:10px">'
+ +'<div class="k" style="margin-bottom:4px"><b style="font-size:15px">克隆音色</b></div>'
+ +'<div class="k" style="margin-bottom:8px">用一段 3-10 秒的参考音频即时克隆——<b>快速灵活</b>，随时用新素材做一个；相似度略逊于微调模型。与微调模型独立，「启用」哪个就用哪个。</div>'
+ +'<div id="gsv-vlist"></div></div></div>'
  +'</div>';
 }
 async function gsvAutoSet(on){
@@ -3145,19 +3150,37 @@ async function ftListLoad(){
  const r=await api('/api/voice/gsv/ft-list',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>null);
  const ms=(r&&r.models)||[];
  const using=(r&&r.using_ft)||false;
- if(!ms.length&&!using){box.innerHTML='<div class="k" style="padding:8px;border:1px dashed var(--line);border-radius:8px">（还没导入微调模型——点右上「＋ 导入微调模型」，或用上方「克隆新音色」零样本方案）</div>';return}
- let html=ms.map(m=>'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:5px 0;padding:8px 10px;border:1.5px solid '+(m.active?'#1a7f37':'var(--line)')+';border-radius:8px;background:'+(m.active?'#f0faf0':'transparent')+'">'
-  +'<b>'+esc(m.name)+'</b>'
-  +'<span class="badge" style="background:#fff4e0;color:#b25e09">微调模型</span>'
+ const missing=(r&&r.missing)||[];
+ let warn='';
+ if(missing.length){
+  warn='<div class="k" style="color:var(--err);margin-bottom:6px;padding:6px 8px;border:1px solid var(--err);border-radius:6px">⚠ '+missing.map(m=>esc(m.name)).join('、')+' 的模型文件已不存在（可能被手动删除）——'+(missing.some(m=>m.active)?'当前启用的模型丢失，请点「回退预设模型」；':'')+'可点对应条目的「删除」清理索引</div>';
+ }
+ if(!ms.length&&!using){box.innerHTML='<div class="k" style="padding:8px 2px">（还没导入微调模型——点右上「＋ 导入微调模型」）</div>'+warn;return}
+ let html=warn+'<div style="display:grid;gap:6px">'+ms.map(m=>{const miss=missing.find(x=>x.id===m.id);return '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 10px;border:1.5px solid '+(m.active?'#1a7f37':'var(--line)')+';border-radius:8px;background:'+(m.active?'#f0faf0':'transparent')+'">'
+  +'<b style="min-width:56px">'+esc(m.name)+'</b>'
+  +(miss?'<span class="badge" style="background:var(--err);color:#fff">文件缺失</span>':'')
   +(m.active?'<span class="badge" style="background:#1a7f37;color:#fff">✓ 引擎加载中</span>':'')
-  +(m.has_ref?'<span class="k">含参考音频</span>':'<span class="k" style="color:var(--err)">⚠ 无参考音频（需手动配）</span>')
+  +((m.has_ref&&!miss)?'<span class="k">含参考音频</span>':'<span class="k" style="color:var(--err)">⚠ 无参考音频</span>')
   +'<span class="k">'+(m.created?new Date(m.created*1000).toLocaleDateString():'')+'</span>'
   +'<span style="margin-left:auto;display:flex;gap:6px">'
+  +'<button class="act ghost" style="margin:0;padding:3px 10px;font-size:12px" onclick="ftPreview(\''+esc(m.id)+'\')">试听</button>'
   +(m.active?'':'<button class="act" style="margin:0;padding:3px 12px;font-size:12px" onclick="ftUse(\''+esc(m.id)+'\',\''+esc(m.name)+'\')">启用</button>')
-  +'<button class="act ghost" style="margin:0;padding:3px 10px;font-size:12px" onclick="ftDel(\''+esc(m.id)+'\',\''+esc(m.name)+'\')">删除</button></span></div>').join('');
- if(using&&!ms.some(m=>m.active)){}
- html+='<div style="display:flex;gap:6px;margin-top:6px">'+(using?'<button class="act ghost" style="margin:0;padding:3px 12px;font-size:12px" onclick="ftUse(\'\',\'预设模型\')">↩ 回退预设模型</button>':'')+'</div>';
+  +'<button class="act ghost danger" style="margin:0;padding:3px 10px;font-size:12px" onclick="ftDel(\''+esc(m.id)+'\',\''+esc(m.name)+'\')">删除</button></span></div>'}).join('')+'</div>';
+ if(using)html+='<div style="margin-top:6px"><button class="act ghost" style="margin:0;padding:3px 12px;font-size:12px" onclick="ftUse(\'\',\'预设模型\')">↩ 回退预设模型</button></div>';
  box.innerHTML=html;
+}
+async function ftPreview(id){
+ // 微调模型试听：需先启用（引擎加载该模型）且含参考音频——用参考音频+当前引擎合成一句
+ const r=await api('/api/voice/gsv/ft-list',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>null);
+ const m=((r&&r.models)||[]).find(x=>x.id===id);
+ if(!m){toast('模型不存在',false);return}
+ if(!m.active){toast('先「启用」这个模型再试听（引擎需加载它，切换约 40-90 秒）',false);return}
+ if(!m.has_ref){toast('该模型没有参考音频，无法试听（导入时自动找 wav 或用克隆向导配）',false);return}
+ toast('合成试听中…（本地引擎约几秒）');
+ const rr=await api('/api/voice/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voice:{provider:'gsv',gsv_ft_ref:id},text:'你好呀，我是你的语音小助手，听听这个声音怎么样？'})}).catch(()=>({ok:false,error:'请求失败'}));
+ if(!rr||rr.ok===false){toast('试听失败：'+((rr&&rr.error)||''),false);return}
+ const au=document.getElementById('v-audio');
+ au.src=rr.audio;au.style.display='block';au.play().catch(()=>{});
 }
 function ftImportPick(){
  const box=document.getElementById('gsv-ftimport');
@@ -3173,11 +3196,16 @@ async function ftImportGo(){
  const name=document.getElementById('ft-name').value.trim();
  if(!src){msg.textContent='先浏览选择模型文件夹';return}
  if(!name){msg.textContent='给模型起个音色名';return}
+ // 命名冲突预检（与已导入的微调模型重名提示确认）
+ const cur=await api('/api/voice/gsv/ft-list',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>({models:[]}));
+ if(((cur&&cur.models)||[]).some(m=>m.name===name)){
+  if(!await dlgConfirm({title:'已有同名模型',body:'已导入名为「'+name+'」的微调模型，继续导入会出现两个同名条目。仍要继续？',okText:'继续导入'}))return}
  msg.textContent='导入中…（复制模型文件，约几秒到十几秒）';
  const r=await api('/api/voice/gsv/ft-import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({src_dir:src,name:name,prompt_lang:(document.getElementById('v-gplang')||{}).value||'zh'})}).catch(()=>({ok:false,error:'请求失败'}));
  if(!r||r.ok===false){msg.textContent='导入失败：'+((r&&r.error)||'');return}
  msg.textContent='';
- toast('✓ 已导入「'+name+'」'+(r.has_ref?'（含参考音频）':'（未找到参考音频——启用后需在克隆向导手动配）')+'；在上方列表点「启用」切换引擎模型');
+ toast('✓ 已导入「'+name+'」'+(r.has_ref?'（含参考音频）':'（未找到参考音频——启用后无法试听/合成需手动配）')+'；点列表「启用」切换引擎模型');
+ document.getElementById('ft-src').value='';
  document.getElementById('ft-name').value='';
  ftListLoad();
 }
@@ -6111,6 +6139,7 @@ class UiHandler(BaseHTTPRequestHandler):
                 "gsv_prompt_text": str(v.get("gsv_prompt_text") or "")[:300],
                 "gsv_prompt_lang": str(v.get("gsv_prompt_lang") or "zh")[:8],
                 "gsv_autostart": bool(v.get("gsv_autostart")),
+                "gsv_ft_model": str(v.get("gsv_ft_model") or "")[:16],
                 # 合成优化（引擎参数；均 clamp 到安全范围）
                 "gsv_batch_size": max(1, min(16, (lambda x: int(x) if str(x or "").strip().isdigit() else 1)(v.get("gsv_batch_size")))),
                 "gsv_split": (str(v.get("gsv_split") or "cut0") if str(v.get("gsv_split") or "") in ("cut0", "cut4", "cut5") else "cut0"),
@@ -6155,6 +6184,23 @@ class UiHandler(BaseHTTPRequestHandler):
                 "custom_base", "custom_key", "custom_model", "custom_voice",
                 "gsv_voice_id", "gsv_ref_wav", "gsv_prompt_text",
                 "gsv_prompt_lang", "gsv_port", "gsv_dir") if k in v})
+            # 微调模型试听：gsv_ft_ref = 模型 id → 用该模型自带 ref.wav 作参考
+            ft_ref = str(v.get("gsv_ft_ref") or "").strip()
+            if ft_ref:
+                import qq_gsv_ft as _F
+                idx = _F.load_index().get(ft_ref)
+                if not idx:
+                    return self._reply(200, {"ok": False, "error": "微调模型不存在"})
+                if not str(_T.voice_cfg().get("gsv_ft_model") or "") == ft_ref:
+                    return self._reply(200, {"ok": False,
+                        "error": "该模型未启用（引擎加载的才能合成）——先点「启用」"})
+                ref = str(idx.get("ref") or "")
+                if not ref or not os.path.isfile(ref):
+                    return self._reply(200, {"ok": False, "error": "该模型没有参考音频"})
+                cfg["gsv_ref_wav"] = ref
+                cfg["gsv_voice_id"] = ""
+                cfg["gsv_prompt_text"] = str(idx.get("prompt_text") or "")
+                cfg["gsv_prompt_lang"] = str(idx.get("prompt_lang") or "zh")
             try:
                 p = _T.synthesize(text, cfg)
                 import pathlib as _pl
@@ -6177,7 +6223,8 @@ class UiHandler(BaseHTTPRequestHandler):
             import qq_gsv_ft as _F
             import qq_tts as _T
             return self._reply(200, {"ok": True,
-                                     **_F.ft_model_list(_T.voice_cfg())})
+                                     **_F.ft_model_list(_T.voice_cfg()),
+                                     **_F.ft_health_check(_T.voice_cfg())})
         if u.path == "/api/voice/gsv/ft-import":
             # 导入微调模型（src_dir 由前端 /api/pick-dir 选出，模型复制进
             # 引擎 ft_models 受控子树；ref 可显式指定或自动挑 3-10s 一条）
