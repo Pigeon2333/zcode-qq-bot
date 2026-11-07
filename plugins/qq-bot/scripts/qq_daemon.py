@@ -77,6 +77,11 @@ def load_private_config_file():
     if isinstance(wl, list):
         cfg["qq_whitelist"] = [str(q).strip() for q in wl
                                if str(q).strip().isdigit()][:100]
+    cfg["typing_enabled"] = bool(data.get("typing_enabled", False))
+    try:
+        cfg["typing_seconds"] = max(1, min(10, int(data.get("typing_seconds") or 2)))
+    except (TypeError, ValueError):
+        cfg["typing_seconds"] = 2
     return cfg
 REPLY_CONFIG_PATH = os.path.realpath(os.path.join(DATA_DIR, "reply_config.json"))
 GROUP_MODES_PATH = os.path.realpath(os.path.join(DATA_DIR, "group_reply_modes.json"))
