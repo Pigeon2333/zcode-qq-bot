@@ -5167,11 +5167,11 @@ def _daily_review_once(daemon):
 
 
 def _backup_data():
-    """每日数据快照：按 qq_common.BACKUP_FILES 统一清单复制到配置目录
+    """每日数据快照：按统一清单（用户可在备份设置勾选范围）复制到配置目录
     （空=默认 backups/），保留天数与份数双条件清理。密钥类文件不备份。"""
     import shutil
     cfg = C.load_app_config()
-    names = list(C.BACKUP_FILES)
+    names = C.backup_files_for(cfg)
     dest_root = str(cfg.get("backup_dir") or "").strip() or os.path.join(DATA_DIR, "backups")
     bdir = os.path.join(dest_root, time.strftime("%Y%m%d"))
     try:

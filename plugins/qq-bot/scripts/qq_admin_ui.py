@@ -1084,6 +1084,36 @@ async function backupNow(){
  toast('正在执行备份…');
  const r=await api('/api/backup-now',{method:'POST'});
  toast(r.ok?'备份完成（目录见运行日志 AGENT_BACKUP_OK）':'备份失败',r.ok!==false)}
+// ---- 备份范围勾选（重要类取消弹强提醒）----
+const BK_GROUPS=[
+ {group:'persona',label:'人设与风格',critical:true,desc:'人设合集（含风格卡）+通用风格卡+自进化观察——机器人的性格本体，重建成本最高'},
+ {group:'memory',label:'长期记忆',critical:true,desc:'对群友/好友的记忆——纯积累型数据，丢了无法再生'},
+ {group:'config',label:'行为与开关配置',critical:false,desc:'回复模式/白名单/模型链/应用设置——丢了可手动重配'},
+ {group:'voice',label:'语音音色索引',critical:false,desc:'克隆音色+微调模型索引——丢了需重新克隆/导入'},
+ {group:'misc',label:'表情/任务/统计',critical:false,desc:'表情包索引/定时任务/用量流水——丢了影响小或可再生'}];
+async function bkGroupsRender(){
+ const box=document.getElementById('bk-groups');
+ if(!box)return;
+ const a=await api('/api/app-config').catch(()=>({}));
+ const excl=a.backup_excluded||[];
+ box.innerHTML=BK_GROUPS.map(g=>'<label class="master" style="margin:4px 0"><input type="checkbox" data-bg="'+g.group+'" '+(excl.indexOf(g.group)<0?'checked':'')+' onchange="bkGroupToggle(this,\''+g.group+'\','+(g.critical?'true':'false')+')">'
+  +' <span><b>'+g.label+'</b>'+(g.critical?'<span class="badge" style="background:#fff4e0;color:#b25e09;margin-left:6px">重要</span>':'')
+  +'<div class="k" style="margin-top:2px">'+g.desc+'</div></span></label>').join('');
+}
+async function bkGroupToggle(el,group,critical){
+ const a=await api('/api/app-config').catch(()=>({backup_excluded:[]}));
+ let excl=a.backup_excluded||[];
+ if(!el.checked){
+  if(critical){
+   const g=BK_GROUPS.find(x=>x.group===group);
+   if(!await dlgConfirm({title:'⚠ 确认不备份「'+g.label+'」？',body:g.desc+'。\n\n这类数据是'+(group==='persona'?'机器人的性格本体（人设+风格长期积累）':'纯积累型记忆，无法再生')+'——一旦损坏/误删将无法恢复，强烈建议保持备份。\n\n确定要排除它吗？',okText:'仍然不备份',danger:true})) {el.checked=true;return}
+  }
+  if(excl.indexOf(group)<0)excl.push(group);
+ }else{
+  excl=excl.filter(x=>x!==group);
+ }
+ await saveKV('/api/app-config',{backup_excluded:excl},el.checked?'已恢复备份「'+BK_GROUPS.find(x=>x.group===group).label+'」':'已排除「'+BK_GROUPS.find(x=>x.group===group).label+'」——今后备份不再包含它');
+}
 async function restorePicker(){
  const d=await api('/api/backups').catch(()=>({backups:[]}));
  const list=d.backups||[];
@@ -1991,7 +2021,9 @@ async function vSettings(){
   <button class="act ghost" style="margin:0" onclick="pickBackupDir()">浏览…</button>
   <button class="act ghost" style="margin:0" onclick="backupNow()">立即备份</button>
   <button class="act" style="margin:0" onclick="restorePicker()">从备份恢复…</button></div>
-  <div class="k" style="margin-top:4px">备份范围：人设合集、风格卡、自进化观察、长期记忆、回复/分群/私聊/白名单配置、模型链、表情包索引（含视觉描述缓存）、设备操控流程、定时任务、主动消息状态、用量流水、本页应用设置。密钥类文件（API Key/token）出于安全不备份，恢复后如缺失需重新填写。超过保留天数或保留份数的旧备份自动清理（最旧的先清）</div></div></div>
+  <div class="k" style="margin-top:10px"><b>备份数据范围</b>（默认全选；取消勾选的类别不再备份）</div>
+  <div id="bk-groups" style="margin-top:6px">加载中…</div>
+  <div class="k" style="margin-top:4px">密钥类文件（API Key/token）出于安全不备份，恢复后如缺失需重新填写。超过保留天数或保留份数的旧备份自动清理（最旧的先清）</div></div></div>
  <div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">缓存管理<span class="badge" style="background:var(--tint);color:var(--dim)">手动清理 · 进回收站 · 不会自动清理</span></div>
   <div class="k" style="margin-bottom:4px">机器人会把重复使用的数据缓存在本机以省 token 和流量（安装包、当天素材、图片暂存等）。下面是各类缓存的实际大小，勾选后手动清理——<b>只释放磁盘空间</b>，人设/记忆/表情包/聊天导入库等个人数据不在此列；被清的都是可再生内容，文件移入回收站可反悔。</div>
   <div id="cachelist"></div>
@@ -2033,6 +2065,7 @@ async function vSettings(){
    <span class="k">点击后程序会自动退出并完成清理</span></div></div>`;
  // 下载进行中：切走再切回设置页/重开管理台后，自动恢复进度轮询
  api('/api/napcat-dl-status').then(st=>{if(st&&st.running)ncdlPoll()}).catch(()=>{});
+ bkGroupsRender();
  // QQ 版本锁状态标注（hosts 实际生效态 vs 配置意图）
  api('/api/qq-compat').then(q=>{
   const el=document.getElementById('qqlock-state');
@@ -4904,7 +4937,7 @@ class UiHandler(BaseHTTPRequestHandler):
                 for sub in sorted(root.iterdir(), reverse=True):
                     if not sub.is_dir():
                         continue
-                    n = sum(1 for f in C.BACKUP_FILES
+                    n = sum(1 for f in C.backup_files_for(cfg)
                             if (sub / os.path.basename(f)).is_file())
                     if n:
                         items.append({"name": sub.name, "files": n,
@@ -5128,7 +5161,7 @@ class UiHandler(BaseHTTPRequestHandler):
             if not src_dir.is_dir():
                 return self._reply(400, {"ok": False, "error": "备份不存在: %s" % name})
             restored, missing = [], []
-            for rel in C.BACKUP_FILES:
+            for rel in C.backup_files_for(cfg):
                 src = src_dir / os.path.basename(rel)
                 if not src.is_file():
                     continue
@@ -5690,6 +5723,11 @@ class UiHandler(BaseHTTPRequestHandler):
                         cleaned[k] = max(1, min(365, int(cfg_in[k])))
                     except (TypeError, ValueError):
                         pass
+            if "backup_excluded" in cfg_in:
+                valid = {g["group"] for g in C.BACKUP_GROUPS}
+                cleaned["backup_excluded"] = [str(x) for x in
+                                              (cfg_in["backup_excluded"] or [])
+                                              if str(x) in valid][:len(valid)]
             if "update_check" in cfg_in:
                 cleaned["update_check"] = bool(cfg_in["update_check"])
             if "update_repo" in cfg_in:

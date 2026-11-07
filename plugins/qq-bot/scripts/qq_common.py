@@ -53,6 +53,7 @@ DEFAULT_CONFIG = {
     "logs_keep_days": 30,      # 日志保留天数（1-365）
     "owner_bilibili_uid": "",  # 主人的 B 站 UID（B站插件站内私信分享目标；曾漏在白名单外导致存了读不到）
     "backup_keep_days": 30,    # 备份保留天数（超过自动清理）
+    "backup_excluded": [],     # 备份范围排除的组名（见 BACKUP_GROUPS；默认空=全备）
     "backup_keep_copies": 30,  # 每个备份保留份数（超过自动清理最旧的）
     "evolved_max_notes": 30,   # 自进化观察每人设保留上限（30-300；只影响存档）
     "evolved_inject_notes": 12,  # 自进化注入提示词条数（4-40；直接影响每条回复 token）
@@ -92,23 +93,48 @@ DEFAULT_CONFIG = {
 }
 
 # 备份/恢复统一文件清单（basename 冲突无；子目录文件扁平存放）
-BACKUP_FILES = [
-    "styles/current_style.md",   # 风格卡真实路径（根目录 style.md 是 0 字节占位）
-    "styles/evolved.json",       # 自进化风格（同上，根目录同名文件非真实数据）
-    "memory_stream.jsonl",
-    "group_reply_modes.json", "reply_config.json",
-    "private_config.json", "group_whitelist.json",
-    "model_chain.json", "app_config.json",
-    "stickers.json",            # 表情包三库索引+视觉描述缓存
-    "device_ctrl_flow.json",    # 设备操控流程自定义
-    "cron_tasks.json",          # 定时任务
-    "proactive_state.json",     # 主动消息发送状态
-    "personas/collection.json", # 人设合集（含激活项；0.5.10 起含 per-persona 风格卡）
-    "usage_log.jsonl",          # token 用量流水（统计）
-    ".last_review_pos",         # 复盘增量游标（丢了仅多复盘一次）
-    "gsv_voices.json",          # 本地克隆音色索引（wav 在 gsv_voices/，体积原因只备索引）
-    "gsv_ft_models.json",       # 微调模型索引（模型文件在引擎目录，只备索引：恢复后缺失项 UI 有警示可清理）
+# 备份范围分组（UI 勾选用）。critical=True 的组取消勾选时 UI 弹强提醒
+# 二次确认；group 键存 app_config.backup_excluded（被取消的组名列表）。
+BACKUP_GROUPS = [
+    {"group": "persona", "label": "人设与风格", "critical": True,
+     "desc": "人设合集（含每人设风格卡）、通用风格卡、自进化观察——机器人的"
+             "「性格」本体，重建成本最高（长期积累），强烈建议备份",
+     "files": ["personas/collection.json", "styles/current_style.md",
+               "styles/evolved.json"]},
+    {"group": "memory", "label": "长期记忆", "critical": True,
+     "desc": "机器人对群友/好友的记忆流水（谁说过什么、喜好等）——纯积累型"
+             "数据，丢了无法再生，强烈建议备份",
+     "files": ["memory_stream.jsonl"]},
+    {"group": "config", "label": "行为与开关配置", "critical": False,
+     "desc": "回复模式/白名单/私聊/模型链/应用设置等——丢了可手动重配",
+     "files": ["group_reply_modes.json", "reply_config.json",
+               "private_config.json", "group_whitelist.json",
+               "model_chain.json", "app_config.json"]},
+    {"group": "voice", "label": "语音音色索引", "critical": False,
+     "desc": "克隆音色与微调模型索引（音频/模型本体体积原因不备份）；丢了"
+             "索引需重新克隆/导入",
+     "files": ["gsv_voices.json", "gsv_ft_models.json"]},
+    {"group": "misc", "label": "表情/任务/统计", "critical": False,
+     "desc": "表情包索引、设备操控流程、定时任务、用量流水、复盘游标——"
+             "丢了影响小或可再生",
+     "files": ["stickers.json", "device_ctrl_flow.json", "cron_tasks.json",
+               "proactive_state.json", "usage_log.jsonl", ".last_review_pos"]},
 ]
+
+# 展平的完整清单（执行侧用：按 excluded 组过滤）
+BACKUP_FILES = [f for g in BACKUP_GROUPS for f in g["files"]]
+
+
+def backup_files_for(app_cfg):
+    """按用户勾选返回实际备份文件清单。
+    app_cfg.backup_excluded = 被取消勾选的组名列表（默认空=全备）。"""
+    try:
+        excluded = set(str(x) for x in (app_cfg or {}).get("backup_excluded") or [])
+    except Exception:
+        excluded = set()
+    return [f for g in BACKUP_GROUPS if g["group"] not in excluded
+            for f in g["files"]]
+
 # 密钥类（api_keys.json / zhipu_api_key / token / ws_token）刻意不备份：备份目录
 # 可能被用户指向网盘同步盘，避免明文密钥外泄。
 
