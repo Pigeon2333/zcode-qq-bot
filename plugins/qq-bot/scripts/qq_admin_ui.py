@@ -3150,8 +3150,11 @@ function vGsvCardInstalled(m,g){
  +'<button class="act" style="margin:0" onclick="gsvVoiceSave()">保存到音色列表</button></div></div></div>'
  +'<div style="margin-top:10px"><div class="card" style="border:1px solid var(--border);padding:10px">'
  +'<div class="k" style="margin-bottom:4px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b style="font-size:15px">微调模型</b><span style="margin-left:auto"><button class="act ghost" style="margin:0" onclick="ftImportPick()">＋ 导入微调模型</button></span></div>'
- +'<div class="k" style="margin-bottom:8px">社区训练好的完整声音模型（.ckpt+.pth）——音色和说话习惯都来自大量素材训练，<b>还原度最高</b>；适合长期使用的固定音色。同一时刻只能加载一个，切换需重启引擎。</div>'
+ +'<div class="k" style="margin-bottom:8px">社区训练好的完整声音模型（.ckpt+.pth）——音色和说话习惯都来自大量素材训练，<b>还原度最高</b>；适合长期使用的固定音色。同一时刻只能加载一个，切换需重启引擎；生效期间克隆音色自动挂起，回退预设后恢复。</div>'
  +'<div id="gsv-ftlist">加载中…</div>'
+ +'<div id="ft-prog" style="display:none;margin-top:8px">'
+ +'<div style="display:flex;gap:8px;align-items:center"><div style="flex:1;height:4px;background:var(--tint);border-radius:2px;overflow:hidden"><div id="ft-bar" style="height:100%;width:0%;background:var(--btn);transition:width .4s"></div></div><span class="k" id="ft-pct" style="flex:none;min-width:36px;text-align:right">0%</span></div>'
+ +'<div class="k" id="ft-progmsg" style="margin-top:4px">准备中…</div></div>'
  +'<div id="gsv-ftimport" style="display:none;margin-top:8px;padding-top:8px;border-top:1px dashed var(--line)">'
  +'<div class="k" style="margin-bottom:6px"><b>导入微调模型</b>（选包含 .ckpt + .pth 的文件夹——社区训练包原样即可；有 wav 参考音频会自动带上一条）</div>'
  +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
@@ -3163,7 +3166,7 @@ function vGsvCardInstalled(m,g){
  +'<div class="k" style="margin-top:4px">导入只是复制文件；要点列表里的「启用」才会切换引擎模型（切换需重启引擎，约 40-90 秒）。</div></div></div>'
  +'<div class="card" style="border:1px solid var(--border);padding:10px">'
  +'<div class="k" style="margin-bottom:4px"><b style="font-size:15px">克隆音色</b></div>'
- +'<div class="k" style="margin-bottom:8px">用一段 3-10 秒的参考音频即时克隆——<b>快速灵活</b>，随时用新素材做一个；相似度略逊于微调模型。与微调模型独立，「启用」哪个就用哪个。</div>'
+ +'<div class="k" style="margin-bottom:8px">用一段 3-10 秒的参考音频即时克隆——<b>快速灵活</b>，随时用新素材做一个；相似度略逊于微调模型。与微调模型<b>二选一</b>：启用微调模型时克隆音色自动挂起，回退预设后恢复。</div>'
  +'<div id="gsv-vlist"></div></div></div>'
  +'</div>';
 }
@@ -3178,6 +3181,7 @@ async function gsvAutoSet(on){
  }
 }
 // ---- 微调模型（方案A）----
+let _GSV_RUN=false;   // 引擎端口是否就绪（gsvVoicesLoad 拉最新 meta 后更新）
 async function ftListLoad(){
  const box=document.getElementById('gsv-ftlist');
  if(!box)return;
@@ -3193,7 +3197,7 @@ async function ftListLoad(){
  let html=warn+'<div style="display:grid;gap:6px">'+ms.map(m=>{const miss=missing.find(x=>x.id===m.id);return '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 10px;border:1.5px solid '+(m.active?'#1a7f37':'var(--line)')+';border-radius:8px;background:'+(m.active?'#f0faf0':'transparent')+'">'
   +'<b style="min-width:56px">'+esc(m.name)+'</b>'
   +(miss?'<span class="badge" style="background:var(--err);color:#fff">文件缺失</span>':'')
-  +(m.active?'<span class="badge" style="background:#1a7f37;color:#fff">✓ 引擎加载中</span>':'')
+  +(m.active?'<span class="badge" style="background:#1a7f37;color:#fff">'+(_GSV_RUN?'✓ 生效中':'✓ 引擎加载中…')+'</span>':'')
   +((m.has_ref&&!miss)?'<span class="k">含参考音频</span>':'<span class="k" style="color:var(--err)">⚠ 无参考音频</span>')
   +'<span class="k">'+(m.created?new Date(m.created*1000).toLocaleDateString():'')+'</span>'
   +'<span style="margin-left:auto;display:flex;gap:6px">'
@@ -3243,14 +3247,60 @@ async function ftImportGo(){
  document.getElementById('ft-name').value='';
  ftListLoad();
 }
-async function ftUse(id,name){
- if(id&&!await dlgConfirm({title:'切换到「'+name+'」？',body:'引擎将重启加载新模型（约 40-90 秒），期间语音合成暂不可用（自动回退其他来源）。',okText:'切换'}))return;
- if(!id&&!await dlgConfirm({title:'回退预设模型？',body:'引擎将重启加载预设模型（约 40-90 秒）。',okText:'回退'}))return;
- toast(id?('正在切换到「'+name+'」…引擎重启约 40-90 秒'):'正在回退预设模型…');
+// ---- 微调模型切换进度条（预估时间轴：写配置→拉起→加载权重，就绪即 100%）----
+let _ftProgTimer=null,_ftBusy=false;
+function ftProgStart(){
+ const box=document.getElementById('ft-prog');if(!box)return;
+ box.style.display='block';
+ if(_ftProgTimer)clearInterval(_ftProgTimer);
+ const bar0=document.getElementById('ft-bar'),pct0=document.getElementById('ft-pct');
+ if(bar0){bar0.style.width='0%';bar0.style.background='var(--btn)'}
+ if(pct0)pct0.textContent='0%';
+ const t0=Date.now();let cur=0;
+ _ftProgTimer=setInterval(()=>{
+  const el=(Date.now()-t0)/1000;
+  const tgt=el<2?8:(el<5?22:Math.min(92,22+(el-5)));
+  cur=Math.min(tgt,cur+0.8+Math.random()*2.5);
+  const bar=document.getElementById('ft-bar'),pct=document.getElementById('ft-pct'),msg=document.getElementById('ft-progmsg');
+  if(bar)bar.style.width=cur.toFixed(0)+'%';
+  if(pct)pct.textContent=cur.toFixed(0)+'%';
+  if(msg)msg.textContent=el<2?'写入配置、停止旧引擎…':(el<5?'拉起引擎进程…':(el<75?'加载模型权重中…（共约 40-90 秒，因显卡而异）':'仍在加载，比预估慢一点…引擎就绪即完成'));
+ },350);
+}
+function ftProgDone(ok,txt){
+ if(_ftProgTimer){clearInterval(_ftProgTimer);_ftProgTimer=null}
+ const bar=document.getElementById('ft-bar'),pct=document.getElementById('ft-pct'),msg=document.getElementById('ft-progmsg');
+ if(bar&&pct){
+  if(ok===true){bar.style.width='100%';pct.textContent='100%'}
+  else if(ok===false){bar.style.background='var(--err)'}
+ }
+ if(msg&&txt)msg.textContent=txt;
+}
+function ftProgHide(){const box=document.getElementById('ft-prog');if(box)box.style.display='none'}
+async function ftUse(id,name,skipConfirm){
+ if(_ftBusy){toast('引擎切换进行中，稍候…',false);return}
+ if(!skipConfirm){
+  const cl=String((((_VM||{}).config)||{}).gsv_voice_id||'');
+  if(id&&!await dlgConfirm({title:'切换到「'+name+'」？',body:'引擎将重启加载新模型（约 40-90 秒），期间语音合成暂不可用（自动回退其他来源）。'+(cl?'当前克隆音色会自动挂起，回退预设模型后恢复。':''),okText:'切换'}))return;
+  if(!id&&!await dlgConfirm({title:'回退预设模型？',body:'引擎将重启加载预设模型（约 40-90 秒）。',okText:'回退'}))return;
+ }
+ _ftBusy=true;
+ toast(id?('正在切换到「'+name+'」…'):'正在回退预设模型…');
+ ftProgStart();
  const r=await api('/api/voice/gsv/ft-use',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})}).catch(()=>({ok:false,error:'请求失败'}));
- if(!r||r.ok===false){toast('切换失败：'+((r&&r.error)||''),false);return}
- toast((r.engine&&r.engine.ok)?'✓ 已切换到「'+(r.name||'')+'」，引擎重启中（约 40-90 秒后可合成）':'yaml 已写但引擎重启异常：'+(((r.engine||{}).error)||''));
- ftListLoad();
+ _ftBusy=false;
+ if(!r||r.ok===false){ftProgDone(false,'✗ 切换失败：'+((r&&r.error)||''));toast('切换失败：'+((r&&r.error)||''),false);setTimeout(ftProgHide,6000);return}
+ if(r.fallback){ftProgDone(false,'⚠ 模型加载失败，已自动回退预设模型——语音功能不受影响');toast(r.error||'模型加载失败，已自动回退预设模型',false);setTimeout(ftProgHide,8000)}
+ else if(r.engine&&r.engine.ok){ftProgDone(true,'✓ 引擎已就绪，「'+(r.name||'')+'」生效中');toast('✓ 已切换到「'+(r.name||'')+'」');setTimeout(ftProgHide,6000)}
+ else{ftProgDone(false,'配置已写入，但引擎启动异常：'+(((r.engine||{}).error)||''));toast('引擎重启异常：'+(((r.engine||{}).error)||''),false);setTimeout(ftProgHide,8000)}
+ ftListLoad();gsvVoicesLoad();voiceBarRefresh();
+}
+async function voiceBarRefresh(){
+ const m=await api('/api/voice/meta').catch(()=>null);
+ if(!m||m.ok===false)return;
+ _VM=m;
+ const el=document.getElementById('voice-active-bar');
+ if(el){const t=document.createElement('div');t.innerHTML=voiceActiveBar(m);const n=t.firstElementChild;if(n)el.replaceWith(n)}
 }
 async function ftDel(id,name){
  if(!await dlgConfirm({title:'删除微调模型「'+name+'」？',body:'删除复制的模型文件（约 240MB/个）；若正在使用会先回退预设模型。',danger:true,okText:'删除'}))return;
@@ -3262,14 +3312,16 @@ async function ftDel(id,name){
 async function gsvVoicesLoad(){
  const box=document.getElementById('gsv-vlist');
  if(!box)return;
- ftListLoad();
  const m=await api('/api/voice/meta').catch(()=>({ok:false}));
+ if(m&&m.ok!==false){_VM=m;_GSV_RUN=!!((m.gsv)||{}).running}   // 挂起判定/状态条/生效徽标都要最新状态
+ ftListLoad();
  const vs=(m&&m.gsv_voices)||[];
  const cur=((m&&m.config)||{}).gsv_voice_id||'';
+ const ftOn=!!String(((m&&m.config)||{}).gsv_ft_model||'');
  if(!vs.length){box.innerHTML='<div class="k" style="padding:8px;border:1px dashed var(--line);border-radius:8px">（还没有本地音色——上面「克隆新音色」做一个，完全免费）</div>';return}
  box.innerHTML='<div style="display:grid;gap:6px">'+vs.map(v=>'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 10px;border:1.5px solid '+(v.id===cur?'#1a7f37':'var(--line)')+';border-radius:8px;background:'+(v.id===cur?'#f0faf0':'transparent')+'">'
   +'<b style="min-width:56px">'+esc(v.name||'(未命名)')+'</b>'
-  +(v.id===cur?'<span class="badge" style="background:#1a7f37;color:#fff">✓ 使用中</span>':'')
+  +(v.id===cur?(ftOn?'<span class="badge" style="background:#8a8a8a;color:#fff">⏸ 挂起（微调模型生效中）</span>':'<span class="badge" style="background:#1a7f37;color:#fff">✓ 使用中</span>'):'')
   +(v.dur?'<span class="k">参考 '+v.dur+'s</span>':'')
   +(v.warn?'<span class="k" style="color:#b42318">⚠ '+esc(v.warn)+'</span>':'')
   +'<span class="k" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(v.prompt_text||'（未填原文）')+'</span>'
@@ -3277,7 +3329,7 @@ async function gsvVoicesLoad(){
   +'<button class="act ghost" style="margin:0;padding:3px 10px;font-size:12px" onclick="gsvVoicePreview(\''+esc(v.id)+'\')">试听</button>'
   +(v.id===cur?'':'<button class="act" style="margin:0;padding:3px 12px;font-size:12px" onclick="gsvVoiceUse(\''+esc(v.id)+'\')">启用</button>')
   +'<button class="act ghost danger" style="margin:0;padding:3px 10px;font-size:12px" onclick="gsvVoiceDel(\''+esc(v.id)+'\',\''+esc(v.name||v.id)+'\')">删除</button></span></div>').join('')+'</div>'
-  +'<div class="k" style="margin-top:6px">删除不可恢复；删「使用中」的音色机器人自动退回其他来源。</div>';
+  +'<div class="k" style="margin-top:6px">'+(ftOn?'微调模型生效中，已选的克隆音色自动挂起（回退预设模型后恢复）。':'')+'删除不可恢复；删「使用中」的音色机器人自动退回其他来源。</div>';
 }
 let __GSVWAV=null;   // 已截取待保存的参考音频（b64）；试听→满意→保存三段共用
 function gwStep1Done(){
@@ -3379,10 +3431,17 @@ async function gsvVoicePreview(id){
 }
 async function gsvVoiceUse(id){
  if(!id)return;   // 空占位项（还没有本地音色）
+ const ftid=String((((_VM||{}).config)||{}).gsv_ft_model||'');
+ if(ftid){
+  // 互斥：微调模型生效中 → 启用克隆音色 = 退出微调模型 + 重启引擎
+  const ft=((_VM.gsv_ft_models)||[]).find(x=>x.id===ftid);
+  if(!await dlgConfirm({title:'切换到克隆音色？',body:'当前微调模型「'+((ft&&ft.name)||ftid)+'」生效中。改用克隆音色需退出微调模型并重启引擎（约 40-90 秒），期间语音合成暂不可用。',okText:'切换'}))return;
+  await ftUse('','预设模型',true);
+ }
  const r=await api('/api/voice/gsv/voice-use',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})}).catch(()=>({ok:false,error:'请求失败'}));
  if(!r||r.ok===false){toast('启用失败：'+((r&&r.error)||''),false);return}
  toast('已启用「'+(r.name||id)+'」——机器人语音现在用这个音色');
- gsvVoicesLoad();
+ gsvVoicesLoad();voiceBarRefresh();
 }
 async function gsvVoiceDel(id,name){
  if(!await dlgConfirm({title:'删除本地音色「'+name+'」？',body:'删除本机保存的参考音频（不可恢复）；机器人当前若在用会自动退回。',danger:true,okText:'删除'}))return;
@@ -3399,9 +3458,17 @@ function voiceActiveBar(m){
  const label=(P[prov]&&P[prov].label)||prov;
  let voice='';
  if(prov==='gsv'){
-  const vid=String(cfg.gsv_voice_id||'');
-  const v=(_VM.gsv_voices||[]).find(x=>x.id===vid);
-  voice=vid?((v&&v.name)||vid):'（未选本地音色——去引擎卡启用）';
+  const ftid=String(cfg.gsv_ft_model||'');
+  if(ftid){
+   // 微调模型生效：音色由训练的说话人决定（克隆音色此时挂起）
+   const ft=(_VM.gsv_ft_models||[]).find(x=>x.id===ftid);
+   voice='微调模型「'+(ft?ft.name:ftid)+'」';
+   if(!((m.gsv)||{}).running)voice+='（引擎未就绪——启动中或已停止）';
+  }else{
+   const vid=String(cfg.gsv_voice_id||'');
+   const v=(_VM.gsv_voices||[]).find(x=>x.id===vid);
+   voice=vid?((v&&v.name)||vid):'（未选本地音色——去引擎卡启用）';
+  }
  }else if(prov==='zhipu'){
   const sid=String(cfg.zhipu_speaker_id||'').trim();
   if(sid){const zv=(_VM.config&&_VM.config.zhipu_saved_voices||[]).find(x=>String(x.speaker_id)===sid);
@@ -3412,7 +3479,7 @@ function voiceActiveBar(m){
  else if(prov==='siliconflow'){voice=String(cfg.sf_voice||'anna')}
  else{voice=String(cfg.custom_voice||'alloy')}
  const on=cfg.enabled?'':'（语音回复总开关未开——下方「开关与策略」里开启）';
- return '<div class="card" style="border-color:var(--acc-border);background:var(--acc-soft);padding:10px 14px">'
+ return '<div class="card" id="voice-active-bar" style="border-color:var(--acc-border);background:var(--acc-soft);padding:10px 14px">'
   +'<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
   +'<span style="flex:none;font-weight:600">🎙 当前生效</span>'
   +'<span class="badge" style="background:var(--btn);color:var(--btn-fg)">'+esc(label)+'</span>'
@@ -4702,6 +4769,7 @@ class UiHandler(BaseHTTPRequestHandler):
         if u.path == "/api/voice/meta":
             # 语音回复元数据：供应商（含计费说明）+ 预设音色表 + 本地引擎状态
             import qq_tts as _T
+            import qq_gsv_ft as _F
             return self._reply(200, {
                 "ok": True,
                 "providers": {k: {"label": v["label"], "billing": v["billing"]}
@@ -4713,6 +4781,8 @@ class UiHandler(BaseHTTPRequestHandler):
                 "config": _T.voice_cfg(),
                 "gsv": _T.gsv_status(_T.voice_cfg()),
                 "gsv_voices": _T.gsv_voice_list(),
+                "gsv_ft_models": [{"id": str(mid), "name": str(m.get("name") or mid)}
+                                  for mid, m in (_F.load_index() or {}).items()],
             })
         if u.path == "/api/lark/meta":
             # 飞书互通：配置 + SDK 可用性

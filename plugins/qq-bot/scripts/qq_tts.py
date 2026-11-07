@@ -283,10 +283,21 @@ def _gsv_request(text, ref, ptext, plang, cfg):
 
 def gsv_tts(text, cfg):
     """GPT-SoVITS 本地合成 → WAV 字节。失败抛异常（调用方回退）。
-    参考音频优先级：gsv_voice_id（本地音色库）> gsv_ref_wav（手动路径）。
-    gsv_prompt_text = 参考音频原文，gsv_prompt_lang = 参考语言。"""
+    参考音频优先级：gsv_ft_model（微调模型自带 ref——它生效时音色由训练
+    的说话人决定，克隆音色挂起）> gsv_voice_id（本地音色库）> gsv_ref_wav
+    （手动路径）。gsv_prompt_text = 参考音频原文，gsv_prompt_lang = 参考语言。"""
     d = gsv_dir(cfg)
     ref, ptext, plang = "", "", "zh"
+    ftid = str(cfg.get("gsv_ft_model") or "").strip()
+    if ftid:
+        import qq_gsv_ft as _F
+        m = _F.load_index().get(ftid) or {}
+        fref = str(m.get("ref") or "")
+        if fref and os.path.isfile(fref):
+            _GSV_KEEPALIVE["last"] = time.time()
+            return _gsv_request(text, fref, str(m.get("prompt_text") or ""),
+                                str(m.get("prompt_lang") or "zh"), cfg)
+        # 微调模型没带参考音频 → 落回零样本链（clone ref 借底模出声）
     vid = str(cfg.get("gsv_voice_id") or "").strip()
     if vid:
         v = gsv_voice_get(vid)
