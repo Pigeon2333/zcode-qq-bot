@@ -295,13 +295,20 @@ def gsv_tts(text, cfg):
             ptext = str(v.get("prompt_text") or "")
             plang = str(v.get("prompt_lang") or "zh")
     _GSV_KEEPALIVE["last"] = time.time()   # 正常合成即视为保活
+    if not ref:
+        ref = str(cfg.get("gsv_ref_wav") or "").strip()
+        ptext = str(cfg.get("gsv_prompt_text") or "")
+        plang = str(cfg.get("gsv_prompt_lang") or "zh")
+    if not ref or not os.path.isfile(ref):
+        raise RuntimeError("未设置参考音频（语音页「本地引擎」卡里克隆/选择一个音色）")
+    return _gsv_request(text, ref, ptext, plang, cfg)
 
 
 def gsv_keepalive_tick(cfg):
     """防冷启动保活：引擎在跑但超过 5 分钟没合成过 → 用超短文本合成一次
-    （后台线程调用，失败静默）。首条慢 4-5s 是引擎批处理/CUDA 缓存被回收
-    后重新预热——保活让用户每次都吃到 1.3-1.5s 的稳态速度。显存代价约
-    数百 MB（引擎本身常驻 1.6-2GB）。"""
+    （agent 主循环每分钟调用，失败静默）。首条慢 4-5s 是引擎批处理/CUDA
+    缓存被回收后重新预热——保活让用户每次都吃到 1.3-1.5s 的稳态速度。
+    显存代价约数百 MB（引擎本身常驻 1.6-2GB）。"""
     try:
         if _GSV_KEEPALIVE.get("warming"):
             return
@@ -332,13 +339,6 @@ def gsv_keepalive_tick(cfg):
             _GSV_KEEPALIVE["warming"] = False
         except Exception:
             pass
-    if not ref:
-        ref = str(cfg.get("gsv_ref_wav") or "").strip()
-        ptext = str(cfg.get("gsv_prompt_text") or "")
-        plang = str(cfg.get("gsv_prompt_lang") or "zh")
-    if not ref or not os.path.isfile(ref):
-        raise RuntimeError("未设置参考音频（语音页「本地引擎」卡里克隆/选择一个音色）")
-    return _gsv_request(text, ref, ptext, plang, cfg)
 
 
 def gsv_preview_bytes(text, wav_bytes, prompt_text="", prompt_lang="zh", cfg=None):
