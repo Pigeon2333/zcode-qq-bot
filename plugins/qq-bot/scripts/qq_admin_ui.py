@@ -533,7 +533,7 @@ select.mini,input.mini{padding:4px 8px;font-size:12.5px}
 <script>
 const $=s=>document.querySelector(s);
 let TAB='status';
-const TITLES={status:'状态',runlog:'运行日志',models:'模型管理',groups:'群消息',private:'私聊消息',voice:'语音消息',persona:'人设',style:'风格卡',memory:'记忆',stickers:'表情包',devctrl:'设备操控',zcode:'ZCode 联动',plugins:'插件',settings:'设置',about:'关于'};
+const TITLES={status:'状态',runlog:'运行日志',models:'模型管理',groups:'群消息',private:'私聊消息',voice:'语音消息',persona:'人设',style:'风格卡',memory:'记忆',stickers:'表情包',devctrl:'设备操控',mcp:'MCP 服务',zcode:'ZCode 联动',plugins:'插件',settings:'设置',about:'关于'};
 function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 function head(sub){return '<h2>'+TITLES[TAB]+'</h2>'+(sub?'<div class="sub">'+sub+'</div>':'')}
 function goTab(t){const b=document.querySelector('#nav button[data-t="'+t+'"]');if(b)b.click()}
@@ -2174,7 +2174,9 @@ async function doUninstall(){
 // ---- MCP 服务桥（内置：机器人作为 MCP 客户端；来源=ZCode 已装 + 自定义 http）----
 let _MCP_TEST={};   // name -> 测试结果 {ok,count,tools|error}
 async function vMcp(){
- const m=await api('/api/mcp/meta').catch(()=>({ok:false,servers:[]}));
+ // meta 是 POST 端点（新端点规矩：GET 会 404——曾因漏带 method 走 GET
+ // 致页面永远显示"未检测到"且开关勾不上，两症状同根因）
+ const m=await api('/api/mcp/meta',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>({ok:false,servers:[]}));
  const on=!!m.enabled;
  const sv=(m.servers||[]);
  const zk=sv.filter(s=>s.source==='zcode'),cu=sv.filter(s=>s.source==='custom');
