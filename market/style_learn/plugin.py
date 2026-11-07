@@ -12,6 +12,7 @@
 """
 
 import json
+import re
 import os
 import threading
 import time
@@ -111,8 +112,9 @@ def _save_cfg(api, args):
 
 
 def _qq_list(v):
+    """解析 QQ 号/群号列表：中英文逗号、顿号、空格、换行分隔均可（去重保序）。"""
     if isinstance(v, str):
-        v = v.replace("，", ",").replace("、", ",").replace("\n", ",").split(",")
+        v = re.split(r"[,，、\s]+", v.strip())
     out, seen = [], set()
     for x in (v or []):
         s = str(x).strip()[:20]

@@ -20,7 +20,7 @@ async function hotBriefPage(d){
  +'<span class="k" id="hb-msg"></span></div>'
  +'<div class="k" style="margin-top:6px;font-size:12px">'+autoHint+'</div></div>'
  +'<div class="card"><div class="k" style="margin-bottom:6px"><b>热点来源</b>（搜什么由你定）</div>'
- +'<div class="k" style="margin-bottom:6px">搜索关键词，用「、」分隔最多 3 组（如：今日热点新闻、微博热搜榜、科技新闻）。总结时先按这些关键词搜索，再由 AI 提炼成真正的热点事件清单（去掉聚合站导航/广告条目）。</div>'
+ +'<div class="k" style="margin-bottom:6px">搜索关键词，最多 3 组（中英文逗号、顿号、空格、换行分隔均可）（如：今日热点新闻、微博热搜榜、科技新闻）。总结时先按这些关键词搜索，再由 AI 提炼成真正的热点事件清单（去掉聚合站导航/广告条目）。</div>'
  +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
  +'<input id="hb-query" placeholder="留空 = 默认（今日热点新闻 头条）" style="flex:1;min-width:260px">'
  +'<button class="act" style="margin:0" onclick="hbSetQuery()">保存来源</button>'

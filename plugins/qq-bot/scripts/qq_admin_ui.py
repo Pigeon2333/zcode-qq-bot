@@ -1223,7 +1223,7 @@ async function vGroups(){
   const opt2=(v,t)=>`<option value="${v}"${pcur===v?' selected':''}>${t}</option>`;
   let params='';
   if(ov.reply_mode==='keyword'){
-   params=`<div class="gm-sub">该群关键词（逗号分隔，覆盖全局；回车保存）：<input value="${esc((ov.keywords||_gmGlobal.keywords||[]).join(', '))}" style="width:230px" onchange="saveGmFieldFor('${esc(x)}','keywords',this)"></div>`;
+   params=`<div class="gm-sub">该群关键词（中英文逗号/顿号/空格分隔均可，覆盖全局；改完自动保存）：<input value="${esc((ov.keywords||_gmGlobal.keywords||[]).join(', '))}" style="width:230px" onchange="saveGmFieldFor('${esc(x)}','keywords',this)"></div>`;
   }else if(ov.reply_mode==='chat'){
    params=`<div class="gm-sub">插话概率 <input type="number" min="0" max="100" style="width:60px" value="${Math.round((ov.chat_probability??_gmGlobal.chat_probability??0.5)*100)}" onchange="saveGmFieldFor('${esc(x)}','chat_probability',this)">%
    　最小间隔 <input type="number" min="0" max="3600" style="width:68px" value="${ov.chat_min_interval_sec??_gmGlobal.chat_min_interval_sec??45}" onchange="saveGmFieldFor('${esc(x)}','chat_min_interval_sec',this)"> 秒（仅该群生效）</div>`;
@@ -1255,7 +1255,7 @@ async function vGroups(){
    ${modeCard('keyword','关键词模式','标准模式基础上，群消息包含关键词也会触发回复')}
    ${modeCard('chat','闲聊模式','群里任何聊天都可能插话：按概率抽样 + 最小间隔防刷屏')}
   </div>
-  ${m==='keyword'?`<div style="margin-top:12px"><div class="k">关键词（逗号分隔，包含即触发；改完按回车或点别处自动保存）</div>
+  ${m==='keyword'?`<div style="margin-top:12px"><div class="k">关键词（中英文逗号/顿号/空格分隔均可，包含即触发；改完自动保存）</div>
    <input id="kwedit" style="width:100%;margin-top:6px" value="${esc((c.keywords||[]).join(', '))}" onchange="saveKw()"></div>`:''}
   ${m==='chat'?`<div style="margin-top:12px">
    <div class="k">插话概率：<b id="pval">${Math.round((c.chat_probability||0)*100)}%</b>（100%=每条都回；拖完松手即保存）</div>
@@ -1665,7 +1665,7 @@ async function vDevCtrl(){
   <div class="k" style="margin-bottom:6px">触发方式</div>
   <label style="display:block;margin:4px 0"><input type="radio" name="fltmode" value="auto" ${(window._flow.trigger_mode||'auto')==='auto'?'checked':''}> 自主判断（默认）<span class="k">：机器人自己判断当前对话是否在要求操作本机文件（关键词+意图规则，拿不准时用一次极小模型判定）</span></label>
   <label style="display:block;margin:4px 0"><input type="radio" name="fltmode" value="keyword" ${window._flow.trigger_mode==='keyword'?'checked':''}> 仅关键词触发<span class="k">：只有消息包含下列关键词才发起授权</span></label>
-  <div style="margin-top:8px"><div class="k" style="margin-bottom:4px">触发关键词（逗号分隔；两种模式下都会先匹配）</div>
+  <div style="margin-top:8px"><div class="k" style="margin-bottom:4px">触发关键词（中英文逗号/顿号/空格分隔均可；两种模式下都会先匹配）</div>
   <input id="flkw" value="${esc((window._flow.keywords||[]).join(', '))}" style="width:100%"></div>
   <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">
    <label class="master"><input type="checkbox" id="fltuse" ${(window._flow.use_custom_text!==false)?'checked':''} onchange="flTextToggle(this.checked)">
@@ -1940,7 +1940,7 @@ async function vSettings(){
  <div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">用户黑名单<span class="badge b-bad">最高优先级 · 一律无视</span></div>
   <div class="k">命中名单的 QQ 号：群聊、私聊、@机器人、关键词、戳一戳<b>全部不响应</b>，消息不进入机器人记忆，改动即时生效。优先级高于一切白名单与回复模式。</div>
   <div style="margin-top:8px;display:flex;gap:8px">
-   <input id="bladd" placeholder="输入要拉黑的 QQ 号后回车" style="flex:1" onkeydown="if(event.key==='Enter')blAdd()">
+   <input id="bladd" placeholder="QQ 号（支持批量：中英文逗号/顿号/空格/换行分隔），回车拉黑" style="flex:1" onkeydown="if(event.key==='Enter')blAdd()">
    <button class="act" style="margin:0" onclick="blAdd()">拉黑</button></div>
   <div style="margin-top:8px">${(c.user_blacklist||[]).length?((c.user_blacklist||[]).map((x,i)=>'<div class="row"><span class="no">'+(i+1)+'.</span><span class="mono" style="flex:1">'+esc(String(x))+'</span><button class="act ghost" style="margin:0" onclick="blDel('+i+')">移出</button></div>').join('')):'<div class="k">名单为空</div>'}</div></div>
 
@@ -2095,12 +2095,17 @@ async function qqLockToggle(on){
 
 async function blList(){const c=await api('/api/app-config').catch(()=>({}));return c.user_blacklist||[]}
 async function blAdd(){
- const inp=document.getElementById('bladd');const v=String(inp.value||'').trim();
- if(!v){return}
- if(!/^\d{5,12}$/.test(v)){toast('QQ 号格式不对',false);return}
+ const inp=document.getElementById('bladd');
+ const raw=String(inp.value||'').trim();
+ if(!raw){return}
+ // 批量+全角兼容：中英文逗号/顿号/空格/换行分隔都可（一次粘贴多个号）
+ const items=[...new Set(raw.split(/[,，、\s]+/).map(x=>x.trim()).filter(Boolean))];
+ const bad=items.find(x=>!/^\d{5,12}$/.test(x));
+ if(bad){toast('「'+bad+'」不是合法 QQ 号（5-12 位数字）',false);return}
  const cur=await blList();
- if(cur.indexOf(v)>=0){toast('已在黑名单里',false);return}
- const r=await saveKVLoad('/api/app-config',{user_blacklist:cur.concat([v])},'已拉黑 '+v+'（即时生效，所有场景不再响应）');
+ const fresh=items.filter(x=>cur.indexOf(x)<0);
+ if(!fresh.length){toast('都在黑名单里了');return}
+ const r=await saveKVLoad('/api/app-config',{user_blacklist:cur.concat(fresh)},'已拉黑 '+fresh.join('、')+'（即时生效，所有场景不再响应）');
  if(r.ok!==false&&inp)inp.value=''}
 async function blDel(i){
  const cur=await blList();const v=cur[i];
@@ -2644,14 +2649,14 @@ function biliPageHtml(d,p){
    tg('share_bili_owner','主动给主人分享','开启后按下面的 UID 发站内私信')+
     '<div class="'+(sh.share_bili_owner?'':'dimmed')+'" style="display:flex;gap:8px;margin:4px 0 8px;align-items:center"><input id="pbiliuid" value="'+esc(String(ownerUid))+'" placeholder="主人的 B 站 UID" style="width:170px" onchange="pbUidSave()"></div>'+
    tg('share_bili_others','主动给其他人分享','开启后按下面填的 UID 一起发（想清楚再开：对方会收到机器人的安利）')+
-    '<div class="'+(sh.share_bili_others?'':'dimmed')+'" style="margin:4px 0 8px"><input id="pshbiliuids" value="'+esc(String(sh.bili_uids||''))+'" placeholder="其他 B 站 UID，逗号分隔" style="width:100%" onchange="biliShareSave(\'share_bili_uids\',\'pshbiliuids\')"></div>'+
+    '<div class="'+(sh.share_bili_others?'':'dimmed')+'" style="margin:4px 0 8px"><input id="pshbiliuids" value="'+esc(String(sh.bili_uids||''))+'" placeholder="其他 B 站 UID（中英文逗号、顿号、空格分隔均可）" style="width:100%" onchange="biliShareSave(\'share_bili_uids\',\'pshbiliuids\')"></div>'+
   '<div class="k" style="margin:10px 0 2px;font-weight:600">通过 QQ 私信分享</div>'+
    tg('share_qq_owner','主动给主人分享','开启后发 QQ 私信给主人（用设置里的主人 QQ 号，无需填写）')+
    tg('share_qq_others','主动给其他人分享','开启后按下面填的 QQ 号一起发')+
-    '<div class="'+(sh.share_qq_others?'':'dimmed')+'" style="margin:4px 0 8px"><input id="pshqqu" value="'+esc(String(sh.qq_users||''))+'" placeholder="其他 QQ 号，逗号分隔" style="width:100%" onchange="biliShareSave(\'share_qq_users\',\'pshqqu\')"></div>'+
+    '<div class="'+(sh.share_qq_others?'':'dimmed')+'" style="margin:4px 0 8px"><input id="pshqqu" value="'+esc(String(sh.qq_users||''))+'" placeholder="其他 QQ 号（中英文逗号、顿号、空格分隔均可）" style="width:100%" onchange="biliShareSave(\'share_qq_users\',\'pshqqu\')"></div>'+
   '<div class="k" style="margin:10px 0 2px;font-weight:600">主动分享到 QQ 群</div>'+
    tg('share_qq_group','主动发到群里','开启后按下面的群号发（发群请确认该群欢迎机器人闲聊）')+
-    '<div class="'+(sh.share_qq_group?'':'dimmed')+'" style="display:flex;gap:8px;margin:4px 0 8px;align-items:center"><input id="pshqqg" value="'+esc(String(sh.qq_groups||''))+'" placeholder="群号，逗号分隔，默认留空" style="flex:1" onchange="biliShareSave(\'share_qq_groups\',\'pshqqg\')"><button class="act ghost" style="margin:0;flex:none" onclick="biliImportGroups()">从白名单群导入</button></div>'+
+    '<div class="'+(sh.share_qq_group?'':'dimmed')+'" style="display:flex;gap:8px;margin:4px 0 8px;align-items:center"><input id="pshqqg" value="'+esc(String(sh.qq_groups||''))+'" placeholder="群号（中英文逗号、顿号、空格分隔均可；留空=默认）" style="flex:1" onchange="biliShareSave(\'share_qq_groups\',\'pshqqg\')"><button class="act ghost" style="margin:0;flex:none" onclick="biliImportGroups()">从白名单群导入</button></div>'+
   '</div>'+
  '</div>'+
  (brief?'<div class="card"><div class="k">最近刷到的见闻（会自然出现在她的聊天里）</div>'+brief+'</div>':'');
@@ -3193,7 +3198,7 @@ function vVoiceCards(m,g){
  +'<label><input type="radio" name="vmode" value="always" '+(mode==='always'?'checked':'')+'> 所有回复都用语音</label>'
  +'<label><input type="radio" name="vmode" value="mixed" '+(mode==='mixed'?'checked':'')+'> 触发词必语音，其余按概率</label></div>'
  +'<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">'
- +'<input id="v-kw" value="'+esc(kw)+'" placeholder="触发词，用、分隔（如：念一下、发语音）" style="flex:1;min-width:220px">'
+ +'<input id="v-kw" value="'+esc(kw)+'" placeholder="触发词（中英文逗号、顿号、空格分隔均可；如：念一下、发语音）" style="flex:1;min-width:220px">'
  +'<label class="k">语音概率 <input id="v-prob" type="number" min="0" max="100" step="5" value="'+esc(String(Math.round((c.prob||0)*100)))+'" style="width:64px"> %</label><span class="k">（触发词必语音；其余消息按此概率语音回复）</span></div>'
  +'<div style="margin-top:10px"><button class="act" style="margin:0" onclick="voiceSave()">保存设置</button><span class="k" id="v-ok" style="margin-left:8px"></span></div></div>'
  +provCard
@@ -3430,7 +3435,7 @@ async function vStickers(){
  <div class="card">
  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
   <select id="stpool">${sel}</select>
-  <input id="sttags" placeholder="标签，逗号分隔" style="width:180px">
+  <input id="sttags" placeholder="标签（中英文逗号、顿号、空格分隔均可）" style="width:180px">
   <input id="stdesc" placeholder="描述" style="width:160px">
   <label style="margin:0"><input type="file" id="stfile" accept=".jpg,.jpeg,.png,.gif,.webp,.bmp" multiple></label>
   <button class="act" style="margin:0" onclick="uploadStickers()">上传到当前库</button>
@@ -3475,7 +3480,7 @@ async function editSticker(id,pool){
  const it=(r.items||[]).find(x=>x.id===id);if(!it)return;
  const desc=await dlgPrompt({title:'编辑表情 · 备注',body:'备注（给机器人的使用提示，可留空）：\n例如：对方难过时发的安慰图 / 胜利嘲讽专用',value:it.desc||'',okText:'下一步'});
  if(desc===null)return;
- const tagsStr=await dlgPrompt({title:'编辑表情 · 标签',body:'标签（逗号分隔，点取消=保持原标签不动）：\n例如：开心,猫猫',value:(it.tags||[]).join(','),okText:'保存'});
+ const tagsStr=await dlgPrompt({title:'编辑表情 · 标签',body:'标签（中英文逗号/顿号/空格分隔均可；点取消=保持原标签不动）：\n例如：开心,猫猫',value:(it.tags||[]).join(','),okText:'保存'});
  const body={pool,id,desc:desc};
  if(tagsStr!==null)body.tags=tagsStr.split(/[,，]/).map(x=>x.trim()).filter(Boolean);
  const res=await api('/api/stickers/update',{method:'POST',headers:{'Content-Type':'application/json'},

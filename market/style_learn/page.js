@@ -21,9 +21,9 @@ async function styleLearnPage(d){
   +'<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--line)"><div class="k" style="margin-bottom:4px"><b>学习对象</b></div>'
   +'<label style="display:block;margin:4px 0"><input type="radio" name="slmode" value="all" '+(cfg.mode!=='members'&&cfg.mode!=='blacklist'?'checked':'')+' onchange="slMode()"> 全员——无差别学习所有群友</label>'
   +'<label style="display:block;margin:4px 0"><input type="radio" name="slmode" value="members" '+(cfg.mode==='members'?'checked':'')+' onchange="slMode()"> 仅指定成员（白名单）</label>'
-  +'<div id="sl-members-row" class="dimmed" style="margin:4px 0 4px 24px"><input id="sl-members" placeholder="QQ 号，逗号/换行分隔" style="width:100%" value="'+esc((cfg.members||[]).join(', '))+'"></div>'
+  +'<div id="sl-members-row" class="dimmed" style="margin:4px 0 4px 24px"><input id="sl-members" placeholder="QQ 号（中英文逗号、顿号、空格、换行分隔均可）" style="width:100%" value="'+esc((cfg.members||[]).join(', '))+'"></div>'
   +'<label style="display:block;margin:4px 0"><input type="radio" name="slmode" value="blacklist" '+(cfg.mode==='blacklist'?'checked':'')+' onchange="slMode()"> 黑名单之外——学习除这些人的所有群友</label>'
-  +'<div id="sl-blacklist-row" class="dimmed" style="margin:4px 0 4px 24px"><input id="sl-blacklist" placeholder="QQ 号，逗号/换行分隔（可排除群里的其他 AI）" style="width:100%" value="'+esc((cfg.blacklist||[]).join(', '))+'"></div></div>'
+  +'<div id="sl-blacklist-row" class="dimmed" style="margin:4px 0 4px 24px"><input id="sl-blacklist" placeholder="QQ 号（中英文逗号、顿号、空格、换行分隔均可）——可排除群里的其他 AI" style="width:100%" value="'+esc((cfg.blacklist||[]).join(', '))+'"></div></div>'
 
   +'<div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--line)"><div class="k" style="margin-bottom:4px"><b>喂给谁</b>（活人感参考注入谁的上下文——三选一）</div>'
   +'<label style="display:block;margin:4px 0"><input type="radio" name="slscope" value="all" '+(cfg.scope==='all'||!cfg.scope?'checked':'')+' onchange="slScope()"> <b>全部人设</b>——所有人格都收到这份参考（含以后新建的）</label>'
@@ -33,7 +33,7 @@ async function styleLearnPage(d){
   +'<div class="k" style="margin-top:4px">与「精简上下文」不冲突：这份参考属于人设/风格类提示（永不裁剪），精简只裁聊天历史和记忆；每个群最多注入一条且硬上限 320 字（约 190 token），不会撑爆上下文。</div></div>'
 
   +'<div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--line)"><div class="k" style="margin-bottom:4px"><b>学习群</b>（独立于群消息白名单——可以让机器人去没配置说话的群只旁观学习）</div>'
-  +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input id="sl-groups" placeholder="群号，逗号/换行分隔" style="flex:1;min-width:240px" value="'+esc((cfg.groups||[]).join(', '))+'">'
+  +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input id="sl-groups" placeholder="群号（中英文逗号、顿号、空格、换行分隔均可）" style="flex:1;min-width:240px" value="'+esc((cfg.groups||[]).join(', '))+'">'
   +'<button class="act ghost" style="margin:0" onclick="slSync()">从群消息白名单同步（合并）</button>'
   +'<button class="act ghost" style="margin:0" onclick="slSync(1)">整表替换为白名单</button></div>'
   +'<div class="k" id="sl-wlnames" style="margin-top:4px"></div>'
