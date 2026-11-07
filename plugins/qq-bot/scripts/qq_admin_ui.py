@@ -2472,6 +2472,9 @@ async function vPlugins(){
  const all=r.plugins||[];
  const mkt={};((mk&&mk.plugins)||[]).forEach(p=>{mkt[p.name]=p});
  window._mktMap=mkt;
+ const costs=await plCosts();
+ const totalPct=costs.reduce((s,c)=>s+c.pct,0);
+ const costByName={};costs.forEach(c=>{costByName[c.name]=c.pct});
  const cats=[...new Set(all.map(p=>p.category||'其他'))].sort();
  const shown=all.filter(p=>!_plCat||p.category===_plCat);
  // 语义化版本比较：市场版本必须【大于】已装版本才提示更新——
@@ -2493,7 +2496,7 @@ async function vPlugins(){
   const setBtn=(p.page||p.settings&&p.settings.length)?'<button class="act" style="margin:0;padding:5px 16px;font-size:12.5px" onclick="plPage(\''+esc(p.name)+'\')">⚙ 设置</button>':'';
   const uninstall=p.builtin?'':'<button class="act ghost danger" style="margin:0;padding:5px 12px;font-size:12px" onclick="plUninstall(\''+esc(p.name)+'\')">卸载</button>';
   const updbtn=hasUpd?'<button class="act" style="margin:0;padding:5px 12px;font-size:12px" onclick="mktInstall(\''+esc(p.name)+'\',true)">⬆ 更新到 v'+esc(m.version)+'</button>':'';
-  return '<div class="card" style="margin-bottom:12px;cursor:pointer" onclick="if(!event.target.closest(\'button,label,input\'))plPage(\''+esc(p.name)+'\')"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b style="font-size:14px">'+esc(p.title||p.name)+'</b>'+(p.version?'<span class="badge" style="background:var(--tint);color:var(--dim)">v'+esc(p.version)+'</span>':'')+'<span class="badge" style="background:var(--tint);color:var(--dim)">'+esc(p.category||'其他')+'</span>'+(p.builtin?'<span class="badge" style="background:var(--tint);color:var(--dim)">内置</span>':'<span class="badge" style="background:var(--tint);color:var(--dim)">已安装</span>')+'<span style="margin-left:auto;display:flex;gap:8px;align-items:center">'+updbtn+setBtn+uninstall+st+'</span></div>'+
+  return '<div class="card" style="margin-bottom:12px;cursor:pointer" onclick="if(!event.target.closest(\'button,label,input\'))plPage(\''+esc(p.name)+'\')"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b style="font-size:14px">'+esc(p.title||p.name)+'</b>'+(p.version?'<span class="badge" style="background:var(--tint);color:var(--dim)">v'+esc(p.version)+'</span>':'')+'<span class="badge" style="background:var(--tint);color:var(--dim)">'+esc(p.category||'其他')+'</span>'+(p.builtin?'<span class="badge" style="background:var(--tint);color:var(--dim)">内置</span>':'<span class="badge" style="background:var(--tint);color:var(--dim)">已安装</span>')+(costByName[p.name]?plCostBadge(costByName[p.name]):'')+'<span style="margin-left:auto;display:flex;gap:8px;align-items:center">'+updbtn+setBtn+uninstall+st+'</span></div>'+
    '<div class="k" style="margin-top:6px">'+esc(p.description||'')+'</div>'+
    '<div class="k" style="margin-top:6px;opacity:.7">点「⚙ 设置」或本卡片进入该插件的专属设置页 →</div></div>';
  }).join('');
@@ -2503,10 +2506,31 @@ async function vPlugins(){
  +'<div class="k" style="margin-top:4px">已装过该插件的会在升级时自动停用（配置共用，「语音消息」页里所有设置原样生效），可在下方直接卸载残留文件。</div></div>')+
  '<div style="display:flex;gap:8px;margin-bottom:14px"><button class="act" style="margin:0" onclick="plTab(\'mine\')">我的插件</button><button class="act ghost" style="margin:0" onclick="plTab(\'market\')">🌐 插件市场</button><span style="flex:1"></span><button class="act ghost" style="margin:0" onclick="plInstall()">从 zip 安装…</button></div>'+
  (cats.length>1?plCatBar(cats,_plCat,'plCatSel'):'')+
+ (totalPct>0?'<div class="card" style="margin-bottom:12px"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b>消耗总览</b>'+plCostBadge(totalPct)+'<span class="k">按启用插件各自声明的估算口径汇总；点开插件卡片可看单项明细与口径说明</span></div></div>':'')+
  (shown.length?'<div style="margin-top:4px">'+rows+'</div>':'<div class="card">该分类暂无插件</div>');
 }
 function plCatSel(c){_plCat=c;load()}
 function plTab(t){_plTab=t;load()}
+/* 插件消耗预估（可选声明）：对启用的插件并发调其 cost route 取 {"pct":数字}，
+   汇总成「预计消耗 +N%」。route 调失败/未声明/停用的不计入；任何异常静默
+   （消耗徽标是辅助信息，绝不能影响插件列表本身）。 */
+async function plCosts(){
+ try{
+  const r=await api('/api/plugins').catch(()=>({plugins:[]}));
+  const cands=(r.plugins||[]).filter(p=>p.enabled&&p.cost_route);
+  if(!cands.length)return [];
+  const vals=await Promise.all(cands.map(p=>
+   api('/api/plugins/call',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({name:p.name,method:p.cost_route,args:{}})})
+    .then(v=>({name:p.name,title:p.title||p.name,pct:parseFloat((v&&v.pct)||0)||0}))
+    .catch(()=>null)));
+  return vals.filter(v=>v&&v.pct>0);
+ }catch(e){return []}
+}
+function plCostBadge(total){
+ const n=total.toFixed(1).replace(/\\.0$/,'');
+ return '<span class="badge" style="background:#fff4e0;color:#b25e09" title="按各插件声明的估算口径汇总（相对典型上下文约 4.5k token/条回复的增幅）；仅统计启用中的插件，可在各插件设置页查看明细">预计消耗 +'+n+'%</span>';
+}
 async function vMarket(){
  $('#view').innerHTML=head('插件市场')+'<div style="display:flex;gap:8px;margin-bottom:14px"><button class="act ghost" style="margin:0" onclick="plTab(\'mine\')">← 我的插件</button><button class="act" style="margin:0">🌐 插件市场</button></div><div id="mktbody" class="card">正在拉取市场清单…</div>';
  const r=await api('/api/plugins/market').catch(e=>({ok:false,error:'请求失败'}));
@@ -2557,7 +2581,15 @@ async function plPage(name){
  let data={};
  if(p.page&&p.page.data){data=await api(p.page.data).catch(()=>({}))}
  const fn=p.page?window[p.page.js]:null;
- $('#view').innerHTML=head('插件 · '+(p.title||name))+'<div style="margin-top:10px"><button class="act ghost" onclick="goTab(\'plugins\')">← 返回插件列表</button></div><div id="plpage" style="margin-top:12px"></div>';
+ // 消耗徽标（可选）：详情页头部显示该插件自己的估算
+ let costBadge='';
+ if(p.enabled&&p.cost_route){
+  const v=await api('/api/plugins/call',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({name:name,method:p.cost_route,args:{}})}).catch(()=>null);
+  const pct=parseFloat((v&&v.pct)||0)||0;
+  if(pct>0)costBadge=plCostBadge(pct);
+ }
+ $('#view').innerHTML=head('插件 · '+(p.title||name)+'  '+costBadge)+'<div style="margin-top:10px"><button class="act ghost" onclick="goTab(\'plugins\')">← 返回插件列表</button></div><div id="plpage" style="margin-top:12px"></div>';
  // 专属页结构：①插件自带 page（登录等专属界面）②声明式 settings 卡（任何插件都有）
  // 插件页契约（硬规矩）：page 函数必须是同步纯函数——接收预取 data、返回 HTML
  // 字符串；禁止自写 #view（会冲掉宿主注入的「← 返回插件列表」按钮与页面头）。
@@ -4236,7 +4268,10 @@ class UiHandler(BaseHTTPRequestHandler):
                             "settings": mf.get("settings") or [],
                             "values": values,
                             "page": mf.get("page") or None,
-                            "page_js": os.path.isfile(os.path.join(str(pdir), "page.js"))})
+                            "page_js": os.path.isfile(os.path.join(str(pdir), "page.js")),
+                            # 消耗预估（可选）：manifest 声明 cost_estimate.route
+                            # → 前端对启用插件调该 route 取 {"pct": 数字}
+                            "cost_route": (mf.get("cost_estimate") or {}).get("route") or ""})
             return self._reply(200, {"ok": True, "plugins": out})
         if u.path == "/api/daily-summaries":
             # 分天存储的日报+热点历史（daily_summaries/<date>.json）
