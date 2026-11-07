@@ -443,6 +443,15 @@ class DaemonClient:
     # 时间的开头绝不自然语言；裸 "21:05 +分隔+还有内容" 也是元数据回显。
     # 整条恰好只是时间（"21:05"）保留——那是对方问时间的正当回答。
     _BARE_TIME_RE = re.compile(r"^\s*\d{1,2}[:：]\d{2}[\s,，、:：-]+")
+    # 句中报时泄漏（用户实测"话中间把时间标记漏出来"）：只认
+    # "都/到/已经+钟点+了"的报时句式（"都22点05了还不睡"）——那是模型在
+    # 复述注入的当前时间；约时间的说法（"咱们22点见"）不带"了"，不受影响。
+    _MID_CLOCK_RE = re.compile(
+        r"(?:都|到|已经)?\s*\d{1,2}\s*[:：]\s*\d{2}\s*分?\s*了"
+        r"|(?:都|到|已经)?\s*\d{1,2}\s*点\s*(?:\d{1,2}\s*分?|半|一刻|三刻)\s*了")
+    _DIRECT_ANSWER_RE = re.compile(
+        r"^[^，。！？,!?]{0,8}?(现在|目前|几点|时间|几点了|clock|time)"
+        r"[^，。！？,!?]{0,10}?$")
 
     @classmethod
     def _strip_time_prefix(cls, t):
@@ -464,6 +473,18 @@ class DaemonClient:
                 stripped = True
                 continue
             break
+        # 句中报时清洗：整条非"直接时间回答"才动；剥掉"都/到+钟点+了"
+        # 后剩余实质内容 ≥3 字才采用（"到22点05了该睡了"→"该睡了"）；
+        # 剩不下什么的（"22点了"本身就是答语）保留原句，不误伤问时回答。
+        if not cls._DIRECT_ANSWER_RE.match(s.strip()):
+            new = cls._MID_CLOCK_RE.sub("", s)
+            if new != s:
+                rest = re.sub(r"[\s，。！？,!?、了呢吧啊呀哦~]", "", new)
+                if len(rest) >= 3:
+                    # 清掉剥完钟点留下的空括号/多余空格（"[21:05]了"→"[]"→""）
+                    new = re.sub(r"\[\s*\]|【\s*】|（\s*）|\(\s*\)", " ", new)
+                    s = re.sub(r"[ \t]{2,}", " ", new).strip()
+                    stripped = True
         return (s.lstrip(" ,，、:：-") if stripped else s), stripped
 
     def observe(self, since=0):
@@ -937,6 +958,14 @@ def vision_mode():
     cfg = load_json_const(REPLY_CONFIG_PATH, {})
     v = str(cfg.get("vision_mode") or "all")
     return v if v in ("all", "all_prob", "ask") else "all"
+
+
+# 上下文明确提及"这张图"的表达（all_prob 档跳过概率骰子的依据）：
+# 对话正在等图的信息，此时沉默等于答非所问。
+_IMG_REF_RE = re.compile(
+    r"这[张个幅附]?[图片]|看[一这]?.{0,3}(图|张|照片)|如图|图[里中上]"
+    r"|截图|发[的个一]?图|什[么么]图|哪[个张]图|photo|pic|图呢"
+    r"|这是什么|这是啥|这是什么梗|这是什么意思")
 
 
 def vision_prob():
@@ -4616,7 +4645,10 @@ def process(daemon, msg):
             out("AGENT_VISION_FALLBACK %r" % e)
             reply = None
     # all_prob 档：图是真看了，回不回按单独概率掷点；看图失败/概率未中 →
-    # 沉默跳过（绝不走纯文本链瞎猜图的内容——那正是"选民证被当结婚证"的来源）
+    # 沉默跳过（绝不走纯文本链瞎猜图的内容——那正是"选民证被当结婚证"的来源）。
+    # 例外（用户实测反馈"图和上下文有关也应主动看"）：消息文字或所回复的上文
+    # 明确提到这张图（这图/这张/看看这个/如图/图里/截图…）→ 图已识完内容，
+    # 对话正在等图的信息，骰子跳过——此时沉默等于答非所问。
     if _vision_go and _vmode == "all_prob" and \
             msg.get("trigger_reason") not in ("at", "reply_to_bot"):
         if reply is None:
@@ -4625,13 +4657,19 @@ def process(daemon, msg):
             out("AGENT_VISION_FAIL_SKIP msg_id=%s chat=%s/%s (all_prob 看图失败，不猜)"
                 % (msg["id"], msg["chat_type"], msg["chat_id"]))
             return
-        import random as _rnd
-        if _rnd.random() >= vision_prob():
-            daemon.ack([msg["id"]])
-            RT.count_processed()
-            out("AGENT_VISION_PROB_SKIP msg_id=%s chat=%s/%s (all_prob 概率未中 %.0f%%)"
-                % (msg["id"], msg["chat_type"], msg["chat_id"], vision_prob() * 100))
-            return
+        _img_referenced = _IMG_REF_RE.search(
+            str(msg.get("text") or "") + " " + str(msg.get("reply_text") or ""))
+        if _img_referenced:
+            out("AGENT_VISION_REF msg_id=%s chat=%s/%s (上下文提及图，跳过概率)"
+                % (msg["id"], msg["chat_type"], msg["chat_id"]))
+        else:
+            import random as _rnd
+            if _rnd.random() >= vision_prob():
+                daemon.ack([msg["id"]])
+                RT.count_processed()
+                out("AGENT_VISION_PROB_SKIP msg_id=%s chat=%s/%s (all_prob 概率未中 %.0f%%)"
+                    % (msg["id"], msg["chat_type"], msg["chat_id"], vision_prob() * 100))
+                return
     if reply is None:
         last_err = None
         for _ in range(2):
