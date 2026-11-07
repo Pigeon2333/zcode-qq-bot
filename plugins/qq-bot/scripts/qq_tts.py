@@ -829,6 +829,19 @@ def _kw_hit(msg, keywords):
     return any(k and k in text for k in keywords)
 
 
+# 语音意图正则：消息明确要求发语音就触发（不管关键词配置怎么写）。
+# 关键词子串匹配会漏口语变体（实测「发个语音给我听听」不含「发语音」——
+# 差一个"个"字），模型又未必自发 [语音] 标记，双重 miss = 用户要语音
+# 只得到文字。意图正则是确定性兜底，覆盖口语变体。
+_VOICE_ASK_RE = re.compile(
+    r"[发来录给想要点整].{0,3}语音|语音.{0,6}(给我|听听|呢|呀)|"
+    r"说给我听|念给我听|读给我听|用语音|来段语音|语音回复|听你说话|"
+    r"发条语音|语音消息")
+# 否定语境排除：「不用语音/别发语音/语音就好（不用真发）」不是请求
+_VOICE_NO_RE = re.compile(
+    r"(不用|别|不要|无需|不想|免).{0,4}语音|语音.{0,4}(免了|就好|就行|算了)")
+
+
 def should_voice(msg):
     """本条回复是否用语音发送。配置由插件设置页维护（reply_config.voice）。"""
     cfg = voice_cfg()
@@ -841,6 +854,11 @@ def should_voice(msg):
         return False
     mode = str(cfg.get("mode") or "keyword")     # always / keyword / mixed
     if mode == "always":
+        return True
+    # 语音意图兜底：对方明确要求语音就必发（各模式一致；场景开关仍生效）；
+    # 否定语境（不用语音/别发语音）不算请求
+    _t = str(msg.get("text") or "")
+    if _VOICE_ASK_RE.search(_t) and not _VOICE_NO_RE.search(_t):
         return True
     kws = [str(x).strip() for x in (cfg.get("keywords") or []) if str(x).strip()]
     if mode == "keyword":
