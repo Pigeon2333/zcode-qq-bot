@@ -587,7 +587,7 @@ def extract_message_info(segments, self_id):
             _cq_re = _re_img.compile(r"CQ:[a-zA-Z_]+\[[^\]]*\]")
             for mu in _img_re.findall(rc):
                 info["image_urls"].append(mu.strip())
-            info["reply_text"] = _cq_re.sub("", rc).strip()[:80]
+            info["reply_text"] = _cq_re.sub("", rc).strip()[:120]
             info["reply_id"] = str(d.get("id", ""))
         elif t == "face":
             info["face_count"] += 1
@@ -892,6 +892,31 @@ class Daemon:
                         reply_to = {"sender_name": rec.get("sender_name"),
                                     "text": str(rec.get("text") or "")[:60]}
                         break
+                # 兜底①：NapCat 的 reply 段常不带 content 预览、本地历史又只
+                # 覆盖最近消息——引用较早/跨天的消息时 reply_text 为空，
+                # 模型就"看不到"被引内容（用户实测：引用翻旧账它装瞎）。
+                # 用 OneBot get_msg 按 id 现查（本地 NapCat 毫秒级；失败静默）。
+                if not info.get("reply_text") or not reply_to:
+                    try:
+                        g = self._call_action(
+                            "get_msg", {"message_id": info["reply_id"]})
+                        if isinstance(g, dict):
+                            segs = g.get("message") or []
+                            if isinstance(segs, str):
+                                txt = re.sub(r"CQ:[a-zA-Z_]+\[[^\]]*\]", "", segs).strip()
+                            else:
+                                txt = " ".join(
+                                    str(s.get("text") or "")
+                                    for s in segs if isinstance(s, dict)
+                                    and s.get("type") == "text").strip()
+                            if txt:
+                                info["reply_text"] = txt[:120]
+                            if not reply_to:
+                                sn = ((g.get("sender") or {}).get("nickname")
+                                      or g.get("sender_name") or "")
+                                reply_to = {"sender_name": sn, "text": txt[:60]}
+                    except Exception:
+                        pass
             item = {
                 "id": self.seq,
                 "ts": ev.get("time") or now_ts(),
@@ -1603,8 +1628,36 @@ class Daemon:
                     if job.get("done") is not None:
                         job["done"].set()
 
+    # 出站控制标记拦截器：模型内部协议词（拆分/安静/跳过/等待/工具/记忆等）
+    # 偶尔以变体形态（单括号、混空格）残留进正文——用户方案：应用层统一
+    # 剔除标记本身保留正文（不拦整条）。这里是所有发送路径的最后一道网
+    # （正常回复/追聊/主动消息/插件/devctrl/MCP 全都走 _send_one）。
+    _MARK_LEAK_RE = re.compile(
+        r"\[{1,2}\s*(?:SPLIT|QUIET(?::\d{1,3})?|SKIP|WAIT|CMD|MCP"
+        r"|语音|连线|STICKER[:：]?\s*\d{0,4}|STICKER)\s*\]{1,2}"
+        r"|\[\s*(?:画|DRAW)\s*[:：][^\]\n]{0,300}\]"
+        r"|\[\s*发到群\s*[:：][^\]\n]{0,300}\]"
+        r"|\[\s*记忆(\s*@)?[^\]\n]{0,60}\]"
+        r"|\[\s*忘\s*[:：][^\]\n]{0,60}\]", re.I)
+
+    @classmethod
+    def _strip_control_marks(cls, text):
+        """剔除残留控制标记（剥完空了返回 None=跳过该条）。"""
+        t = cls._MARK_LEAK_RE.sub("", str(text or ""))
+        t = re.sub(r"[ \t]{2,}", " ", t).strip(" \n，。,.")
+        return (t or None)
+
     def _send_one(self, job):
         chat_type, chat_id = job["chat_type"], job["chat_id"]
+        # 拦截器兜底：agent 侧各标记都有泄漏剥离，但追聊/主动/插件/MCP 等
+        # 路径不完全走 parse_reply——这里统一再剥一遍（图片/语音的附字也剥）
+        if job.get("text") and isinstance(job["text"], str):
+            _clean = self._strip_control_marks(job["text"])
+            if _clean is None and job["kind"] == "text":
+                out("SEND_MARK_ONLY_DROP chat=%s/%s（整条只剩控制标记，丢弃）"
+                    % (chat_type, chat_id))
+                return
+            job["text"] = _clean if _clean is not None else ""
         # 私聊文字回复前显示「对方正在输入…」（拟真；仅文字，语音/图片不发）
         if chat_type == "private" and job["kind"] == "text":
             try:

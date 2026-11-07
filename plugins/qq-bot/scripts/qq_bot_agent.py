@@ -2704,6 +2704,9 @@ def build_messages(daemon, msg, ctx_k=32):
 
     rt = msg.get("reply_to") or None
     rt_text = str(msg.get("reply_text") or "").strip()
+    # 被引原文注入（带说话人——"谁说的"和"说了什么"同样重要）
+    rt_note = ("\n【被引用的原文】%s：%s" % (
+        (rt or {}).get("sender_name") or "对方", rt_text)) if rt_text else ""
     if msg["chat_type"] == "group":
         speaker = "%s(QQ:%s)" % (msg["sender_name"], msg["sender_id"])
         # 被@列表：at_me 时保留其他人名（群友让她"跟XX聊"需知道XX是谁）
@@ -2723,8 +2726,7 @@ def build_messages(daemon, msg, ctx_k=32):
             lead = "%s 说：" % speaker
         content = ("【当前场景：群聊（群号 %s，群内所有人可见你发的消息）| 最近对话】\n%s\n%s\n\n【现在】%s%s%s" % (
             msg["chat_name"], hist_block, hist_note, lead,
-            msg["text"] or "（发了一张图/表情）",
-            ("\n【被引用的原文】" + rt_text) if rt_text else ""))
+            msg["text"] or "（发了一张图/表情）", rt_note))
     else:
         # 私聊：告诉模型它在哪些群（否则它以为"活动范围只有当前聊天"，
         # 主人让它去群里说话时会拒绝）；群名拉不到时只给群号
@@ -2735,8 +2737,7 @@ def build_messages(daemon, msg, ctx_k=32):
         content = ("【当前场景：私聊（一对一对话，仅对方可见）| 最近对话】\n%s\n%s\n\n"
                    "【你在这些群（群号（群名））：%s】\n\n【现在】对方(QQ:%s)对你说：%s%s"
                    % (hist_block, hist_note, groups_line, msg["sender_id"],
-                      msg["text"] or "（发了一张图/表情）",
-                      ("\n【被引用的原文】" + rt_text) if rt_text else ""))
+                      msg["text"] or "（发了一张图/表情）", rt_note))
 
     guard_on = abuse_guard_enabled()
     head_line = "你是QQ群里的AI机器人。"
@@ -2863,6 +2864,12 @@ def build_messages(daemon, msg, ctx_k=32):
         "只记重要且长期有意义的——个人近况、约定、重要事件；日常闲聊、临时话题、"
         "热梗玩梗、你自己刚说的话、你刚做的总结都不要记；同一信息只记一次；"
         "没有值得记的就不输出\n"
+        "- 记忆只准记对方亲口明确说出的事实。你的推测和感觉（\"他应该喜欢…\"）、"
+        "工具/搜索查到的内容、你自己说过的话，一律不许记成关于对方的事——"
+        "记错一条比漏记十条严重得多（张冠李戴会被当成说谎）。\n"
+        "- 对方纠正或否认某条记忆（\"我没说过\"\"你记错了\"）时：立即输出"
+        "[忘:关键词] 撤销那条错误记忆（关键词取记忆里最有辨识度的几个字），"
+        "并停止再引用它；这是纠错通道，别不好意思用。\n"
         "- 记忆标记是你唯一的长期记忆来源，必须主动使用：对方告诉你名字/职业/喜好/"
         "近况/约定时，当天回复的末尾单独一行输出对应标记（先写完聊天正文再输出标记）。"
         "漏标等于把对方说过的话忘掉——这是硬性失职，不是可选项\n"
@@ -2900,13 +2907,17 @@ def build_messages(daemon, msg, ctx_k=32):
              {"role": "user", "content": content}], active_name)
 
 
-SPLIT_RE = re.compile(r"\[\[SPLIT\]\]")
+# 拆分标记：宽容变体（模型偶尔打成单括号 [SPLIT]/混空格——此前单括号
+# 变体既不拆分也不剥离，原样发出去就是 "[SPLIT]" 泄漏事故的根因）
+SPLIT_RE = re.compile(r"\[{1,2}\s*SPLIT\s*\]{1,2}", re.I)
 STICKER_RE = re.compile(r"\[STICKER[:：]\s*(\d{1,4})\]")   # 兼容中文冒号/空格变体
 _STICKER_LEAK_RE = re.compile(r"\[STICKER[^\]\n]{0,24}\]")  # 兜底：任何残留标记整段剥掉
 MEMO_RE = re.compile(r"^\s*\[记忆\]\s*(.+)$", re.M)
 # [记忆] / [记忆@目标]（目标=QQ号；模型可能混入昵称如 [记忆@陨星CClt(QQ:702215860)]）。
 # 任意位置匹配：提取入库并从正文剥离，防泄漏给用户。
 MEMO_ANY_RE = re.compile(r"\[记忆(@[^\]\n]{0,60})?\]\s*([^\[\n]{1,100})")
+# [忘:关键词]：记忆纠错通道（模型发现自己记错→撤销匹配关键词的记忆行）
+FORGET_RE = re.compile(r"\[\s*忘\s*[:：]\s*([^\]\[]{1,60})\]")
 _MEMO_QQ_RE = re.compile(r"(\d{5,12})")
 # 兜底：MEMO_ANY_RE 要求"标记+内容"成对，模型偶尔输出裸标记当引用用
 # （如回复尾部跟 [记忆@QQ号] 不带内容）——那种形态不匹配，整段残留就
@@ -4332,6 +4343,44 @@ def persist_memo(scope, cid, text):
     out("AGENT_MEMO scope=%s id=%s text=%.40s" % (scope, cid, text))
 
 
+def _memory_forget(daemon, msg, keywords):
+    """记忆纠错（仅主人）：删掉文本含关键词的记忆行（物理重写流水文件）。
+    模型记错张冠李戴时，主人一句"我没说过"即可让它自愈——错误记忆继续
+    存在只会被反复引用，越描越黑（草莓糖事故）。"""
+    if not keywords or not is_owner(msg):
+        return 0
+    kws = [k.strip().lower() for k in keywords if len(k.strip()) >= 2][:3]
+    if not kws:
+        return 0
+    try:
+        with open(MEMORY_STREAM_PATH, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        keep, dropped = [], 0
+        for ln in lines:
+            try:
+                rec = json.loads(ln)
+                txt = str(rec.get("text") or "").lower()
+            except ValueError:
+                keep.append(ln)
+                continue
+            if txt and any(k in txt for k in kws):
+                dropped += 1
+                continue
+            keep.append(ln)
+        if dropped:
+            import tempfile as _tf
+            _fd, _tp = _tf.mkstemp(dir=os.path.dirname(MEMORY_STREAM_PATH) or ".",
+                                    prefix="memfg_", suffix=".tmp")
+            with os.fdopen(_fd, "w", encoding="utf-8") as f:
+                f.writelines(keep)
+            os.replace(_tp, MEMORY_STREAM_PATH)
+        out("AGENT_MEM_FORGET dropped=%d kw=%s" % (dropped, ",".join(kws)))
+        return dropped
+    except Exception as e:
+        out("AGENT_MEM_FORGET_FAIL %r" % e)
+        return 0
+
+
 def _emit_memo(daemon, msg, memo):
     """路由一条记忆 memo=(target|None, text)：显式 QQ → contact；
     否则内容命中历史昵称 → 那个人；否则当前会话。永远只写一条。"""
@@ -4791,6 +4840,14 @@ def process(daemon, msg):
     # [语音] 标记：模型结合语境自主决定用语音回复（与关键词触发互补）
     voice_ask = _VOICE_MARK_RE.search(reply) is not None
     reply = _VOICE_MARK_ANY_RE.sub("", reply)
+    # [忘:关键词]：模型自纠错记忆（仅主人路径生效）——先剥再发，绝不外漏
+    _forgot = FORGET_RE.findall(reply)
+    if _forgot:
+        reply = FORGET_RE.sub("", reply)
+        try:
+            _memory_forget(daemon, msg, _forgot)
+        except Exception as _fe:
+            out("AGENT_MEM_FORGET_ERR %r" % _fe)
     # [MCP] 动作行：主人 + MCP 桥启用 → 专用工具循环；否则剥离（绝不泄漏协议词）
     if _MCP_ACT_ANY_RE.search(reply):
         if owner and _mcp_tools_doc():
