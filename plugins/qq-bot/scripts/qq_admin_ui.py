@@ -6304,6 +6304,11 @@ class UiHandler(BaseHTTPRequestHandler):
                 "custom_base", "custom_key", "custom_model", "custom_voice",
                 "gsv_voice_id", "gsv_ref_wav", "gsv_prompt_text",
                 "gsv_prompt_lang", "gsv_port", "gsv_dir") if k in v})
+            # 试听显式指定了克隆音色/手动 ref → 挂起微调模型优先级
+            # （否则 gsv_tts 的 ft 优先会压过所点 ref，放出微调模型的声音——
+            # 预览必须「点谁听谁」；不带音色键的试听保持真实生效配置）
+            if "gsv_voice_id" in v or "gsv_ref_wav" in v:
+                cfg["gsv_ft_model"] = ""
             # 微调模型试听：gsv_ft_ref = 模型 id → 用该模型自带 ref.wav 作参考
             ft_ref = str(v.get("gsv_ft_ref") or "").strip()
             if ft_ref:
