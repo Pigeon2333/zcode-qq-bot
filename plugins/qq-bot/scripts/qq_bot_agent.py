@@ -167,12 +167,50 @@ COOLDOWN_SECONDS = 300
 BOT_NAME = "藤原妹紅"
 
 
+_MEM_MAX_BYTES = 8 * 1024 * 1024   # 记忆流水轮转阈值（8MB；超出保最近 4MB）
+_MEM_ROTATE_OK = {"ts": 0.0}        # 上次轮转时刻（1 小时节流，避免频繁重写）
+
+
 def _append_memory(rec):
     """追加一条记忆到 JSONL：每次即开即闭（不用常驻 FileHandler——
-    长期持有句柄会挡住管理 UI 对该文件的原子重写，Windows 下 replace 被拒）。"""
+    长期持有句柄会挡住管理 UI 对该文件的原子重写，Windows 下 replace 被拒）。
+    P2：超 8MB 自动轮转保最近一半（memory_snippets 每消息全量扫描，
+    无限增长会线性拖慢；8MB≈3 万条，日常几年也够，真超了也只留新一半）。"""
     try:
         with open(MEMORY_STREAM_PATH, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        now = time.time()
+        if now - _MEM_ROTATE_OK["ts"] > 3600 and \
+                os.path.getsize(MEMORY_STREAM_PATH) > _MEM_MAX_BYTES:
+            _MEM_ROTATE_OK["ts"] = now
+            try:
+                with open(MEMORY_STREAM_PATH, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+                keep = _MEM_MAX_BYTES // 2
+                kept, size = [], 0
+                for ln in reversed(lines):
+                    size += len(ln.encode("utf-8"))
+                    kept.append(ln)
+                    if size >= keep:
+                        break
+                kept.reverse()
+                import tempfile as _tf
+                _fd, _tpath = _tf.mkstemp(
+                    dir=os.path.dirname(MEMORY_STREAM_PATH) or ".",
+                    prefix="memrot_", suffix=".tmp")
+                try:
+                    with os.fdopen(_fd, "w", encoding="utf-8") as f:
+                        f.writelines(kept)
+                    os.replace(_tpath, MEMORY_STREAM_PATH)
+                except OSError:
+                    try:
+                        os.unlink(_tpath)
+                    except OSError:
+                        pass
+                    raise
+                out("MEMORY_ROTATED %d->%d lines" % (len(lines), len(kept)))
+            except OSError as e:
+                out("MEMORY_ROTATE_FAIL %r" % e)
     except OSError:
         pass
 
@@ -301,7 +339,11 @@ def _cooldown_sec(detail):
 def write_const(path, text):
     """原子写常量路径文件（tmp + os.replace）。
     首次写入时父目录可能尚不存在（如 stickers/）→ 先自建；tmp 带进程号
-    避免固定名被杀软反复盯上；replace 撞读句柄（Windows 不共享删除权）重试。"""
+    避免固定名被杀软反复盯上；replace 撞读句柄（Windows 不共享删除权）重试。
+    写完失效 load_json_const 的签名缓存（同进程保存→回显不读旧值）。"""
+    with _JSON_CACHE_LOCK:
+        _JSON_CACHE["sig"].pop(path, None)
+        _JSON_CACHE["val"].pop(path, None)
     p = pathlib.Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_name("%s.ag.%d.tmp" % (p.name, os.getpid()))
@@ -324,12 +366,41 @@ def read_const(path, default=""):
         return default
 
 
+_JSON_CACHE = {"sig": {}, "val": {}}   # mtime+size 签名缓存（P2：主循环每轮
+                                       # 重读 4-5 个 JSON→磁盘 IO 热点；命中签名
+                                       # 才真正读盘。daemon 侧 file_sig 同范式）
+_JSON_CACHE_LOCK = threading.Lock()
+
+
 def load_json_const(path, default):
+    """带 mtime+size 签名缓存的 JSON 读取：文件没变直接返回缓存值。
+    注意：写侧（write_const/直接 json.dump）后同进程读取会拿到旧缓存——
+    立即读回的场景（保存→回显）改用 load_json_const(path, default, force=True)
+    或直接读盘。"""
+    force = False
+    if isinstance(default, dict) and default.pop("__force__", False):
+        force = True
+    try:
+        st = os.stat(path)
+        sig = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        with _JSON_CACHE_LOCK:
+            _JSON_CACHE["sig"].pop(path, None)
+            _JSON_CACHE["val"].pop(path, None)
+        return default
+    with _JSON_CACHE_LOCK:
+        if not force and _JSON_CACHE["sig"].get(path) == sig:
+            v = _JSON_CACHE["val"].get(path)
+            return v if v is not None else default
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
     except (OSError, ValueError):
         return default
+    with _JSON_CACHE_LOCK:
+        _JSON_CACHE["sig"][path] = sig
+        _JSON_CACHE["val"][path] = data
+    return data
 
 
 class DaemonClient:
@@ -760,19 +831,25 @@ def call_glm_with_fallback(messages, text_ctx=""):
 
 
 def memory_snippets(scope, cid, limit=12):
-    """从记忆流水（常量路径 JSONL）取该对象最近记忆。"""
+    """从记忆流水（常量路径 JSONL）取该对象最近记忆。
+    P2：倒序读 + 攒够 limit*3 即停——新记忆在文件尾，顺序全量扫描
+    （文件随年月无限增长）在活跃对象上白读 99% 的旧行。"""
     items = []
     try:
         with open(MEMORY_STREAM_PATH, "r", encoding="utf-8") as f:
-            for ln in f:
-                try:
-                    rec = json.loads(ln)
-                except ValueError:
-                    continue
-                if rec.get("scope") == scope and str(rec.get("id")) == str(cid):
-                    items.append("[%s] %s" % (
-                        time.strftime("%m-%d", time.localtime(rec.get("ts", 0))),
-                        str(rec.get("text", ""))[:150]))
+            lines = f.readlines()
+        for ln in reversed(lines):
+            try:
+                rec = json.loads(ln)
+            except ValueError:
+                continue
+            if rec.get("scope") == scope and str(rec.get("id")) == str(cid):
+                items.append("[%s] %s" % (
+                    time.strftime("%m-%d", time.localtime(rec.get("ts", 0))),
+                    str(rec.get("text", ""))[:150]))
+                if len(items) >= limit * 3:
+                    break
+        items.reverse()
     except OSError:
         return []
     return items[-limit:]

@@ -512,6 +512,9 @@ def _post_audio_speech(base_url, key, model, voice, text, timeout=90,
     u = urllib.parse.urlsplit(base + "audio/speech")
     if u.scheme != "https" or not u.hostname:
         raise RuntimeError("接口地址非法（必须 https 域名）")
+    # SSRF 防护（P2 修复）：与模型管理同标准——拒绝环回/私网/保留地址
+    if not C.safe_api_host(u.hostname):
+        raise RuntimeError("接口地址主机被拒绝（禁止内网/环回地址）")
     payload = {"model": str(model), "input": str(text), "voice": str(voice)}
     if audio_format:
         payload["response_format"] = audio_format
