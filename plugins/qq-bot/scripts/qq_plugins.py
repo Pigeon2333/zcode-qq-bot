@@ -94,6 +94,16 @@ class PluginAPI:
         return daemon.send_record(chat_type, str(chat_id), file_path,
                                   text=str(text or ""))
 
+    def get_voice_file(self, message_id):
+        """把一条消息里的语音转成 mp3 落到数据目录，返回 {ok, path}。
+        需要 0.5.14+ 宿主（旧版返回可读错误）。翻唱/语音理解类插件的数据入口。
+        转码由 NapCat 完成，插件无需自己解 silk/amr。"""
+        daemon = self._host.daemon
+        fn = getattr(daemon, "get_voice_file", None) if daemon else None
+        if fn is None:
+            return {"ok": False, "error": "需要 0.5.14 及以上版本的应用"}
+        return fn(str(message_id or ""))
+
     def set_qq_status(self, kind):
         """设置机器人 QQ 在线状态（0.5.11+ 宿主）。
         kind：online 在线 / away 离开 / busy 忙碌 / dnd 请勿打扰 / qme Q我吧 /

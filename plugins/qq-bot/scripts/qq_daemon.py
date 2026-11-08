@@ -614,6 +614,10 @@ def extract_message_info(segments, self_id):
             texts.append("[表情包]")
         elif t == "record":
             info["record"] = True
+            # 语音段带 file（NapCat 文件标识）与 url（可直接下载）——
+            # 唱歌翻唱类插件需要拿到用户唱的原始音频（此前只立 flag 全丢）
+            info["record_file"] = str(d.get("file") or "")[:300]
+            info["record_url"] = str(d.get("url") or "")[:500]
     info["text"] = "".join(texts).strip()
     return info
 
@@ -923,6 +927,9 @@ class Daemon:
                 "reply_text": info.get("reply_text", ""),
                 "face_count": info["face_count"],
                 "has_record": info["record"],
+                "reply_id": info.get("reply_id", ""),
+                "record_file": info.get("record_file", ""),
+                "record_url": info.get("record_url", ""),
                 "forward_lines": info.get("forward_lines") or [],
             }
             if rt_fetch_id:
@@ -1496,6 +1503,49 @@ class Daemon:
 
     # ---------- 发送 ----------
 
+    def get_voice_file(self, message_id):
+        """把任意一条消息里的语音转成 mp3 落到数据目录，返回本地路径。
+        链路：get_msg 取消息段 → record 段 file 标识 → OneBot get_record
+        转码（NapCat 自带 silk/amr 解码，比我们自己解靠谱）→ 拷进
+        cache/records/。翻唱/听写类插件的数据入口（0.5.14+ 宿主能力）。"""
+        rid = str(message_id or "").strip()
+        if not rid:
+            return {"ok": False, "error": "缺 message_id"}
+        try:
+            g = self._call_action("get_msg", {"message_id": rid}, timeout=10)
+        except Exception as e:
+            return {"ok": False, "error": "get_msg 失败：%s" % e}
+        segs = (g or {}).get("message") or []
+        rec_file = ""
+        if isinstance(segs, str):
+            m = re.search(r"file=([^,\]]+)", segs)
+            rec_file = m.group(1) if m else ""
+        else:
+            for s in segs:
+                if isinstance(s, dict) and s.get("type") == "record":
+                    rec_file = str(((s.get("data") or {}).get("file")) or "")
+                    if not rec_file:
+                        rec_file = str((s.get("data") or {}).get("file") or "")
+                    break
+        if not rec_file:
+            return {"ok": False, "error": "这条消息里没有语音"}
+        try:
+            r = self._call_action(
+                "get_record", {"file": rec_file, "out_format": "mp3"}, timeout=30)
+        except Exception as e:
+            return {"ok": False, "error": "get_record 失败：%s" % e}
+        src = str((r or {}).get("file") or (r or {}).get("path") or "")
+        if src and os.path.isfile(src):
+            import shutil
+            dst_dir = os.path.join(DATA_DIR, "cache", "records")
+            os.makedirs(dst_dir, exist_ok=True)
+            dst = os.path.join(dst_dir, "rec_%s.mp3" % rid[-14:].replace("\\", "_"))
+            shutil.copyfile(src, dst)
+            return {"ok": True, "path": dst}
+        return {"ok": False,
+                "error": "语音转码失败（NapCat get_record 未返回文件；"
+                         "确认 NapCat 版本支持 get_record）"}
+
     def send_record(self, chat_type, chat_id, file_path, text=""):
         """发送语音文件（mp3/wav/silk；NapCat 收到后自动转 QQ 语音格式）。
         文件必须位于数据目录 cache/tts 之下（TTS 引擎输出目录）。
@@ -1945,6 +1995,9 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
             d = self.daemon
             if u.path == "/ack":
                 return self._reply(200, {"ok": True, **d.inbox_ack(body.get("ids", []))})
+            if u.path == "/record-file":
+                # 语音转文件（插件能力）：{message_id} → {ok, path=mp3 本地路径}
+                return self._reply(200, d.get_voice_file(str(body.get("message_id") or "")))
             if u.path == "/quiet":
                 # 安静模式：{minutes: 0} 取消；正数=持续 N 分钟（@/回复仍响应）
                 try:

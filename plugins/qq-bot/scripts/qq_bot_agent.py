@@ -497,6 +497,16 @@ class DaemonClient:
             pass
         return None, []
 
+    def get_voice_file(self, message_id):
+        """把一条消息里的语音转成 mp3 落盘并返回路径（翻唱类插件数据入口）。
+        需要 daemon 0.5.14+；旧版 daemon 返回 404 时给可读错误。"""
+        try:
+            return self._request(
+                "POST", "/record-file",
+                body={"message_id": str(message_id or "")}, timeout=45) or {}
+        except Exception as e:
+            return {"ok": False, "error": "语音取件失败（需要 0.5.14+ 应用）：%s" % e}
+
     def send(self, chat_type, chat_id, texts, reply_message_id=None):
         if isinstance(texts, str):
             texts = [texts]

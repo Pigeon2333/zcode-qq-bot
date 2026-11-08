@@ -1,0 +1,13 @@
+{
+  "name": "sing_svc",
+  "version": "1.0.0",
+  "title": "AI翻唱（歌声转换）",
+  "category": "娱乐",
+  "default_enabled": false,
+  "description": "你唱一句，她用指定的音色重新唱给你：引用一条语音消息说「翻唱」（可指定音色「用XX唱」），机器人提取人声 → so-vits-svc 歌声转换 → 以目标音色发回语音。需要：① 本机安装 so-vits-svc 4.1 整合包（页内引导，推理走本机 GPU 零 API 成本）；② 导入社区歌声模型（G*.pth+config.json，页内一键导入）。清唱干声效果最好；转换约半分钟。需要应用 0.5.14 及以上版本。",
+  "page": {
+    "js": "singPage",
+    "data": ""
+  },
+  "settings": []
+}
