@@ -612,6 +612,30 @@ def extract_message_info(segments, self_id):
             if mu:
                 info["image_urls"].append(mu)
             texts.append("[表情包]")
+        elif t == "json":
+            # QQ 小程序/链接卡片（B站分享、音乐、各类小程序）——此前没有
+            # 分支直接整段丢弃，机器人完全"看不见"这类消息（用户实测
+            # B站分享视频无反应）。解析内层卡片 JSON 提取标题/描述/跳转
+            # 链接拼成可读文字；B站卡片的链接含 BV 号（bili 插件也能吃上）。
+            try:
+                inner = json.loads(str(d.get("data") or "{}"))
+                title = desc = jump = ""
+                meta = inner.get("meta") or {}
+                for _k, mv in (meta.items() if isinstance(meta, dict) else []):
+                    if not isinstance(mv, dict):
+                        continue
+                    title = title or str(mv.get("title") or "")
+                    desc = desc or str(mv.get("desc") or "")
+                    jump = jump or str(mv.get("jump_url") or mv.get("jumpUrl")
+                                       or mv.get("qqdocurl") or "")
+                brief = "[分享] " + "——".join(
+                    x for x in (title[:60], desc[:80]) if x)
+                if jump:
+                    brief += "（链接：%s）" % jump[:160]
+                if brief.strip("[] 分享——（）链接："):
+                    texts.append(brief)
+            except (ValueError, TypeError):
+                texts.append("[卡片消息]")
         elif t == "record":
             info["record"] = True
             # 语音段带 file（NapCat 文件标识）与 url（可直接下载）——
