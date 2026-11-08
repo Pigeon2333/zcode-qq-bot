@@ -953,16 +953,65 @@ function runlogRows(d){
  }).join('');
 }
 async function vRunlog(){
+ if(_runlogSrc==='ctx')return vCtxLog();
  const d=await api('/api/runlog?src='+_runlogSrc).catch(()=>({lines:[]}));
  const chip=(v,label)=>'<button class="badge" style="border:1px solid var(--line2);background:'+(_runlogSrc===v?'var(--nav-on)':'var(--card)')+';color:' +(_runlogSrc===v?'var(--fg-strong)':'var(--dim)')+';cursor:pointer;font-size:12px" onclick="setRunlogSrc(\''+v+'\')">'+label+'</button>';
  $('#view').innerHTML=head('机器人运行全日志：消息管道（daemon）、自治大脑（agent）、启动任务实时汇聚；NapCat 页签含 WebUi Token 与登录二维码')+
  '<div class="card"><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:10px">'
- +chip('all','全部')+chip('daemon','消息管道')+chip('agent','自治大脑')+chip('boot','启动任务')+chip('napcat','NapCat')
+ +chip('all','全部')+chip('daemon','消息管道')+chip('agent','自治大脑')+chip('boot','启动任务')+chip('napcat','NapCat')+chip('ctx','上下文注入')
  +'<button class="act ghost" style="margin:0;margin-left:8px" onclick="logsExport()">导出诊断包…</button>'
  +'<span class="k" style="margin-left:auto">3 秒自动刷新·跟随滚动</span></div>'
  +'<div style="max-height:calc(100vh - 210px);overflow-y:auto" id="logbox">'+(runlogRows(d)||'<div class="k" style="padding:20px 0">暂无日志</div>')+'</div></div>';
  const box=$('#logbox');if(box)box.scrollTop=box.scrollHeight;
  if(!_runlogTimer)_runlogTimer=setInterval(refreshRunlog,3000);
+}
+let _ctxDetail=null;
+async function vCtxLog(){
+ const d=await api('/api/runlog?src=agent').catch(()=>({lines:[]}));
+ const c=await api('/api/ctx-log').catch(()=>({ok:false,items:[]}));
+ const items=(c&&c.items)||[];
+ const on=(c&&c.enabled!==false);
+ const rows=items.slice().reverse().map(x=>'<div style="display:flex;gap:8px;align-items:center;padding:7px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;cursor:pointer" onclick="ctxDetail('+x.ts+')">'
+  +'<span class="k mono" style="flex:none">'+new Date(x.ts*1000).toLocaleTimeString()+'</span>'
+  +'<span class="k" style="flex:none">'+esc(x.chat||'')+'</span>'
+  +'<b style="flex:none;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(x.sender||'')+'</b>'
+  +'<span class="k" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(x.text||'')+'</span>'
+  +'<span class="badge" style="background:var(--tint);color:var(--dim);flex:none">'+(x.roles||[]).length+' 段</span>'
+  +'<span class="k" style="flex:none">'+(x.persona?esc(x.persona):'')+'</span></div>').join('');
+ $('#view').innerHTML=head('上下文注入日志：每条触发消息发给模型的完整上下文（system=人设/记忆/安全/工具 + 历史 + 当前消息）——排查"她为什么会这么回"')+
+ '<div class="card"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">'
+ +'<label class="k" style="display:flex;gap:5px;align-items:center"><input type="checkbox" '+(on?'checked':'')+' onchange="ctxToggle(this.checked)"> 记录注入上下文</label>'
+ +'<button class="act ghost danger" style="margin:0;padding:4px 12px;font-size:12px" onclick="ctxClear()">清空全部记录</button>'
+ +'<button class="act ghost" style="margin:0;padding:4px 12px;font-size:12px" onclick="vCtxLog()">刷新</button>'
+ +'<span class="k" style="margin-left:auto">最近 120 条·点击任意一条看完整注入</span></div>'
+ +(rows||'<div class="k" style="padding:20px 0">'+((c&&c.ok)?'暂无记录（机器人回复消息后出现）':'加载失败')+'</div>')+'</div>'
+ +'<div id="ctxdetail"></div>';
+}
+async function ctxToggle(on){
+ const r=await saveKV('/api/ctx-log-toggle',{on:on});
+ toast(on?'已开启记录（新消息起）':'已停止记录（已有记录保留）');
+}
+async function ctxClear(){
+ if(!await dlgConfirm({title:'清空上下文注入记录？',body:'含人设/记忆/聊天内容，只清本机日志，不影响任何功能。',okText:'清空'}))return;
+ const r=await api('/api/ctx-log-clear',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>({ok:false}));
+ if(!r||r.ok===false){toast('清空失败',false);return}
+ toast('已清空');vCtxLog();
+}
+async function ctxDetail(ts){
+ const r=await api('/api/ctx-log-detail?i='+ts).catch(()=>({ok:false}));
+ const box=document.getElementById('ctxdetail');
+ if(!box)return;
+ if(!r||r.ok===false){box.innerHTML='<div class="card">记录读取失败：'+esc((r&&r.error)||'')+'</div>';return}
+ const rec=r.rec||{};
+ const segs=(rec.roles||[]).map((m,i)=>{
+  const c=typeof m.content==='string'?m.content:JSON.stringify(m.content);
+  return '<div style="margin-bottom:10px"><div style="display:flex;gap:8px;align-items:center;margin-bottom:4px">'
+   +'<span class="badge" style="background:'+(m.role==='system'?'var(--btn)':'var(--tint)')+';color:'+(m.role==='system'?'var(--btn-fg)':'var(--dim)')+';flex:none">'+esc(m.role||'?')+'</span>'
+   +'<span class="k" style="flex:none">'+c.length+' 字</span></div>'
+   +'<textarea readonly rows="'+Math.min(18,Math.max(4,Math.ceil(c.length/90)))+'" style="width:100%;font-size:12px;font-family:monospace;resize:vertical;white-space:pre-wrap">'+esc(c)+'</textarea></div>';
+ }).join('');
+ box.innerHTML='<div class="card"><div class="k" style="margin-bottom:8px"><b>完整注入</b> · '+new Date(rec.ts*1000).toLocaleString()+' · '+esc(rec.chat||'')+' · '+esc(rec.sender||'')+'：'+esc(rec.text||'')+'</div>'+segs+'</div>';
+ box.scrollIntoView({behavior:'smooth'});
 }
 async function logsExport(){
  const d=await api('/api/pick-dir',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:'选择日志导出位置'})}).catch(()=>({dir:''}));
@@ -4687,6 +4736,46 @@ class UiHandler(BaseHTTPRequestHandler):
                 src = "all"
             return self._reply(200, {"ok": True, "src": src,
                                      "lines": collect_runlog(src, tail=250)})
+        if u.path == "/api/ctx-log":
+            # 上下文注入日志（每条触发消息的完整 messages；排查"她怎么想出这话的"）
+            import glob as _glob
+            ctx_dir = os.path.join(DATA_DIR, "logs", "context")
+            files = sorted(_glob.glob(os.path.join(ctx_dir, "ctx_*.jsonl")),
+                           reverse=True)[:3]
+            items = []
+            for fp in files:
+                try:
+                    with open(fp, "r", encoding="utf-8") as f:
+                        for ln in f.readlines()[-120:]:
+                            try:
+                                items.append(json.loads(ln))
+                            except ValueError:
+                                continue
+                except OSError:
+                    continue
+            items = items[-120:]
+            rc = load_json_const(REPLY_CONFIG_PATH, {})
+            return self._reply(200, {"ok": True, "items": items,
+                                     "enabled": rc.get("context_log_enabled", True)})
+        if u.path == "/api/ctx-log-detail":
+            # 单条上下文全文（?i=<ts>）
+            import glob as _glob
+            want_ts = str(q.get("i") or "")
+            ctx_dir = os.path.join(DATA_DIR, "logs", "context")
+            for fp in sorted(_glob.glob(os.path.join(ctx_dir, "ctx_*.jsonl")),
+                             reverse=True)[:3]:
+                try:
+                    with open(fp, "r", encoding="utf-8") as f:
+                        for ln in f:
+                            try:
+                                rec = json.loads(ln)
+                            except ValueError:
+                                continue
+                            if str(rec.get("ts")) == want_ts:
+                                return self._reply(200, {"ok": True, "rec": rec})
+                except OSError:
+                    continue
+            return self._reply(200, {"ok": False, "error": "记录不存在或已滚动清理"})
         if u.path == "/api/config":
             cfg = load_json_const(MODEL_CHAIN_PATH, {"models": [], "paused": False})
             return self._reply(200, {"ok": True, "models": cfg.get("models", []),
@@ -5488,6 +5577,25 @@ class UiHandler(BaseHTTPRequestHandler):
                 _M.save_mcp_cfg(cfg)
                 return self._reply(200, {"ok": True})
             return self._reply(200, {"ok": False, "error": "只能删除自定义服务"})
+        if u.path == "/api/ctx-log-clear":
+            # 清空全部上下文日志（写空文件而非删目录——agent 侧还在追加写）
+            import glob as _glob
+            import pathlib as _pl
+            ctx_dir = os.path.join(DATA_DIR, "logs", "context")
+            n = 0
+            for fp in _glob.glob(os.path.join(ctx_dir, "ctx_*.jsonl")):
+                try:
+                    _pl.Path(fp).write_text("", encoding="utf-8")
+                    n += 1
+                except OSError:
+                    pass
+            return self._reply(200, {"ok": True, "cleared": n})
+        if u.path == "/api/ctx-log-toggle":
+            data = load_json_const(REPLY_CONFIG_PATH, {})
+            data["context_log_enabled"] = bool(body.get("on"))
+            write_const(REPLY_CONFIG_PATH, data)
+            return self._reply(200, {"ok": True,
+                                     "enabled": data["context_log_enabled"]})
         if u.path == "/api/shutdown":
             # 桌面应用退出时用：先回执再退出本进程（daemon/agent 是独立进程，不受影响）
             self._reply(200, {"ok": True, "bye": True})
