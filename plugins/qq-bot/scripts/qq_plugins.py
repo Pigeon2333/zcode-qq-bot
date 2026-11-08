@@ -94,6 +94,17 @@ class PluginAPI:
         return daemon.send_record(chat_type, str(chat_id), file_path,
                                   text=str(text or ""))
 
+    def set_msg_reaction(self, message_id, emoji_id, on=True):
+        """给一条消息打/撤表情回应（0.5.14+ 宿主）。
+        message_id=OneBot 消息 id；emoji_id=QQ 系统表情编号字符串
+        （129=赞 4=得意 2=可爱 5=流泪 8=睡 63=吃瓜 74=狗头…）。"""
+        daemon = self._host.daemon
+        fn = getattr(daemon, "set_msg_reaction", None) if daemon else None
+        if fn is None:
+            return {"ok": False, "error": "需要 0.5.14 及以上版本的应用"}
+        ok, detail = fn(str(message_id or ""), str(emoji_id or ""), bool(on))
+        return {"ok": bool(ok), "detail": detail}
+
     def get_voice_file(self, message_id):
         """把一条消息里的语音转成 mp3 落到数据目录，返回 {ok, path}。
         需要 0.5.14+ 宿主（旧版返回可读错误）。翻唱/语音理解类插件的数据入口。

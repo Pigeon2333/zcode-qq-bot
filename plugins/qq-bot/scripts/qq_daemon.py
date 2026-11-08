@@ -1463,6 +1463,27 @@ class Daemon:
                 % (json.dumps(kind), json.dumps(detail, ensure_ascii=False)))
             return False, detail
 
+    def set_msg_reaction(self, message_id, emoji_id, on=True):
+        """给一条消息打/撤表情回应（NapCat 扩展动作 set_msg_emoji_like；
+        2026-11 实弹验证：打→get_emoji_likes 可见→撤，全通）。
+        message_id 为 OneBot 消息 id；emoji_id 为 QQ 系统表情编号字符串
+        （129=赞 4=得意 2=可爱 5=流泪 8=睡 63=吃瓜 74=狗头…）。
+        返回 (ok, detail)。"""
+        try:
+            self._call_action("set_msg_emoji_like", {
+                "message_id": int(message_id),
+                "emoji_id": str(emoji_id),
+                "set": bool(on),
+            }, timeout=8)
+            out("AGENT_LOG {\"msg\": \"msg_reaction\", \"mid\": %s, \"emoji\": %s, \"on\": %s}"
+                % (json.dumps(str(message_id)), json.dumps(str(emoji_id)), json.dumps(bool(on))))
+            return True, "ok"
+        except Exception as e:
+            detail = repr(e)[:120]
+            out("AGENT_LOG {\"msg\": \"msg_reaction_fail\", \"mid\": %s, \"detail\": %s}"
+                % (json.dumps(str(message_id)), json.dumps(detail, ensure_ascii=False)))
+            return False, detail
+
     def set_typing(self, user_id, on=True):
         """在对方聊天栏显示/取消「对方正在输入…」（NapCat set_input_status；
         仅私聊会话有效，群聊无此显示）。on=False 取消。返回 (ok, detail)。"""
@@ -1998,6 +2019,13 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
             if u.path == "/record-file":
                 # 语音转文件（插件能力）：{message_id} → {ok, path=mp3 本地路径}
                 return self._reply(200, d.get_voice_file(str(body.get("message_id") or "")))
+            if u.path == "/msg-reaction":
+                # 表情回应（agent [回应:id] 标记与插件用）：{message_id, emoji_id, on}
+                ok, detail = d.set_msg_reaction(
+                    str(body.get("message_id") or ""),
+                    str(body.get("emoji_id") or ""),
+                    bool(body.get("on", True)))
+                return self._reply(200, {"ok": ok, "detail": detail})
             if u.path == "/quiet":
                 # 安静模式：{minutes: 0} 取消；正数=持续 N 分钟（@/回复仍响应）
                 try:
