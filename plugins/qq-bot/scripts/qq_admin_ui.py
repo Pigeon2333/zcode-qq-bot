@@ -2263,7 +2263,7 @@ function mcpAddDlg(){
   +'<div class="k" style="margin-top:6px">stdio 会在本机运行你填的命令——只添加信任来源的服务。</div></div>'
   +'<div id="mcpd-json" style="display:none">'
   +'<textarea id="mcpd-spec" rows="8" placeholder=\'粘贴完整服务配置（ZCode 格式直接用）：&#10;{"type":"stdio","command":"npx","args":["-y","@modelcontextprotocol/server-memory"],"env":{},"timeout":30000}&#10;或 {"type":"http","url":"https://…/mcp","headers":{"Authorization":"Bearer …"}}\' style="width:100%;resize:vertical;font-family:monospace;font-size:12px"></textarea>'
-  +'<div class="k" style="margin-top:4px">支持键：type / command / args / env（stdio）· url / headers（http、sse）· timeout（毫秒自动换算秒）· protocol。type 可省略（有 url 即 http）；streamable_http 自动按 http 处理。</div></div>';
+  +'<div class="k" style="margin-top:4px">三种粘法都行：① 整段 Claude Desktop 配置 {"mcpServers":{"名":{…}}}（可一次多个，名称可留空用配置里的键名，中文键自动转安全名）；② 单个服务 {type,command,args,env} 或 {type,url,headers}；③ type 可省略（有 url 即 http）；streamable_http 自动按 http 处理；timeout 毫秒自动换算秒。</div></div>';
  const m=_dlgBuild('添加 MCP 服务',body,false,'添加');
  const g=id=>m.querySelector('#'+id);
  let mode='form';
@@ -2307,7 +2307,13 @@ function mcpAddDlg(){
   const r=await api('/api/mcp/add-custom',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).catch(()=>({ok:false,error:'请求失败'}));
   if(!r||r.ok===false){toast('添加失败：'+((r&&r.error)||''),false);return}   // 失败不关窗，改完直接重按添加
   close();
-  toast('已添加「'+name+'」——测试连接后启用');
+  if(r.added&&r.added.length){
+   toast('已添加 '+r.added.length+' 个：'+r.added.join('、')
+    +((r.skipped&&r.skipped.length)?('（跳过：'+r.skipped.join('；')+'）'):'')
+    +'——测试连接后启用');
+  }else{
+   toast('已添加「'+name+'」——测试连接后启用');
+  }
   vMcp();
  };
  setTimeout(()=>{g('mcpd-name').focus()},30);
@@ -5290,28 +5296,23 @@ class UiHandler(BaseHTTPRequestHandler):
                         d[m.group(1).strip()[:64]] = m.group(2).strip()[:300]
                 return d
 
-            name = str(body.get("name") or "").strip()[:32]
-            if not _re.fullmatch(r"[A-Za-z0-9_\-.]{1,32}", name):
-                return self._reply(200, {"ok": False,
-                                         "error": "名称仅限 1-32 位字母/数字/-_."})
-            if any(s["name"] == name for s in _M.all_servers()):
-                return self._reply(200, {"ok": False, "error": "与现有服务重名"})
-            spec_obj = body.get("spec")
-            if isinstance(spec_obj, dict):
-                # ---- JSON 导入 ----
-                t = _M.norm_type(spec_obj.get("type"))
+            def _build_ent(sp):
+                """单个服务对象 → (ent, err)。type 缺省但有 url 按 http；
+                streamable_http 等别名经 norm_type 归一。"""
+                if not isinstance(sp, dict):
+                    return None, "配置需要是对象"
+                t = _M.norm_type(sp.get("type")) or (
+                    "http" if str(sp.get("url") or "").strip() else "")
                 if not t:
-                    return self._reply(200, {"ok": False,
-                                             "error": "不支持的传输类型 %r（支持 http（含 streamable_http）/ sse / stdio）"
-                                             % str(spec_obj.get("type") or "")[:40]})
+                    return None, ("不支持的传输类型 %r（支持 http（含 streamable_http）/ sse / stdio）"
+                                  % str(sp.get("type") or "")[:40])
                 ent = {"type": t}
                 if t == "stdio":
-                    cmd = str(spec_obj.get("command") or "").strip()[:200]
+                    cmd = str(sp.get("command") or "").strip()[:200]
                     if not cmd:
-                        return self._reply(200, {"ok": False,
-                                                 "error": "stdio 服务缺 command"})
+                        return None, "stdio 服务缺 command"
                     ent["command"] = cmd
-                    a = spec_obj.get("args")
+                    a = sp.get("args")
                     if isinstance(a, list):
                         ent["args"] = [str(x)[:200] for x in a][:32]
                     elif isinstance(a, str) and a.strip():
@@ -5319,23 +5320,81 @@ class UiHandler(BaseHTTPRequestHandler):
                             r'"[^"]*"|\S+', a.strip())][:32]
                     else:
                         ent["args"] = []
-                    if isinstance(spec_obj.get("env"), dict):
+                    if isinstance(sp.get("env"), dict):
                         ent["env"] = {str(k)[:64]: str(v)[:300]
-                                      for k, v in list(spec_obj["env"].items())[:32]}
+                                      for k, v in list(sp["env"].items())[:32]}
                 else:
-                    url = str(spec_obj.get("url") or "").strip()[:300]
+                    url = str(sp.get("url") or "").strip()[:300]
                     if not (url.startswith("http://") or url.startswith("https://")):
-                        return self._reply(200, {"ok": False,
-                                                 "error": "url 需以 http(s):// 开头"})
+                        return None, "url 需以 http(s):// 开头"
                     ent["url"] = url
-                    if isinstance(spec_obj.get("headers"), dict):
+                    if isinstance(sp.get("headers"), dict):
                         ent["headers"] = {str(k)[:64]: str(v)[:300]
-                                          for k, v in list(spec_obj["headers"].items())[:24]}
-                if spec_obj.get("timeout") is not None:
-                    ent["timeout"] = spec_obj["timeout"]
-                if spec_obj.get("protocol"):
-                    ent["protocol"] = spec_obj["protocol"]
-                ent = _norm_extras(ent)
+                                          for k, v in list(sp["headers"].items())[:24]}
+                if sp.get("timeout") is not None:
+                    ent["timeout"] = sp["timeout"]
+                if sp.get("protocol"):
+                    ent["protocol"] = sp["protocol"]
+                return _norm_extras(ent), ""
+
+            def _dup(nm):
+                return any(s["name"] == nm for s in _M.all_servers())
+
+            def _safe_name(k):
+                """服务名必须 ASCII（进 [MCP] 动作行协议）；中文键名转安全名。"""
+                s = "".join(ch for ch in str(k)
+                            if ch.isascii() and (ch.isalnum() or ch in "-_.")) \
+                    .strip("-_.")[:24]
+                import hashlib as _hl
+                base = s if _re.fullmatch(r"[A-Za-z0-9_\-.]{1,24}", s) \
+                    else ("mcp" + _hl.md5(str(k).encode("utf-8")).hexdigest()[:6])
+                nm, n = base, 2
+                while _dup(nm):
+                    nm = "%s-%d" % (base, n)
+                    n += 1
+                return nm
+
+            cfg = _M.mcp_cfg()
+            spec_obj = body.get("spec")
+            inner = spec_obj.get("mcpServers") if isinstance(spec_obj, dict) else None
+            if isinstance(inner, dict) and inner:
+                # ---- mcpServers 包装（Claude Desktop 配置整段粘贴，可一次多个）----
+                items = [(k, v) for k, v in inner.items()
+                         if isinstance(v, dict)][:12]
+                if not items:
+                    return self._reply(200, {"ok": False,
+                                             "error": "mcpServers 里没有有效的服务配置"})
+                typed = str(body.get("name") or "").strip()[:32]
+                added, skipped = [], []
+                for k, v in items:
+                    nm = typed if (len(items) == 1 and typed) else _safe_name(k)
+                    if not _re.fullmatch(r"[A-Za-z0-9_\-.]{1,32}", nm):
+                        skipped.append("%s：名称非法" % k); continue
+                    if _dup(nm):
+                        skipped.append("%s：与现有服务重名" % nm); continue
+                    ent, err = _build_ent(v)
+                    if err:
+                        skipped.append("%s：%s" % (str(k)[:24], err)); continue
+                    cfg["custom"][nm] = ent
+                    added.append(nm)
+                if not added:
+                    return self._reply(200, {"ok": False,
+                                             "error": ("；".join(skipped)[:300]
+                                                       or "没有可添加的服务")})
+                _M.save_mcp_cfg(cfg)
+                return self._reply(200, {"ok": True, "added": added,
+                                         "skipped": skipped[:6]})
+            name = str(body.get("name") or "").strip()[:32]
+            if not _re.fullmatch(r"[A-Za-z0-9_\-.]{1,32}", name):
+                return self._reply(200, {"ok": False,
+                                         "error": "名称仅限 1-32 位字母/数字/-_."})
+            if _dup(name):
+                return self._reply(200, {"ok": False, "error": "与现有服务重名"})
+            if isinstance(spec_obj, dict):
+                # ---- 单服务 JSON ----
+                ent, err = _build_ent(spec_obj)
+                if err:
+                    return self._reply(200, {"ok": False, "error": err})
             else:
                 # ---- 表单模式 ----
                 stype = _M.norm_type(body.get("type") or "http")
@@ -5372,7 +5431,6 @@ class UiHandler(BaseHTTPRequestHandler):
                 if body.get("protocol"):
                     ent["protocol"] = body.get("protocol")
                 ent = _norm_extras(ent)
-            cfg = _M.mcp_cfg()
             cfg["custom"][name] = ent
             _M.save_mcp_cfg(cfg)
             return self._reply(200, {"ok": True})
