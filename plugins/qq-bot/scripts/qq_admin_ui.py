@@ -955,19 +955,21 @@ function runlogRows(d){
 async function vRunlog(){
  if(_runlogSrc==='ctx')return vCtxLog();
  const d=await api('/api/runlog?src='+_runlogSrc).catch(()=>({lines:[]}));
- const chip=(v,label)=>'<button class="badge" style="border:1px solid var(--line2);background:'+(_runlogSrc===v?'var(--nav-on)':'var(--card)')+';color:' +(_runlogSrc===v?'var(--fg-strong)':'var(--dim)')+';cursor:pointer;font-size:12px" onclick="setRunlogSrc(\''+v+'\')">'+label+'</button>';
  $('#view').innerHTML=head('机器人运行全日志：消息管道（daemon）、自治大脑（agent）、启动任务实时汇聚；NapCat 页签含 WebUi Token 与登录二维码')+
- '<div class="card"><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:10px">'
- +chip('all','全部')+chip('daemon','消息管道')+chip('agent','自治大脑')+chip('boot','启动任务')+chip('napcat','NapCat')+chip('ctx','上下文注入')
- +'<button class="act ghost" style="margin:0;margin-left:8px" onclick="logsExport()">导出诊断包…</button>'
- +'<span class="k" style="margin-left:auto">3 秒自动刷新·跟随滚动</span></div>'
+ '<div class="card">'+_runlogChips()
+ +'<span class="k" style="margin:0 0 10px;display:block">3 秒自动刷新·跟随滚动</span>'
  +'<div style="max-height:calc(100vh - 210px);overflow-y:auto" id="logbox">'+(runlogRows(d)||'<div class="k" style="padding:20px 0">暂无日志</div>')+'</div></div>';
  const box=$('#logbox');if(box)box.scrollTop=box.scrollHeight;
  if(!_runlogTimer)_runlogTimer=setInterval(refreshRunlog,3000);
 }
 let _ctxDetail=null;
+function _runlogChips(){
+ const chip=(v,label)=>'<button class="badge" style="border:1px solid var(--line2);background:'+(_runlogSrc===v?'var(--nav-on)':'var(--card)')+';color:' +(_runlogSrc===v?'var(--fg-strong)':'var(--dim)')+';cursor:pointer;font-size:12px" onclick="setRunlogSrc(\''+v+'\')">'+label+'</button>';
+ return '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:10px">'
+  +chip('all','全部')+chip('daemon','消息管道')+chip('agent','自治大脑')+chip('boot','启动任务')+chip('napcat','NapCat')+chip('ctx','上下文注入')
+  +'<button class="act ghost" style="margin:0;margin-left:8px" onclick="logsExport()">导出诊断包…</button></div>';
+}
 async function vCtxLog(){
- const d=await api('/api/runlog?src=agent').catch(()=>({lines:[]}));
  const c=await api('/api/ctx-log').catch(()=>({ok:false,items:[]}));
  const items=(c&&c.items)||[];
  const on=(c&&c.enabled!==false);
@@ -979,7 +981,8 @@ async function vCtxLog(){
   +'<span class="badge" style="background:var(--tint);color:var(--dim);flex:none">'+(x.roles||[]).length+' 段</span>'
   +'<span class="k" style="flex:none">'+(x.persona?esc(x.persona):'')+'</span></div>').join('');
  $('#view').innerHTML=head('上下文注入日志：每条触发消息发给模型的完整上下文（system=人设/记忆/安全/工具 + 历史 + 当前消息）——排查"她为什么会这么回"')+
- '<div class="card"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">'
+ '<div class="card">'+_runlogChips()
+ +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">'
  +'<label class="k" style="display:flex;gap:5px;align-items:center"><input type="checkbox" '+(on?'checked':'')+' onchange="ctxToggle(this.checked)"> 记录注入上下文</label>'
  +'<button class="act ghost danger" style="margin:0;padding:4px 12px;font-size:12px" onclick="ctxClear()">清空全部记录</button>'
  +'<button class="act ghost" style="margin:0;padding:4px 12px;font-size:12px" onclick="vCtxLog()">刷新</button>'
