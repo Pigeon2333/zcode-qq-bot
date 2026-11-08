@@ -152,20 +152,21 @@ def _download(url, dst, label, attempts=6):
     """流式下载（http.client；1MB 块；进度写 _setup）。
     断点续传：hf-mirror 这类镜像会中途失速（实测 360MB 拉到一半 read 超时），
     .part 落盘保留，重试带 Range 从断点继续，成功才 rename 到目标。
-    写法合规：先校验 https 与公网 host；断点/目标路径走 pathlib 派生。"""
+    重定向：HF/hf-mirror 都是 302 → CDN（实测首个 bug：不跟随=永远失败），
+    逐跳跟随最多 5 次，每跳仍走 https+公网校验。
+    写法合规：断点/目标路径走 pathlib 派生。"""
     import ssl
     import urllib.parse
-    u = urllib.parse.urlsplit(url)
-    if u.scheme != "https" or not u.hostname:
-        raise RuntimeError("仅允许 https 下载源")
-    host = u.hostname.lower()
-    if host in ("localhost", "127.0.0.1", "0.0.0.0", "::1") \
-            or host.startswith("192.168.") or host.startswith("10.") \
-            or host.startswith("172.") or host == "metadata.google.internal":
-        raise RuntimeError("下载源必须是公网地址")
     os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
     p_dst = _pl.Path(dst)
     part = p_dst.with_name(p_dst.name + ".part")   # 断点文件（同目录同名 +.part）
+
+    def _public(u):
+        return u.scheme == "https" and u.hostname and \
+            u.hostname.lower() not in ("localhost", "127.0.0.1", "0.0.0.0", "::1",
+                                       "metadata.google.internal") \
+            and not u.hostname.lower().startswith(("192.168.", "10.", "172."))
+
     last_err = ""
     for _att in range(attempts):
         try:
@@ -173,15 +174,32 @@ def _download(url, dst, label, attempts=6):
             headers = {"User-Agent": "zcode-qq-bot"}
             if got:
                 headers["Range"] = "bytes=%d-" % got
-            ctx = ssl.create_default_context()
-            conn = http.client.HTTPSConnection(
-                u.hostname, u.port or 443, timeout=90, context=ctx)
-            path = u.path + (("?" + u.query) if u.query else "")
-            conn.request("GET", path, headers=headers)
-            r = conn.getresponse()
-            if r.status not in (200, 206):
-                conn.close()
-                raise RuntimeError("HTTP %d" % r.status)
+            cur = urllib.parse.urlsplit(url)
+            r = None
+            conn = None
+            for _hop in range(5):
+                if not _public(cur):
+                    raise RuntimeError("下载源必须是公网 https 地址")
+                ctx = ssl.create_default_context()
+                conn = http.client.HTTPSConnection(
+                    cur.hostname, cur.port or 443, timeout=90, context=ctx)
+                path = cur.path + (("?" + cur.query) if cur.query else "")
+                conn.request("GET", path, headers=headers)
+                r = conn.getresponse()
+                if r.status in (301, 302, 303, 307, 308):
+                    loc = r.getheader("Location") or ""
+                    r.read()
+                    conn.close()
+                    conn = None
+                    if not loc:
+                        raise RuntimeError("重定向缺 Location")
+                    cur = urllib.parse.urlsplit(
+                        loc if "://" in loc else
+                        (cur.scheme + "://" + cur.netloc + loc))
+                    continue
+                break
+            if r is None or r.status not in (200, 206):
+                raise RuntimeError("HTTP %s" % (getattr(r, "status", "?")))
             if r.status == 200:
                 got = 0          # 服务器不支持断点：重头
             clen = r.getheader("Content-Length") or "0"
@@ -199,14 +217,21 @@ def _download(url, dst, label, attempts=6):
                             msg="%s %d/%d MB%s" % (label, got // 1048576,
                                                    total // 1048576,
                                                    "（续传）" if _att else ""))
-            conn.close()
+            if conn:
+                conn.close()
             if total and got < total:
                 raise RuntimeError("提前断流 %d/%d" % (got, total))
             os.replace(str(part), dst)
             return got
         except Exception as e:
             last_err = str(e)
-            log("download attempt%d fail %s %r（保留断点）" % (_att + 1, url[:60], e))
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+            log("download attempt%d fail %s %r（保留断点 %s）"
+                % (_att + 1, url[:60], e, part.name))
             time.sleep(3)
     raise RuntimeError("%s 下载失败（已重试 %d 次）：%s" % (label, attempts, last_err[:120]))
 

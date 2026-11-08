@@ -17,7 +17,23 @@ import os
 import sys
 import threading
 import time
+import types
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# faiss 哨兵（实测坑）：复用 GPT-SoVITS runtime 时，其 faiss-cpu 1.7.2 与
+# torch 2.0.0+cu118 同进程导入即段错误（OpenMP 运行时冲突）——但 faiss 只
+# 用于建特征索引（训练链），推理链完全不经过它。注入空壳让 utils 顶层
+# `import faiss` 通过；真去建索引会得到明确报错而非崩溃。
+if "faiss" not in sys.modules:
+    _stub = types.ModuleType("faiss")
+    _stub.__path__ = []
+
+    def _no_faiss(*_a, **_k):
+        raise RuntimeError("faiss 不可用：本引擎只做推理（建特征索引请用官方 WebUI）")
+    _stub.index_factory = _no_faiss
+    _stub.write_index = _no_faiss
+    _stub.read_index = _no_faiss
+    sys.modules["faiss"] = _stub
 
 _lock = threading.Lock()          # torch 推理不并发：一次一段
 _state = {"svc": None, "model": "", "speakers": {}, "sr": 32000, "err": ""}
