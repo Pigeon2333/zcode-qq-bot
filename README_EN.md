@@ -21,7 +21,6 @@ Messaging runs through [NapCat](https://napcat.net) (a QQNT protocol implementat
 
 - [Features](#features)
 - [Plugin marketplace](#plugin-marketplace)
-- [ZCode integration](#zcode-integration)
 - [Architecture](#architecture)
 - [Install](#install)
 - [Daily use](#daily-use)
@@ -62,8 +61,6 @@ Task sandbox: send "task: write a scraper for xxx" and it goes to an isolated su
 
 Device control: the most powerful and most dangerous feature. Say "find that report on my PC" in private chat and she'll ask for a 6-digit dynamic code (shown live in the console, changes each use). Authorized, you command in plain language — find files, read them, send them, open apps. Critical system processes are untouchable, protected directories are unreachable, and all results go to private chat only. Turn it off when you don't need it.
 
-**ZCode integration**: the bot runs fully without ZCode; install it and flip the integration master switch to unlock a set of "two AIs working together" abilities — (1) **task inbox**: say "转交ZCode: write me a crawler" in QQ, ZCode takes the job and the result comes back to your QQ within a minute; (2) **reverse MCP control**: the AI inside ZCode sessions can drive the bot directly through this project's MCP server (12 tools) — check status, send messages, write memories, switch personas, inject test messages; (3) **daily review**: her nightly self-review reports sync into the ZCode workspace so ZCode can periodically "coach" her; (4) **ZCode process monitor**: you get a QQ alert if ZCode exits unexpectedly; (5) **scheduled ZCode tasks**, **master context awareness** (privacy-sensitive, off by default), and **GUI handoff** (fine-grained operations delegated to ZCode's computer control). It's the mirror image of the MCP tool bridge above: the bridge lets the bot *use* services installed in ZCode; integration lets ZCode *manage* the bot.
-
 Proactive messages: let her start conversations herself, controlled separately for groups and private chat, with probability caps, rate limits and quiet hours. She won't ping you at 3am unless you ask for it.
 
 Scheduled tasks: "定时 22:00 write the weekly report" runs on time and reports back.
@@ -73,6 +70,20 @@ Bilibili browsing (plugin): she browses with her own registered Bilibili account
 Chat-log import (plugins for QQ and WeChat): merged-forward a chat history to her with "导入" and it lands in an isolated store; hit "learn as persona" on the plugin page to digest it. File import and one-click tool export also work.
 
 Feishu bridge (plugin): two-way relay between QQ groups and Feishu groups, no public server needed.
+
+### ZCode Integration
+
+The bot runs fully without [ZCode](https://zcode.ai) (an AI coding assistant). Install it and flip the integration master switch to unlock a set of "two AIs working together" abilities:
+
+- **Task inbox**: say "转交ZCode: help me look at this error" in QQ private chat — the task lands in ZCode's inbox and results flow back to your QQ within a minute
+- **Reverse MCP control**: the AI inside ZCode sessions drives the bot directly — status, sending, memory, persona switching — through this project's MCP server (12 tools), not simulated clicks
+- **Daily review**: her nightly ops report lands in the ZCode workspace, so ZCode can review her performance and suggest persona tweaks
+- **ZCode process monitor**: if the ZCode process exits, the bot pings you on QQ — long tasks shouldn't die silently
+- **Scheduled ZCode tasks** / **master context awareness** (privacy-sensitive, off by default) / **GUI handoff**: fine-grained GUI work (clicking buttons, filling forms) gets delegated to ZCode's computer-use capability
+
+This is the mirror image of the MCP tool bridge above: **the bridge lets the bot use services installed in ZCode; integration lets ZCode manage the bot** — enable both and they're wired both ways.
+
+![Console · ZCode integration](docs/console-zcode.png)
 
 ### Models & cost
 
@@ -110,18 +121,6 @@ Install, pause and update plugins from the console's Plugins page. No app change
 | Group Check-in | Send 签到 in group to check in; daily and all-time boards (third-party demo plugin) |
 
 Writing your own is fair game, and doesn't require waiting on my app releases. One zip (plugin.py + manifest.json, plus page.js if it needs a settings page) gets you the full API surface: message hooks, sending text/images/voice, scheduled jobs, context injection, declarative settings, private storage, custom HTTP endpoints. Install and it works; updates flow through the plugin channel independently — similar to how a Minecraft server core relates to its plugins. To share yours, open an issue and I'll list it on the marketplace. Docs in [PLUGINS.md](./PLUGINS.md).
-
-## ZCode integration
-
-This part is optional. The bot runs fine without [ZCode](https://zcode.ai) (an AI coding assistant), but with it installed and the master switch on:
-
-- The AI inside ZCode sessions can drive the bot directly — status, sending, memory, persona switching — through 12 MCP tools, not simulated clicks
-- Send "forward to ZCode: help me look at this error" in QQ private chat and the task lands in ZCode's inbox; results flow back to your QQ when done
-- The bot's daily ops report can land in the ZCode workspace, so ZCode can review her performance and suggest persona tweaks
-- If the ZCode process exits, the bot pings you on QQ (long tasks shouldn't die silently)
-- Fine-grained GUI work (clicking buttons, filling forms) isn't her thing; it gets delegated to ZCode's computer-use capability
-
-![Console · ZCode integration](docs/console-zcode.png)
 
 ## Architecture
 
