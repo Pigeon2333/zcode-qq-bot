@@ -25,6 +25,14 @@ DATA_DIR = os.environ.get("QQBOT_DATA_DIR") or os.path.join(
 DATA_ROOT = pathlib.Path(DATA_DIR)
 
 APP_VERSION = "0.5.13"         # 发布版本号（更新检查与本页展示用；发版时同步改）
+
+# 表情回应（QQ 系统表情，NapCat set_msg_emoji_like 的 emoji_id）。
+# agent 教学 / daemon 执行 / 管理台勾选三方共用的全集；默认全开。
+REACT_EMOJIS = [
+    ("129", "👍 赞"), ("4", "😏 得意"), ("2", "😊 可爱"), ("5", "😭 流泪"),
+    ("8", "😴 睡"), ("63", "🍉 吃瓜"), ("74", "🐶 狗头"),
+]
+REACT_EMOJI_IDS = [e[0] for e in REACT_EMOJIS]
 # 更新默认指向主仓库（已开源，release 资产匿名可读；旧发布仓库已归档）
 DEFAULT_UPDATE_REPO = "Pigeon2333/zcode-qq-bot"
 

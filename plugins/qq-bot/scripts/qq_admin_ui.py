@@ -1233,6 +1233,17 @@ async function editModel(i){
   window._mThink=think;
   const r=await saveKV('/api/config',{models:chainOf(window._mEntries),thinking:think},(creating?'已添加 ':'已保存 ')+model+'（agent 已热加载）');
   load()}}
+const _REACT_TABLE=[["129","👍 赞"],["4","😏 得意"],["2","😊 可爱"],["5","😭 流泪"],["8","😴 睡"],["63","🍉 吃瓜"],["74","🐶 狗头"]];
+async function saveReaction(){
+ const on=document.getElementById('rcton');
+ const boxes=[...document.querySelectorAll('#rctemojis input[type=checkbox]')];
+ const ems=boxes.filter(b=>b.checked).map(b=>b.value);
+ if(on&&on.checked&&!ems.length){toast('至少保留 1 个表情（或直接关掉总开关）',false);load();return}
+ const body={reaction_enabled:!!(on&&on.checked)};
+ if(ems.length)body.reaction_emojis=ems;
+ const r=await saveKV('/api/reply-config',body,'表情回应设置已保存（即时生效）');
+ if(r.ok!==false)load();
+}
 async function vGroups(){
  const [g,c,gm,rv,gnr]=await Promise.all([
   api('/api/groups').catch(()=>({})),
@@ -1309,9 +1320,16 @@ async function vGroups(){
   <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)"><label class="master"><input type="checkbox" ${rv.nudge_group_enabled?'checked':''} onchange="saveKVLoad('/api/reply-config',{nudge_group_enabled:this.checked},'群聊追问已'+(this.checked?'开启':'关闭'))">
    <span><b>群聊冷场追问</b><div class="k" style="margin-top:3px">机器人在群里说话没人接时，也像真人那样轻轻追一句。默认关——群里冷场很正常，追多了容易尬也容易被当刷屏。开启后也只选允许主动发消息的群（白名单内、未暂停、该群没单独关主动），每轮最多追一次，判定比私聊保守得多（多数情况选择不说话）。沉默窗口沿用私聊追问的设置</div></span></label></div>
   <div style="margin-top:8px"><label>总量上限：所有群+私聊合计每小时最多 <input type="number" min="0" max="60" value="${rv.proactive_hourly_cap??2}" style="width:52px" onchange="saveProNum('hourly_cap',(isNaN(parseInt(this.value))?2:parseInt(this.value)),'总量上限')"> 条（0=不限；各群各自计时容易叠加，这个上限封住整体频率）</label></div>
-  ${_ovLine}
-  <div class="k" style="margin-top:6px">例：30 分钟 + 10% ≈ 平均每 5 小时主动说一句。私聊的设置在「私聊消息」页，互不影响。</div></div>
- <div class="card">
+   ${_ovLine}
+   <div class="k" style="margin-top:6px">例：30 分钟 + 10% ≈ 平均每 5 小时主动说一句。私聊的设置在「私聊消息」页，互不影响。</div></div>
+  <div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">表情回应<span class="badge" style="background:var(--tint);color:var(--dim)">小黄脸</span></div>
+   <label class="master" style="margin-bottom:8px"><input type="checkbox" id="rcton" ${rv.reaction_enabled!==false?'checked':''} onchange="saveReaction()">
+    <span><b>允许机器人打表情回应</b><div class="k" style="margin-top:3px">像真人一样给消息挂 QQ 小黄脸（右键消息→表情回应那个）：她看到好玩/离谱/不用正经接话的消息时会顺手挂一个，偶尔代替打字。只对上方白名单里的群生效。</div></span></label>
+   <div class="k" style="margin-bottom:6px">可以打哪些表情（勾选即时生效，至少留 1 个；不勾的她会完全不知道存在）：</div>
+   <div style="display:flex;gap:8px;flex-wrap:wrap" id="rctemojis">
+    ${_REACT_TABLE.map(e=>`<label style="display:flex;gap:5px;align-items:center;padding:5px 10px;border:1.5px solid ${(rv.reaction_emojis||[]).includes(e[0])?'#1a7f37':'var(--line)'};border-radius:8px;background:${(rv.reaction_emojis||[]).includes(e[0])?'#f0faf0':'transparent'};cursor:pointer"><input type="checkbox" value="${e[0]}" ${(rv.reaction_emojis||[]).includes(e[0])?'checked':''} onchange="saveReaction()"> ${e[1]}</label>`).join('')}
+   </div></div>
+  <div class="card">
   <label class="master" style="margin-bottom:8px"><input type="checkbox" id="allowall" ${allOn?'checked':''} onchange="saveGroups(true)">
    <span><b>响应所有群</b><div class="k" style="margin-top:3px">开启后忽略下方白名单；关闭即恢复白名单，列表保留不丢</div></span></label>
   <div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">白名单群与分群模式<span class="badge" style="background:var(--tint);color:var(--dim)">每行可覆盖全局</span><span>机器人只在列表内群响应；模式下拉=该群回复模式，主动下拉=该群是否参与主动发消息（跟随全局=用上方全局设置，暂停回应=该群一切回应停止（@也不回）但群保留在列表、随时切回；改动即时生效${allOn?'；当前被上面的开关覆盖':''}）</span></div>
@@ -5083,6 +5101,8 @@ class UiHandler(BaseHTTPRequestHandler):
                                      "vision_prob": _vp,
                                      "chat_anti_interrupt": data.get("chat_anti_interrupt", True),
                                      "web_search_enabled": data.get("web_search_enabled", False),
+                                     "reaction_enabled": data.get("reaction_enabled", True),
+                                     "reaction_emojis": data.get("reaction_emojis") or list(C.REACT_EMOJI_IDS),
                                      "abuse_guard_enabled": data.get("abuse_guard_enabled", True),
                                      "task_bridge_enabled": data.get("task_bridge_enabled", True),
                                      "remote_control_enabled": data.get("remote_control_enabled", True),
@@ -5871,6 +5891,13 @@ class UiHandler(BaseHTTPRequestHandler):
             return self._reply(200, {"ok": True})
         if u.path == "/api/reply-config":
             data = load_json_const(REPLY_CONFIG_PATH, {})
+            if "reaction_enabled" in body:
+                data["reaction_enabled"] = bool(body["reaction_enabled"])
+            if "reaction_emojis" in body:
+                ems = body["reaction_emojis"]
+                if isinstance(ems, list):
+                    data["reaction_emojis"] = [str(e) for e in ems
+                                               if str(e) in C.REACT_EMOJI_IDS][:len(C.REACT_EMOJI_IDS)]
             if "reply_mode" in body:
                 if body["reply_mode"] not in ("standard", "keyword", "chat"):
                     return self._reply(400, {"ok": False, "error": "reply_mode 非法"})
