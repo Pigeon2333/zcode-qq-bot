@@ -623,7 +623,7 @@ function dirtyOff(btnId){const b=document.getElementById(btnId);if(b)b.disabled=
 async function dirtyGuard(){const d=document.querySelector('textarea.dirty,input.dirty');if(!d)return true;
  return await dlgConfirm({title:'有未保存的修改',body:'当前有未保存的修改（蓝色边框标记），离开将丢失。确定离开？',okText:'放弃修改',danger:true})}
 async function load(){try{if(TAB==='status')await vStatus();else if(TAB==='runlog')await vRunlog();else if(TAB==='models')await vModels();else if(TAB==='groups')await vGroups();else if(TAB==='private')await vPrivate();else if(TAB==='voice')await vVoice();else if(TAB==='persona')await vPersonas();else if(TAB==='style')await vFile('style');else if(TAB==='memory')await vMemory();else if(TAB==='stickers')await vStickers();else if(TAB==='devctrl')await vDevCtrl();else if(TAB==='mcp')await vMcp();else if(TAB==='zcode')await vZcode();else if(TAB==='plugins')await vPlugins();else if(TAB==='settings'){await vSettings();cacheReload();}else if(TAB==='about')await vAbout();}catch(e){$('#view').innerHTML='<div class="card">加载失败: '+esc(e)+'</div>'}}
-document.querySelectorAll('#nav button').forEach(b=>b.onclick=async()=>{if(!await dirtyGuard())return;document.querySelectorAll('#nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');TAB=b.dataset.t;if(TAB!=='runlog'&&_runlogTimer){clearInterval(_runlogTimer);_runlogTimer=null}if(TAB!=='devctrl'&&_devCodeTimer){clearInterval(_devCodeTimer);_devCodeTimer=null}if(TAB!=='status'&&_ncTokTimer){clearInterval(_ncTokTimer);_ncTokTimer=null}skeleton();load()});
+document.querySelectorAll('#nav button').forEach(b=>b.onclick=async()=>{if(!await dirtyGuard())return;document.querySelectorAll('#nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');TAB=b.dataset.t;if(TAB!=='runlog'&&_runlogTimer){clearInterval(_runlogTimer);_runlogTimer=null}if(TAB!=='devctrl'&&_devCodeTimer){clearInterval(_devCodeTimer);_devCodeTimer=null}if(TAB!=='status'&&_ncTokTimer){clearInterval(_ncTokTimer);_ncTokTimer=null}if(TAB!=='voice'&&typeof _gsvPollTimer!=='undefined'&&_gsvPollTimer){clearInterval(_gsvPollTimer);_gsvPollTimer=null}skeleton();load()});
 const _urlTab=new URLSearchParams(location.search).get('tab');
 if(_urlTab&&TITLES[_urlTab]){TAB=_urlTab;document.querySelectorAll('#nav button').forEach(x=>x.classList.toggle('on',x.dataset.t===_urlTab));}
 /* 启动闪屏：每次新窗口首播，UI 自愈刷新（reload）不重播。
@@ -2201,7 +2201,7 @@ async function vMcp(){
  +'<label class="master" style="margin-bottom:8px"><input type="checkbox" id="mcpon" '+(on?'checked':'')+' onchange="mcpToggleGlobal(this.checked)">'
  +'<span><b>启用 MCP 工具桥</b><div class="k" style="margin-top:3px">⚠ 仅主人的消息可触发工具调用；每个服务还需单独启用（默认全关）。开启需二次确认。</div></span></label>'
  +'<div class="k" style="line-height:1.8;margin-top:8px">用法：开启并启用服务后，在 QQ 里像聊天一样对机器人说需求（如「用 tracy 抓 5 秒性能」「帮我查下麦当劳有什么券」），它会自己决定调哪个工具、多步执行，再用平时的语气汇报结果。stdio 型服务由机器人自起进程（复用 ZCode 的安装，不重复装）；http 型直连同一实例。</div></div>'
- +'<div class="card"><div class="k" style="margin-bottom:8px"><b>来自 ZCode</b>（读取 ~/.zcode/cli/config.json，' + (zk.length?('共 '+zk.length+' 个，启用即用——无需重复安装'):'未检测到') + '）</div>'
+ +'<div class="card"><div class="k" style="margin-bottom:8px"><b>来自 ZCode</b>（自动同步 ~/.zcode/cli/config.json，' + (zk.length?('共 '+zk.length+' 个——ZCode 新装的服务约 1 分钟内自动出现，无需重复安装；每个服务在此手动启用'):'未检测到') + '）</div>'
  +(zk.length?'<div style="display:grid;gap:6px">'+zk.map(row).join('')+'</div>'
    :'<div class="k" style="padding:10px;border:1px dashed var(--line);border-radius:8px;line-height:1.9">'
    +(m.zcode_installed
@@ -3180,10 +3180,37 @@ function vGsvCardTeaser(){
  const st=document.getElementById('gsv-steps');st&&(st.style.display='block');
  btn&&btn.parentElement&&btn.remove();
 }
+// 引擎自启动加载期徽标轮询：8s 探一次 meta，就绪即变「运行中」并 toast
+// （只改徽标不动表单——整页重渲染会丢用户正在填的输入）
+let _gsvPollTimer=null,_gsvPollT0=0;
+function gsvBadgePoll(m){
+ if(_gsvPollTimer){clearInterval(_gsvPollTimer);_gsvPollTimer=null}
+ const g=(m&&m.gsv)||{},c=(m&&m.config)||{};
+ if(g.running||!c.gsv_autostart||!g.dir_ok)return;
+ _gsvPollT0=Date.now();
+ _gsvPollTimer=setInterval(async()=>{
+  const r=await api('/api/voice/meta').catch(()=>null);
+  const gg=(r&&r.gsv)||{};
+  const el=document.getElementById('gsv-badge');
+  if(!el){if(_gsvPollTimer){clearInterval(_gsvPollTimer);_gsvPollTimer=null}return}
+  if(gg.running){
+   if(_gsvPollTimer){clearInterval(_gsvPollTimer);_gsvPollTimer=null}
+   el.style.background='#e6f7e6';el.style.color='#1a7f37';
+   el.textContent='● 运行中（端口 '+gg.port+'）';
+   toast('✓ 语音引擎已就绪（本地合成可用）');
+  }else{
+   const secs=Math.round((Date.now()-_gsvPollT0)/1000);
+   el.textContent='◐ 启动中…（模型加载约 40-90 秒，已等 '+secs+' 秒）';
+  }
+ },8000);
+}
 function vGsvCardInstalled(m,g){
  const c=m.config||{};
- const badge=g.running?'<span class="badge" style="background:#e6f7e6;color:#1a7f37">● 运行中（端口 '+g.port+'）</span>'
-  :'<span class="badge" style="background:var(--tint);color:var(--dim)">已安装 · 未启动</span>';
+ // 自启动开启但端口未就绪 = 大概率正在加载（模型加载 40-90 秒）——
+ // 此前这段窗口显示「已安装 · 未启动」，用户以为自启没生效（实测误解）
+ const badge=g.running?'<span class="badge" id="gsv-badge" style="background:#e6f7e6;color:#1a7f37">● 运行中（端口 '+g.port+'）</span>'
+  :(c.gsv_autostart?'<span class="badge" id="gsv-badge" style="background:#fff7e0;color:#8a6100">◐ 启动中…（模型加载约 40-90 秒，本页会自动刷新状态）</span>'
+  :'<span class="badge" id="gsv-badge" style="background:var(--tint);color:var(--dim)">已安装 · 未启动</span>');
  return '<div class="card" id="gsv-card"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px"><b>GPT-SoVITS 本地引擎</b>'+badge
   +'<span style="margin-left:auto;display:flex;gap:8px">'
   +(g.running?'<button class="act ghost" style="margin:0" onclick="gsvStop()">停止引擎</button>':'<button class="act" style="margin:0" onclick="gsvStart()">启动引擎</button>')
@@ -3577,7 +3604,7 @@ async function vVoice(){
  const g=m.gsv||{};
  const provHtml=vVoiceCards(m,g);
  $('#view').innerHTML=head('让机器人开口说话：回复改发语音（内容跟人设走，只换发送形式）。')+voiceActiveBar(m)+provHtml;
- setTimeout(()=>{voiceProvChange();gsvVoicesLoad();zvRender();},0);
+ setTimeout(()=>{voiceProvChange();gsvVoicesLoad();zvRender();gsvBadgePoll(m);},0);
 }
 function vVoiceCards(m,g){
  const P=m.providers||{};const c=m.config||{};

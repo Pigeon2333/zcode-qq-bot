@@ -1009,16 +1009,23 @@ def autostart_enabled():
 
 
 def set_autostart(enable):
-    """注册/注销当前用户级开机自启（启动 qq_app 静默窗口模式）。"""
-    app_entry = os.path.join(C.SCRIPTS_DIR, "qq_app.py")
-    launcher = PYW_EXE if os.path.isfile(PYW_EXE) else PY_EXE
+    """注册/注销当前用户级开机自启。
+    发布版（exe）注册 exe 本体；源码运行注册 pythonw+脚本。
+    坑（用户实测"开机自启无效"根因）：此前一律注册 pythonw+脚本路径，
+    frozen 下 pythonw/python.exe 和 _internal 里的脚本路径都不存在，
+    开机时静默失败——连个报错都看不到。"""
+    if getattr(sys, "frozen", False):
+        entry = '"%s"' % sys.executable
+    else:
+        app_entry = os.path.join(C.SCRIPTS_DIR, "qq_app.py")
+        launcher = PYW_EXE if os.path.isfile(PYW_EXE) else PY_EXE
+        entry = '"%s" "%s"' % (launcher, app_entry)
     try:
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0,
                              winreg.KEY_SET_VALUE)
         try:
             if enable:
-                winreg.SetValueEx(key, AUTOSTART_NAME, 0, winreg.REG_SZ,
-                                  '"%s" "%s"' % (launcher, app_entry))
+                winreg.SetValueEx(key, AUTOSTART_NAME, 0, winreg.REG_SZ, entry)
             else:
                 try:
                     winreg.DeleteValue(key, AUTOSTART_NAME)
