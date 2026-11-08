@@ -1511,6 +1511,22 @@ class Daemon:
                 % (json.dumps(str(message_id)), json.dumps(detail, ensure_ascii=False)))
             return False, detail
 
+    def get_image_file(self, url):
+        """QQ 图（multimedia.nt.qq.com.cn 带 rkey）外部 HTTP 一律 400
+        （-5503，签名只认 QQ 内部环境，实测换 UA 无效）——必须借 NapCat
+        的 get_image 动作下载到本地。返回 {ok, path}。"""
+        u = str(url or "").strip()
+        if not u.startswith("http"):
+            return {"ok": False, "error": "url 非法"}
+        try:
+            r = self._call_action("get_image", {"file": u}, timeout=25)
+        except Exception as e:
+            return {"ok": False, "error": "get_image 失败：%s" % e}
+        p = str((r or {}).get("file") or "")
+        if p and os.path.isfile(p):
+            return {"ok": True, "path": p}
+        return {"ok": False, "error": "NapCat 未返回本地文件（旧版本？）"}
+
     def set_typing(self, user_id, on=True):
         """在对方聊天栏显示/取消「对方正在输入…」（NapCat set_input_status；
         仅私聊会话有效，群聊无此显示）。on=False 取消。返回 (ok, detail)。"""
@@ -2053,6 +2069,9 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
                     str(body.get("emoji_id") or ""),
                     bool(body.get("on", True)))
                 return self._reply(200, {"ok": ok, "detail": detail})
+            if u.path == "/image-file":
+                # QQ 图本地化（视觉调用 base64 直传的数据源）：{url} → {ok, path}
+                return self._reply(200, d.get_image_file(str(body.get("url") or "")))
             if u.path == "/quiet":
                 # 安静模式：{minutes: 0} 取消；正数=持续 N 分钟（@/回复仍响应）
                 try:

@@ -4513,8 +4513,64 @@ def _emit_memo(daemon, msg, memo):
         persist_memo("contact", msg["sender_id"], text)
 
 
-def call_vision(messages_text, image_urls):
-    """视觉调用：user 内容转 multimodal（image_url 引用公网图）。
+def _img_to_datauri(u, daemon=None):
+    """QQ 图链本地化直传。NT CDN 的 rkey 签名只认 QQ 内部环境——外部 HTTP
+    （含模型服务端、我们自己 curl，换 UA 无效）一律 400 -5503，此前视觉
+    调用累计 171 次「图片输入格式/解析错误」就是模型端拉不到图。
+    通道①：daemon /image-file → NapCat get_image（带内部凭证）→ 本地文件；
+    通道②：普通公网图直连下载兜底；都失败回落原 URL。"""
+    u = str(u or "")
+    if not u.startswith("http"):
+        return u
+    data = None
+    # 通道①：NapCat（QQ 图唯一可靠通道）
+    if daemon is not None:
+        try:
+            r = daemon._request("POST", "/image-file",
+                                body={"url": u}, timeout=30) or {}
+            if r.get("ok") and r.get("path"):
+                with open(str(r["path"]), "rb") as f:
+                    data = f.read()
+        except Exception:
+            data = None
+    # 通道②：普通图直连
+    if data is None and "multimedia.nt.qq.com" not in u:
+        try:
+            import ssl
+            import urllib.parse
+            p = urllib.parse.urlsplit(u)
+            conn_cls = http.client.HTTPSConnection if p.scheme == "https" \
+                else http.client.HTTPConnection
+            ctx = ssl.create_default_context() if p.scheme == "https" else None
+            kw = {"context": ctx} if ctx else {}
+            conn = conn_cls(p.hostname,
+                            p.port or (443 if p.scheme == "https" else 80),
+                            timeout=15, **kw)
+            path = p.path + (("?" + p.query) if p.query else "")
+            conn.request("GET", path, headers={"User-Agent": "zcode-qq-bot"})
+            r = conn.getresponse()
+            data = r.read()
+            conn.close()
+            if r.status != 200:
+                data = None
+        except Exception:
+            data = None
+    if data and 1024 < len(data) < 9 * 1024 * 1024:
+        import base64
+        mime = "image/jpeg"
+        if data[:8] == b"\x89PNG\r\n\x1a\n":
+            mime = "image/png"
+        elif data[:3] == b"GIF":
+            mime = "image/gif"
+        elif data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            mime = "image/webp"
+        return "data:%s;base64,%s" % (mime, base64.b64encode(data).decode("ascii"))
+    return u
+
+
+def call_vision(messages_text, image_urls, daemon=None):
+    """视觉调用：user 内容转 multimodal（图片本地下载转 base64 直传——
+    模型端拉 QQ 临时图链常 400，见 _img_to_datauri 注）。
 
     模型选择：vision_model 配置了具体模型则只用它；留空则按模型链降级尝试
     （glm-5.3-flash 等新模型原生支持图像输入）。失败抛异常由调用方降级纯文本。
@@ -4527,7 +4583,7 @@ def call_vision(messages_text, image_urls):
                "你真的看懂了图，但别用说明腔，自然聊。）")
     content = [{"type": "text", "text": messages_text[1]["content"] + _ground}]
     for u in image_urls[:4]:
-        content.append({"type": "image_url", "image_url": {"url": str(u)}})
+        content.append({"type": "image_url", "image_url": {"url": _img_to_datauri(u, daemon)}})
     vmsgs = [{"role": "system", "content": messages_text[0]["content"]},
              {"role": "user", "content": content}]
 
@@ -4898,7 +4954,7 @@ def process(daemon, msg):
         or msg.get("trigger_reason") in ("at", "reply_to_bot"))
     if _vision_go:
         try:
-            model, reply = call_vision(messages, msg["image_urls"])
+            model, reply = call_vision(messages, msg["image_urls"], daemon=daemon)
         except Exception as e:
             out("AGENT_VISION_FALLBACK %r" % e)
             reply = None
