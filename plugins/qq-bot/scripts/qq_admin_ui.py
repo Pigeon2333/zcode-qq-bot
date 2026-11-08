@@ -2263,7 +2263,7 @@ function mcpAddDlg(){
   +'<div class="k" style="margin-top:6px">stdio 会在本机运行你填的命令——只添加信任来源的服务。</div></div>'
   +'<div id="mcpd-json" style="display:none">'
   +'<textarea id="mcpd-spec" rows="8" placeholder=\'粘贴完整服务配置（ZCode 格式直接用）：&#10;{"type":"stdio","command":"npx","args":["-y","@modelcontextprotocol/server-memory"],"env":{},"timeout":30000}&#10;或 {"type":"http","url":"https://…/mcp","headers":{"Authorization":"Bearer …"}}\' style="width:100%;resize:vertical;font-family:monospace;font-size:12px"></textarea>'
-  +'<div class="k" style="margin-top:4px">支持键：type / command / args / env（stdio）· url / headers（http、sse）· timeout（毫秒自动换算秒）· protocol。type 可省略（有 url 即 http）。</div></div>';
+  +'<div class="k" style="margin-top:4px">支持键：type / command / args / env（stdio）· url / headers（http、sse）· timeout（毫秒自动换算秒）· protocol。type 可省略（有 url 即 http）；streamable_http 自动按 http 处理。</div></div>';
  const m=_dlgBuild('添加 MCP 服务',body,false,'添加');
  const g=id=>m.querySelector('#'+id);
  let mode='form';
@@ -5299,10 +5299,11 @@ class UiHandler(BaseHTTPRequestHandler):
             spec_obj = body.get("spec")
             if isinstance(spec_obj, dict):
                 # ---- JSON 导入 ----
-                t = str(spec_obj.get("type") or "").strip().lower()
-                if t not in ("http", "sse", "stdio"):
+                t = _M.norm_type(spec_obj.get("type"))
+                if not t:
                     return self._reply(200, {"ok": False,
-                                             "error": "JSON 里 type 仅支持 http/sse/stdio"})
+                                             "error": "不支持的传输类型 %r（支持 http（含 streamable_http）/ sse / stdio）"
+                                             % str(spec_obj.get("type") or "")[:40]})
                 ent = {"type": t}
                 if t == "stdio":
                     cmd = str(spec_obj.get("command") or "").strip()[:200]
@@ -5337,10 +5338,10 @@ class UiHandler(BaseHTTPRequestHandler):
                 ent = _norm_extras(ent)
             else:
                 # ---- 表单模式 ----
-                stype = str(body.get("type") or "http").strip().lower()
-                if stype not in ("http", "sse", "stdio"):
+                stype = _M.norm_type(body.get("type") or "http")
+                if not stype:
                     return self._reply(200, {"ok": False,
-                                             "error": "类型仅支持 http / sse / stdio"})
+                                             "error": "类型仅支持 http（含 streamable_http）/ sse / stdio"})
                 ent = {"type": stype}
                 if stype == "stdio":
                     command = str(body.get("command") or "").strip()[:200]

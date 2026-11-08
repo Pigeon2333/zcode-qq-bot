@@ -82,24 +82,43 @@ def load_zcode_servers():
         return {}
 
 
+def norm_type(t):
+    """传输类型别名归一：MCP 生态里同一传输有多个名字（12306 等社区配置
+    写 streamable_http，就是新版 http；还有人写 command/standardio）。
+    返回 http/sse/stdio 之一，认不出返回 ''。"""
+    s = str(t or "").strip().lower().replace("-", "_")
+    return {"http": "http", "streamable_http": "http", "streamablehttp": "http",
+            "sse": "sse", "http_sse": "sse",
+            "stdio": "stdio", "command": "stdio", "standardio": "stdio",
+            }.get(s, "")
+
+
 def all_servers():
     """合并两个来源 → [{name, source, type, spec}]（type: stdio/http/sse）。"""
     out = []
     for name, spec in load_zcode_servers().items():
-        if isinstance(spec, dict) and spec.get("type"):
-            out.append({"name": str(name), "source": "zcode",
-                        "type": str(spec.get("type")), "spec": spec})
+        if isinstance(spec, dict):
+            t = norm_type(spec.get("type"))
+            if t:
+                s2 = dict(spec)
+                s2["type"] = t
+                out.append({"name": str(name), "source": "zcode",
+                            "type": t, "spec": s2})
     cfg = mcp_cfg()
     for name, spec in (cfg.get("custom") or {}).items():
         if not isinstance(spec, dict):
             continue
-        t = str(spec.get("type") or "http")
+        t = norm_type(spec.get("type") or "http")
         if t in ("http", "sse") and str(spec.get("url") or "").strip():
+            s2 = dict(spec)
+            s2["type"] = t
             out.append({"name": str(name), "source": "custom", "type": t,
-                        "spec": spec})
+                        "spec": s2})
         elif t == "stdio" and str(spec.get("command") or "").strip():
+            s2 = dict(spec)
+            s2["type"] = t
             out.append({"name": str(name), "source": "custom", "type": "stdio",
-                        "spec": spec})
+                        "spec": s2})
     return out
 
 
@@ -522,8 +541,11 @@ def test_server(name, timeout=_INIT_TIMEOUT):
     for s in all_servers():
         if s["name"] == name:
             spec = s["spec"]
-            if s["type"] not in ("stdio", "http", "sse"):
-                return {"ok": False, "error": "暂不支持 %s 传输" % s["type"].upper()}
+            t = norm_type(spec.get("type"))
+            if t not in ("stdio", "http", "sse"):
+                return {"ok": False,
+                        "error": "暂不支持 %s 传输（支持 http/含 streamable_http、sse、stdio）"
+                        % str(spec.get("type") or "?").upper()}
     if spec is None:
         return {"ok": False, "error": "服务器不存在"}
     c = McpClient(name, spec)
