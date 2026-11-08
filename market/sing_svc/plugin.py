@@ -45,6 +45,8 @@ def register(api):
     api.route("model_del", lambda args: E.model_del(str((args or {}).get("id") or "")))
     api.route("model_use", lambda args: _model_use(api, args or {}))
     api.route("convert_test", lambda args: _convert_test(api, args or {}))
+    api.route("setup_status", lambda args: {"ok": True, **E.setup_status()})
+    api.route("setup_start", lambda args: _setup_start(api, args or {}))
 
     # ---- QQ 触发（on_message 收到的是已触发消息；回复丢工作线程绝不阻塞主循环） ----
     api.on_message(lambda m: _on_msg(api, m))
@@ -122,6 +124,25 @@ def _convert_test(api, a):
     if not _os.path.isfile(src):
         return {"ok": False, "error": "测试音频文件不存在"}
     return E.convert(src, mid, cfg)
+
+
+def _setup_start(api, a):
+    """一键部署（后台线程跑，进度走 setup_status 轮询）。"""
+    root = str(a.get("root") or "").strip()
+    if not root:
+        return {"ok": False, "error": "先填安装根目录（如 E:\\SoVITS）"}
+    cfg = _cfg(api)
+
+    def _run():
+        r = E.setup_run(root, cfg)
+        if r.get("ok"):
+            cfg2 = _cfg(api)
+            cfg2["dir"] = str(r.get("dir") or cfg2.get("dir") or "")
+            _save_cfg(api, cfg2)
+        api.log("setup done %s" % r)
+
+    _th.Thread(target=_run, daemon=True).start()
+    return {"ok": True, "started": True}
 
 
 # ---------------- QQ 触发链路 ----------------
