@@ -91,9 +91,15 @@ def all_servers():
                         "type": str(spec.get("type")), "spec": spec})
     cfg = mcp_cfg()
     for name, spec in (cfg.get("custom") or {}).items():
-        if isinstance(spec, dict) and spec.get("url"):
-            out.append({"name": str(name), "source": "custom",
-                        "type": "http", "spec": spec})
+        if not isinstance(spec, dict):
+            continue
+        t = str(spec.get("type") or "http")
+        if t in ("http", "sse") and str(spec.get("url") or "").strip():
+            out.append({"name": str(name), "source": "custom", "type": t,
+                        "spec": spec})
+        elif t == "stdio" and str(spec.get("command") or "").strip():
+            out.append({"name": str(name), "source": "custom", "type": "stdio",
+                        "spec": spec})
     return out
 
 

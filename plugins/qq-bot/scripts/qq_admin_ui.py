@@ -2209,13 +2209,18 @@ async function vMcp(){
      :('❌ 未检测到 ZCode。两条路任选：<br>① 安装 <b>ZCode</b>（智谱的 AI 编程助手）→ 在其 <b>设置 → MCP</b> 里添加服务 → 本页刷新即可共用（推荐：一次安装，ZCode 和机器人两边都能用）；<br>② 不装 ZCode 也行——直接在下方「自定义服务」添加 http 型 MCP 服务。'))
    +'</div>')
  +'<div class="k" style="margin-top:8px;color:var(--dim)">通用说明：机器人只读取 ZCode 的配置文件，<b>ZCode 关着也能用</b>；stdio 型服务由机器人自己拉起进程，http/sse 型直接连服务地址（服务本身要可达）。</div></div>'
- +'<div class="card"><div class="k" style="margin-bottom:8px"><b>自定义服务</b>（http 型；v1 暂不支持手动添加 stdio/SSE）</div>'
+ +'<div class="card"><div class="k" style="margin-bottom:8px"><b>自定义服务</b>（http / sse / stdio 三种传输均可手动添加）</div>'
  +(cu.length?'<div style="display:grid;gap:6px;margin-bottom:8px">'+cu.map(row).join('')+'</div>':'')
  +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
  +'<input id="mcp-name" placeholder="服务名（如 myapi）" style="width:150px">'
+ +'<select id="mcp-type" onchange="mcpTypeSwitch()" style="width:100px">'
+ +'<option value="http">http</option><option value="sse">sse</option><option value="stdio">stdio</option></select>'
  +'<input id="mcp-url" placeholder="http(s)://服务器/mcp 地址" style="flex:1;min-width:220px">'
  +'<input id="mcp-token" placeholder="鉴权 Token（可选）" style="width:160px">'
- +'<button class="act" style="margin:0" onclick="mcpAddCustom()">添加</button></div></div>';
+ +'<input id="mcp-command" placeholder="可执行文件路径（如 C:\\tools\\mcp.exe）" style="flex:1;min-width:220px;display:none">'
+ +'<input id="mcp-args" placeholder="启动参数（可选，空格分隔，引号包住含空格的）" style="flex:1;min-width:220px;display:none">'
+ +'<button class="act" style="margin:0" onclick="mcpAddCustom()">添加</button></div>'
+ +'<div class="k" style="margin-top:6px">stdio 型会在本机运行你填的命令（机器人按需拉起进程）——只添加来自信任来源的服务。</div></div>';
 }
 async function mcpToggleGlobal(on){
  if(on&&!await dlgConfirm({title:'启用 MCP 工具桥？',body:'开启后主人在 QQ 里的消息可触发已启用服务的工具调用（外部服务行为不可控，请只启用信任的服务）。每个服务默认关闭，还需单独启用。',okText:'启用'})){const el=document.getElementById('mcpon');if(el)el.checked=false;return}
@@ -2237,14 +2242,32 @@ async function mcpTest(name){
  toast(r&&r.ok?('✓ 连接成功，'+r.count+' 个工具'):'✗ '+((r&&r.error)||''),!!(r&&r.ok));
  vMcp();
 }
+function mcpTypeSwitch(){
+ const t=(document.getElementById('mcp-type')||{}).value||'http';
+ const isStd=(t==='stdio');
+ const u=document.getElementById('mcp-url'),k=document.getElementById('mcp-token'),
+       c=document.getElementById('mcp-command'),a=document.getElementById('mcp-args');
+ if(u)u.style.display=isStd?'none':'';
+ if(k)k.style.display=isStd?'none':'';
+ if(c)c.style.display=isStd?'':'none';
+ if(a)a.style.display=isStd?'':'none';
+}
 async function mcpAddCustom(){
  const name=(document.getElementById('mcp-name').value||'').trim();
- const url=(document.getElementById('mcp-url').value||'').trim();
- const token=(document.getElementById('mcp-token').value||'').trim();
- if(!name||!url){toast('服务名和地址都要填',false);return}
- const r=await api('/api/mcp/add-custom',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,url:url,token:token})}).catch(()=>({ok:false,error:'请求失败'}));
+ const type=(document.getElementById('mcp-type')||{}).value||'http';
+ const body={name:name,type:type};
+ if(type==='stdio'){
+  body.command=(document.getElementById('mcp-command').value||'').trim();
+  body.args=(document.getElementById('mcp-args').value||'').trim();
+  if(!name||!body.command){toast('服务名和可执行文件路径都要填',false);return}
+ }else{
+  body.url=(document.getElementById('mcp-url').value||'').trim();
+  body.token=(document.getElementById('mcp-token').value||'').trim();
+  if(!name||!body.url){toast('服务名和地址都要填',false);return}
+ }
+ const r=await api('/api/mcp/add-custom',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).catch(()=>({ok:false,error:'请求失败'}));
  if(!r||r.ok===false){toast('添加失败：'+((r&&r.error)||''),false);return}
- toast('已添加「'+name+'」，测试连接后启用');
+ toast('已添加「'+name+'」（'+type+'），测试连接后启用');
  vMcp();
 }
 async function mcpDelCustom(name){
@@ -5189,22 +5212,41 @@ class UiHandler(BaseHTTPRequestHandler):
             import qq_mcp as _M
             return self._reply(200, _M.test_server(str(body.get("name") or "")[:48]))
         if u.path == "/api/mcp/add-custom":
+            # 三种传输：http / sse（url+可选 Token）/ stdio（命令+参数）。
+            # stdio = 在本机运行用户指定的命令（能力等同 ZCode 里的 stdio 条目），
+            # 仅主人可操作本页，UI 提示只添加信任来源。
             import re as _re
             import qq_mcp as _M
             name = str(body.get("name") or "").strip()[:32]
+            stype = str(body.get("type") or "http").strip().lower()
             url = str(body.get("url") or "").strip()[:300]
             token = str(body.get("token") or "").strip()[:200]
+            command = str(body.get("command") or "").strip()[:200]
+            args_raw = str(body.get("args") or "").strip()[:600]
             if not _re.fullmatch(r"[A-Za-z0-9_\-.]{1,32}", name):
                 return self._reply(200, {"ok": False,
                                          "error": "名称仅限 1-32 位字母/数字/-_."})
-            if not (url.startswith("http://") or url.startswith("https://")):
-                return self._reply(200, {"ok": False, "error": "url 需以 http(s):// 开头"})
-            cfg = _M.mcp_cfg()
             if any(s["name"] == name for s in _M.all_servers()):
                 return self._reply(200, {"ok": False, "error": "与现有服务重名"})
-            ent = {"type": "http", "url": url}
-            if token:
-                ent["headers"] = {"Authorization": "Bearer " + token}
+            if stype in ("http", "sse"):
+                if not (url.startswith("http://") or url.startswith("https://")):
+                    return self._reply(200, {"ok": False,
+                                             "error": "url 需以 http(s):// 开头"})
+                ent = {"type": stype, "url": url}
+                if token:
+                    ent["headers"] = {"Authorization": "Bearer " + token}
+            elif stype == "stdio":
+                if not command:
+                    return self._reply(200, {"ok": False,
+                                             "error": "stdio 服务需要可执行文件路径"})
+                # 参数按空格切分，双引号包住的部分不切（Windows 路径常见）
+                args = [p.strip('"') for p in _re.findall(
+                    r'"[^"]*"|\S+', args_raw)][:32]
+                ent = {"type": "stdio", "command": command, "args": args}
+            else:
+                return self._reply(200, {"ok": False,
+                                         "error": "类型仅支持 http / sse / stdio"})
+            cfg = _M.mcp_cfg()
             cfg["custom"][name] = ent
             _M.save_mcp_cfg(cfg)
             return self._reply(200, {"ok": True})
