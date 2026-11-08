@@ -54,7 +54,9 @@ Image generation: "draw a xxx" or something looser like "make me an avatar" both
 
 Web search: real-time questions (news, releases, prices) trigger it automatically. Zhipu's search add-on comes first; if you don't have it, a free Bing fallback kicks in. Casual chat never triggers search, so it never costs you anything.
 
-Voice: with the plugin installed she sends voice messages. Four voice sources — Edge-TTS is free with nine built-in Chinese voices; Zhipu GLM-TTS is paid but can clone a custom voice from three seconds of audio; plus SiliconFlow and any OpenAI-compatible service. You set when she uses voice: trigger words, always, or keywords-mandatory-with-probability. If synthesis fails she falls back to text, so nothing gets lost.
+MCP tool bridge: the bot itself is an MCP client (managed on the "MCP Services" page). Enabled services inject their tool catalog into her context; in chat you just state the need and she picks tools, chains steps, and reports back in her usual voice — only the master's messages can trigger calls, and everything defaults to off. All three transports work (stdio / http / SSE, with aliases like streamable_http normalized). Zero setup for ZCode users: services installed in ZCode are reused directly (http via the same instance, stdio spawned locally; ZCode doesn't need to be running). Without ZCode, add services in a dialog — form fields for timeout/headers/env/protocol version, or paste JSON: a single server, ZCode format, or a whole Claude Desktop `mcpServers` block (multiple at once).
+
+Voice: she sends voice messages. Five voice sources — Edge-TTS is free with nine built-in Chinese voices; Zhipu GLM-TTS is paid but can clone a custom voice from three seconds of audio; GPT-SoVITS runs fully free on your own GPU with instant 3-second cloning and community fine-tuned model import (.ckpt+.pth, the highest fidelity, mutually exclusive with cloned voices); plus SiliconFlow and any OpenAI-compatible service. You set when she uses voice: trigger words, always, or keywords-mandatory-with-probability. If synthesis fails she falls back to text, so nothing gets lost.
 
 Task sandbox: send "task: write a scraper for xxx" and it goes to an isolated subprocess with whitelisted commands and a time budget. Results come back automatically.
 
@@ -131,6 +133,7 @@ qq_app.py         desktop shell (pywebview window + tray + single-instance + sel
   ├─ qq_lark.py        Feishu bridge engine
   ├─ qq_plugins.py     plugin host (hook routing/hot reload/private storage/custom endpoints)
   ├─ qq_task_worker.py task sandbox subprocess
+  ├─ qq_mcp.py         MCP client bridge (stdio/http/sse; reuses services installed in ZCode)
   └─ qq_mcp_server.py  MCP server for the ZCode plugin (stdio)
 qq_services.py    component lifecycle (idempotent start/stop, NapCat config, zip installer, autostart)
 qq_common.py      paths/config/provider registry/timezone (data dir ~/.zcode-qq-bot, QQBOT_DATA_DIR overrides)
