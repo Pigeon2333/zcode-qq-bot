@@ -143,6 +143,19 @@ class McpClient:
         self._sse_alive = False
         self._tools = None
         self._bad = ""            # 不可用原因（上次失败）
+        # 每服务可选覆盖（ZCode 同款字段；JSON 导入对齐）：
+        #   protocol = initialize 的协议版本（默认全局 _PROTO）
+        #   timeout  = 秒；>1000 视为毫秒自动换算（ZCode 存 ms，常见 30000）
+        self._proto = str(spec.get("protocol") or "")
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", self._proto):
+            self._proto = _PROTO       # 端点已校验；这里纵深防御（手改 JSON 也能兜住）
+        try:
+            _t = float(spec.get("timeout") or 0)
+            if _t > 1000:
+                _t /= 1000.0
+            self._timeout = max(5, min(600, int(_t))) if _t else None
+        except (TypeError, ValueError):
+            self._timeout = None
 
     # ---- 底层收发 ----
     @staticmethod
@@ -412,8 +425,9 @@ class McpClient:
         if self._tools is not None:
             return self
         res = self._rpc("initialize", {
-            "protocolVersion": _PROTO, "capabilities": {},
-            "clientInfo": {"name": "zcode-qq-bot", "version": str(C.APP_VERSION)}})
+            "protocolVersion": self._proto, "capabilities": {},
+            "clientInfo": {"name": "zcode-qq-bot", "version": str(C.APP_VERSION)}},
+            timeout=min(self._timeout or _INIT_TIMEOUT, 30))
         self._notify("notifications/initialized")
         tools = (self._rpc("tools/list", {}) or {}).get("tools") or []
         self._tools = [t for t in tools if isinstance(t, dict) and t.get("name")]
@@ -423,11 +437,12 @@ class McpClient:
         self.ensure()
         return self._tools or []
 
-    def call(self, tool, args, timeout=_CALL_TIMEOUT):
-        """tools/call → 拼接 text 内容（isError 的结果如实返回文本）。"""
+    def call(self, tool, args, timeout=None):
+        """tools/call → 拼接 text 内容（isError 的结果如实返回文本）。
+        超时优先级：调用方显式 > 每服务配置 > 全局默认 60s。"""
         self.ensure()
         res = self._rpc("tools/call", {"name": str(tool), "arguments": args or {}},
-                        timeout=timeout)
+                        timeout=timeout or self._timeout or _CALL_TIMEOUT)
         parts = []
         for c in (res.get("content") or []):
             if isinstance(c, dict) and c.get("type") == "text":

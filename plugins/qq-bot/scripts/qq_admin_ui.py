@@ -2209,17 +2209,10 @@ async function vMcp(){
      :('❌ 未检测到 ZCode。两条路任选：<br>① 安装 <b>ZCode</b>（智谱的 AI 编程助手）→ 在其 <b>设置 → MCP</b> 里添加服务 → 本页刷新即可共用（推荐：一次安装，ZCode 和机器人两边都能用）；<br>② 不装 ZCode 也行——直接在下方「自定义服务」添加 http 型 MCP 服务。'))
    +'</div>')
  +'<div class="k" style="margin-top:8px;color:var(--dim)">通用说明：机器人只读取 ZCode 的配置文件，<b>ZCode 关着也能用</b>；stdio 型服务由机器人自己拉起进程，http/sse 型直接连服务地址（服务本身要可达）。</div></div>'
- +'<div class="card"><div class="k" style="margin-bottom:8px"><b>自定义服务</b>（http / sse / stdio 三种传输均可手动添加）</div>'
- +(cu.length?'<div style="display:grid;gap:6px;margin-bottom:8px">'+cu.map(row).join('')+'</div>':'')
- +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
- +'<input id="mcp-name" placeholder="服务名（如 myapi）" style="width:150px">'
- +'<select id="mcp-type" onchange="mcpTypeSwitch()" style="width:100px">'
- +'<option value="http">http</option><option value="sse">sse</option><option value="stdio">stdio</option></select>'
- +'<input id="mcp-url" placeholder="http(s)://服务器/mcp 地址" style="flex:1;min-width:220px">'
- +'<input id="mcp-token" placeholder="鉴权 Token（可选）" style="width:160px">'
- +'<input id="mcp-command" placeholder="可执行文件路径（如 C:\\tools\\mcp.exe）" style="flex:1;min-width:220px;display:none">'
- +'<input id="mcp-args" placeholder="启动参数（可选，空格分隔，引号包住含空格的）" style="flex:1;min-width:220px;display:none">'
- +'<button class="act" style="margin:0" onclick="mcpAddCustom()">添加</button></div>'
+ +'<div class="card"><div class="k" style="margin-bottom:8px;display:flex;gap:8px;align-items:center"><b>自定义服务</b>（http / sse / stdio 均可）'
+ +'<span style="margin-left:auto"><button class="act" style="margin:0;padding:5px 14px" onclick="mcpAddDlg()">＋ 添加服务</button></span></div>'
+ +(cu.length?'<div style="display:grid;gap:6px">'+cu.map(row).join('')+'</div>'
+   :'<div class="k" style="padding:8px 2px">（还没有自定义服务——点右上「＋ 添加服务」，或直接启用上方 ZCode 已装的服务）</div>')
  +'<div class="k" style="margin-top:6px">stdio 型会在本机运行你填的命令（机器人按需拉起进程）——只添加来自信任来源的服务。</div></div>';
 }
 async function mcpToggleGlobal(on){
@@ -2242,33 +2235,80 @@ async function mcpTest(name){
  toast(r&&r.ok?('✓ 连接成功，'+r.count+' 个工具'):'✗ '+((r&&r.error)||''),!!(r&&r.ok));
  vMcp();
 }
-function mcpTypeSwitch(){
- const t=(document.getElementById('mcp-type')||{}).value||'http';
- const isStd=(t==='stdio');
- const u=document.getElementById('mcp-url'),k=document.getElementById('mcp-token'),
-       c=document.getElementById('mcp-command'),a=document.getElementById('mcp-args');
- if(u)u.style.display=isStd?'none':'';
- if(k)k.style.display=isStd?'none':'';
- if(c)c.style.display=isStd?'':'none';
- if(a)a.style.display=isStd?'':'none';
-}
-async function mcpAddCustom(){
- const name=(document.getElementById('mcp-name').value||'').trim();
- const type=(document.getElementById('mcp-type')||{}).value||'http';
- const body={name:name,type:type};
- if(type==='stdio'){
-  body.command=(document.getElementById('mcp-command').value||'').trim();
-  body.args=(document.getElementById('mcp-args').value||'').trim();
-  if(!name||!body.command){toast('服务名和可执行文件路径都要填',false);return}
- }else{
-  body.url=(document.getElementById('mcp-url').value||'').trim();
-  body.token=(document.getElementById('mcp-token').value||'').trim();
-  if(!name||!body.url){toast('服务名和地址都要填',false);return}
- }
- const r=await api('/api/mcp/add-custom',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).catch(()=>({ok:false,error:'请求失败'}));
- if(!r||r.ok===false){toast('添加失败：'+((r&&r.error)||''),false);return}
- toast('已添加「'+name+'」（'+type+'），测试连接后启用');
- vMcp();
+// ---- MCP 添加服务弹窗（表单⇄JSON 双页签；字段对齐 ZCode：超时/请求头/
+//      协议版本/环境变量，JSON 直接粘贴 ZCode 格式兼容） ----
+function mcpAddDlg(){
+ const body='<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:10px">'
+  +'<input id="mcpd-name" placeholder="服务名（如 myapi）" style="width:170px">'
+  +'<span class="k" style="margin-left:auto;display:flex;gap:4px">'
+  +'<button class="act" style="margin:0;padding:4px 14px;font-size:12px" id="mcpd-tab-form">表单</button>'
+  +'<button class="act ghost" style="margin:0;padding:4px 14px;font-size:12px" id="mcpd-tab-json">JSON</button></span></div>'
+  +'<div id="mcpd-form">'
+  +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">'
+  +'<select id="mcpd-type" style="width:96px"><option value="http">http</option><option value="sse">sse</option><option value="stdio">stdio</option></select>'
+  +'<select id="mcpd-proto" style="width:130px" title="协议版本"><option value="">协议：自动（推荐）</option><option value="2024-11-05">兼容旧版 2024-11-05</option><option value="2025-03-26">2025-03-26</option><option value="2025-06-18">v2 · 2025-06-18</option></select>'
+  +'<input id="mcpd-timeout" placeholder="超时秒（默认60）" style="width:130px"></div>'
+  +'<div id="mcpd-net">'
+  +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">'
+  +'<input id="mcpd-url" placeholder="http(s)://服务器/mcp 地址" style="flex:1;min-width:220px">'
+  +'<input id="mcpd-token" placeholder="鉴权 Token（可选）" style="width:170px"></div>'
+  +'<textarea id="mcpd-headers" rows="2" placeholder="请求头（可选，每行一条，如：&#10;X-Api-Key: abc123" style="width:100%;resize:vertical;margin-bottom:8px"></textarea></div>'
+  +'<div id="mcpd-stdio" style="display:none">'
+  +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">'
+  +'<input id="mcpd-command" placeholder="可执行文件路径（如 C:\\tools\\mcp.exe）" style="flex:1;min-width:220px">'
+  +'<input id="mcpd-args" placeholder="参数（空格分隔，引号包含空格路径）" style="flex:1;min-width:200px"></div>'
+  +'<textarea id="mcpd-env" rows="2" placeholder="环境变量（可选，每行一条，如：&#10;API_KEY=xxx" style="width:100%;resize:vertical"></textarea></div>'
+  +'<div class="k" style="margin-top:6px">stdio 会在本机运行你填的命令——只添加信任来源的服务。</div></div>'
+  +'<div id="mcpd-json" style="display:none">'
+  +'<textarea id="mcpd-spec" rows="8" placeholder=\'粘贴完整服务配置（ZCode 格式直接用）：&#10;{"type":"stdio","command":"npx","args":["-y","@modelcontextprotocol/server-memory"],"env":{},"timeout":30000}&#10;或 {"type":"http","url":"https://…/mcp","headers":{"Authorization":"Bearer …"}}\' style="width:100%;resize:vertical;font-family:monospace;font-size:12px"></textarea>'
+  +'<div class="k" style="margin-top:4px">支持键：type / command / args / env（stdio）· url / headers（http、sse）· timeout（毫秒自动换算秒）· protocol。type 可省略（有 url 即 http）。</div></div>';
+ const m=_dlgBuild('添加 MCP 服务',body,false,'添加');
+ const g=id=>m.querySelector('#'+id);
+ let mode='form';
+ const tabF=g('mcpd-tab-form'),tabJ=g('mcpd-tab-json'),pF=g('mcpd-form'),pJ=g('mcpd-json');
+ const setMode=v=>{mode=v;pF.style.display=v==='form'?'':'none';pJ.style.display=v==='json'?'':'none';
+  tabF.className=v==='form'?'act':'act ghost';tabJ.className=v==='json'?'act':'act ghost'};
+ tabF.onclick=()=>setMode('form');tabJ.onclick=()=>setMode('json');
+ const typeSel=g('mcpd-type');
+ typeSel.onchange=()=>{const st=(typeSel.value==='stdio');g('mcpd-net').style.display=st?'none':'';g('mcpd-stdio').style.display=st?'':'none'};
+ // 手动接管按钮（不走 _dlgWire：它先关窗再回调，校验失败会把用户填的
+ // 内容一起带走——本弹窗要校验通过才关）
+ const close=()=>m.remove();
+ m.querySelector('.dlg-btns .ghost').onclick=close;
+ m.onkeydown=e=>{if(e.key==='Escape')close()};
+ m.onclick=e=>{if(e.target===m)close()};
+ m.querySelector('.dlg-btns .act:not(.ghost)').onclick=async()=>{
+  const name=(g('mcpd-name').value||'').trim();
+  if(!name){toast('先填服务名',false);return}
+  let payload={name:name};
+  if(mode==='json'){
+   try{payload.spec=JSON.parse(g('mcpd-spec').value)}
+   catch(e){toast('JSON 解析失败：'+e.message,false);return}
+   if(!payload.spec||typeof payload.spec!=='object'||Array.isArray(payload.spec)){toast('JSON 需要是一个对象',false);return}
+   if(!payload.spec.type&&payload.spec.url)payload.spec.type='http';
+  }else{
+   const t=typeSel.value;payload.type=t;
+   payload.timeout=(g('mcpd-timeout').value||'').trim();
+   payload.protocol=g('mcpd-proto').value;
+   if(t==='stdio'){
+    payload.command=(g('mcpd-command').value||'').trim();
+    payload.args=(g('mcpd-args').value||'').trim();
+    payload.env_lines=g('mcpd-env').value;
+    if(!payload.command){toast('可执行文件路径要填',false);return}
+   }else{
+    payload.url=(g('mcpd-url').value||'').trim();
+    payload.token=(g('mcpd-token').value||'').trim();
+    payload.headers_lines=g('mcpd-headers').value;
+    if(!payload.url){toast('服务地址要填',false);return}
+   }
+  }
+  const r=await api('/api/mcp/add-custom',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).catch(()=>({ok:false,error:'请求失败'}));
+  if(!r||r.ok===false){toast('添加失败：'+((r&&r.error)||''),false);return}   // 失败不关窗，改完直接重按添加
+  close();
+  toast('已添加「'+name+'」——测试连接后启用');
+  vMcp();
+ };
+ setTimeout(()=>{g('mcpd-name').focus()},30);
 }
 async function mcpDelCustom(name){
  if(!await dlgConfirm({title:'删除自定义服务「'+name+'」？',body:'仅删除本应用里的配置，不影响 ZCode 或服务本身。',okText:'删除'}))return;
@@ -5212,40 +5252,123 @@ class UiHandler(BaseHTTPRequestHandler):
             import qq_mcp as _M
             return self._reply(200, _M.test_server(str(body.get("name") or "")[:48]))
         if u.path == "/api/mcp/add-custom":
-            # 三种传输：http / sse（url+可选 Token）/ stdio（命令+参数）。
-            # stdio = 在本机运行用户指定的命令（能力等同 ZCode 里的 stdio 条目），
-            # 仅主人可操作本页，UI 提示只添加信任来源。
+            # 表单模式：type/url/token/command/args + 高级字段（headers_lines
+            # 每行 "Header: 值"、env_lines 每行 KEY=VALUE、timeout 秒、protocol）
+            # JSON 模式：body.spec = 完整服务对象（ZCode 格式直接粘贴兼容：
+            # {type,command,args,env,url,headers,timeout(ms 自动换算),protocol}）
+            # stdio = 在本机运行用户指定的命令，UI 提示只添加信任来源。
             import re as _re
             import qq_mcp as _M
+
+            def _norm_extras(ent):
+                # timeout：秒；>1000 视为毫秒换算（ZCode 存 ms）；限 5-600
+                if ent.get("timeout") is not None:
+                    try:
+                        t = float(ent["timeout"])
+                        if t > 1000:
+                            t /= 1000.0
+                        t = max(5, min(600, int(t)))
+                        ent["timeout"] = t
+                    except (TypeError, ValueError):
+                        ent.pop("timeout", None)
+                # protocol：YYYY-MM-DD 形态才收（其余丢弃走默认）
+                if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}",
+                                      str(ent.get("protocol") or "")):
+                    ent.pop("protocol", None)
+                return ent
+
+            def _parse_lines_kv(txt, sep_re):
+                d = {}
+                for ln in str(txt or "").splitlines():
+                    ln = ln.strip()
+                    if not ln or ln.startswith("#"):
+                        continue
+                    m = _re.match(sep_re, ln)
+                    if m:
+                        d[m.group(1).strip()[:64]] = m.group(2).strip()[:300]
+                return d
+
             name = str(body.get("name") or "").strip()[:32]
-            stype = str(body.get("type") or "http").strip().lower()
-            url = str(body.get("url") or "").strip()[:300]
-            token = str(body.get("token") or "").strip()[:200]
-            command = str(body.get("command") or "").strip()[:200]
-            args_raw = str(body.get("args") or "").strip()[:600]
             if not _re.fullmatch(r"[A-Za-z0-9_\-.]{1,32}", name):
                 return self._reply(200, {"ok": False,
                                          "error": "名称仅限 1-32 位字母/数字/-_."})
             if any(s["name"] == name for s in _M.all_servers()):
                 return self._reply(200, {"ok": False, "error": "与现有服务重名"})
-            if stype in ("http", "sse"):
-                if not (url.startswith("http://") or url.startswith("https://")):
+            spec_obj = body.get("spec")
+            if isinstance(spec_obj, dict):
+                # ---- JSON 导入 ----
+                t = str(spec_obj.get("type") or "").strip().lower()
+                if t not in ("http", "sse", "stdio"):
                     return self._reply(200, {"ok": False,
-                                             "error": "url 需以 http(s):// 开头"})
-                ent = {"type": stype, "url": url}
-                if token:
-                    ent["headers"] = {"Authorization": "Bearer " + token}
-            elif stype == "stdio":
-                if not command:
-                    return self._reply(200, {"ok": False,
-                                             "error": "stdio 服务需要可执行文件路径"})
-                # 参数按空格切分，双引号包住的部分不切（Windows 路径常见）
-                args = [p.strip('"') for p in _re.findall(
-                    r'"[^"]*"|\S+', args_raw)][:32]
-                ent = {"type": "stdio", "command": command, "args": args}
+                                             "error": "JSON 里 type 仅支持 http/sse/stdio"})
+                ent = {"type": t}
+                if t == "stdio":
+                    cmd = str(spec_obj.get("command") or "").strip()[:200]
+                    if not cmd:
+                        return self._reply(200, {"ok": False,
+                                                 "error": "stdio 服务缺 command"})
+                    ent["command"] = cmd
+                    a = spec_obj.get("args")
+                    if isinstance(a, list):
+                        ent["args"] = [str(x)[:200] for x in a][:32]
+                    elif isinstance(a, str) and a.strip():
+                        ent["args"] = [p.strip('"') for p in _re.findall(
+                            r'"[^"]*"|\S+', a.strip())][:32]
+                    else:
+                        ent["args"] = []
+                    if isinstance(spec_obj.get("env"), dict):
+                        ent["env"] = {str(k)[:64]: str(v)[:300]
+                                      for k, v in list(spec_obj["env"].items())[:32]}
+                else:
+                    url = str(spec_obj.get("url") or "").strip()[:300]
+                    if not (url.startswith("http://") or url.startswith("https://")):
+                        return self._reply(200, {"ok": False,
+                                                 "error": "url 需以 http(s):// 开头"})
+                    ent["url"] = url
+                    if isinstance(spec_obj.get("headers"), dict):
+                        ent["headers"] = {str(k)[:64]: str(v)[:300]
+                                          for k, v in list(spec_obj["headers"].items())[:24]}
+                if spec_obj.get("timeout") is not None:
+                    ent["timeout"] = spec_obj["timeout"]
+                if spec_obj.get("protocol"):
+                    ent["protocol"] = spec_obj["protocol"]
+                ent = _norm_extras(ent)
             else:
-                return self._reply(200, {"ok": False,
-                                         "error": "类型仅支持 http / sse / stdio"})
+                # ---- 表单模式 ----
+                stype = str(body.get("type") or "http").strip().lower()
+                if stype not in ("http", "sse", "stdio"):
+                    return self._reply(200, {"ok": False,
+                                             "error": "类型仅支持 http / sse / stdio"})
+                ent = {"type": stype}
+                if stype == "stdio":
+                    command = str(body.get("command") or "").strip()[:200]
+                    if not command:
+                        return self._reply(200, {"ok": False,
+                                                 "error": "stdio 服务需要可执行文件路径"})
+                    ent["command"] = command
+                    ent["args"] = [p.strip('"') for p in _re.findall(
+                        r'"[^"]*"|\S+', str(body.get("args") or "").strip()[:600])][:32]
+                    env = _parse_lines_kv(body.get("env_lines"), r"([^=]+?)\s*=\s*(.*)")
+                    if env:
+                        ent["env"] = env
+                else:
+                    url = str(body.get("url") or "").strip()[:300]
+                    if not (url.startswith("http://") or url.startswith("https://")):
+                        return self._reply(200, {"ok": False,
+                                                 "error": "url 需以 http(s):// 开头"})
+                    ent["url"] = url
+                    hdrs = _parse_lines_kv(body.get("headers_lines"),
+                                           r"([^:]+?)\s*:\s*(.*)")
+                    token = str(body.get("token") or "").strip()[:200]
+                    if token:
+                        hdrs["Authorization"] = "Bearer " + token
+                    if hdrs:
+                        ent["headers"] = hdrs
+                if str(body.get("timeout") or "").strip():
+                    ent["timeout"] = body.get("timeout")
+                if body.get("protocol"):
+                    ent["protocol"] = body.get("protocol")
+                ent = _norm_extras(ent)
             cfg = _M.mcp_cfg()
             cfg["custom"][name] = ent
             _M.save_mcp_cfg(cfg)
