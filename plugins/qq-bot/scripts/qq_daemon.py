@@ -891,7 +891,8 @@ class Daemon:
                         "%s_%s" % (chat_type, chat_id), [])):
                     if str(rec.get("message_id")) == str(info["reply_id"]):
                         reply_to = {"sender_name": rec.get("sender_name"),
-                                    "text": str(rec.get("text") or "")[:60]}
+                                    "text": str(rec.get("text") or "")[:60],
+                                    "is_bot": bool(rec.get("is_bot"))}
                         break
                 # 兜底①：NapCat 的 reply 段常不带 content 预览、本地历史又只
                 # 覆盖最近消息——引用较早/跨天的消息时 reply_text 为空，
@@ -946,8 +947,11 @@ class Daemon:
                             if not it.get("reply_to"):
                                 sn = ((g.get("sender") or {}).get("nickname")
                                       or g.get("sender_name") or "")
-                                it["reply_to"] = {"sender_name": sn,
-                                                  "text": txt[:60]}
+                                it["reply_to"] = {
+                                    "sender_name": sn, "text": txt[:60],
+                                    "is_bot": str((g.get("sender") or {}).get(
+                                        "user_id") or g.get("user_id") or "")
+                                    == str(self.login.get("user_id") or "")}
                     except Exception:
                         pass
                     finally:

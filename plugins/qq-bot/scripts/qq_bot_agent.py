@@ -2160,6 +2160,15 @@ def _interrupt_gate(daemon, msg, persona_name):
     if vision_enabled() and vision_mode() == "ask":
         _img_rule = ("带图的消息：只有对方明确要求你看图（看这张/这是什么图/帮我分析）"
                      "或图与你强相关时才输出 Y；只是随手发图没人叫你看 → 输出 N。" + nl)
+    # 引用回复他人（用户实测：回复别人的消息机器人跑去插话）——闸门必须
+    # 知道这条是"回复某人的"，那是一场双向对话，默认不掺和
+    rt = msg.get("reply_to") or {}
+    _reply_rule = ""
+    if msg.get("has_reply") and rt and not rt.get("is_bot") \
+            and msg.get("trigger_reason") not in ("at", "reply_to_bot"):
+        _reply_rule = ("【现在】是引用回复：发言者在回复「%s」的消息（不是回复你）——"
+                       "他们在双向对话，默认输出 N；只有内容明显点你名字/向你提问才 Y。"
+                       % str(rt.get("sender_name") or "某人")[:16] + nl)
     system = (
         "你是QQ群AI机器人「%s」的插话判定器。下面是群最近对话，最后一条【现在】"
         "不是对你说的，你在随机旁观。判断这个话题值不值得「%s」接一句话：" + nl +
@@ -2168,7 +2177,7 @@ def _interrupt_gate(daemon, msg, persona_name):
         "重点识别「群友俩在对话」：最近几行里有两三个不同的人名在短句往来"
         "（尤其「没」「告诉我」「你倒是说啊」这类省略主语的接话短句），"
         "说明他们在聊自己的事——哪怕话题有趣也输出 N。" + nl +
-        _img_rule +
+        _img_rule + _reply_rule +
         "宁可 N。只输出 Y 或 N，不要其他任何字。") % (persona_name, persona_name)
     user = ("【最近对话】" + nl + "%s" + nl + nl + "【现在】%s") % (hist_block, now_line)
     try:
@@ -4408,8 +4417,14 @@ def call_vision(messages_text, image_urls):
 
     模型选择：vision_model 配置了具体模型则只用它；留空则按模型链降级尝试
     （glm-5.3-flash 等新模型原生支持图像输入）。失败抛异常由调用方降级纯文本。
+    接地指令：小模型对"文字+图"容易只按文字字面回复（用户实测"窜了是我
+    肠胃不好"是在调侃图里华莱士低价，它没看图答非所问）——显式要求结合图。
     """
-    content = [{"type": "text", "text": messages_text[1]["content"]}]
+    _ground = ("\n\n（系统注：这条消息带有图片，图片就在下方——必须先看懂图片"
+               "实际内容再回复：文字的意思往往建立在图片语境上（梗、价格、"
+               "画面、表情、场景），只按文字字面回答会答非所问；回复要体现"
+               "你真的看懂了图，但别用说明腔，自然聊。）")
+    content = [{"type": "text", "text": messages_text[1]["content"] + _ground}]
     for u in image_urls[:4]:
         content.append({"type": "image_url", "image_url": {"url": str(u)}})
     vmsgs = [{"role": "system", "content": messages_text[0]["content"]},
