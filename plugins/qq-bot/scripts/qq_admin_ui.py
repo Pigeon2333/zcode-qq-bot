@@ -453,7 +453,9 @@ table.proftbl th:nth-child(4){width:110px}
 table.proftbl th:nth-child(5){width:144px}
 table.proftbl td:nth-child(3){word-break:break-word}
 table.proftbl td:nth-child(4),table.proftbl td:nth-child(5){white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#toast{position:fixed;right:20px;bottom:20px;background:var(--card);border:1px solid var(--ok);color:var(--fg);padding:11px 18px;border-radius:10px;display:none;box-shadow:var(--shadow);font-size:13.5px;z-index:99}
+#toast{position:fixed;right:20px;bottom:20px;background:var(--card);border:1px solid var(--ok);color:var(--fg);padding:11px 18px;border-radius:10px;display:none;box-shadow:var(--shadow);font-size:13.5px;z-index:9999}
+/* toast 必须盖过 .dlg-mask(200)/#splash(300)：弹窗里校验失败的提示曾被
+   压在模糊层下面看不见（用户实测）——与 #taskbox 同层 9999 */
 .mono{font-family:Consolas,monospace;font-size:12px;color:var(--dim)}
 .tabular-nums{font-variant-numeric:tabular-nums}
 .rmgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:10px}
