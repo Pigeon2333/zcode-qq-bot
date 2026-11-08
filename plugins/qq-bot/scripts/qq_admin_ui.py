@@ -2202,7 +2202,12 @@ async function vMcp(){
  +'<div class="card" style="border:1px solid '+(on?'var(--err)':'var(--border)')+'">'
  +'<label class="master" style="margin-bottom:8px"><input type="checkbox" id="mcpon" '+(on?'checked':'')+' onchange="mcpToggleGlobal(this.checked)">'
  +'<span><b>启用 MCP 工具桥</b><div class="k" style="margin-top:3px">⚠ 仅主人的消息可触发工具调用；每个服务还需单独启用（默认全关）。开启需二次确认。</div></span></label>'
- +'<div class="k" style="line-height:1.8;margin-top:8px">用法：开启并启用服务后，在 QQ 里像聊天一样对机器人说需求（如「用 tracy 抓 5 秒性能」「帮我查下麦当劳有什么券」），它会自己决定调哪个工具、多步执行，再用平时的语气汇报结果。stdio 型服务由机器人自起进程（复用 ZCode 的安装，不重复装）；http 型直连同一实例。</div></div>'
+ +'<div class="k" style="line-height:1.8;margin-top:8px">用法：开启并启用服务后，在 QQ 里像聊天一样对机器人说需求（如「用 tracy 抓 5 秒性能」「帮我查下麦当劳有什么券」），它会自己决定调哪个工具、多步执行，再用平时的语气汇报结果。stdio 型服务由机器人自起进程（复用 ZCode 的安装，不重复装）；http 型直连同一实例。</div>'
+ +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px dashed var(--line)">'
+ +'<span class="k">工具索引上限（字符）</span>'
+ +'<input id="mcp-docap" type="number" min="500" max="20000" step="500" value="'+(m.doc_cap||4000)+'" style="width:110px">'
+ +'<button class="act ghost" style="margin:0;padding:4px 14px;font-size:12px" onclick="mcpDocapSave()">保存</button>'
+ +'<span class="k" id="mcp-docap-msg" style="flex:1;min-width:260px">默认 4000。参考：每个服务约 20 个工具、占约 2000-2500 字符——2 个服务 ≈ 4000，4 个 ≈ 8000，8 个 ≈ 16000。调大=工具更全，但每条主人消息注入更多上下文（4000 字符约 2000 token）；超出上限的工具新启用服务优先展示。</span></div></div>'
  +'<div class="card"><div class="k" style="margin-bottom:8px"><b>来自 ZCode</b>（自动同步 ~/.zcode/cli/config.json，' + (zk.length?('共 '+zk.length+' 个——ZCode 新装的服务约 1 分钟内自动出现，无需重复安装；每个服务在此手动启用'):'未检测到') + '）</div>'
  +(zk.length?'<div style="display:grid;gap:6px">'+zk.map(row).join('')+'</div>'
    :'<div class="k" style="padding:10px;border:1px dashed var(--line);border-radius:8px;line-height:1.9">'
@@ -2229,6 +2234,13 @@ async function mcpToggleSrv(name,on){
  if(!r||r.ok===false){toast('操作失败：'+((r&&r.error)||''),false);vMcp();return}
  toast(on?('已启用「'+name+'」——下一条主人消息起生效（工具索引约 1 分钟内刷新）'):'已停用「'+name+'」');
  vMcp();
+}
+async function mcpDocapSave(){
+ const v=parseInt((document.getElementById('mcp-docap').value||'').trim(),10);
+ if(!v||v<500||v>20000){toast('上限需是 500-20000 的数字',false);return}
+ const r=await api('/api/mcp/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({doc_cap:v})}).catch(()=>({ok:false,error:'请求失败'}));
+ if(!r||r.ok===false){toast('保存失败：'+((r&&r.error)||''),false);return}
+ toast('已保存：工具索引上限 '+r.doc_cap+' 字符（约 1 分钟内生效）');
 }
 async function mcpTest(name){
  toast('连接测试中…（stdio 型需拉起进程，约几秒）');
@@ -5237,6 +5249,7 @@ class UiHandler(BaseHTTPRequestHandler):
             zk_n = len([s for s in servers if s["source"] == "zcode"])
             return self._reply(200, {"ok": True, "enabled": bool(cfg.get("enabled")),
                                      "servers": servers,
+                                     "doc_cap": _M.doc_cap_cfg(),
                                      "zcode_installed": bool(C.zcode_installed()),
                                      "zcode_config_found": os.path.isfile(_M.ZCODE_CONFIG),
                                      "zcode_mcp_count": zk_n})
@@ -5256,6 +5269,17 @@ class UiHandler(BaseHTTPRequestHandler):
                     _M.reset_client(name)   # 关闭即杀常驻子进程
             _M.save_mcp_cfg(cfg)
             return self._reply(200, {"ok": True})
+        if u.path == "/api/mcp/settings":
+            # MCP 桥杂项设置：doc_cap = 工具索引总长度上限（字符）
+            import qq_mcp as _M
+            cfg = _M.mcp_cfg()
+            try:
+                v = int(body.get("doc_cap"))
+                cfg["doc_cap"] = max(500, min(20000, v))
+            except (TypeError, ValueError):
+                return self._reply(200, {"ok": False, "error": "上限需是 500-20000 的数字"})
+            _M.save_mcp_cfg(cfg)
+            return self._reply(200, {"ok": True, "doc_cap": cfg["doc_cap"]})
         if u.path == "/api/mcp/test":
             import qq_mcp as _M
             return self._reply(200, _M.test_server(str(body.get("name") or "")[:48]))

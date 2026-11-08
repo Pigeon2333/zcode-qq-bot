@@ -508,9 +508,23 @@ def call_tool(server, tool, args, timeout=_CALL_TIMEOUT):
     return c.call(tool, args, timeout=timeout)
 
 
-def tool_index(limit_per_server=20, doc_cap=4000):
+def doc_cap_cfg():
+    """工具索引总长度上限（字符，用户可调；默认 4000，限 500-20000）。
+    经验值：单服务一般 ≤20 个工具、每条索引行约 100-130 字符——
+    1 个服务约 2000-2500 字符，默认 4000 约够 2 个服务全量。"""
+    try:
+        v = int(mcp_cfg().get("doc_cap") or 0)
+    except (TypeError, ValueError):
+        v = 0
+    return max(500, min(20000, v)) if v > 0 else 4000
+
+
+def tool_index(limit_per_server=20, doc_cap=None):
     """agent 提示词用工具索引：[(server, tool, desc, 必填参数)]。
-    单服务超时/失败就跳过（日志见返回的 errors）。总长度受 doc_cap 约束。"""
+    单服务超时/失败就跳过（日志见返回的 errors）。总长度受 doc_cap 约束
+    （默认取用户配置 doc_cap_cfg()；每服务最多列 20 个工具）。"""
+    if doc_cap is None:
+        doc_cap = doc_cap_cfg()
     rows, errors, used = [], [], 0
     for name, _spec in enabled_tool_servers():
         try:

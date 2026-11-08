@@ -4535,8 +4535,9 @@ def _mcp_tools_doc():
            "参数是 JSON（字符串用双引号）；没有参数可省略 {}。工具结果下一轮给你。\n"
            "要点：闲聊绝不用工具；不要对主人提\"工具/MCP\"字眼，用完自然转述结果；"
            "拿不准就一步一步来，先查询再动手。\n可用工具：\n" + "\n".join(rows))
-    if len(txt) > 4600:
-        txt = txt[:4600] + "\n…（工具清单过长已截断）"
+    cap = M.doc_cap_cfg() + 700      # 索引行（可调上限）+ 协议说明头部余量
+    if len(txt) > cap:
+        txt = txt[:cap] + "\n…（工具清单过长已截断——可在管理台「MCP 服务」页调大工具索引上限）"
     _MCP_DOC_CACHE.update(ts=time.time(), txt=txt, n=len(rows))
     return txt
 
