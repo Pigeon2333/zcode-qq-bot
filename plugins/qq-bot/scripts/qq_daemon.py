@@ -942,7 +942,10 @@ class Daemon:
                 "sender_name": sender_name,
                 "triggered": triggered,
                 "trigger_reason": reason,
-                "text": info["text"],
+                "text": info["text"] or ("[图片]" if info["image_urls"]
+                                         else ("[语音]" if info["record"]
+                                               else ("[表情]" if info["face_count"]
+                                                     else ""))),
                 "at_me": info["at_me"],
                 "at_users": info["at_users"][:5],
                 "image_urls": info["image_urls"][:6],
