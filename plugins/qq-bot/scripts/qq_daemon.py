@@ -164,9 +164,10 @@ def file_sig(path):
 
 def out(line):
     """线程安全地打印结构化行（stdout 由启动方重定向到日志文件）。
-    行首带 [HH:MM:SS] 时间戳，供运行日志页展示。"""
+    行首带 [MM-DD HH:MM:SS] 时间戳（日期不能省：日志多天累积，无日期的
+    历史行会和今天的混排，把已修复的旧故障当成现行——agent 侧已同步）。"""
     with _print_lock:
-        print("[%s] %s" % (time.strftime("%H:%M:%S"), line), flush=True)
+        print("[%s] %s" % (time.strftime("%m-%d %H:%M:%S"), line), flush=True)
 
 
 def now_ts():
