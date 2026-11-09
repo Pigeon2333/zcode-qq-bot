@@ -1513,19 +1513,48 @@ class Daemon:
 
     def get_image_file(self, url):
         """QQ 图（multimedia.nt.qq.com.cn 带 rkey）外部 HTTP 一律 400
-        （-5503，签名只认 QQ 内部环境，实测换 UA 无效）——必须借 NapCat
-        的 get_image 动作下载到本地。返回 {ok, path}。"""
+        （-5503，签名只认 QQ 内部环境）——借 NapCat 的 download_file
+        （内部凭证；get_image 对该 URL 形态实测 file not found）下载后
+        复制进 DATA_DIR/cache/images/（=缓存管理「消息图片暂存」分类，
+        UI 可清）并做 200MB 环形上限。返回 {ok, path}。"""
         u = str(url or "").strip()
         if not u.startswith("http"):
             return {"ok": False, "error": "url 非法"}
         try:
-            r = self._call_action("get_image", {"file": u}, timeout=25)
+            r = self._call_action("download_file", {"url": u}, timeout=25)
         except Exception as e:
-            return {"ok": False, "error": "get_image 失败：%s" % e}
-        p = str((r or {}).get("file") or "")
-        if p and os.path.isfile(p):
-            return {"ok": True, "path": p}
-        return {"ok": False, "error": "NapCat 未返回本地文件（旧版本？）"}
+            return {"ok": False, "error": "下载失败：%s" % e}
+        src = str((r or {}).get("file") or "")
+        if not (src and os.path.isfile(src)):
+            return {"ok": False, "error": "NapCat 未返回本地文件"}
+        try:
+            import hashlib as _hl
+            import shutil as _sh
+            dst_dir = os.path.join(DATA_DIR, "cache", "images")
+            os.makedirs(dst_dir, exist_ok=True)
+            dst = os.path.join(
+                dst_dir, _hl.sha256(u.encode("utf-8")).hexdigest()[:24]
+                + os.path.splitext(src)[1].lower()[:5] or ".img")
+            if not os.path.isfile(dst):
+                _sh.copyfile(src, dst)
+            # 环形上限 200MB：超了按 mtime 删最老（每下载一次最多清一轮）
+            try:
+                items = [(os.path.getmtime(os.path.join(dst_dir, f)),
+                          os.path.join(dst_dir, f), f)
+                         for f in os.listdir(dst_dir)
+                         if os.path.isfile(os.path.join(dst_dir, f))]
+                total = sum(os.path.getsize(p) for _m, p, _f in items)
+                if total > 200 * 1024 * 1024:
+                    for _m, p, _f in sorted(items)[:-int(len(items) * 0.3)]:
+                        try:
+                            os.remove(p)
+                        except OSError:
+                            pass
+            except OSError:
+                pass
+            return {"ok": True, "path": dst}
+        except OSError as e:
+            return {"ok": False, "error": "复制进缓存失败：%s" % e}
 
     def set_typing(self, user_id, on=True):
         """在对方聊天栏显示/取消「对方正在输入…」（NapCat set_input_status；
