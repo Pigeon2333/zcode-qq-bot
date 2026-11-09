@@ -526,7 +526,7 @@ _QQ_FACE_NAMES = [
 ]
 
 
-def extract_message_info(segments, self_id):
+def extract_message_info(segments, self_id, chat_ctx=("", "")):
     info = {
         "text": "",
         "at_me": False,
@@ -643,6 +643,30 @@ def extract_message_info(segments, self_id):
             # 唱歌翻唱类插件需要拿到用户唱的原始音频（此前只立 flag 全丢）
             info["record_file"] = str(d.get("file") or "")[:300]
             info["record_url"] = str(d.get("url") or "")[:500]
+        elif t in ("video", "file", "contact", "location", "xml", "markdown",
+                   "share", "dice", "rps", "coin", "poke", "basketball",
+                   "inline_keyboard", "touch"):
+            # 已知但不解析的段：给模型可读标记（此前静默丢弃→模型以为
+            # 对方发了条空消息，用户实测"看不到QQ空间动态"即此类）
+            label = {"video": "[视频]", "file": "[文件]", "contact": "[名片]",
+                     "location": "[位置]", "xml": "[XML卡片]",
+                     "markdown": "[Markdown卡片]", "share": "[链接分享]",
+                     "dice": "[骰子]", "rps": "[猜拳]", "coin": "[金币]",
+                     "poke": "[戳一戳]", "basketball": "[篮球]",
+                     "inline_keyboard": "[按钮]", "touch": "[触屏]"}[t]
+            texts.append(label)
+            info.setdefault("unknown_segs", []).append(
+                {"type": t, "keys": sorted(str(k) for k in d.keys())[:8]})
+        elif t not in ("text", "at", "image", "forward", "reply", "face",
+                       "mface", "json"):
+            # 完全未知的段类型：标记+留键名（下一版精确支持的数据源；
+            # QQ 空间动态转发等新形态靠这个现形——不再静默丢弃）
+            texts.append("[消息类型:%s]" % str(t)[:20])
+            info.setdefault("unknown_segs", []).append(
+                {"type": str(t)[:20], "keys": sorted(str(k) for k in d.keys())[:8]})
+            out("DAEMON_UNKNOWN_SEG type=%s keys=%s chat=%s/%s"
+                % (str(t)[:20], ",".join(sorted(str(k) for k in d.keys()))[:80],
+                   chat_ctx[0], chat_ctx[1]))
     info["text"] = "".join(texts).strip()
     return info
 
@@ -846,7 +870,9 @@ class Daemon:
             chat_name = str(sender.get("nickname") or user_id)
             sender_name = chat_name
 
-        info = extract_message_info(segments_of(ev.get("message")), self_id)
+        info = extract_message_info(segments_of(ev.get("message")), self_id,
+                                     (str(ev.get("chat_type") or ""),
+                                      str(ev.get("chat_id") or "")))
         if info.get("forward_ids") and not info.get("forward_inline"):
             # 合并转发只带卡片 id：去拉取内部消息。get_forward_msg 要等 WS
             # 回包，而回包处理就跑在当前这条 WS 事件线程上——同步等会死锁到
