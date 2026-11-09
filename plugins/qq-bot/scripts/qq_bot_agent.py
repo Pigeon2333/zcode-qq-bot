@@ -307,8 +307,10 @@ RT = Runtime()
 
 
 def out(line):
-    """结构化日志行，行首带 [HH:MM:SS] 时间戳（运行日志页展示用）。"""
-    print("[%s] %s" % (time.strftime("%H:%M:%S"), line), flush=True)
+    """结构化日志行，行首带 [MM-DD HH:MM:SS] 时间戳（运行日志页展示用）。
+    日期不能省：agent.log 多天累积 + 多进程交错追加，只带时分秒的历史行
+    会和今天的行混排，把已修复的旧崩溃当成现行故障（11-09 排查实录）。"""
+    print("[%s] %s" % (time.strftime("%m-%d %H:%M:%S"), line), flush=True)
 
 
 _RE_RESET_AT = re.compile(r"(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2}:\d{2})")
@@ -808,14 +810,22 @@ def any_key_usable():
     return bool(glm_key())
 
 
-def call_glm_with_fallback(messages, text_ctx=""):
+def call_glm_with_fallback(messages, text_ctx="", budget_sec=200):
     """按模型链候选序尝试（每条目可绑定不同 API Key，可跨 Key 降级）；
     失败按错误分级冷却，429/失效自动切下一个。控制台「立即使用」锁定的
-    候选排最前且无视冷却；它一旦失败立即解锁回落自动链。"""
+    候选排最前且无视冷却；它一旦失败立即解锁回落自动链。
+    budget_sec：单次调用总预算（默认 200s）。服务端不稳时段（实测 k2 连续
+    read timeout + k1 429 冷却）链式重试能把一条消息拖 8-12 分钟，主循环
+    停转期间后续所有消息积压——超预算立即放弃本条（下条消息照常服务）。"""
     tried = []
     cands = _order_candidates(_chain_candidates())
     now = time.time()
+    _t0 = now
     for kid, kv, model, _ctx, _mo in cands:
+        if time.time() - _t0 > budget_sec:
+            out("AGENT_BUDGET_OUT tried=%s elapsed=%.0fs（服务端不稳，本条放弃）"
+                % ("/".join(tried)[:120], time.time() - _t0))
+            raise RuntimeError("模型链预算耗尽（%ds）" % budget_sec)
         ck = "%s:%s" % (kid, model)
         if ck != RT.pinned and RT.cooldowns.get(ck, 0) > now:
             tried.append("%s@%s(冷却)" % (model, kid))
