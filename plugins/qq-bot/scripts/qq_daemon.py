@@ -677,7 +677,8 @@ class Daemon:
         self._gm_sig = object()
         self._pc_cache = dict(DEFAULT_PRIVATE_CONFIG)
         self._pc_sig = object()
-        self._last_chat_ts = 0.0
+        self._last_chat_ts = {}   # chat_id → 上次闲聊插话 ts（全局单值时
+        #  跨群互相抢占：A 群刚插话会把 B 群的间隔也重置——分群各自计时）
         self.pending_echoes = {}
         self.stop_flag = threading.Event()
         self.stats = {"received": 0, "triggered": 0, "sent": 0, "dropped_rate": 0}
@@ -1413,11 +1414,16 @@ class Daemon:
         if mode == "chat" and chat_type == "group":
             now = time.time()
             with self.lock:
-                gap = now - self._last_chat_ts
+                gap = now - self._last_chat_ts.get(str(chat_id), 0.0)
             if gap >= cfg["chat_min_interval_sec"]:
                 if rand_int(0, 9999) < int(cfg["chat_probability"] * 10000):
                     with self.lock:
-                        self._last_chat_ts = now
+                        # 分群计时（全局单值时 A 群插话会重置 B 群间隔）；
+                        # 触发后立即记录——同一话题热区群友 3 秒连发几条时
+                        # 不会每条都掷点（用户实测"翻译话题重复回复"）。
+                        # 但下一条若是 @/回复机器人（强触发），到 agent 后
+                        # 照常回复，不受此影响。
+                        self._last_chat_ts[str(chat_id)] = now
                     return True, "chat_random"
         return False, ""
 

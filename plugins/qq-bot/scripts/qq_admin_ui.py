@@ -4137,7 +4137,7 @@ def _tail_lines(path, n=250):
         return []
 
 
-_LINE_TS = re.compile(r"^\[(\d{2}:\d{2}:\d{2})\]\s?")
+_LINE_TS = re.compile(r"^\[(?:\d{2}-\d{2} )?(\d{2}:\d{2}:\d{2})\]\s?")
 
 
 def _split_ts(ln):
