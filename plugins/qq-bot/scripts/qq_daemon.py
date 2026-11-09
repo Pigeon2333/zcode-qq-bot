@@ -990,7 +990,8 @@ class Daemon:
                         pass
                     finally:
                         self.inbox.append(it)
-                threading.Thread(target=_enrich_reply, args=(item,),
+                threading.Thread(target=_enrich_reply,
+                                 args=(item, rt_fetch_id),
                                  daemon=True).start()
             else:
                 self.inbox.append(item)
