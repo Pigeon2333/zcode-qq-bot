@@ -949,6 +949,10 @@ class Daemon:
                         reply_to = {"sender_name": rec.get("sender_name"),
                                     "text": str(rec.get("text") or "")[:60],
                                     "is_bot": bool(rec.get("is_bot"))}
+                        # 被引用消息带图 → 并进当前消息视觉输入
+                        for mu in (rec.get("image_urls") or [])[:2]:
+                            if mu and mu not in info["image_urls"]:
+                                info["image_urls"].append(mu)
                         break
                 # 兜底①：NapCat 的 reply 段常不带 content 预览、本地历史又只
                 # 覆盖最近消息——引用较早/跨天的消息时 reply_text 为空，
@@ -996,16 +1000,40 @@ class Daemon:
                                               {"message_id": mid}, timeout=5)
                         if isinstance(g, dict):
                             segs = g.get("message") or []
+                            img_urls = []
                             if isinstance(segs, str):
                                 txt = re.sub(r"CQ:[a-zA-Z_]+\[[^\]]*\]", "",
                                              segs).strip()
+                                # CQ 码形态：抓被引用消息里的图片 url
+                                for mu in re.findall(r"url=([^,\]]+)", segs):
+                                    mu = mu.strip()
+                                    if mu.startswith("http") and mu not in img_urls:
+                                        img_urls.append(mu)
                             else:
+                                # array 形态：文字在 data.text（曾误用段级
+                                # s.get("text")——恒为空，兜底文字从未工作）
                                 txt = " ".join(
-                                    str(s.get("text") or "")
+                                    str((s.get("data") or {}).get("text") or "")
                                     for s in segs if isinstance(s, dict)
                                     and s.get("type") == "text").strip()
+                                # array 形态：抓 image 段 url（被引用消息带
+                                # 图——用户实测引用图机器人"看不到"）
+                                for s in segs:
+                                    if isinstance(s, dict) and s.get("type") == "image":
+                                        du = s.get("data") or {}
+                                        mu = str(du.get("url") or "")
+                                        if mu.startswith("http") and mu not in img_urls:
+                                            img_urls.append(mu)
                             if txt:
                                 it["reply_text"] = txt[:120]
+                            if img_urls:
+                                # 并进当前消息视觉输入（走 NapCat 图片链，
+                                # 视觉分支 base64 直传照常工作）
+                                it.setdefault("image_urls", [])
+                                for mu in img_urls[:2]:
+                                    if mu not in it["image_urls"]:
+                                        it["image_urls"].append(mu)
+                                it["reply_has_image"] = True
                             if not it.get("reply_to"):
                                 sn = ((g.get("sender") or {}).get("nickname")
                                       or g.get("sender_name") or "")
@@ -1076,6 +1104,10 @@ class Daemon:
             "is_bot": is_bot,
             "text": text if text is not None else item.get("text", ""),
             "n_images": n_images,
+            # 存前 2 张图 URL：之后有人引用这条消息时，被引原图可以
+            # 补进视觉输入（历史路径此前只有 n_images 计数，图拿不到）
+            "image_urls": [str(u)[:200]
+                           for u in (item.get("image_urls") or [])[:2]],
         }
         self.mem_history["%s_%s" % (item.get("chat_type"), item.get("chat_id"))].append(rec)
         if message_id:

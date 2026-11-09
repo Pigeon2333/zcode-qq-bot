@@ -2756,9 +2756,19 @@ def build_messages(daemon, msg, ctx_k=32):
 
     rt = msg.get("reply_to") or None
     rt_text = str(msg.get("reply_text") or "").strip()
-    # 被引原文注入（带说话人——"谁说的"和"说了什么"同样重要）
-    rt_note = ("\n【被引用的原文】%s：%s" % (
-        (rt or {}).get("sender_name") or "对方", rt_text)) if rt_text else ""
+    # 被引原文注入（带说话人——"谁说的"和"说了什么"同样重要）；
+    # 被引消息带图时明确告知（图已并进本条视觉输入，模型能把图和
+    # 引用语境关联——用户实测引用图问"这是什么意思"她看不到）
+    _rt_img = bool(msg.get("reply_has_image")) or (
+        bool(msg.get("image_urls")) and bool(msg.get("has_reply")))
+    if rt_text:
+        rt_note = ("\n【被引用的原文】%s：%s%s" % (
+            (rt or {}).get("sender_name") or "对方", rt_text,
+            "（这条被引用的消息带图片——下方附的图就是它，结合图回答）"
+            if _rt_img else ""))
+    elif _rt_img:
+        rt_note = ("\n【被引用的原文】%s 发的是一条图片消息（图已附在下方）"
+                   % ((rt or {}).get("sender_name") or "对方"))
     if msg["chat_type"] == "group":
         speaker = "%s(QQ:%s)" % (msg["sender_name"], msg["sender_id"])
         # 被@列表：at_me 时保留其他人名（群友让她"跟XX聊"需知道XX是谁）
