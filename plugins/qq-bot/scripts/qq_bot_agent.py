@@ -2761,6 +2761,8 @@ def build_messages(daemon, msg, ctx_k=32):
     # 引用语境关联——用户实测引用图问"这是什么意思"她看不到）
     _rt_img = bool(msg.get("reply_has_image")) or (
         bool(msg.get("image_urls")) and bool(msg.get("has_reply")))
+    rt_note = ""   # 默认无引用注释（三分支兜底：曾漏默认值致无引用消息
+                   # 组装即 UnboundLocalError 全群失声——11-09 23:37 事故）
     if rt_text:
         rt_note = ("\n【被引用的原文】%s：%s%s" % (
             (rt or {}).get("sender_name") or "对方", rt_text,
