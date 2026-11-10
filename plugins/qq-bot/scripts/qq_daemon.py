@@ -701,6 +701,7 @@ class Daemon:
         self._gm_sig = object()
         self._pc_cache = dict(DEFAULT_PRIVATE_CONFIG)
         self._pc_sig = object()
+        self._nearby_img = {}     # 会话+发送者 → 90s 内发的图（图文拆两条合并用）
         self._last_chat_ts = {}   # chat_id → 上次闲聊插话 ts（全局单值时
         #  跨群互相抢占：A 群刚插话会把 B 群的间隔也重置——分群各自计时）
         self.pending_echoes = {}
@@ -873,6 +874,27 @@ class Daemon:
         info = extract_message_info(segments_of(ev.get("message")), self_id,
                                      (str(ev.get("chat_type") or ""),
                                       str(ev.get("chat_id") or "")))
+        # QQ 发"图+文字"常被拆成两条消息（先文字条无图/先图条无字）——
+        # 用户实测"这个真想买了"+遮光罩图：文字条无图走纯文本链，"这个"
+        # 被上文食物顶替或瞎猜"图没加载"。合并：同发送者 90s 内的相邻纯图
+        # 消息把图并入本条（发送时间缓存，双向都可命中——先图后字同理）。
+        _ck = "%s_%s_%s" % (chat_type, chat_id or group_id, user_id)
+        _now = ev.get("time") or now_ts()
+        _txt = info.get("text") or ""
+        if info.get("image_urls"):
+            # 本条带图 → 记缓存，供之后的纯文字条回捞
+            with self.lock:
+                self._nearby_img[_ck] = {
+                    "ts": _now, "urls": info["image_urls"][:2]}
+        elif _txt.strip():
+            # 纯文字条 → 捞 90s 内同发送者的图并入（"这个/它"类指代即指此图）
+            with self.lock:
+                _cached = self._nearby_img.get(_ck)
+            if _cached and _now - _cached.get("ts", 0) <= 90:
+                info["image_urls"] = list(_cached["urls"])
+                info["merged_nearby_image"] = True
+                with self.lock:
+                    self._nearby_img.pop(_ck, None)   # 一次性，避免重复并图
         if info.get("forward_ids") and not info.get("forward_inline"):
             # 合并转发只带卡片 id：去拉取内部消息。get_forward_msg 要等 WS
             # 回包，而回包处理就跑在当前这条 WS 事件线程上——同步等会死锁到
