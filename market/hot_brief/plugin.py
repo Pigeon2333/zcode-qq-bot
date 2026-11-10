@@ -353,15 +353,36 @@ def _set_auto_time(api, hh, mm):
 
 
 def _line(chat_type, chat_id):
+    """注入今日 + 近 2 天热点（此前只注入当天——隔天热点被新闻源撤下后，
+    群友问昨天的瓜机器人一无所知还搜不到（实测黄仁勋外遇事故：
+    11-09 热点里有，11-10 群友问时注入的是 11-10 清单=没有）。新闻的
+    讨论窗口普遍 2-3 天，热点记忆跟着讨论窗口走）。"""
+    parts = []
+    # 今天（主清单）
     try:
         with open(BRIEF_PATH, "r", encoding="utf-8") as f:
             d = json.load(f)
+        if isinstance(d, dict) and str(d.get("date") or "") == time.strftime("%Y-%m-%d"):
+            text = str(d.get("text") or "").strip()
+            if text:
+                parts.append("### %s\n- %s" % (d.get("date"), text[:_MAX]))
     except (OSError, ValueError):
+        pass
+    # 近 2 天（历史存档，压缩为行首条目——旧瓜只需"知道有这回事"）
+    for k in (1, 2):
+        try:
+            day = time.strftime("%Y-%m-%d", time.localtime(time.time() - k * 86400))
+            hp = os.path.join(HIST_DIR, day + ".json")
+            with open(hp, "r", encoding="utf-8") as f:
+                hd = json.load(f)
+            text = str(hd.get("text") or "").strip()
+            if text:
+                parts.append("### %s（前天以前的旧闻，条目截断）\n- %s"
+                             % (day, text[:_MAX // 2]))
+        except (OSError, ValueError):
+            continue
+    if not parts:
         return ""
-    if not isinstance(d, dict) or str(d.get("date") or "") != time.strftime("%Y-%m-%d"):
-        return ""
-    text = str(d.get("text") or "").strip()
-    if not text:
-        return ""
-    return ("\n\n## 今日热点速览（今天 %s 的新闻/热搜摘要，聊到相关话题时可自然引用，"
-            "不确定的细节不要编）\n- %s" % (d.get("date"), text[:_MAX]))
+    return ("\n\n## 近几天热点速览（按日分组的新闻/热搜摘要——**包括昨天前天的旧闻**，"
+            "群友聊到其中任何一条都算真实新闻，别否认说没这回事；细节不确定就说不"
+            "确定，但\"有没有这件事\"以这里为准）\n%s" % "\n".join(parts))
