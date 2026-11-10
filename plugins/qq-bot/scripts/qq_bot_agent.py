@@ -3623,6 +3623,10 @@ def _proactive_pick(cfg, kind, pool, now, daemon=None):
         g_prob = min(1.0, max(0.0, float(cfg.get("proactive_%s_probability" % kind, 0.1))))
     except (TypeError, ValueError):
         g_prob = 0.1
+    # 风控优化·主动消息降频：间隔×2、概率×0.5（risk_proactive_downscale 开时）
+    if load_json_const(REPLY_CONFIG_PATH, {}).get("risk_proactive_downscale", False):
+        g_iv = min(7200, g_iv * 2)
+        g_prob = g_prob * 0.5
     modes = load_json_const(GROUP_MODES_AGENT_PATH, {}) if kind == "groups" else {}
     secrets.SystemRandom().shuffle(pool)
     for chat_type, chat_id in pool:
@@ -3671,13 +3675,21 @@ def _proactive_cap_left(cfg, now):
 
 def _proactive_tick(daemon):
     """主动发消息节拍器（主循环每次迭代调用）：群/私聊各自独立判定
-    （开关、频率、概率、禁用时段），共用安静模式与输出守卫。"""
+    （开关、频率、概率、禁用时段），共用安静模式与输出守卫。
+    风控优化（risk_proactive_downscale，默认关）：夜间（0-8点）全静默 +
+    全时段主动消息概率×0.5、最小间隔×2——降低"非人工高频行为"特征。
+    开关关闭=完全回退原始配置，不丢任何已有设置。"""
     cfg = load_json_const(REPLY_CONFIG_PATH, {})
     kinds = [k for k in ("groups", "private")
              if cfg.get("proactive_%s_enabled" % k)]
     if not kinds:
         return
     now = time.time()
+    _risk_down = cfg.get("risk_proactive_downscale", False)
+    if _risk_down:
+        _lt = time.localtime(now)
+        if _lt.tm_hour < 8:
+            return  # 夜间全静默
     st = daemon.status() or {}
     if st.get("quiet_until", 0) > now:
         return  # 安静模式：不主动打扰

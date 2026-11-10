@@ -2119,10 +2119,6 @@ async function vSettings(){
    <button class="act ghost" style="margin:0" onclick="cacheReload()">刷新大小</button>
    <button class="act" style="margin:0" onclick="cacheClean()">清理所选缓存…</button>
    <span class="k" id="cachetotal"></span></div></div>
- <div class="card"><div class="k" style="margin-bottom:8px">所在地天气感知</div>
-  <div class="k">已插件化：城市与开关在「插件 → 所在地天气感知 → ⚙ 设置」里配置（留空 = 不感知）。之前在这里填过的城市会自动沿用。</div></div>
- <div class="card"><div class="k" style="margin-bottom:8px">QQ 在线状态<span class="badge" style="background:var(--tint);color:var(--dim)">已插件化 · 能力更全</span></div>
-  <div class="k">已迁到「插件 → QQ 在线状态管理」：上下线自动 / 定时状态（睡觉中·搬砖中·摸鱼中等个性状态定时切换）/ 手动一键切换，三个能力各自开关。之前在这里设置过的「上下线自动」开关自动沿用。</div></div>
  <div class="card"><div class="k" style="margin-bottom:8px">NapCat 活性看门狗<span class="badge" style="background:var(--tint);color:var(--dim)">防消息推送静默失联</span></div>
   <label class="master"><input type="checkbox" ${c.watchdog_enabled!==false?'checked':''} onchange="saveKVLoad('/api/app-config',{watchdog_enabled:this.checked?1:0},'看门狗已'+(this.checked?'开启':'关闭'))">
    <span><b>启用看门狗</b><div class="k" style="margin-top:3px">定期探测 NapCat 消息通道是否真的活着（TCP 连着但对端不响应/不推事件的「半死」状态，控制台显示在线但机器人实际收不到消息）；探测到失联会在「状态」页告警并私聊通知主人</div></span></label>
@@ -2131,6 +2127,16 @@ async function vSettings(){
   <label style="display:block;margin:4px 0"><input type="radio" name="wdmode" value="alert" ${c.watchdog_mode==='alert'?'checked':''} onchange="saveKVLoad('/api/app-config',{watchdog_mode:'alert'},'看门狗模式：仅告警')"> 仅告警<span class="k">：只通知，不做任何重启，等主人到控制台手动处理</span></label>
   <div style="margin-top:8px"><label>探测间隔 <input type="number" min="60" max="600" step="30" value="${c.watchdog_interval||120}" style="width:70px" onchange="saveKVLoad('/api/app-config',{watchdog_interval:Math.max(60,Math.min(600,parseInt(this.value)||120))},'探测间隔已保存')"> 秒（连续 2 次异常才触发动作）</label></div>
   <div class="k" style="margin-top:6px">当前状态可在「状态」页查看（含最近事件）</div></div>
+
+ <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">⑦.5 风控优化（2026-11-10 条款825 风控后新增）</div>
+ <div class="card"><div class="k" style="margin-bottom:10px">降低机器人账号的"非人工行为"特征，减少触发风控（条款8.2.5=第三方软件获取数据/非人工操作）的概率。所有开关都<strong>可随时开/关并即时生效</strong>——关闭即完全回退原始行为，已有设置不丢失。</div>
+  <label class="master" style="margin-bottom:10px"><input type="checkbox" ${rv.risk_limit_image_fetch!==false?'checked':''} onchange="saveKVLoad('/api/reply-config',{risk_limit_image_fetch:this.checked},'图片获取限频已'+(this.checked?'开启':'关闭'))">
+   <span><b>图片获取限频</b><div class="k" style="margin-top:3px">机器人下载 QQ 图片（看图用）每分钟最多 10 次、每日最多 60 次——批量拉取图片是条款825「第三方获取数据」最典型的特征。超限时段机器人会"暂时看不到图"（诚实回复看不到），恢复后自动继续。</div></span></label>
+  <label class="master" style="margin-bottom:10px"><input type="checkbox" ${rv.risk_proactive_downscale?'checked':''} onchange="saveKVLoad('/api/reply-config',{risk_proactive_downscale:this.checked},'主动消息降频已'+(this.checked?'开启':'关闭'))">
+   <span><b>主动消息降频 + 夜间静默</b><div class="k" style="margin-top:3px">开启后：凌晨 0-8 点主动消息全静默；其他时段主动消息概率×0.5、最小间隔×2。上方的主动消息设置保留不丢，关闭本开关即完全回退原始频率。</div></span></label>
+  <label class="master"><input type="checkbox" ${rv.risk_human_pace!==false?'checked':''} onchange="saveKVLoad('/api/reply-config',{risk_human_pace:this.checked},'发送节奏拟人化已'+(this.checked?'开启':'关闭'))">
+   <span><b>发送节奏拟人化</b><div class="k" style="margin-top:3px">回复首条消息带 0.8-2.5 秒随机"看到消息到开口"的反应延迟（秒回是机器人最典型的特征）。关闭=首条立即发出。</div></span></label>
+  <div class="k" style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--line)">⚠ 这些措施降低的是风险概率，无法完全消除——第三方协议（NapCat）本身就在条款禁止范围内。账号解封后建议先冷启动 1-2 天（只看不说），再逐步恢复。</div></div>
 
  <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">⑧ 应用行为</div>
  <div class="card"><div class="k">开机自启（登录 Windows 后自动打开控制台窗口${c.autostart_with_windows?'，已开启':'，未开启'}）</div>
@@ -5248,6 +5254,9 @@ class UiHandler(BaseHTTPRequestHandler):
                                      "vision_prob": _vp,
                                      "blank_img_policy": str(data.get("blank_img_policy") or "reaction")[:12],
                                      "chat_max_len": data.get("chat_max_len", 80),
+                                     "risk_limit_image_fetch": data.get("risk_limit_image_fetch", True),
+                                     "risk_proactive_downscale": data.get("risk_proactive_downscale", False),
+                                     "risk_human_pace": data.get("risk_human_pace", True),
                                      "chat_anti_interrupt": data.get("chat_anti_interrupt", True),
                                      "web_search_enabled": data.get("web_search_enabled", False),
                                      "reaction_enabled": data.get("reaction_enabled", True),
@@ -6100,6 +6109,12 @@ class UiHandler(BaseHTTPRequestHandler):
                     data["chat_max_len"] = max(0, min(500, int(body["chat_max_len"])))
                 except (TypeError, ValueError):
                     pass
+            if "risk_limit_image_fetch" in body:
+                data["risk_limit_image_fetch"] = bool(body["risk_limit_image_fetch"])
+            if "risk_proactive_downscale" in body:
+                data["risk_proactive_downscale"] = bool(body["risk_proactive_downscale"])
+            if "risk_human_pace" in body:
+                data["risk_human_pace"] = bool(body["risk_human_pace"])
             if "web_search_enabled" in body:
                 data["web_search_enabled"] = bool(body["web_search_enabled"])
             if "abuse_guard_enabled" in body:

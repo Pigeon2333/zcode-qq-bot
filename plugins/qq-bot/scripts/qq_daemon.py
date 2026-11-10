@@ -702,6 +702,8 @@ class Daemon:
         self._pc_cache = dict(DEFAULT_PRIVATE_CONFIG)
         self._pc_sig = object()
         self._nearby_img = {}     # 会话+发送者 → 90s 内发的图（图文拆两条合并用）
+        self._img_fetch_window = {"m": []}   # 图片获取限频：分钟窗口时间戳
+        self._img_fetch_day = {"d": "", "n": 0}   # 图片获取限频：当日计数
         self._last_chat_ts = {}   # chat_id → 上次闲聊插话 ts（全局单值时
         #  跨群互相抢占：A 群刚插话会把 B 群的间隔也重置——分群各自计时）
         self.pending_echoes = {}
@@ -1604,10 +1606,28 @@ class Daemon:
         （-5503，签名只认 QQ 内部环境）——借 NapCat 的 download_file
         （内部凭证；get_image 对该 URL 形态实测 file not found）下载后
         复制进 DATA_DIR/cache/images/（=缓存管理「消息图片暂存」分类，
-        UI 可清）并做 200MB 环形上限。返回 {ok, path}。"""
+        UI 可清）并做 200MB 环形上限。
+        风控优化（条款825=第三方获取数据，download_file 是典型特征）：
+        限频开关开时每分钟最多 10 次、每日最多 60 次，超限返回跳过标记
+        （调用方视觉降级为纯文本，不硬拉）。返回 {ok, path|error}。"""
         u = str(url or "").strip()
         if not u.startswith("http"):
             return {"ok": False, "error": "url 非法"}
+        cfg = self.cfg
+        if cfg.get("risk_limit_image_fetch", True):
+            now = time.time()
+            with self.lock:
+                win = self._img_fetch_window.setdefault("m", [])
+                win[:] = [t for t in win if now - t < 60]
+                day_key = time.strftime("%Y%m%d")
+                if self._img_fetch_day.get("d") != day_key:
+                    self._img_fetch_day = {"d": day_key, "n": 0}
+                if len(win) >= 10:
+                    return {"ok": False, "error": "图片获取限频（每分钟 10 次上限）"}
+                if self._img_fetch_day["n"] >= 60:
+                    return {"ok": False, "error": "图片获取限频（今日 60 次上限）"}
+                win.append(now)
+                self._img_fetch_day["n"] += 1
         try:
             r = self._call_action("download_file", {"url": u}, timeout=25)
         except Exception as e:
@@ -1791,6 +1811,8 @@ class Daemon:
         if not self._rate_ok(chat_key):
             raise RuntimeError("触发每分钟限流，请稍后再发")
         lo, hi = [int(x) for x in self.cfg.get("typing_delay_ms", [600, 2000])]
+        # 风控优化·发送节奏拟人化总开关（默认开）：条间随机延迟；关闭=回退旧行为
+        risk_pace = cfg.get("risk_human_pace", True)
         reply_to = str(reply_message_id).strip() if reply_message_id else ""
         n = 0
         for i, t in enumerate(texts[:8]):
@@ -1799,7 +1821,9 @@ class Daemon:
                 out("SEND_DUP_DROP chat=%s text=%.40s" % (chat_key, t))
                 continue
             if i == 0:
-                delay = 0
+                # 风控优化·拟人化：首条也带 0.8-2.5s 反应延迟（秒回是机器人
+                # 最典型特征）；带引用回复时不延迟（语义上紧跟被引用消息）
+                delay = rand_int(8, 25) / 10.0 if (risk_pace and not reply_to) else 0
             else:
                 # 拟人打字节奏：条间延迟 = 基础随机 + 本条字数因子
                 # （打长一点的消息本来就要多打一会儿），上限 6s
