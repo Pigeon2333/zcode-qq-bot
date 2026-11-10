@@ -2062,7 +2062,21 @@ async function vSettings(){
     <span class="k">%（0%=只看不说，100%=见图必聊）</span>
    </div>
    <div class="k" style="margin-top:8px">「看后再定」= 看图与插话解耦：每张图都会真的看过（内容理解准确），要不要开口由概率单独控制——在热情与克制之间。前两档也会把带图消息更积极地送到机器人面前；「仅明确要求」最省资源</div>
+   <div style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--line)">
+    <div class="k" style="margin-bottom:6px"><b>纯图/表情包怎么回应</b>（对方只发了张图或表情包、没有任何文字时——活人感复盘 P1）</div>
+    <label style="display:block;margin:5px 0"><input type="radio" name="bip" value="reaction" ${(rv.blank_img_policy||'reaction')==='reaction'?'checked':''} onchange="saveKVLoad('/api/reply-config',{blank_img_policy:this.value},'纯图/表情回应策略已保存')"> <b>回个表情（推荐）</b><span class="k">——从「表情回应」已启用的表情里随机挂一个小黄脸，不发文字（真人刷到表情包大多也就回个表情；最去人机感）</span></label>
+    <label style="display:block;margin:5px 0"><input type="radio" name="bip" value="skip" ${(rv.blank_img_policy)==='skip'?'checked':''} onchange="saveKVLoad('/api/reply-config',{blank_img_policy:this.value},'纯图/表情回应策略已保存')"> <b>不回应</b><span class="k">——纯图/表情完全不搭理（最安静）</span></label>
+    <label style="display:block;margin:5px 0"><input type="radio" name="bip" value="text" ${(rv.blank_img_policy)==='text'?'checked':''} onchange="saveKVLoad('/api/reply-config',{blank_img_policy:this.value},'纯图/表情回应策略已保存')"> <b>照旧文字回复</b><span class="k">——按以前的行为生成文字回应（最热情，也最容易硬接话）</span></label>
+    <div class="k" style="margin-top:4px">仅影响闲聊插话场景；@她、回复她、文字里提到图的消息不受此设置影响（照常认真回应）。选择「回个表情」需在「群消息」页开启表情回应并勾选至少一个表情。</div>
+   </div>
   </div></div>
+ <div class="card"><div class="k" style="margin-bottom:6px"><b>闲聊回复长度上限</b>（活人感复盘 P3——消除小作文感）</div>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+   <span class="k">闲聊插话的单条回复超过</span>
+   <input type="number" min="0" max="500" step="10" value="${rv.chat_max_len===undefined?80:rv.chat_max_len}" style="width:70px" onchange="saveKVLoad('/api/reply-config',{chat_max_len:Math.max(0,Math.min(500,parseInt(this.value)||0))},'闲聊长度上限已保存（0=不限制）')">
+   <span class="k">字时自动压缩成一句（0=不限制）。仅管闲聊插话；@她/回复她的正经回答不受限。</span>
+  </div>
+  <div class="k" style="margin-top:6px">超长回复会带着「压缩成一两句、保留人设口吻和最有趣的一点」的指令重写一次——不是硬截断，意思和人设都在。</div></div>
  <div class="card"><label class="master"><input type="checkbox" ${rv.web_search_enabled?'checked':''} onchange="saveWebSearch(this.checked)">
   <span><b>联网搜索</b><div class="k" style="margin-top:3px">遇到实时性问题（新闻/天气/价格/最新版本等）自动先联网搜索再回答，普通闲聊不触发不计费。搜索后端：优先用智谱搜索资源包（若有），未开通自动切换必应免费搜索兜底——不买资源包也能搜；两个都失败时机器人会坦白拿不到最新消息</div></span></label></div>
 
@@ -5232,6 +5246,8 @@ class UiHandler(BaseHTTPRequestHandler):
                                      "vision_enabled": data.get("vision_enabled", False),
                                      "vision_mode": str(data.get("vision_mode") or "all")[:8],
                                      "vision_prob": _vp,
+                                     "blank_img_policy": str(data.get("blank_img_policy") or "reaction")[:12],
+                                     "chat_max_len": data.get("chat_max_len", 80),
                                      "chat_anti_interrupt": data.get("chat_anti_interrupt", True),
                                      "web_search_enabled": data.get("web_search_enabled", False),
                                      "reaction_enabled": data.get("reaction_enabled", True),
@@ -6074,6 +6090,14 @@ class UiHandler(BaseHTTPRequestHandler):
             if "vision_prob" in body:
                 try:
                     data["vision_prob"] = min(1.0, max(0.0, float(body["vision_prob"])))
+                except (TypeError, ValueError):
+                    pass
+            if "blank_img_policy" in body:
+                if body["blank_img_policy"] in ("text", "reaction", "skip"):
+                    data["blank_img_policy"] = body["blank_img_policy"]
+            if "chat_max_len" in body:
+                try:
+                    data["chat_max_len"] = max(0, min(500, int(body["chat_max_len"])))
                 except (TypeError, ValueError):
                     pass
             if "web_search_enabled" in body:
