@@ -2642,17 +2642,50 @@ async function setPrimary(id){
  const r=await saveKV('/api/keys/primary',{id},'主 Key 已切换（生图/搜索/未指定条目即用新主 Key）');
  if(r.ok!==false)load()}
 let _memPage=0,_profPage=0;
+let _memQ={id:'',text:''},_profQ={qq:'',text:''};
 const _PAGE=20;
+const _SYN=[['外遇','出轨','婚外情','不忠','偷情'],['黄仁勋','老黄','英伟达'],['显卡','gpu'],['女朋友','女友','对象'],['男朋友','男友'],['结婚','已婚','婚礼'],['离婚'],['生日'],['工作','上班','打工'],['大学','上学','学校'],['游戏','打游戏','开黑'],['老板','上司'],['美食','好吃','吃的'],['猫','猫咪','喵'],['狗','狗狗','汪'],['失眠','睡不着','熬夜'],['感冒','生病'],['加班'],['放假','假期','休假'],['视频','bv号','b站'],['直播'],['演唱会','live'],['外卖','饿了么','美团'],['奶茶','咖啡','喝茶'],['原神','深渊','原批'],['明日方舟','舟游','刀客塔'],['东方','车万'],['碧蓝档案','ba','sensei'],['崩坏','星穹铁道','米哈游']];
+function _fuzzyHit(needle,hay){
+ // 三档模糊：①子串 ②短词(≤4字)同义词组扩散（"外遇"命中"婚外情"）
+ // ③长词 2-gram 覆盖≥0.6（允许个别字错序/间隔）。多词空格分隔=每词都中。
+ // 长句不做同义词扩散（"打游戏的约定"含"游戏"不该命中任何含"游戏"的记忆）。
+ needle=String(needle||'').trim().toLowerCase();
+ hay=String(hay||'').toLowerCase();
+ if(!needle)return true;
+ if(hay.includes(needle))return true;
+ const words=needle.split(/[\s,，、;；]+/).filter(Boolean);
+ const wordHit=(w)=>{
+  if(hay.includes(w))return true;
+  if(w.length<=4){
+   for(const g of _SYN){
+    if(g.some(x=>x===w||x.includes(w))&&g.some(x=>hay.includes(x)))return true;
+   }
+  }
+  if(w.length>=3){let hit=0,tot=0;for(let i=0;i<w.length-1;i++){tot++;if(hay.includes(w.slice(i,i+2)))hit++;}if(hit/tot>=0.6)return true;}
+  return false;
+ };
+ return words.every(wordHit);
+}
+function _memFilter(items){
+ const q=_memQ;
+ return items.filter(r=>(!q.id||String(r.id).includes(q.id.trim()))&&_fuzzyHit(q.text,r.text));
+}
+function _profFilter(items){
+ const q=_profQ;
+ return items.filter(p=>(!q.qq||String(p.qq).includes(q.qq.trim()))&&_fuzzyHit(q.text,(p.note||'')+' '+(p.name||'')+' '+(p.groups||[]).join(' ')));
+}
 async function vMemory(){
  const [d,mp]=await Promise.all([api('/api/memory'),api('/api/member-profiles').catch(()=>({members:[]}))]);
  window._memData=d.items||[];window._profData=mp.members||[];
- const total=window._memData.length;
- const paged=window._memData.slice(_memPage*_PAGE,(_memPage+1)*_PAGE);
+ const memAll=_memFilter(window._memData);
+ const total=memAll.length;
+ const paged=memAll.slice(_memPage*_PAGE,(_memPage+1)*_PAGE);
  const rows=paged.map(r=>`<tr><td class="mono">${esc(r.time)}</td><td>${r.scope==='group'?'群':'人'}</td><td class="mono">${esc(String(r.id))}</td><td>${esc(r.text)}</td>
   <td><button class="act ghost" style="margin:0;padding:3px 10px;font-size:12px" onclick="editMemo(${r.idx})">编辑</button>
   <button class="act ghost danger" style="margin:0;padding:3px 10px;font-size:12px" onclick="delMemo(${r.idx})">删除</button></td></tr>`).join('');
- const ptotal=window._profData.length;
- const ppaged=window._profData.slice(_profPage*_PAGE,(_profPage+1)*_PAGE);
+ const profAll=_profFilter(window._profData);
+ const ptotal=profAll.length;
+ const ppaged=profAll.slice(_profPage*_PAGE,(_profPage+1)*_PAGE);
  const profs=ppaged.map(p=>`<tr><td>${esc(p.name||'<i>未命名</i>')}</td><td class="mono">${esc(p.qq)}</td><td>${esc(p.note)}</td>
   <td class="k" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc((p.groups||[]).join('、'))}">${esc((p.groups||[]).join('、'))||'—'}</td>
   <td><button class="act ghost" style="margin:0;padding:3px 10px;font-size:12px" onclick="editProfile('${esc(p.qq)}')">编辑</button>
@@ -2661,18 +2694,26 @@ async function vMemory(){
   '<button class="act ghost" style="margin:0;padding:4px 12px;font-size:12px" '+(cur>0?'':'disabled ')+'onclick="'+fn+'(-1)">上一页</button>'+
   '<span class="k">第 '+(ttl?cur+1:0)+' / '+Math.max(1,Math.ceil(ttl/_PAGE))+' 页 · 共 '+ttl+' 条</span>'+
   '<button class="act ghost" style="margin:0;padding:4px 12px;font-size:12px" '+((cur+1)*_PAGE<ttl?'':'disabled ')+'onclick="'+fn+'(1)">下一页</button></div>';
+ const srchBox=(kind,labelQ,labelId,oninput)=>'<div style="display:flex;gap:8px;margin:8px 0;flex-wrap:wrap;align-items:center">'+
+  '<input placeholder="'+labelQ+'" style="flex:1;min-width:160px" value="'+esc(kind==='mem'?_memQ.text:_profQ.text)+'" oninput="'+oninput+'(\'text\',this.value)">'+
+  '<input placeholder="'+labelId+'" style="width:130px" value="'+esc(kind==='mem'?_memQ.id:_profQ.qq)+'" oninput="'+oninput+'(\'id\',this.value)">'+
+  '<span class="k">输入即筛；内容支持模糊（多词空格分隔=都含；中文两字邻对覆盖≥50%算命中）</span></div>';
  $('#view').innerHTML=head('长期记忆流水（自治大脑自动写入；改动即时生效，机器人下一轮对话即用新记忆）')+saveHint('每条记忆可单独编辑/删除（删除需确认）；也可手动新增一条（选择群或联系人）。')+
  `<div class="card">
+ ${srchBox('mem','搜索记忆内容（模糊）','群号/人QQ','memQSet')}
  <table class="memtbl"><tr><th>时间</th><th>类型</th><th>对象</th><th>内容</th><th>操作</th></tr>${rows||'<tr><td colspan=5 class="k">空</td></tr>'}</table>
  ${pgn(_memPage,total,'memPage')}
  <div style="display:flex;gap:8px;margin-top:10px"><button class="act" onclick="addMemo()">手动新增一条记忆</button>
  <button class="act ghost danger" onclick="clearMem()">清空全部记忆流水</button></div></div>
  <div class="card" style="margin-top:14px"><div class="k" style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">群成员画像<span class="badge" style="background:var(--tint);color:var(--dim)">每日复盘自动更新</span><span class="k">开关在「插件 → 群成员画像」</span></div>
  <div class="k" style="margin-bottom:8px">机器人对每个熟人的长期了解（身份、兴趣、相处注意事项），聊天时自动带上「记得你」的感觉。数据只存本机，本页可随时查看/编辑/删除。</div>
+ ${srchBox('prof','搜索画像/昵称/群（模糊）','QQ号','profQSet')}
  <table class="proftbl"><tr><th>昵称</th><th>QQ</th><th>画像</th><th>常驻群</th><th>操作</th></tr>${profs||'<tr><td colspan=5 class="k">暂无画像（夜间复盘会自动为活跃成员生成）</td></tr>'}</table>
  ${pgn(_profPage,ptotal,'profPage')}
  <div style="display:flex;gap:8px"><button class="act" onclick="editProfile('')">手动新增画像</button></div></div>`;
 }
+function memQSet(k,v){_memQ[k]=v;_memPage=0;vMemory()}
+function profQSet(k,v){_profQ[k]=v;_profPage=0;vMemory()}
 function memPage(d){_memPage=Math.max(0,_memPage+d);load()}
 function profPage(d){_profPage=Math.max(0,_profPage+d);load()}
 async function editProfile(qq){
