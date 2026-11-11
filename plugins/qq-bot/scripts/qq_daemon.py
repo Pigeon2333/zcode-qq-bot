@@ -709,6 +709,9 @@ class Daemon:
         # 图文合并·向后捞：会话+发送者 → 等待后续配图的被触发文字条 ts
         # （期间到达的图压住自身触发，并入该文字条一次性消费，防双回复）
         self._fwd_pending = {}
+        # 裸@补内容：会话+发送者 → {"ts","cancel"}（只@没写正文的等待项；
+        # 3s 内 TA 补发的正文/图并入裸@，带正文的@补发则取消裸@防双回）
+        self._at_pending = {}
         self._img_fetch_window = {"m": []}   # 图片获取限频：分钟窗口时间戳
         self._img_fetch_day = {"d": "", "n": 0}   # 图片获取限频：当日计数
         self._last_chat_ts = {}   # chat_id → 上次闲聊插话 ts（全局单值时
@@ -981,6 +984,37 @@ class Daemon:
         if info.pop("_fwd_merge_hold", False) and \
                 reason not in ("at", "reply_to_bot"):
             triggered, reason = False, "img_fwd_merged"
+        # 裸@补内容（用户两连报：只@没写正文时机器人对着空气问"你发的是啥"，
+        # 还被空文本占位符误导成"对方发了图"——真正想说的内容在 TA 刚发的
+        # 前/后一条消息里）。裸@推迟 3s 入箱：届时取同发送者 120s 内最后一条
+        # 实质消息，文字作 bare_at_prev 提示、图并入视觉输入——前发后发都覆盖。
+        # @本身带正文（"@智谱娘 看这个"）或引用消息不走此路。
+        _at_ck = "%s_%s_%s" % (chat_type, chat_id, user_id)
+        _at_now = now_ts()
+        with self.lock:
+            _at_pend = self._at_pending.get(_at_ck)
+        _at_fresh = bool(_at_pend and _at_now - _at_pend["ts"] <= 8)
+        _at_bare = (triggered and reason == "at"
+                    and not (info["text"] or "").strip()
+                    and not info["image_urls"] and not info["has_reply"])
+        _at_defer_ok = False
+        if _at_bare and _at_fresh:
+            # 连续裸@：前一个还在等配文，这个丢弃（防对同一内容回两次）
+            triggered, reason = False, "bare_at_dup"
+        elif _at_bare:
+            with self.lock:
+                self._at_pending[_at_ck] = {"ts": _at_now, "cancel": False}
+            _at_defer_ok = True
+        elif _at_fresh and triggered and \
+                reason not in ("at", "reply_to_bot"):
+            # 裸@等待期 TA 补发了正文/图：那就是被@的那条——压掉自身主动
+            # 触发（内容照常入史，延迟中的裸@会捞到它）
+            triggered, reason = False, "at_followup_merged"
+        elif _at_fresh and reason == "at" and \
+                ((info["text"] or "").strip() or info["image_urls"]):
+            # 补发的是带正文的@：裸@作废（延迟项丢弃），由本条直接回
+            with self.lock:
+                self._at_pending[_at_ck]["cancel"] = True
         # 图文合并·向后捞（双向化的另一头）：被触发的纯文字条自身无图时，
         # 同发送者的配图常在 1-3 秒后才到（先打字后配图——2026-11-11 实测
         # 「腾讯云搞活动了」触发回复"图看不到"，图 1 秒后才到，而回捞只会
@@ -1115,6 +1149,11 @@ class Daemon:
                     threading.Thread(target=self._fwd_deferred_push,
                                      args=(item, _fwd_ck, _fwd_ts),
                                      daemon=True).start()
+                elif _at_defer_ok:
+                    # 裸@推迟入箱等前后文（见 _at_deferred_push）
+                    threading.Thread(target=self._at_deferred_push,
+                                     args=(item, _at_ck),
+                                     daemon=True).start()
                 else:
                     self.inbox.append(item)
             self.stats["received"] += 1
@@ -1165,6 +1204,58 @@ class Daemon:
         if got:
             out("DAEMON_FWD_IMG_MERGE id=%s chat=%s/%s (+%d图并入文字条)"
                 % (it["id"], it["chat_type"], it["chat_id"], len(got)))
+
+    def _prev_substantive(self, chat_type, chat_id, user_id, within=120):
+        """同发送者 within 秒内最后一条有实质内容的消息（裸@补内容用）。
+        跳过机器人自己的消息与空占位（纯@/表情/语音/无图的图占位）；
+        历史按时间追加，倒序扫到超窗即止。"""
+        key = "%s_%s" % (chat_type, chat_id)
+        now = time.time()
+        with self.lock:
+            hist = list(self.mem_history.get(key, []))
+        for rec in reversed(hist):
+            if rec.get("ts", 0) < now - within:
+                return None
+            if rec.get("is_bot") or \
+                    str(rec.get("sender_id") or "") != str(user_id):
+                continue
+            txt = str(rec.get("text") or "").strip()
+            has_img = bool(rec.get("image_urls"))
+            if not has_img and (not txt or txt in ("[表情]", "[语音]", "[图片]")
+                                or txt.startswith("@")):
+                continue
+            return rec
+        return None
+
+    def _at_deferred_push(self, it, ck):
+        """裸@延迟入箱（独立线程）：睡 3s 后取同发送者 120s 内最后一条实质
+        消息补进本条——TA 先发内容再@、或先@再补内容都覆盖（等待期补发的
+        内容自身触发已被压掉，入史后在这里被捞到）。带正文的@补发会把
+        cancel 置位：本条直接丢弃，由那条自己回，绝不对同一内容回两次。"""
+        time.sleep(3.0)
+        prev = None
+        with self.lock:
+            pend = self._at_pending.get(ck)
+            self._at_pending.pop(ck, None)
+            if pend and pend.get("cancel"):
+                return
+            prev = self._prev_substantive(it["chat_type"], it["chat_id"],
+                                          it.get("sender_id"), within=120)
+            if self.acked_max >= it["id"]:
+                # 延迟期间 agent 可能已确认更高 id——重编号防本条被永久跳过
+                self.seq = max(self.seq, self.acked_max) + 1
+                it["id"] = self.seq
+        if prev:
+            pt = str(prev.get("text") or "").strip()
+            it["bare_at_prev"] = {"text": pt[:120], "ts": prev.get("ts", 0)}
+            it.setdefault("image_urls", [])
+            for mu in (prev.get("image_urls") or [])[:2]:
+                if mu and mu not in it["image_urls"]:
+                    it["image_urls"].append(mu)
+            out("DAEMON_BARE_AT_MERGE id=%s chat=%s/%s prev=%.40s img=%d"
+                % (it["id"], it["chat_type"], it["chat_id"],
+                   pt.replace("\n", " "), len(it["image_urls"])))
+        self.inbox.append(it)
 
     def _mem_push(self, item, message_id, is_bot, text=None, n_images=0):
         # 同一 message_id 只入历史一次：机器人自发消息会经历「发送成功入史」

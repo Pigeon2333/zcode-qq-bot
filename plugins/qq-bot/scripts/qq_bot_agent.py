@@ -2826,9 +2826,28 @@ def build_messages(daemon, msg, ctx_k=32):
             lead = "%s（@的是QQ:%s，不是你）说：" % (speaker, msg["at_users"][0])
         else:
             lead = "%s 说：" % speaker
+        # 裸@（只@没写正文）：空文本绝不能落进"（发了一张图/表情）"占位——
+        # 那会误导模型以为对方发了图（用户实测："图片发过来看看嘛"/"这个我
+        # 看不到"）。daemon 已把 TA 刚发的上一条实质消息挂进 bare_at_prev
+        # （前发后发都覆盖，图也并进了视觉输入），这里如实告知并指路。
+        _bap = msg.get("bare_at_prev") or {}
+        _bare_at = (msg.get("at_me") and not (msg.get("text") or "").strip()
+                    and not msg.get("image_urls"))
+        if _bap.get("text") and _bap["text"] != "[图片]":
+            _now_body = ("只@了你、这条没写正文。TA 刚发的上一条消息是「%s」"
+                         "——TA 这个时候@你多半就是在说这条，直接结合它回应"
+                         "（那条带的图也已附在下方）；除非那条也没有实质内容，"
+                         "才问 TA 想说什么。") % _bap["text"]
+        elif _bap and msg.get("image_urls"):
+            _now_body = ("只@了你、没写正文；TA 刚发的内容已并进本条（见下方"
+                         "图片）——直接看图/内容回应。")
+        elif _bare_at:
+            _now_body = "只@了你、没写正文，前后也没有 TA 刚发的消息——问 TA 想说什么。"
+        else:
+            _now_body = msg["text"] or "（发了一张图/表情）"
         content = ("【当前场景：群聊（群号 %s，群内所有人可见你发的消息）| 最近对话】\n%s\n%s\n\n【现在】%s%s%s" % (
             msg["chat_name"], hist_block, hist_note, lead,
-            msg["text"] or "（发了一张图/表情）", rt_note))
+            _now_body, rt_note))
     else:
         # 私聊：告诉模型它在哪些群（否则它以为"活动范围只有当前聊天"，
         # 主人让它去群里说话时会拒绝）；群名拉不到时只给群号
