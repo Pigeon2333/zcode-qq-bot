@@ -81,9 +81,11 @@ async function styleLearnPage(d){
     el.textContent='群消息白名单：'+r.groups.map(function(g){return String(g.name||g.id)}).join('、');
    }else{el.textContent='（群消息白名单为空或读取失败）'}
   };
-  if(window._SL_WL){paint(window._SL_WL);return}
-  PC('wl_groups').then(function(r){window._SL_WL=r;paint(r)});
-  // 人设卡列表（喂给谁）：勾选式多选（只列人设卡；全局是平级 radio 不在此列）
+  if(window._SL_WL){paint(window._SL_WL)}
+  else{PC('wl_groups').then(function(r){window._SL_WL=r;paint(r)})}
+  // 人设卡列表（喂给谁）：勾选式多选（只列人设卡；全局是平级 radio 不在此列）。
+  // 注意：不能吃缓存也不能被白名单缓存的 early-return 跳过——每次进页都要拉
+  // （人设可新建/改名/切换激活，且二次打开时上面 if 已 return 掉一次导致列表卡死的事故）
   PC('persona_names').then(function(r){
    var box=document.getElementById('sl-plist');if(!box)return;
    if(!r||!r.ok){box.textContent='人设列表读取失败';return}
