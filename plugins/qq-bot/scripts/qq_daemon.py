@@ -125,9 +125,13 @@ def load_reply_config_file():
     except (TypeError, ValueError):
         pass
     # 高峰降耗字段原样透传（判定在 qq_common.econ_active；后两项为旧字段兼容）
+    # vision_enabled/vision_mode 必须透传：_decide_trigger 的纯图绕过
+    # （all_prob 档）读这里——漏透传则绕过条件恒 False，纯图消息永远
+    # 只能靠闲聊掷点进 agent（2026-11-11 实测：纯图 reason="" 直接落空）
     for k in ("econ_enabled", "econ_manual", "econ_start", "econ_end",
               "econ_days", "econ_workdays_only", "econ_mode_override",
-              "wait_gate_enabled", "burst_merge_enabled", "botloop_guard_enabled"):
+              "wait_gate_enabled", "burst_merge_enabled", "botloop_guard_enabled",
+              "vision_enabled", "vision_mode"):
         if k in data:
             cfg[k] = data[k]
     return cfg
@@ -702,6 +706,9 @@ class Daemon:
         self._pc_cache = dict(DEFAULT_PRIVATE_CONFIG)
         self._pc_sig = object()
         self._nearby_img = {}     # 会话+发送者 → 90s 内发的图（图文拆两条合并用）
+        # 图文合并·向后捞：会话+发送者 → 等待后续配图的被触发文字条 ts
+        # （期间到达的图压住自身触发，并入该文字条一次性消费，防双回复）
+        self._fwd_pending = {}
         self._img_fetch_window = {"m": []}   # 图片获取限频：分钟窗口时间戳
         self._img_fetch_day = {"d": "", "n": 0}   # 图片获取限频：当日计数
         self._last_chat_ts = {}   # chat_id → 上次闲聊插话 ts（全局单值时
@@ -878,14 +885,22 @@ class Daemon:
                                       str(ev.get("chat_id") or "")))
         # QQ 发"图+文字"常被拆成两条消息（先文字条无图/先图条无字）——
         # 用户实测"这个真想买了"+遮光罩图：文字条无图走纯文本链，"这个"
-        # 被上文食物顶替或瞎猜"图没加载"。合并：同发送者 90s 内的相邻纯图
-        # 消息把图并入本条（发送时间缓存，双向都可命中——先图后字同理）。
+        # 被上文食物顶替或瞎猜"图没加载"。合并（双向）：
+        # - 图在前：同发送者 90s 内先发的图，回捞并入本条（下方 elif）；
+        # - 图在后：被触发的纯文字条延迟 2.5s 入箱，等随后到的配图并入
+        #   （_ingest_message 的 _fwd_defer + _fwd_deferred_push）。
         _ck = "%s_%s_%s" % (chat_type, chat_id or group_id, user_id)
         _now = ev.get("time") or now_ts()
         _txt = info.get("text") or ""
         if info.get("image_urls"):
             # 本条带图 → 记缓存，供之后的纯文字条回捞
+            # 若该会话+发送者有等待配图的被触发文字条（先打字后配图），
+            # 压住本图自身的主动触发——它将并入那条文字一次性回复；
+            # @/回复机器人的图不压（用户点名要立刻看的就是这张）
             with self.lock:
+                _pend_ts = self._fwd_pending.get(_ck)
+                if _pend_ts and _now - _pend_ts <= 6:
+                    info["_fwd_merge_hold"] = True
                 self._nearby_img[_ck] = {
                     "ts": _now, "urls": info["image_urls"][:2]}
         elif _txt.strip():
@@ -960,6 +975,26 @@ class Daemon:
         # 此前 info 没有该字段，两处 info.get("sender_id","") 恒为空 → 静默失效。
         info["sender_id"] = user_id
         triggered, reason = self._decide_trigger(chat_type, info, chat_id)
+        # 并入待定文字的图（_fwd_merge_hold）：压掉自身主动触发，防同一张图
+        # 走两条路各回一次（文字合并回复 + 图自己识图回复）；@/回复机器人
+        # 的强触发已在 _decide_trigger 前置放行，不在此压制
+        if info.pop("_fwd_merge_hold", False) and \
+                reason not in ("at", "reply_to_bot"):
+            triggered, reason = False, "img_fwd_merged"
+        # 图文合并·向后捞（双向化的另一头）：被触发的纯文字条自身无图时，
+        # 同发送者的配图常在 1-3 秒后才到（先打字后配图——2026-11-11 实测
+        # 「腾讯云搞活动了」触发回复"图看不到"，图 1 秒后才到，而回捞只会
+        # 往回找合不上）。推迟 2.5s 入收件箱，期间到的图并入本条视觉输入；
+        # 该图自己的触发已被上面的 hold 压制，不会双回复。带图/引用/语音
+        # 消息不走（各自已有图或有自己的延迟补查路径）。
+        _fwd_ck = "%s_%s_%s" % (chat_type, chat_id, user_id)
+        _fwd_ts = ev.get("time") or now_ts()
+        _fwd_defer = (triggered and not info["image_urls"]
+                      and (info["text"] or "").strip()
+                      and not info["has_reply"] and not info["record"])
+        if _fwd_defer:
+            with self.lock:
+                self._fwd_pending[_fwd_ck] = _fwd_ts
 
         with self.lock:
             self.seq += 1
@@ -1074,7 +1109,14 @@ class Daemon:
                                  args=(item, rt_fetch_id),
                                  daemon=True).start()
             else:
-                self.inbox.append(item)
+                if _fwd_defer:
+                    # 推迟入箱等配图（见 _fwd_deferred_push）；期间 agent 可能
+                    # 已确认更高 id——推送线程会按需重编号防丢
+                    threading.Thread(target=self._fwd_deferred_push,
+                                     args=(item, _fwd_ck, _fwd_ts),
+                                     daemon=True).start()
+                else:
+                    self.inbox.append(item)
             self.stats["received"] += 1
             if triggered:
                 self.stats["triggered"] += 1
@@ -1097,6 +1139,32 @@ class Daemon:
             if len(self._observe) > 2000:
                 del self._observe[:len(self._observe) - 2000]
         out("AGENT_EVENT " + json.dumps(item, ensure_ascii=False))
+
+    def _fwd_deferred_push(self, it, ck, text_ts):
+        """图文合并·向后捞的延迟入箱（独立线程）：睡 2.5s 后看同发送者
+        是否有晚于文字到达的图（_nearby_img 缓存 ts 比对），有则并入本条
+        视觉输入再进收件箱（缓存一次性消费）。收件箱按 id>acked_max 拉取，
+        延迟期间若 agent 已确认到更高 id，重新编号防止本条被永久跳过。"""
+        time.sleep(2.5)
+        got = []
+        with self.lock:
+            c = self._nearby_img.get(ck)
+            if c and c.get("ts", 0) > text_ts:
+                got = list(c.get("urls") or [])[:2]
+                self._nearby_img.pop(ck, None)
+            self._fwd_pending.pop(ck, None)
+            if self.acked_max >= it["id"]:
+                # 新 id 必须越过 acked_max 本身（冒烟实测：仅 seq+=1 在
+                # seq 落后于 acked_max 时仍会被跳过）
+                self.seq = max(self.seq, self.acked_max) + 1
+                it["id"] = self.seq
+            if got:
+                it["image_urls"] = got
+                it["merged_nearby_image"] = True
+            self.inbox.append(it)
+        if got:
+            out("DAEMON_FWD_IMG_MERGE id=%s chat=%s/%s (+%d图并入文字条)"
+                % (it["id"], it["chat_type"], it["chat_id"], len(got)))
 
     def _mem_push(self, item, message_id, is_bot, text=None, n_images=0):
         # 同一 message_id 只入历史一次：机器人自发消息会经历「发送成功入史」
@@ -1474,7 +1542,11 @@ class Daemon:
             return False, "peer_talk"
         # 碎片合并：此人还在连发中，主动插话暂缓（@/回复不受影响；
         # 等此人静默 gap 秒后下一条自然走正常触发，上下文也更完整）
-        if self._is_bursting(chat_type, chat_id, info.get("sender_id", "")):
+        # 带图消息豁免：连发中的「图+配文」正是话题主体（2026-11-11 实测
+        # 合并了配图的「不限老用户」死于 burst_wait，机器人对刚发的图视而
+        # 不见）。豁免只放行到后续判定——all_prob 掷点/纯图降级照常管着。
+        if self._is_bursting(chat_type, chat_id, info.get("sender_id", "")) \
+                and not info.get("image_urls"):
             return False, "burst_wait"
         # 看图模式 all_prob：所有图都识——带图消息绕过闲聊概率直接送达 agent，
         # 识图后由 agent 按 vision_prob 掷点决定插不插话（识图与概率解耦；
