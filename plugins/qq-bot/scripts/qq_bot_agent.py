@@ -536,7 +536,22 @@ class DaemonClient:
         body = {"chat_type": chat_type, "chat_id": chat_id, "texts": clean}
         if reply_message_id:
             body["reply_message_id"] = str(reply_message_id)
-        return self._request("POST", "/send", body)
+        return self._send_checked("POST", "/send", body, "send",
+                                  chat_type, chat_id, timeout=15)
+
+    def _send_checked(self, method, path, body, tag, chat_type, chat_id,
+                      timeout=15):
+        """发送类调用统一出口：daemon 拒绝（ok:false）必须留痕。
+        2026-11-11 事故：daemon send_texts 抛 NameError 后以 ok:false 返回，
+        agent 侧 20 个调用点无一检查返回值 → 机器人全群失声近一天无人知晓。"""
+        r = self._request(method, path, body, timeout=timeout)
+        try:
+            if isinstance(r, dict) and not r.get("ok", True):
+                out("DAEMON_SEND_REJECT tag=%s chat=%s/%s err=%.200s"
+                    % (tag, chat_type, chat_id, str(r.get("error", ""))))
+        except Exception:
+            pass
+        return r
 
     def group_names(self):
         """群号→群名映射（daemon 缓存；拉不到返回空 dict）。"""
@@ -561,18 +576,19 @@ class DaemonClient:
 
     def send_image(self, chat_type, chat_id, file_path, caption="", wait=False,
                    allow_any=False):
-        return self._request("POST", "/send-image", {
+        return self._send_checked("POST", "/send-image", {
             "chat_type": chat_type, "chat_id": chat_id,
             "file": file_path, "caption": caption, "wait": bool(wait),
             "allow_any": bool(allow_any)},
-            timeout=90)
+            "send-image", chat_type, chat_id, timeout=90)
 
     def send_record(self, chat_type, chat_id, file_path, text=""):
         """发语音文件（daemon 校验路径在 cache/tts 下）。
         text = 语音实际说的话（写进会话历史；只发语音时模型也要记得自己说过什么）"""
-        return self._request("POST", "/send-record", {
+        return self._send_checked("POST", "/send-record", {
             "chat_type": chat_type, "chat_id": chat_id, "file": file_path,
-            "text": str(text or "")}, timeout=90)
+            "text": str(text or "")},
+            "send-record", chat_type, chat_id, timeout=90)
 
     def botloop_report(self, chat_type, chat_id, sender_id, confirmed,
                        cooldown_min=60):

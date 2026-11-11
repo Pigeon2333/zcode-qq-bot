@@ -1812,7 +1812,10 @@ class Daemon:
             raise RuntimeError("触发每分钟限流，请稍后再发")
         lo, hi = [int(x) for x in self.cfg.get("typing_delay_ms", [600, 2000])]
         # 风控优化·发送节奏拟人化总开关（默认开）：条间随机延迟；关闭=回退旧行为
-        risk_pace = cfg.get("risk_human_pace", True)
+        # （2026-11-11 事故：这里曾写成裸 cfg → NameError → 部署后所有文字发送
+        # 全灭且两层日志都不记（send_failed 只记队列线程内异常）。该异常在入队前
+        # 抛出，由 HTTP 层把 ok:false 回给 agent，而 agent 不检查返回值——双重静默）
+        risk_pace = self.cfg.get("risk_human_pace", True)
         reply_to = str(reply_message_id).strip() if reply_message_id else ""
         n = 0
         for i, t in enumerate(texts[:8]):
