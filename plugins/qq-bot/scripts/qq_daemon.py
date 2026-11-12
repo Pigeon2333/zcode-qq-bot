@@ -2082,10 +2082,21 @@ class Daemon:
         r"|\[\s*记忆(\s*@)?[^\]\n]{0,60}\]"
         r"|\[\s*忘\s*[:：][^\]\n]{0,60}\]", re.I)
 
+    # 行首 [] 元数据前缀（用户指令 2026-11-12：拦截所有以 [] 开头的会话
+    # 内容——正常口语不以 [ 开头，这是模型模仿历史行/系统标记格式的泄漏，
+    # 实测 [时:23:24]/[21:05]/[回应:63] 三种形态）。反复剥多组前缀；
+    # markdown 链接 [文本](url) 例外（] 后紧跟 ( 不剥）。
+    _LEAD_BRACKET_RE = re.compile(r"^\s*\[[^\[\]]{1,32}\](?!\()\s*")
+
     @classmethod
     def _strip_control_marks(cls, text):
         """剔除残留控制标记（剥完空了返回 None=跳过该条）。"""
         t = cls._MARK_LEAK_RE.sub("", str(text or ""))
+        for _ in range(6):          # 行首 [] 前缀连环剥（上限防病态输入）
+            m = cls._LEAD_BRACKET_RE.match(t)
+            if not m:
+                break
+            t = t[m.end():]
         t = re.sub(r"[ \t]{2,}", " ", t).strip(" \n，。,.")
         return (t or None)
 
