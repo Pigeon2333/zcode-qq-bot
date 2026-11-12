@@ -2075,7 +2075,8 @@ class Daemon:
     # （正常回复/追聊/主动消息/插件/devctrl/MCP 全都走 _send_one）。
     _MARK_LEAK_RE = re.compile(
         r"\[{1,2}\s*(?:SPLIT|QUIET(?::\d{1,3})?|SKIP|WAIT|CMD|MCP"
-        r"|语音|连线|STICKER[:：]?\s*\d{0,4}|STICKER)\s*\]{1,2}"
+        r"|语音|连线|STICKER[:：]?\s*\d{0,4}|STICKER"
+        r"|回应[:：]?\s*\d{0,4})\s*\]{1,2}"
         r"|\[\s*(?:画|DRAW)\s*[:：][^\]\n]{0,300}\]"
         r"|\[\s*发到群\s*[:：][^\]\n]{0,300}\]"
         r"|\[\s*记忆(\s*@)?[^\]\n]{0,60}\]"

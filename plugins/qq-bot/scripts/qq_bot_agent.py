@@ -2402,6 +2402,15 @@ _HIST_TIME_NOTE = ("（每行开头[时:分]是那句话的真实发送时间—
                    "别把旧话题当成现在正在聊的内容）")
 
 
+# 追聊"提示词回声"特征（2026-11-12 实测：模型把判断框架转述成
+# "我问了晚饭，没回。换个新话头，别再追问吃饭。轻一点，像没事找话"
+# 当回复发出）。全部取自提示词原词/指令语，正常口语几乎不含；
+# 命中即整句丢弃（追聊一轮只一句，误杀代价=少追一次，可接受）。
+_NUDGE_ECHO_RE = re.compile(
+    r"新话头|没事找话|换话题|查岗|人设|口吻|输出纪律|判断框架"
+    r"|A[类ｌ]?类|B类|C类|D类|别再追问|轻一点")
+
+
 def _nudge_compose(daemon, chat_type, chat_id):
     """生成一句追问：人设全栈（按会话路由）+ 最近对话 → 一句话。
     非预制模板——每次由模型依据人设、记忆风格和对话停在哪决定说什么；
@@ -2481,6 +2490,10 @@ def _nudge_compose(daemon, chat_type, chat_id):
         out_text = out_text.strip("\"“”「」").strip()
         if len(out_text) < 2:
             return ""
+    # 提示词回声兜底：命中指令特征词整句丢弃（见 _NUDGE_ECHO_RE 注）
+    if _NUDGE_ECHO_RE.search(out_text):
+        out("AGENT_NUDGE_ECHO_DROP text=%.40s" % out_text.replace("\n", " "))
+        return ""
     return out_text
 
 
@@ -3256,6 +3269,10 @@ def parse_reply(text):
         return "WAIT", [], None, None, None
     text = _WAIT_LEAK_RE.sub("", text)  # 等说完关闭/漏写时兜底剥离，绝不泄漏给用户
     text = _SKIP_LEAK_RE.sub("", text)  # 中文 SKIP 变体（跳过/不说/不发/沉默）兜底剥离
+    # [回应:id] 泄漏兜底（2026-11-12 实测：追聊/主动消息/连贯性重试路径
+    # 不走主路径的标记剥离，[回应:63] 原样进群）。主路径在 parse 前已剥并
+    # 执行表情动作，这里只是兜网；裸标记剥掉不影响正文。
+    text = _REACT_MARK_RE.sub("", text)
     # [画: 描述] 标记：模型自主补触发画图（系统没自动识别但主人明显想画时）
     dm = _DRAW_MARK_RE.search(text)
     draw = re.sub(r"\s+", " ", dm.group(1)).strip()[:100] if dm else None
