@@ -71,7 +71,12 @@ class PluginAPI:
             raise ValueError("chat_type 必须是 group/private")
         if not isinstance(texts, list):
             texts = [texts]
-        return daemon.send_texts(chat_type, str(chat_id), texts)
+        # 2026-11-12 修复：这里曾是 daemon.send_texts（服务端 Daemon 类的
+        # 方法名），而 _host.daemon 是 agent 侧 DaemonClient（HTTP 客户端，
+        # 方法名 send）——插件 api.send 自 0.4.0 起从未工作过（bili_sub
+        # 实测 AttributeError 暴露）。两种方法名都试，老宿主兼容。
+        fn = getattr(daemon, "send", None) or getattr(daemon, "send_texts")
+        return fn(chat_type, str(chat_id), texts)
 
     def send_image(self, chat_type, chat_id, file_path, caption=None):
         """以机器人身份发图片（文件须在数据目录约定子目录：cache/images、
@@ -568,7 +573,7 @@ def uninstall(name):
 # 市场清单文件名带版本：release 资产 CDN 缓存≈永久，clobber 同名文件更新后
 # 用户拿到的仍是旧字节——清单内容有变必须换新文件名（market-v3、v4…）
 DEFAULT_MARKET_URL = ("https://github.com/Pigeon2333/zcode-qq-bot/"
-                      "releases/download/plugins/market-v28.json")
+                      "releases/download/plugins/market-v29.json")
 _MARKET_MIRRORS = ("https://gh-proxy.com/" + DEFAULT_MARKET_URL,)
 
 
