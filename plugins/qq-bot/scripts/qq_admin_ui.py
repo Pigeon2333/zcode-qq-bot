@@ -1498,14 +1498,20 @@ async function saveGmFieldFor(gid,f,el){
  if(r.ok!==false)_gmModes[gid]=Object.assign({},_gmModes[gid],ov);
 }
 // ---------------- 群管理（0.5.16：定时禁言/关键词撤回禁言/群公告/快捷禁言；分群+批量两页） ----------------
-var __GA={groups:{},names:{},sel:'',notices:[],tab:'single',picked:{}};
-function __gaTabBar(){return '<div style="display:flex;gap:8px;margin-bottom:10px">'
+var __GA={groups:{},names:{},sel:'',notices:[],tab:'single',picked:{},chat:false};
+function __gaTabBar(){return '<div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;flex-wrap:wrap">'
  +'<button class="act'+(__GA.tab==='single'?'':' ghost')+'" style="margin:0" onclick="__GA.tab=\'single\';load()">分群管理</button>'
  +'<button class="act'+(__GA.tab==='batch'?'':' ghost')+'" style="margin:0" onclick="__GA.tab=\'batch\';load()">批量管理</button>'
- +'<span class="k" style="font-size:12px;align-self:center">（批量管理=选多个群统一设置/群发公告）</span></div>'}
+ +'<span class="k" style="font-size:12px">（批量=选多群统一设置/群发公告）</span>'
+ +'<label class="k" style="margin-left:auto;font-size:12.5px;cursor:pointer" title="开启后主人在私聊/群聊里自然指挥机器人执行群管（仅主人可用，绝不主动执行）"><input type="checkbox" id="ga-chat" '+(__GA.chat?'checked':'')+' onchange="__gaChatToggle(this)"> 对话群管<span style="font-size:11px;color:var(--fg-dim)">（主人自然语言指挥）</span></label></div>'}
+async function __gaChatToggle(el){
+ const r=await api('/api/gadmin-chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:el.checked})}).catch(()=>({ok:false}));
+ if(r&&r.ok){__GA.chat=!!r.enabled;toast(__GA.chat?'对话群管已开启：主人可在私聊/群聊里自然指挥（发公告/禁言/撤回）':'对话群管已关闭');}
+ else{el.checked=!el.checked;toast('设置失败',false);}
+}
 async function vGroupAdmin(){
  const d=await api('/api/gadmin').catch(()=>({ok:false}));
- if(d&&d.ok){__GA.groups=d.groups||{};__GA.names=d.names||{};}
+ if(d&&d.ok){__GA.groups=d.groups||{};__GA.names=d.names||{};__GA.chat=!!d.chat_enabled;}
  if(!__GA.sel){const ks=Object.keys(__GA.names);__GA.sel=ks[0]||'';}
  const gids=Object.keys(__GA.names);
  if(!gids.length){$('#view').innerHTML=head('群管理')+'<div class="card">机器人还没加入任何群（或群列表未加载）。</div>';return;}
@@ -5535,6 +5541,12 @@ class UiHandler(BaseHTTPRequestHandler):
             r = proxy_get("127.0.0.1", _daemon_port(), "/group-admin",
                           read_const(TOKEN_PATH), timeout=15)
             return self._reply(200, r if isinstance(r, dict) else {"ok": False})
+        if u.path == "/api/gadmin-chat":
+            # 自然语言群管开关状态
+            r = proxy_get("127.0.0.1", _daemon_port(), "/group-admin",
+                          read_const(TOKEN_PATH), timeout=15)
+            on = bool(isinstance(r, dict) and r.get("chat_enabled"))
+            return self._reply(200, {"ok": True, "enabled": on})
         if u.path == "/api/zcode-status":
             import subprocess as _sp
             running = False
@@ -5609,6 +5621,11 @@ class UiHandler(BaseHTTPRequestHandler):
         if u.path == "/api/notice-send":
             r = proxy_post("127.0.0.1", _daemon_port(), "/notice-send",
                            body, read_const(TOKEN_PATH), timeout=20)
+            return self._reply(200, r if isinstance(r, dict) else {"ok": False})
+        if u.path == "/api/gadmin-chat":
+            # 自然语言群管开关设置（daemon /gadmin-chat）
+            r = proxy_post("127.0.0.1", _daemon_port(), "/gadmin-chat",
+                           body, read_const(TOKEN_PATH), timeout=15)
             return self._reply(200, r if isinstance(r, dict) else {"ok": False})
         if u.path == "/api/notice-get":
             r = proxy_post("127.0.0.1", _daemon_port(), "/notice-get",

@@ -2140,6 +2140,7 @@ class Daemon:
         r"\[{1,2}\s*(?:SPLIT|QUIET(?::\d{1,3})?|SKIP|WAIT|CMD|MCP"
         r"|语音|连线|STICKER[:：]?\s*\d{0,4}|STICKER"
         r"|回应[:：]?\s*\d{0,4})\s*\]{1,2}"
+        r"|\[\s*GADMIN\s*\][^\[\]\n]{0,300}"
         r"|\[\s*(?:画|DRAW)\s*[:：][^\]\n]{0,300}\]"
         r"|\[\s*发到群\s*[:：][^\]\n]{0,300}\]"
         r"|\[\s*记忆(\s*@)?[^\]\n]{0,60}\]"
@@ -2444,6 +2445,127 @@ class Daemon:
         if changed:
             self._group_admin_save(cfg_all)
 
+    def _resolve_member(self, group_id, who):
+        """群成员解析：who=QQ号直用；名字→get_group_member_list 按 群名片
+        /昵称 精确→前缀→包含 匹配。返回 (qq, 显示名) 或 (None, 原因)。"""
+        w = str(who or "").strip()
+        if not w:
+            return None, "没说是谁"
+        if w.isdigit() and len(w) >= 5:
+            return w, w
+        try:
+            data = self._call_action("get_group_member_list",
+                                     {"group_id": int(group_id)}, timeout=12)
+        except Exception as e:
+            return None, "拉群成员列表失败：%s" % repr(e)[:80]
+        exact, prefix, fuzzy = None, None, None
+        for m in (data if isinstance(data, list) else []):
+            card = str(m.get("card") or "").strip()
+            nick = str(m.get("nickname") or "").strip()
+            qq = str(m.get("user_id") or "")
+            for nm in (card, nick):
+                if not nm:
+                    continue
+                if nm == w:
+                    exact = (qq, card or nick)
+                    break
+                if nm.startswith(w) and prefix is None:
+                    prefix = (qq, card or nick)
+                if w in nm and fuzzy is None:
+                    fuzzy = (qq, card or nick)
+            if exact:
+                break
+        hit = exact or prefix or fuzzy
+        if hit:
+            return hit
+        return None, "群里没找到叫「%s」的人（可让我按QQ号来）" % w[:20]
+
+    def gadmin_exec(self, body):
+        """自然语言群管执行入口（agent 转发；[GADMIN] 标记解析结果）。
+        op: ban 禁言 / unban 解禁 / whole 全体禁言 / notice 公告 / recall 撤回。
+        返回 {ok, detail}——detail 是给模型回话用的人话。"""
+        b = body if isinstance(body, dict) else {}
+        op = str(b.get("op") or "").strip()
+        gid = str(b.get("group_id") or "").strip()
+        if not gid.isdigit():
+            return {"ok": False, "detail": "群号不对"}
+        gid_i = int(gid)
+        try:
+            if op in ("ban", "unban"):
+                qq, name = self._resolve_member(gid, b.get("who"))
+                if not qq:
+                    return {"ok": False, "detail": name}
+                mins = 0
+                if op == "ban":
+                    try:
+                        mins = max(1, min(43200, int(b.get("minutes") or 10)))
+                    except (TypeError, ValueError):
+                        mins = 10
+                self._call_action("set_group_ban",
+                                  {"group_id": gid_i, "user_id": int(qq),
+                                   "duration": mins * 60}, timeout=15)
+                out("GADMIN_EXEC %s group=%s who=%s(%s) min=%s"
+                    % (op, gid, qq, name, mins))
+                return {"ok": True, "detail": ("已把 %s 禁言 %d 分钟"
+                                               % (name, mins)) if op == "ban" else
+                                              ("已解除 %s 的禁言" % name)}
+            if op == "whole":
+                on = bool(b.get("on"))
+                self._call_action("set_group_whole_ban",
+                                  {"group_id": gid_i, "enable": on}, timeout=15)
+                out("GADMIN_EXEC whole group=%s on=%s" % (gid, on))
+                return {"ok": True, "detail": ("已开启 %s 全体禁言" % gid) if on
+                        else ("已解除 %s 全体禁言" % gid)}
+            if op == "notice":
+                content = str(b.get("content") or "").strip()
+                if not content:
+                    return {"ok": False, "detail": "公告内容是空的"}
+                self._call_action("_send_group_notice",
+                                  {"group_id": gid_i, "content": content[:2000]},
+                                  timeout=15)
+                out("GADMIN_EXEC notice group=%s len=%d" % (gid, len(content)))
+                return {"ok": True, "detail": "公告已经发到群里了"}
+            if op == "recall":
+                qq, name = self._resolve_member(gid, b.get("who"))
+                if not qq:
+                    return {"ok": False, "detail": name}
+                try:
+                    n = max(1, min(10, int(b.get("count") or 1)))
+                except (TypeError, ValueError):
+                    n = 1
+                key = "group_%s" % gid
+                with self.lock:
+                    hist = list(self.mem_history.get(key, []))
+                mids = []
+                for rec in reversed(hist):
+                    if len(mids) >= n:
+                        break
+                    if str(rec.get("sender_id") or "") == qq and \
+                            rec.get("message_id") and not rec.get("is_bot"):
+                        mids.append(str(rec["message_id"]))
+                if not mids:
+                    return {"ok": False, "detail":
+                            "%s 最近没有能撤回的消息（只支持撤回近期消息）" % name}
+                okn = 0
+                for mid in mids:
+                    try:
+                        self._call_action("delete_msg",
+                                          {"message_id": mid}, timeout=10)
+                        okn += 1
+                    except Exception:
+                        pass
+                out("GADMIN_EXEC recall group=%s who=%s(%s) %d/%d"
+                    % (gid, qq, name, okn, len(mids)))
+                return {"ok": True, "detail": "已撤回 %s 的 %d 条消息"
+                        % (name, okn)}
+            return {"ok": False, "detail": "不支持的操作：%s" % op[:20]}
+        except Exception as e:
+            out("AGENT_LOG {\"msg\": \"gadmin_exec_fail\", \"op\": %s, \"detail\": %s}"
+                % (json.dumps(op), json.dumps(repr(e)[:120])))
+            return {"ok": False,
+                    "detail": "执行失败（多半是我在这个群没有管理员权限）：%s"
+                              % repr(e)[:100]}
+
     def _gadmin_keyword_check(self, chat_type, chat_id, info, message_id):
         """关键词撤回/禁言（群管模块；白名单群消息逐条检查）。
         在 ws 收线程上调用——撤回/禁言动作丢后台线程执行（同步 _call_action
@@ -2558,6 +2680,7 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
                 cfg = self.daemon._group_admin_cfg()
                 return self._reply(200, {
                     "ok": True,
+                    "chat_enabled": bool(cfg.get("chat_enabled")),
                     "groups": cfg.get("groups") or {},
                     "names": self.daemon.group_names()})
             if u.path == "/inbox":
@@ -2618,6 +2741,20 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
             if u.path == "/image-file":
                 # QQ 图本地化（视觉调用 base64 直传的数据源）：{url} → {ok, path}
                 return self._reply(200, d.get_image_file(str(body.get("url") or "")))
+            # ---------------- 群管模块（UI 转发；机器人需为目标群管理员） ----------------
+            if u.path == "/gadmin-chat":
+                # 自然语言群管总开关（UI）：{enabled: bool}（默认关；边界=仅主人）
+                cfg_all = d._group_admin_cfg()
+                cfg_all["chat_enabled"] = bool(body.get("enabled"))
+                d._group_admin_save(cfg_all)
+                out("AGENT_LOG {\"msg\": \"gadmin_chat\", \"enabled\": %s}"
+                    % ("true" if cfg_all["chat_enabled"] else "false"))
+                return self._reply(200, {"ok": True,
+                                         "enabled": cfg_all["chat_enabled"]})
+            if u.path == "/gadmin-exec":
+                # 自然语言群管执行（agent [GADMIN] 标记；调用方已校验主人）
+                # {op, group_id, who(名字或QQ), minutes, count, content, on}
+                return self._reply(200, d.gadmin_exec(body))
             # ---------------- 群管模块（UI 转发；机器人需为目标群管理员） ----------------
             if u.path == "/group-admin/save":
                 # {groups: {gid: cfg}} 整表保存（UI 编辑态直写，_state 保留）
