@@ -5090,6 +5090,34 @@ def process(daemon, msg):
                   and not msg.get("at_me")
                   and msg.get("trigger_reason") in ("chat_random", "burst", "peer_talk")
                   and blank_img_policy() != "text")
+    # 裸@反应降级（2026-11-13 用户实测+设计哲学：纯@=戳一戳——没有实质
+    # 内容可回应时不该走完整回复链，表情回应才是自然反应）：
+    # - B 场景（下面立即处理）：裸@且前后都没有实质内容 → 表情回应；
+    # - A 场景（视觉失败分支处理）：裸@带图但图看不了 → 表情回应，
+    #   绝不走文本链说"图我这边没显示出来"（视觉失败在 at 档不掷点，
+    #   直接落文本链——这是当日"德聊铁路"事故的路径）。
+    # @+正文 / @+引用（正经提问）不受影响。
+    _bare_at_msg = (msg.get("at_me")
+                    and not str(msg.get("text") or "").strip()
+                    and not msg.get("reply_text")
+                    and not msg.get("has_reply")
+                    and msg.get("trigger_reason") == "at")
+    _bap_text = str((msg.get("bare_at_prev") or {}).get("text") or "").strip()
+    _bare_at_prev_txt = bool(_bap_text) and _bap_text not in (
+        "[图片]", "[表情]", "[语音]", "[表情包]")
+    if _bare_at_msg and not msg.get("image_urls") and not _bare_at_prev_txt:
+        # B：完全没内容——表情回应（戳一戳式）；回应不可用则退文本链
+        # （旧"问 TA 想说什么"路径，build_messages 有对应提示）
+        daemon.ack([msg["id"]])
+        RT.count_processed()
+        _on, _ems = reaction_allowed()
+        if _on and _ems:
+            import random as _r2
+            daemon.set_msg_reaction(msg["message_id"], _r2.choice(_ems), True)
+            out("AGENT_BARE_AT_REACTION msg_id=%s chat=%s/%s (裸@无内容→表情回应)"
+                % (msg["id"], msg["chat_type"], msg["chat_id"]))
+            return
+        out("AGENT_BARE_AT_TEXT msg_id=%s (表情回应未启用，退文本链打招呼)" % msg["id"])
     if _blank_img and _vision_go and reply is None:
         # 视觉还没跑/不需要跑：纯占位直接按策略处理（识图结果对纯表情包
         # 本就低信息量，P1 的核心就是"不为用而用"）
@@ -5117,6 +5145,22 @@ def process(daemon, msg):
         except Exception as e:
             out("AGENT_VISION_FALLBACK %r" % e)
             reply = None
+    # A：裸@带图且图看不了 → 表情回应（戳一戳式）。此前落文本链，模型
+    # 对着「已并进本条（见下方图片）」的提示说"图我这边没显示出来"——
+    # 图挂了就别硬回，表情回应最像真人（用户实测连着两次都这么说）。
+    if reply is None and _bare_at_msg and msg.get("image_urls"):
+        daemon.ack([msg["id"]])
+        RT.count_processed()
+        _on, _ems = reaction_allowed()
+        if _on and _ems:
+            import random as _r2
+            daemon.set_msg_reaction(msg["message_id"], _r2.choice(_ems), True)
+            out("AGENT_BARE_AT_REACTION msg_id=%s chat=%s/%s (裸@图看不了→表情回应)"
+                % (msg["id"], msg["chat_type"], msg["chat_id"]))
+            return
+        out("AGENT_BARE_AT_SKIP msg_id=%s chat=%s/%s (图看不了+表情回应未启用，不回)"
+            % (msg["id"], msg["chat_type"], msg["chat_id"]))
+        return
     # all_prob 档：图是真看了，回不回按单独概率掷点；看图失败/概率未中 →
     # 沉默跳过（绝不走纯文本链瞎猜图的内容——那正是"选民证被当结婚证"的来源）。
     # 例外（用户实测反馈"图和上下文有关也应主动看"）：消息文字或所回复的上文
