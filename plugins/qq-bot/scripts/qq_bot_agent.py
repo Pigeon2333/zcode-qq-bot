@@ -5307,6 +5307,7 @@ def process(daemon, msg):
             out("AGENT_GADMIN_DENY msg_id=%s chat=%s/%s（非主人尝试群管标记，已剥离）"
                 % (msg["id"], msg["chat_type"], msg["chat_id"]))
         else:
+            _g_ok_details = []
             for _gop, _gargs in _gmarks[:3]:
                 _kv = {}
                 for _pair in _gargs.split("|"):
@@ -5335,8 +5336,15 @@ def process(daemon, msg):
                     r = {"ok": False, "detail": repr(_ge)[:100]}
                 out("AGENT_GADMIN_EXEC op=%.6s group=%s ok=%s %.60s"
                     % (_gop, gid, r.get("ok"), str(r.get("detail"))[:60]))
-                if not r.get("ok"):
+                if r.get("ok"):
+                    _g_ok_details.append(str(r.get("detail") or "办好了"))
+                else:
                     reply += "\n（系统：%s）" % str(r.get("detail") or "执行失败")[:120]
+            # 群聊里模型常只输出标记本身（群场合话少）——剥完正文空了就用
+            # 执行结果人话兜底，绝不能"办了事却一声不吭"（用户实测群@指挥
+            # 禁言成功但零回复）。私聊模型一般带自然话，不受影响。
+            if not reply.strip() and _g_ok_details:
+                reply = _g_ok_details[0]
     if _MCP_ACT_ANY_RE.search(reply):
         if owner and _mcp_tools_doc():
             daemon.ack([msg["id"]])
