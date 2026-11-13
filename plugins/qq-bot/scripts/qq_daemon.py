@@ -84,6 +84,9 @@ def load_private_config_file():
         cfg["typing_seconds"] = 2
     return cfg
 REPLY_CONFIG_PATH = os.path.realpath(os.path.join(DATA_DIR, "reply_config.json"))
+# 群管模块配置（UI 维护）：{"groups": {gid: {sched_ban{on,mute_hhmm,unmute_hhmm},
+# kw_recall_on, kw_recall[], kw_mute_on, kw_mute_words[], kw_mute_min, _state{}}}}
+GROUP_ADMIN_PATH = os.path.realpath(os.path.join(DATA_DIR, "group_admin.json"))
 GROUP_MODES_PATH = os.path.realpath(os.path.join(DATA_DIR, "group_reply_modes.json"))
 
 _print_lock = threading.Lock()
@@ -726,6 +729,8 @@ class Daemon:
         # 图文合并·向后捞：会话+发送者 → 等待后续配图的被触发文字条 ts
         # （期间到达的图压住自身触发，并入该文字条一次性消费，防双回复）
         self._fwd_pending = {}
+        self._ga_cfg = {}
+        self._ga_sig = None
         # 裸@补内容：会话+发送者 → {"ts","cancel"}（只@没写正文的等待项；
         # 3s 内 TA 补发的正文/图并入裸@，带正文的@补发则取消裸@防双回）
         self._at_pending = {}
@@ -991,6 +996,12 @@ class Daemon:
 
     def _ingest_message(self, ev, chat_type, chat_id, chat_name,
                         user_id, sender_name, info):
+        # 群管：关键词撤回/禁言（在任何触发判定之前——被撤的消息不该再被回应）
+        try:
+            self._gadmin_keyword_check(chat_type, chat_id, info,
+                                       ev.get("message_id"))
+        except Exception:
+            pass
         # 发言人身份必须进 info：AI 互聊节奏检测与「碎片合并」都按发言人统计条数。
         # 此前 info 没有该字段，两处 info.get("sender_id","") 恒为空 → 静默失效。
         info["sender_id"] = user_id
@@ -2308,9 +2319,11 @@ class Daemon:
     def _probe_loop(self):
         """动作通道探活（45s 一次）：get_login_info 探测 NapCat 是否仍响应。
         连续 2 次失败且连接显示在线 = 半死连接 → 硬复位 socket 触发重连。
-        复位至少间隔 120s（防止对刚重连好的新连接反复拆线）。"""
+        复位至少间隔 120s（防止对刚重连好的新连接反复拆线）。
+        兼职跑群管定时禁言检查（限频 60s，跨午夜窗口支持 23:00→08:00）。"""
         fails = 0
         last_reset = 0.0
+        last_sched = 0.0
         while not self.stop_flag.is_set():
             time.sleep(45)
             if self.stop_flag.is_set() or not self.ws.connected:
@@ -2332,6 +2345,155 @@ class Daemon:
                     except Exception:
                         pass
                     fails = 0
+            # ---- 群管：定时全群禁言 ----
+            now = time.time()
+            if now - last_sched >= 60:
+                last_sched = now
+                try:
+                    self._sched_ban_tick()
+                except Exception as e:
+                    out("AGENT_LOG {\"msg\": \"sched_ban_err\", \"detail\": %s}"
+                        % json.dumps(repr(e)[:120]))
+
+    def _group_admin_cfg(self):
+        """群管配置热加载（group_admin.json；结构见 _group_admin_default）。"""
+        sig = file_sig(GROUP_ADMIN_PATH)
+        if sig != self._ga_sig:
+            data = {}
+            try:
+                with open(GROUP_ADMIN_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if not isinstance(data, dict):
+                    data = {}
+            except (OSError, ValueError):
+                data = {}
+            with self.lock:
+                self._ga_cfg = data
+                self._ga_sig = sig
+        return self._ga_cfg
+
+    def _group_admin_save(self, data):
+        with self.lock:
+            self._ga_cfg = data
+            self._ga_sig = file_sig(GROUP_ADMIN_PATH)
+        import pathlib
+        pathlib.Path(GROUP_ADMIN_PATH).write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        # 写后重取签名（write 改 mtime，避免下一读误判变更）
+        self._ga_sig = file_sig(GROUP_ADMIN_PATH)
+
+    def _sched_ban_tick(self):
+        """定时全群禁言到点触发。状态记在配置文件 _state（重启不重复触发）：
+        muted_date/unmuted_date=当日已执行过该动作的日期。支持跨午夜窗口
+        （mute 23:00 > unmute 08:00：禁言时段=[mute,24:00)∪[00:00,unmute)）。"""
+        cfg_all = self._group_admin_cfg()
+        today = time.strftime("%Y-%m-%d")
+        hhmm = time.strftime("%H:%M")
+        changed = False
+        for gid, cfg in (cfg_all.get("groups") or {}).items():
+            sched = cfg.get("sched_ban") or {}
+            if not sched.get("on"):
+                continue
+            try:
+                m_t = str(sched.get("mute_hhmm") or "23:00")
+                u_t = str(sched.get("unmute_hhmm") or "08:00")
+                m_h, m_m = [int(x) for x in m_t.split(":")[:2]]
+                u_h, u_m = [int(x) for x in u_t.split(":")[:2]]
+            except (TypeError, ValueError):
+                continue
+            cur = time.localtime()
+            cur_min = cur.tm_hour * 60 + cur.tm_min
+            cross = (m_h * 60 + m_m) > (u_h * 60 + u_m)   # 跨午夜窗口
+            state = cfg.setdefault("_state", {})
+            gid_i = int(gid)
+            try:
+                if cross:
+                    # 到禁言点（今天还没禁过）→ 禁
+                    if cur_min >= m_h * 60 + m_m and state.get("muted_date") != today:
+                        self._call_action("set_group_whole_ban",
+                                          {"group_id": gid_i, "enable": True}, timeout=10)
+                        state["muted_date"] = today
+                        state.pop("unmuted_date", None)
+                        changed = True
+                        out("GROUP_ADMIN sched_mute group=%s at=%s" % (gid, m_t))
+                    # 到解禁点（今天还没解过）→ 解
+                    elif cur_min < u_h * 60 + u_m and state.get("unmuted_date") != today:
+                        self._call_action("set_group_whole_ban",
+                                          {"group_id": gid_i, "enable": False}, timeout=10)
+                        state["unmuted_date"] = today
+                        changed = True
+                        out("GROUP_ADMIN sched_unmute group=%s at=%s" % (gid, u_t))
+                else:
+                    # 同日窗口 [mute, unmute)
+                    if m_h * 60 + m_m <= cur_min < u_h * 60 + u_m \
+                            and state.get("muted_date") != today:
+                        self._call_action("set_group_whole_ban",
+                                          {"group_id": gid_i, "enable": True}, timeout=10)
+                        state["muted_date"] = today
+                        changed = True
+                        out("GROUP_ADMIN sched_mute group=%s at=%s" % (gid, m_t))
+                    elif cur_min >= u_h * 60 + u_m and state.get("unmuted_date") != today:
+                        self._call_action("set_group_whole_ban",
+                                          {"group_id": gid_i, "enable": False}, timeout=10)
+                        state["unmuted_date"] = today
+                        changed = True
+                        out("GROUP_ADMIN sched_unmute group=%s at=%s" % (gid, u_t))
+            except Exception as e:
+                out("AGENT_LOG {\"msg\": \"sched_ban_fail\", \"group\": %s, \"detail\": %s}"
+                    % (json.dumps(str(gid)), json.dumps(repr(e)[:100])))
+        if changed:
+            self._group_admin_save(cfg_all)
+
+    def _gadmin_keyword_check(self, chat_type, chat_id, info, message_id):
+        """关键词撤回/禁言（群管模块；白名单群消息逐条检查）。
+        在 ws 收线程上调用——撤回/禁言动作丢后台线程执行（同步 _call_action
+        死锁教训同 _enrich_reply）。机器人自己与触发的命令消息不查。"""
+        if chat_type != "group" or not message_id:
+            return
+        if str(info.get("sender_id") or "") == str(self.login.get("user_id") or ""):
+            return
+        cfg = ((self._group_admin_cfg().get("groups") or {}).get(str(chat_id)) or {})
+        text = str(info.get("text") or "")
+        if not text:
+            return
+
+        def _hit(words):
+            for w in words or []:
+                w = str(w).strip()
+                if w and w in text:
+                    return w
+            return None
+
+        recall_kw = _hit(cfg.get("kw_recall")) if cfg.get("kw_recall_on") else None
+        mute_kw = _hit(cfg.get("kw_mute_words")) if cfg.get("kw_mute_on") else None
+        if not recall_kw and not mute_kw:
+            return
+        mid = str(message_id)
+        gid = int(chat_id)
+
+        def _do():
+            try:
+                if recall_kw:
+                    self._call_action("delete_msg", {"message_id": mid}, timeout=10)
+                    out("GROUP_ADMIN recall group=%s kw=%.20s mid=%s"
+                        % (gid, recall_kw, mid))
+            except Exception as e:
+                out("AGENT_LOG {\"msg\": \"gadmin_recall_fail\", \"detail\": %s}"
+                    % json.dumps(repr(e)[:100]))
+            try:
+                if mute_kw:
+                    mins = max(1, min(43200, int(cfg.get("kw_mute_min") or 10)))
+                    uid = int(info.get("sender_id") or 0)
+                    self._call_action("set_group_ban",
+                                      {"group_id": gid, "user_id": uid,
+                                       "duration": mins * 60}, timeout=10)
+                    out("GROUP_ADMIN mute group=%s uid=%s %dmin kw=%.20s"
+                        % (gid, uid, mins, mute_kw))
+            except Exception as e:
+                out("AGENT_LOG {\"msg\": \"gadmin_mute_fail\", \"detail\": %s}"
+                    % json.dumps(repr(e)[:100]))
+
+        threading.Thread(target=_do, daemon=True).start()
 
 
 # ---------------------------------------------------------------------------
@@ -2391,6 +2553,13 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
                 with self.daemon.lock:
                     st["quiet_until"] = self.daemon.quiet_until
                 return self._reply(200, {"ok": True, **st})
+            if u.path == "/group-admin":
+                # 群管配置（UI 加载）：groups 配置体 + 白名单群名映射
+                cfg = self.daemon._group_admin_cfg()
+                return self._reply(200, {
+                    "ok": True,
+                    "groups": cfg.get("groups") or {},
+                    "names": self.daemon.group_names()})
             if u.path == "/inbox":
                 items = self.daemon.inbox_get(
                     only_triggered=q.get("triggered") in ("1", "true"),
@@ -2449,6 +2618,91 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
             if u.path == "/image-file":
                 # QQ 图本地化（视觉调用 base64 直传的数据源）：{url} → {ok, path}
                 return self._reply(200, d.get_image_file(str(body.get("url") or "")))
+            # ---------------- 群管模块（UI 转发；机器人需为目标群管理员） ----------------
+            if u.path == "/group-admin/save":
+                # {groups: {gid: cfg}} 整表保存（UI 编辑态直写，_state 保留）
+                groups = body.get("groups")
+                if not isinstance(groups, dict):
+                    return self._reply(400, {"ok": False, "error": "groups 结构非法"})
+                clean = {}
+                for gid, cfg in groups.items():
+                    if not str(gid).isdigit() or not isinstance(cfg, dict):
+                        continue
+                    old_state = (((d._group_admin_cfg().get("groups") or {})
+                                  .get(str(gid)) or {}).get("_state")) or {}
+                    sched = cfg.get("sched_ban") or {}
+                    clean[str(gid)] = {
+                        "sched_ban": {
+                            "on": bool(sched.get("on")),
+                            "mute_hhmm": str(sched.get("mute_hhmm") or "23:00")[:5],
+                            "unmute_hhmm": str(sched.get("unmute_hhmm") or "08:00")[:5],
+                        },
+                        "kw_recall_on": bool(cfg.get("kw_recall_on")),
+                        "kw_recall": [str(w).strip() for w in (cfg.get("kw_recall") or [])
+                                      if str(w).strip()][:50],
+                        "kw_mute_on": bool(cfg.get("kw_mute_on")),
+                        "kw_mute_words": [str(w).strip() for w in (cfg.get("kw_mute_words") or [])
+                                          if str(w).strip()][:50],
+                        "kw_mute_min": max(1, min(43200, int(cfg.get("kw_mute_min") or 10))),
+                        "_state": old_state,
+                    }
+                d._group_admin_save({"groups": clean})
+                return self._reply(200, {"ok": True, "count": len(clean)})
+            if u.path == "/notice-send":
+                gid = str(body.get("group_id") or "")
+                content = str(body.get("content") or "").strip()
+                if not gid.isdigit() or not content:
+                    return self._reply(400, {"ok": False, "error": "group_id/content 非法"})
+                try:
+                    d._call_action("_send_group_notice",
+                                   {"group_id": int(gid), "content": content[:2000]},
+                                   timeout=15)
+                    return self._reply(200, {"ok": True})
+                except Exception as e:
+                    return self._reply(200, {"ok": False, "error": repr(e)[:200]})
+            if u.path == "/notice-get":
+                gid = str(body.get("group_id") or "")
+                if not gid.isdigit():
+                    return self._reply(400, {"ok": False, "error": "group_id 非法"})
+                try:
+                    data = d._call_action("_get_group_notice",
+                                          {"group_id": int(gid)}, timeout=15)
+                    notices = []
+                    for n in (data if isinstance(data, list) else [])[:20]:
+                        notices.append({
+                            "title": str(((n or {}).get("title")) or "")[:40],
+                            "text": str(((n or {}).get("text")) or "")[:600],
+                            "ts": (n or {}).get("publish_time") or 0})
+                    return self._reply(200, {"ok": True, "notices": notices})
+                except Exception as e:
+                    return self._reply(200, {"ok": False, "error": repr(e)[:200]})
+            if u.path == "/whole-ban":
+                gid = str(body.get("group_id") or "")
+                if not gid.isdigit():
+                    return self._reply(400, {"ok": False, "error": "group_id 非法"})
+                try:
+                    d._call_action("set_group_whole_ban",
+                                   {"group_id": int(gid),
+                                    "enable": bool(body.get("on"))}, timeout=15)
+                    return self._reply(200, {"ok": True})
+                except Exception as e:
+                    return self._reply(200, {"ok": False, "error": repr(e)[:200]})
+            if u.path == "/member-ban":
+                gid = str(body.get("group_id") or "")
+                uid = str(body.get("user_id") or "")
+                try:
+                    minutes = max(0, min(43200, int(body.get("minutes") or 0)))
+                except (TypeError, ValueError):
+                    return self._reply(400, {"ok": False, "error": "minutes 非法"})
+                if not gid.isdigit() or not uid.isdigit():
+                    return self._reply(400, {"ok": False, "error": "group_id/user_id 非法"})
+                try:
+                    d._call_action("set_group_ban",
+                                   {"group_id": int(gid), "user_id": int(uid),
+                                    "duration": minutes * 60}, timeout=15)
+                    return self._reply(200, {"ok": True})
+                except Exception as e:
+                    return self._reply(200, {"ok": False, "error": repr(e)[:200]})
             if u.path == "/quiet":
                 # 安静模式：{minutes: 0} 取消；正数=持续 N 分钟（@/回复仍响应）
                 try:

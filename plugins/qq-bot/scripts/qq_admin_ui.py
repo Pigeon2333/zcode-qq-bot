@@ -509,10 +509,10 @@ select.mini,input.mini{padding:4px 8px;font-size:12.5px}
   <button data-t="runlog">运行日志</button>
   <button data-t="models">模型管理</button>
   <button data-t="groups">群消息</button>
+  <button data-t="gadmin">群管理</button>
   <button data-t="private">私聊消息</button>
   <button data-t="voice">语音消息</button>
-  <button data-t="persona">人设</button>
-  <button data-t="style">风格卡</button>
+  <button data-t="persona">人设与风格</button>
   <button data-t="memory">记忆</button>
   <button data-t="stickers">表情包</button>
  <button data-t="devctrl">设备操控</button>
@@ -535,7 +535,13 @@ select.mini,input.mini{padding:4px 8px;font-size:12.5px}
 <script>
 const $=s=>document.querySelector(s);
 let TAB='status';
-const TITLES={status:'状态',runlog:'运行日志',models:'模型管理',groups:'群消息',private:'私聊消息',voice:'语音消息',persona:'人设',style:'风格卡',memory:'记忆',stickers:'表情包',devctrl:'设备操控',mcp:'MCP 服务',zcode:'ZCode 联动',plugins:'插件',settings:'设置',about:'关于'};
+const TITLES={status:'状态',runlog:'运行日志',models:'模型管理',groups:'群消息',gadmin:'群管理',private:'私聊消息',voice:'语音消息',persona:'人设与风格',style:'人设与风格',memory:'记忆',stickers:'表情包',devctrl:'设备操控',mcp:'MCP 服务',zcode:'ZCode 联动',plugins:'插件',settings:'设置',about:'关于'};
+// 人设与风格合并页的子tab（persona=人设 / style=风格卡；数据与功能不变）
+var __PS_TAB='persona';
+function __psTabBar(){return '<div style="display:flex;gap:8px;margin-bottom:10px">'
+ +'<button class="act'+(__PS_TAB==='persona'?'':' ghost')+'" style="margin:0" onclick="__PS_TAB=\'persona\';load()">人设</button>'
+ +'<button class="act'+(__PS_TAB==='style'?'':' ghost')+'" style="margin:0" onclick="__PS_TAB=\'style\';load()">风格卡</button>'
+ +'<span class="k" style="font-size:12px;align-self:center">（两页功能不变，数据共存放于人设合集）</span></div>'}
 function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 function head(sub){return '<h2>'+TITLES[TAB]+'</h2>'+(sub?'<div class="sub">'+sub+'</div>':'')}
 function goTab(t){const b=document.querySelector('#nav button[data-t="'+t+'"]');if(b)b.click()}
@@ -624,7 +630,7 @@ function dirtyOn(el,btnId){el.classList.add('dirty');const b=document.getElement
 function dirtyOff(btnId){const b=document.getElementById(btnId);if(b)b.disabled=true;document.querySelectorAll('textarea.dirty,input.dirty').forEach(x=>x.classList.remove('dirty'))}
 async function dirtyGuard(){const d=document.querySelector('textarea.dirty,input.dirty');if(!d)return true;
  return await dlgConfirm({title:'有未保存的修改',body:'当前有未保存的修改（蓝色边框标记），离开将丢失。确定离开？',okText:'放弃修改',danger:true})}
-async function load(){try{if(TAB==='status')await vStatus();else if(TAB==='runlog')await vRunlog();else if(TAB==='models')await vModels();else if(TAB==='groups')await vGroups();else if(TAB==='private')await vPrivate();else if(TAB==='voice')await vVoice();else if(TAB==='persona')await vPersonas();else if(TAB==='style')await vFile('style');else if(TAB==='memory')await vMemory();else if(TAB==='stickers')await vStickers();else if(TAB==='devctrl')await vDevCtrl();else if(TAB==='mcp')await vMcp();else if(TAB==='zcode')await vZcode();else if(TAB==='plugins')await vPlugins();else if(TAB==='settings'){await vSettings();cacheReload();}else if(TAB==='about')await vAbout();}catch(e){$('#view').innerHTML='<div class="card">加载失败: '+esc(e)+'</div>'}}
+async function load(){try{if(TAB==='status')await vStatus();else if(TAB==='runlog')await vRunlog();else if(TAB==='models')await vModels();else if(TAB==='groups')await vGroups();else if(TAB==='gadmin')await vGroupAdmin();else if(TAB==='private')await vPrivate();else if(TAB==='voice')await vVoice();else if(TAB==='persona')await vPersonas();else if(TAB==='style'){__PS_TAB='style';TAB='persona';await vPersonas();}else if(TAB==='memory')await vMemory();else if(TAB==='stickers')await vStickers();else if(TAB==='devctrl')await vDevCtrl();else if(TAB==='mcp')await vMcp();else if(TAB==='zcode')await vZcode();else if(TAB==='plugins')await vPlugins();else if(TAB==='settings'){await vSettings();cacheReload();}else if(TAB==='about')await vAbout();}catch(e){$('#view').innerHTML='<div class="card">加载失败: '+esc(e)+'</div>'}}
 document.querySelectorAll('#nav button').forEach(b=>b.onclick=async()=>{if(!await dirtyGuard())return;document.querySelectorAll('#nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');TAB=b.dataset.t;if(TAB!=='runlog'&&_runlogTimer){clearInterval(_runlogTimer);_runlogTimer=null}if(TAB!=='devctrl'&&_devCodeTimer){clearInterval(_devCodeTimer);_devCodeTimer=null}if(TAB!=='status'&&_ncTokTimer){clearInterval(_ncTokTimer);_ncTokTimer=null}if(TAB!=='voice'&&typeof _gsvPollTimer!=='undefined'&&_gsvPollTimer){clearInterval(_gsvPollTimer);_gsvPollTimer=null}skeleton();load()});
 const _urlTab=new URLSearchParams(location.search).get('tab');
 if(_urlTab&&TITLES[_urlTab]){TAB=_urlTab;document.querySelectorAll('#nav button').forEach(x=>x.classList.toggle('on',x.dataset.t===_urlTab));}
@@ -1491,7 +1497,100 @@ async function saveGmFieldFor(gid,f,el){
  const r=await saveKV('/api/group-modes',{chat_id:gid,override:ov},names[f]+'已生效（仅群 '+gid+'）');
  if(r.ok!==false)_gmModes[gid]=Object.assign({},_gmModes[gid],ov);
 }
+// ---------------- 群管理（0.5.16：定时禁言/关键词撤回禁言/群公告/快捷禁言） ----------------
+var __GA={groups:{},names:{},sel:'',notices:[]};
+async function vGroupAdmin(){
+ const d=await api('/api/gadmin').catch(()=>({ok:false}));
+ if(d&&d.ok){__GA.groups=d.groups||{};__GA.names=d.names||{};}
+ if(!__GA.sel){const ks=Object.keys(__GA.names);__GA.sel=ks[0]||'';}
+ const gids=Object.keys(__GA.names);
+ if(!gids.length){$('#view').innerHTML=head('群管理')+'<div class="card">机器人还没加入任何群（或群列表未加载）。</div>';return;}
+ const sel=__GA.sel, cfg=__GA.groups[sel]||{}, sc=cfg.sched_ban||{};
+ const opts=gids.map(g=>'<option value="'+esc(g)+'" '+(g===sel?'selected':'')+'>'+esc((__GA.names[g]||'')+' ('+g+')')+'</option>').join('');
+ const notList=(__GA.notices||[]).map((n,i)=>'<div style="border:1px solid var(--line);border-radius:6px;padding:7px;margin:5px 0">'
+  +'<b>'+esc(n.title||'（无标题）')+'</b> <span class="k mono" style="font-size:11px">'+esc(n.ts?new Date(n.ts*1000).toLocaleString():'')+'</span>'
+  +'<div class="k" style="white-space:pre-wrap;font-size:12.5px;margin-top:4px">'+esc((n.text||'').slice(0,300))+'</div></div>').join('');
+ $('#view').innerHTML=head('群管理')
+ +'<div class="card"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+ +'<label class="k">目标群 <select onchange="__GA.sel=this.value;__GA.notices=[];load()">'+opts+'</select></label>'
+ +'<span class="k" style="font-size:12px">⚠ 管理操作要求机器人是该群管理员，否则接口会报权限错误</span></div></div>'
+ +'<div class="card"><div style="margin-bottom:6px"><b>定时全群禁言</b> <span class="k" style="font-size:12px">（到点自动开/关全体禁言；支持跨午夜，如 23:00→08:00）</span></div>'
+ +'<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap" class="k">'
+ +'<label><input type="checkbox" id="ga-sc-on" '+(sc.on?'checked':'')+'> 启用</label>'
+ +'<label>禁言于 <input type="time" id="ga-sc-mute" value="'+esc(sc.mute_hhmm||'23:00')+'"></label>'
+ +'<label>解除于 <input type="time" id="ga-sc-unmute" value="'+esc(sc.unmute_hhmm||'08:00')+'"></label>'
+ +'<button class="act" style="margin:0" onclick="__gaSave()">保存全部群管设置</button><span class="k" id="ga-msg"></span></div></div>'
+ +'<div class="card"><div style="margin-bottom:6px"><b>关键词撤回</b> <span class="k" style="font-size:12px">（消息含任一关键词 → 自动撤回）</span></div>'
+ +'<div style="display:flex;gap:12px;align-items:center;margin-bottom:6px" class="k"><label><input type="checkbox" id="ga-kr-on" '+(cfg.kw_recall_on?'checked':'')+'> 启用</label></div>'
+ +'<textarea id="ga-kr" style="min-height:56px" placeholder="关键词，逗号/换行分隔（如：广告、博彩、刷单）">'+esc((cfg.kw_recall||[]).join('、'))+'</textarea></div>'
+ +'<div class="card"><div style="margin-bottom:6px"><b>关键词禁言</b> <span class="k" style="font-size:12px">（消息含任一关键词 → 撤回并禁言发送者）</span></div>'
+ +'<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:6px" class="k">'
+ +'<label><input type="checkbox" id="ga-km-on" '+(cfg.kw_mute_on?'checked':'')+'> 启用</label>'
+ +'<label>禁言 <input type="number" id="ga-km-min" min="1" max="43200" style="width:64px" value="'+(cfg.kw_mute_min||10)+'"> 分钟</label></div>'
+ +'<textarea id="ga-km" style="min-height:56px" placeholder="关键词，逗号/换行分隔">'+esc((cfg.kw_mute_words||[]).join('、'))+'</textarea></div>'
+ +'<div class="card"><div style="margin-bottom:6px"><b>群公告</b> <span class="k" style="font-size:12px">（编辑后发送即发布新公告；QQ 群通常同时只保留一条最新公告）</span></div>'
+ +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px">'
+ +'<button class="act ghost" style="margin:0" onclick="__gaNoticeGet()">查看当前公告</button>'
+ +'<button class="act" style="margin:0" onclick="__gaNoticeSend()">发送公告</button><span class="k" id="ga-nmsg"></span></div>'
+ +'<textarea id="ga-notice" style="min-height:90px" placeholder="公告内容（发送前会弹确认）"></textarea>'
+ +'<div id="ga-notices" style="margin-top:8px">'+(notList||'')+'</div></div>'
+ +'<div class="card"><div style="margin-bottom:6px"><b>快捷操作</b> <span class="k" style="font-size:12px">（立即执行；有确认弹窗）</span></div>'
+ +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+ +'<button class="act ghost danger" style="margin:0" onclick="__gaWholeBan(true)">立即全群禁言</button>'
+ +'<button class="act ghost" style="margin:0" onclick="__gaWholeBan(false)">解除全群禁言</button>'
+ +'<span class="k">| 手动禁言成员：</span><input id="ga-mb-uid" placeholder="QQ号" style="width:120px">'
+ +'<input id="ga-mb-min" type="number" min="0" max="43200" placeholder="分钟(0=解禁)" style="width:110px">'
+ +'<button class="act ghost danger" style="margin:0" onclick="__gaMemberBan()">禁言</button></div></div>';
+}
+function __gaCollect(){
+ const gid=__GA.sel;
+ const kr=(document.getElementById('ga-kr').value||'').split(/[,，、\n]/).map(s=>s.trim()).filter(Boolean);
+ const km=(document.getElementById('ga-km').value||'').split(/[,，、\n]/).map(s=>s.trim()).filter(Boolean);
+ const g=__GA.groups;
+ g[gid]={"sched_ban":{"on":document.getElementById('ga-sc-on').checked,
+   "mute_hhmm":document.getElementById('ga-sc-mute').value||'23:00',
+   "unmute_hhmm":document.getElementById('ga-sc-unmute').value||'08:00'},
+  "kw_recall_on":document.getElementById('ga-kr-on').checked,"kw_recall":kr,
+  "kw_mute_on":document.getElementById('ga-km-on').checked,"kw_mute_words":km,
+  "kw_mute_min":parseInt(document.getElementById('ga-km-min').value,10)||10,
+  "_state":(g[gid]||{})._state||{}};
+ return g;
+}
+async function __gaSave(){
+ const msg=document.getElementById('ga-msg');msg.textContent='保存中…';
+ const r=await api('/api/gadmin-save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({groups:__gaCollect()})}).catch(()=>({ok:false}));
+ msg.textContent=r&&r.ok?'✓ 已保存（下一分钟内生效）':'✗ '+(r&&r.error||'保存失败');
+}
+async function __gaNoticeGet(){
+ const msg=document.getElementById('ga-nmsg');msg.textContent='读取中…';
+ const r=await api('/api/notice-get',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({group_id:__GA.sel})}).catch(()=>({ok:false}));
+ if(r&&r.ok){__GA.notices=r.notices||[];msg.textContent='';load();}
+ else msg.textContent='✗ '+(r&&r.error||'读取失败（需要机器人是群管理员）');
+}
+async function __gaNoticeSend(){
+ const content=(document.getElementById('ga-notice').value||'').trim();
+ if(!content){alert('公告内容为空');return;}
+ if(!await dlgConfirm({title:'⚠ 发布群公告',body:'将向「'+esc((__GA.names[__GA.sel]||'')+' '+__GA.sel)+'」发布公告：\n\n'+content.slice(0,200)+'\n\n所有群成员会收到通知，确认发布？',okText:'发布'}))return;
+ const msg=document.getElementById('ga-nmsg');msg.textContent='发送中…';
+ const r=await api('/api/notice-send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({group_id:__GA.sel,content})}).catch(()=>({ok:false}));
+ msg.textContent=r&&r.ok?'✓ 已发布':'✗ '+(r&&r.error||'发布失败（需要机器人是群管理员）');
+ if(r&&r.ok)__gaNoticeGet();
+}
+async function __gaWholeBan(on){
+ if(!await dlgConfirm({title:on?'⚠ 开启全群禁言':'解除全群禁言',body:on?('将立即对「'+esc((__GA.names[__GA.sel]||'')+' '+__GA.sel)+'」开启全体禁言，全体成员（管理员除外）将无法发言。确认？'):('将解除「'+esc((__GA.names[__GA.sel]||'')+' '+__GA.sel)+'」的全体禁言。确认？'),okText:on?'开启禁言':'解除禁言',danger:on}))return;
+ const r=await api('/api/whole-ban',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({group_id:__GA.sel,on})}).catch(()=>({ok:false}));
+ alert(r&&r.ok?'已执行':'失败：'+(r&&r.error||'（需要机器人是群管理员）'));
+}
+async function __gaMemberBan(){
+ const uid=(document.getElementById('ga-mb-uid').value||'').replace(/\D/g,'');
+ const min=parseInt(document.getElementById('ga-mb-min').value,10)||0;
+ if(!uid){alert('请填QQ号');return;}
+ if(!await dlgConfirm({title:'⚠ 禁言群成员',body:'将对 '+uid+' 禁言 '+min+' 分钟'+(min?'':'（0=解除禁言）')+'。确认？',okText:'禁言',danger:true}))return;
+ const r=await api('/api/member-ban',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({group_id:__GA.sel,user_id:uid,minutes:min})}).catch(()=>({ok:false}));
+ alert(r&&r.ok?'已执行':'失败：'+(r&&r.error||'（需要机器人是群管理员；群主无法被禁言）'));
+}
 async function vPersonas(){
+ if(__PS_TAB==='style')return vFile('style');
  const [d,pr,gnr,fnr]=await Promise.all([
   api('/api/personas'),
   api('/api/persona-routes').catch(()=>({routes:[]})),
@@ -1501,7 +1600,7 @@ async function vPersonas(){
  window._prNames={g:(gnr&&gnr.names)||{},f:(fnr&&fnr.names)||{}};
  const opts=(d.names||[]).map(n=>`<option value="${esc(n)}" ${n===d.active?'selected':''}>${esc(n)}</option>`).join('');
  window._prPersonaNames=d.names||[];
- $('#view').innerHTML=head('多人设管理与全局通用设定')+saveHint('长文本需点所在卡片的「保存」按钮生效（按钮只保存该卡片）；未保存的修改以蓝色边框标记，切换人设或离开本页会提示。')+
+ $('#view').innerHTML=__psTabBar()+head('多人设管理与全局通用设定')+saveHint('长文本需点所在卡片的「保存」按钮生效（按钮只保存该卡片）；未保存的修改以蓝色边框标记，切换人设或离开本页会提示。')+
  `<div class="card"><div class="k">全局通用设定（所有人设共用：主人是谁、通用禁忌等，跨人设生效）</div>
   <textarea id="gedit" style="min-height:150px;margin-top:8px" oninput="dirtyOn(this,'bsaveg')">${esc(d.global||'')}</textarea>
   <button class="act" id="bsaveg" disabled onclick="saveGlobal()">保存全局设定</button></div>
@@ -1660,7 +1759,7 @@ async function vFile(kind){
    +'<div class="k" style="margin-top:4px">⚠ <b>注入条数直接影响消耗</b>：每条观察 ≈35 token，注入 '+inj+' 条 ≈ '+injTok+' token/条回复。调高=她带着更多积累说话（语气更稳定），但每次回复都更贵、更慢；过多的旧观察也可能和当前话题不搭。调低则反之。改完即时生效。</div>'
    +'<div style="margin-top:10px">'+(rows||'<i class="k">暂无人设</i>')+'</div></div>';
  }
- $('#view').innerHTML=head('说话风格卡（0.5.10 起按人设独立：每张人设可以有自己的语言底子；全局风格叠加到所有人设，与自进化叠加生效）')+saveHint('风格卡内容需点「保存」按钮生效（只保存当前选中目标）；未保存的修改以蓝色边框标记，切换目标会提示。')+evHtml+
+ $('#view').innerHTML=__psTabBar()+head('说话风格卡（0.5.10 起按人设独立：每张人设可以有自己的语言底子；全局风格叠加到所有人设，与自进化叠加生效）')+saveHint('风格卡内容需点「保存」按钮生效（只保存当前选中目标）；未保存的修改以蓝色边框标记，切换目标会提示。')+evHtml+
   `<div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
    <b>编辑目标</b><select id="stsel">${(window._stTargets||[]).map(t=>'<option value="'+esc(t.id)+'" '+(t.id===window._stSel?'selected':'')+'>'+esc(t.label)+(t.has_card?' ✓卡':'')+(t.evolved?' ✦自进化'+t.ev_count:'')+'</option>').join('')}</select>
    <span class="k" id="ststate"></span>
@@ -5342,6 +5441,11 @@ class UiHandler(BaseHTTPRequestHandler):
                           "/friend-list" + ("?refresh=1" if q.get("refresh") else ""),
                           read_const(TOKEN_PATH), timeout=15)
             return self._reply(200, r if isinstance(r, dict) else {"ok": False})
+        if u.path == "/api/gadmin":
+            # 群管模块：配置加载（daemon /group-admin 转发）
+            r = proxy_get("127.0.0.1", _daemon_port(), "/group-admin",
+                          read_const(TOKEN_PATH), timeout=15)
+            return self._reply(200, r if isinstance(r, dict) else {"ok": False})
         if u.path == "/api/zcode-status":
             import subprocess as _sp
             running = False
@@ -5408,6 +5512,27 @@ class UiHandler(BaseHTTPRequestHandler):
         if not self._authed(u, q):
             return self._reply(401, {"ok": False, "error": "unauthorized"})
         body = self._body()
+        # ---- 群管模块（daemon ctl 转发；机器人需为目标群管理员）----
+        if u.path == "/api/gadmin-save":
+            r = proxy_post("127.0.0.1", _daemon_port(), "/group-admin/save",
+                           body, read_const(TOKEN_PATH), timeout=20)
+            return self._reply(200, r if isinstance(r, dict) else {"ok": False})
+        if u.path == "/api/notice-send":
+            r = proxy_post("127.0.0.1", _daemon_port(), "/notice-send",
+                           body, read_const(TOKEN_PATH), timeout=20)
+            return self._reply(200, r if isinstance(r, dict) else {"ok": False})
+        if u.path == "/api/notice-get":
+            r = proxy_post("127.0.0.1", _daemon_port(), "/notice-get",
+                           body, read_const(TOKEN_PATH), timeout=20)
+            return self._reply(200, r if isinstance(r, dict) else {"ok": False})
+        if u.path == "/api/whole-ban":
+            r = proxy_post("127.0.0.1", _daemon_port(), "/whole-ban",
+                           body, read_const(TOKEN_PATH), timeout=20)
+            return self._reply(200, r if isinstance(r, dict) else {"ok": False})
+        if u.path == "/api/member-ban":
+            r = proxy_post("127.0.0.1", _daemon_port(), "/member-ban",
+                           body, read_const(TOKEN_PATH), timeout=20)
+            return self._reply(200, r if isinstance(r, dict) else {"ok": False})
         # ---- MCP 服务桥（内置；来源=ZCode 已装服务 + 自定义 http）----
         if u.path == "/api/mcp/meta":
             import qq_mcp as _M
