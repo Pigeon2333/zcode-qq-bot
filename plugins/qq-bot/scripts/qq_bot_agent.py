@@ -2822,14 +2822,22 @@ def build_messages(daemon, msg, ctx_k=32):
         bool(msg.get("image_urls")) and bool(msg.get("has_reply")))
     rt_note = ""   # 默认无引用注释（三分支兜底：曾漏默认值致无引用消息
                    # 组装即 UnboundLocalError 全群失声——11-09 23:37 事故）
+    # 引用的是机器人自己的话 → 必须点破"引用者≠当时对话的人"（2026-11-14
+    # 实测：A说晚安→BOT回A"快睡"；B引用BOT那条晚安@BOT"喵"→模型把B当成
+    # 刚被道晚安的A继续哄睡——被引对话的"对方"换人了模型浑然不知）
+    _rt_bot_note = ""
+    if rt and rt.get("is_bot"):
+        _rt_bot_note = ("（注意：这是你之前回**别人**的话——现在引用它的人"
+                        "【不一定是】当时跟你对话的那个人！先看清【现在】行"
+                        "是谁在说话，别把引用者当成当时那个人继续聊）")
     if rt_text:
-        rt_note = ("\n【被引用的原文】%s：%s%s" % (
+        rt_note = ("\n【被引用的原文】%s：%s%s%s" % (
             (rt or {}).get("sender_name") or "对方", rt_text,
             "（这条被引用的消息带图片——下方附的图就是它，结合图回答）"
-            if _rt_img else ""))
+            if _rt_img else "", _rt_bot_note))
     elif _rt_img:
-        rt_note = ("\n【被引用的原文】%s 发的是一条图片消息（图已附在下方）"
-                   % ((rt or {}).get("sender_name") or "对方"))
+        rt_note = ("\n【被引用的原文】%s 发的是一条图片消息（图已附在下方）%s"
+                   % ((rt or {}).get("sender_name") or "对方", _rt_bot_note))
     if msg["chat_type"] == "group":
         speaker = "%s(QQ:%s)" % (msg["sender_name"], msg["sender_id"])
         # 被@列表：at_me 时保留其他人名（群友让她"跟XX聊"需知道XX是谁）
