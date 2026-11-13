@@ -2674,7 +2674,8 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
                         msg = (n or {}).get("message") or {}
                         notices.append({
                             "title": "",
-                            "text": str(msg.get("text") or "")[:600],
+                            "text": str(msg.get("text") or "").replace(
+                                "&#10;", "\n")[:600],
                             "ts": (n or {}).get("publish_time") or 0,
                             "sender": str((n or {}).get("sender_id") or ""),
                             "n_img": len(msg.get("images") or [])})
