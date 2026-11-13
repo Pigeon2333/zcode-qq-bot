@@ -1497,20 +1497,27 @@ async function saveGmFieldFor(gid,f,el){
  const r=await saveKV('/api/group-modes',{chat_id:gid,override:ov},names[f]+'已生效（仅群 '+gid+'）');
  if(r.ok!==false)_gmModes[gid]=Object.assign({},_gmModes[gid],ov);
 }
-// ---------------- 群管理（0.5.16：定时禁言/关键词撤回禁言/群公告/快捷禁言） ----------------
-var __GA={groups:{},names:{},sel:'',notices:[]};
+// ---------------- 群管理（0.5.16：定时禁言/关键词撤回禁言/群公告/快捷禁言；分群+批量两页） ----------------
+var __GA={groups:{},names:{},sel:'',notices:[],tab:'single',picked:{}};
+function __gaTabBar(){return '<div style="display:flex;gap:8px;margin-bottom:10px">'
+ +'<button class="act'+(__GA.tab==='single'?'':' ghost')+'" style="margin:0" onclick="__GA.tab=\'single\';load()">分群管理</button>'
+ +'<button class="act'+(__GA.tab==='batch'?'':' ghost')+'" style="margin:0" onclick="__GA.tab=\'batch\';load()">批量管理</button>'
+ +'<span class="k" style="font-size:12px;align-self:center">（批量管理=选多个群统一设置/群发公告）</span></div>'}
 async function vGroupAdmin(){
  const d=await api('/api/gadmin').catch(()=>({ok:false}));
  if(d&&d.ok){__GA.groups=d.groups||{};__GA.names=d.names||{};}
  if(!__GA.sel){const ks=Object.keys(__GA.names);__GA.sel=ks[0]||'';}
  const gids=Object.keys(__GA.names);
  if(!gids.length){$('#view').innerHTML=head('群管理')+'<div class="card">机器人还没加入任何群（或群列表未加载）。</div>';return;}
+ if(__GA.tab==='batch')return vGroupAdminBatch(gids);
  const sel=__GA.sel, cfg=__GA.groups[sel]||{}, sc=cfg.sched_ban||{};
  const opts=gids.map(g=>'<option value="'+esc(g)+'" '+(g===sel?'selected':'')+'>'+esc((__GA.names[g]||'')+' ('+g+')')+'</option>').join('');
  const notList=(__GA.notices||[]).map((n,i)=>'<div style="border:1px solid var(--line);border-radius:6px;padding:7px;margin:5px 0">'
-  +'<b>'+esc(n.title||'（无标题）')+'</b> <span class="k mono" style="font-size:11px">'+esc(n.ts?new Date(n.ts*1000).toLocaleString():'')+'</span>'
-  +'<div class="k" style="white-space:pre-wrap;font-size:12.5px;margin-top:4px">'+esc((n.text||'').slice(0,300))+'</div></div>').join('');
- $('#view').innerHTML=head('群管理')
+  +'<span class="k mono" style="font-size:11px">'+esc(n.ts?new Date(n.ts*1000).toLocaleString():'')+'</span>'
+  +(n.sender?'<span class="k mono" style="font-size:11px"> 发布者QQ:'+esc(n.sender)+'</span>':'')
+  +(n.n_img?'<span class="k" style="font-size:11px"> ['+n.n_img+'图]</span>':'')
+  +'<div class="k" style="white-space:pre-wrap;font-size:12.5px;margin-top:4px">'+esc((n.text||'（无文字）').slice(0,400))+'</div></div>').join('');
+ $('#view').innerHTML=__gaTabBar()+head('群管理')
  +'<div class="card"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
  +'<label class="k">目标群 <select onchange="__GA.sel=this.value;__GA.notices=[];load()">'+opts+'</select></label>'
  +'<span class="k" style="font-size:12px">⚠ 管理操作要求机器人是该群管理员，否则接口会报权限错误</span></div></div>'
@@ -1542,6 +1549,86 @@ async function vGroupAdmin(){
  +'<input id="ga-mb-min" type="number" min="0" max="43200" placeholder="分钟(0=解禁)" style="width:110px">'
  +'<button class="act ghost danger" style="margin:0" onclick="__gaMemberBan()">禁言</button></div></div>';
 }
+// 批量管理页：多选群 → 统一应用设置 / 群发公告
+async function vGroupAdminBatch(gids){
+ const chips=gids.map(g=>'<span class="k ga-bchip" data-g="'+esc(g)+'" onclick="__gaPick(this)" style="padding:2px 10px;border:1px solid var(--line);border-radius:14px;cursor:pointer;font-size:12.5px">'+esc((__GA.names[g]||'')+ '('+g+')')+'</span>').join('');
+ const n=Object.keys(__GA.picked).filter(k=>__GA.picked[k]).length;
+ $('#view').innerHTML=__gaTabBar()+head('群管理 · 批量')
+ +'<div class="card"><div style="margin-bottom:6px"><b>选择群</b> <span class="k" style="font-size:12px">（点击增减，已选 <b id="ga-bn">'+n+'</b> 个）</span></div>'
+ +'<div style="display:flex;gap:6px;flex-wrap:wrap">'+chips+'</div>'
+ +'<div style="display:flex;gap:8px;margin-top:8px"><button class="act ghost" style="margin:0;padding:2px 10px;font-size:12px" onclick="__gaPickAll(true)">全选</button>'
+ +'<button class="act ghost" style="margin:0;padding:2px 10px;font-size:12px" onclick="__gaPickAll(false)">清空</button></div></div>'
+ +'<div class="card"><div style="margin-bottom:6px"><b>批量群发公告</b> <span class="k" style="font-size:12px">（同一内容发到上面所选的每个群；各群独立弹不弹确认由下方开关决定）</span></div>'
+ +'<textarea id="ga-b-notice" style="min-height:90px" placeholder="公告内容"></textarea>'
+ +'<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:6px" class="k">'
+ +'<label><input type="checkbox" id="ga-b-confirm" checked> 逐群确认（关=一次确认直接全发）</label>'
+ +'<button class="act" style="margin:0" onclick="__gaBatchNotice()">向所选群发送公告</button><span class="k" id="ga-bmsg"></span></div></div>'
+ +'<div class="card"><div style="margin-bottom:6px"><b>批量应用群管设置</b> <span class="k" style="font-size:12px">（把下面的定时禁言/关键词设置覆盖应用到所选的每个群；不动未勾选的项）</span></div>'
+ +'<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:6px" class="k">'
+ +'<label><input type="checkbox" id="ga-b-apply-sc"> 应用定时禁言</label>'
+ +'<label><input type="checkbox" id="ga-b-apply-kw"> 应用关键词设置</label></div>'
+ +'<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap" class="k">'
+ +'<label><input type="checkbox" id="ga-b-sc-on"> 启用定时禁言</label>'
+ +'<label>禁言于 <input type="time" id="ga-b-sc-mute" value="23:00"></label>'
+ +'<label>解除于 <input type="time" id="ga-b-sc-unmute" value="08:00"></label></div>'
+ +'<textarea id="ga-b-kr" style="min-height:44px;margin-top:6px" placeholder="关键词撤回（逗号/换行分隔；留空=清空该列表）"></textarea>'
+ +'<textarea id="ga-b-km" style="min-height:44px;margin-top:6px" placeholder="关键词禁言（逗号/换行分隔；留空=清空该列表）"></textarea>'
+ +'<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:6px" class="k">'
+ +'<label>禁言 <input type="number" id="ga-b-km-min" min="1" max="43200" style="width:64px" value="10"> 分钟</label>'
+ +'<button class="act" style="margin:0" onclick="__gaBatchApply()">应用到所选群</button><span class="k" id="ga-bmsg2"></span></div></div>';
+}
+function __gaPick(el){const g=el.dataset.g;__GA.picked[g]=!__GA.picked[g];
+ el.style.borderColor=__GA.picked[g]?'var(--acc,#4f7cff)':'var(--line)';
+ el.style.background=__GA.picked[g]?'rgba(79,124,255,.12)':'';
+ const n=Object.keys(__GA.picked).filter(k=>__GA.picked[k]).length;
+ const bn=document.getElementById('ga-bn');if(bn)bn.textContent=n;}
+function __gaPickAll(on){document.querySelectorAll('.ga-bchip').forEach(el=>{
+ __GA.picked[el.dataset.g]=on;
+ el.style.borderColor=on?'var(--acc,#4f7cff)':'var(--line)';
+ el.style.background=on?'rgba(79,124,255,.12)':'';});
+ const bn=document.getElementById('ga-bn');if(bn)bn.textContent=Object.keys(__GA.picked).filter(k=>__GA.picked[k]).length;}
+function __gaPickedList(){return Object.keys(__GA.picked).filter(k=>__GA.picked[k]);}
+async function __gaBatchNotice(){
+ const sel=__gaPickedList();
+ const content=(document.getElementById('ga-b-notice').value||'').trim();
+ if(!sel.length){toast('先选择要发送的群',false);return;}
+ if(!content){toast('公告内容为空',false);return;}
+ const needConfirm=document.getElementById('ga-b-confirm').checked;
+ if(!await dlgConfirm({title:'⚠ 批量发送群公告',body:'将把同一段公告发送到 '+sel.length+' 个群：\n'
+  +(sel.map(g=>esc((__GA.names[g]||'')+'('+g+')')).join('、').slice(0,300))+'\n\n公告内容：\n'+content.slice(0,200)+'\n\n确认发送？',okText:'发送'}))return;
+ const msg=document.getElementById('ga-bmsg');msg.textContent='发送中…';
+ const okList=[],failList=[];
+ for(const g of sel){
+  if(needConfirm&&sel.length>1&&!await dlgConfirm({title:'⚠ 发送到 '+esc((__GA.names[g]||'')+' ('+g+')'),body:content.slice(0,150)+'\n\n发送到这个群？',okText:'发送'}))continue;
+  const r=await api('/api/notice-send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({group_id:g,content})}).catch(()=>({ok:false}));
+  (r&&r.ok?okList:failList).push(g);
+ }
+ msg.textContent='完成：成功 '+okList.length+(failList.length?('，失败 '+failList.length+'（'+failList.join('、')+'，多为无管理员权限）'):'');
+ toast('公告群发完成：成功'+okList.length+(failList.length?'/失败'+failList.length:''),!failList.length);
+}
+async function __gaBatchApply(){
+ const sel=__gaPickedList();
+ if(!sel.length){toast('先选择要应用的群',false);return;}
+ const applySc=document.getElementById('ga-b-apply-sc').checked;
+ const applyKw=document.getElementById('ga-b-apply-kw').checked;
+ if(!applySc&&!applyKw){toast('至少勾选一项要应用的设置',false);return;}
+ const kr=(document.getElementById('ga-b-kr').value||'').split(/[,，、\n]/).map(s=>s.trim()).filter(Boolean);
+ const km=(document.getElementById('ga-b-km').value||'').split(/[,，、\n]/).map(s=>s.trim()).filter(Boolean);
+ if(!await dlgConfirm({title:'⚠ 批量应用设置',body:'将把设置覆盖到 '+sel.length+' 个群'+(applySc?'（含定时禁言'+(document.getElementById('ga-b-sc-on').checked?'·启用':'·停用')+'）':'')+(applyKw?'（含关键词撤回'+kr.length+'词/禁言'+km.length+'词）':'')+'。\n所选群原有的对应设置会被覆盖，确认？',okText:'应用',danger:true}))return;
+ const msg=document.getElementById('ga-bmsg2');msg.textContent='应用中…';
+ for(const g of sel){
+  const c=__GA.groups[g]||{};
+  if(applySc)c.sched_ban={on:document.getElementById('ga-b-sc-on').checked,
+   mute_hhmm:document.getElementById('ga-b-sc-mute').value||'23:00',
+   unmute_hhmm:document.getElementById('ga-b-sc-unmute').value||'08:00'};
+  if(applyKw){c.kw_recall=kr;c.kw_mute_words=km;
+   c.kw_mute_min=parseInt(document.getElementById('ga-b-km-min').value,10)||10;}
+  __GA.groups[g]=c;
+ }
+ const r=await api('/api/gadmin-save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({groups:__GA.groups})}).catch(()=>({ok:false}));
+ msg.textContent=r&&r.ok?'✓ 已应用到 '+sel.length+' 个群':'✗ '+(r&&r.error||'保存失败');
+ if(r&&r.ok)toast('设置已应用到 '+sel.length+' 个群');
+}
 function __gaCollect(){
  const gid=__GA.sel;
  const kr=(document.getElementById('ga-kr').value||'').split(/[,，、\n]/).map(s=>s.trim()).filter(Boolean);
@@ -1560,34 +1647,36 @@ async function __gaSave(){
  const msg=document.getElementById('ga-msg');msg.textContent='保存中…';
  const r=await api('/api/gadmin-save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({groups:__gaCollect()})}).catch(()=>({ok:false}));
  msg.textContent=r&&r.ok?'✓ 已保存（下一分钟内生效）':'✗ '+(r&&r.error||'保存失败');
+ if(r&&r.ok)toast('群管设置已保存');
 }
 async function __gaNoticeGet(){
  const msg=document.getElementById('ga-nmsg');msg.textContent='读取中…';
  const r=await api('/api/notice-get',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({group_id:__GA.sel})}).catch(()=>({ok:false}));
  if(r&&r.ok){__GA.notices=r.notices||[];msg.textContent='';load();}
- else msg.textContent='✗ '+(r&&r.error||'读取失败（需要机器人是群管理员）');
+ else {msg.textContent='✗ '+(r&&r.error||'读取失败');toast('公告读取失败（需机器人是群管理员）',false);}
 }
 async function __gaNoticeSend(){
  const content=(document.getElementById('ga-notice').value||'').trim();
- if(!content){alert('公告内容为空');return;}
+ if(!content){toast('公告内容为空',false);return;}
  if(!await dlgConfirm({title:'⚠ 发布群公告',body:'将向「'+esc((__GA.names[__GA.sel]||'')+' '+__GA.sel)+'」发布公告：\n\n'+content.slice(0,200)+'\n\n所有群成员会收到通知，确认发布？',okText:'发布'}))return;
  const msg=document.getElementById('ga-nmsg');msg.textContent='发送中…';
  const r=await api('/api/notice-send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({group_id:__GA.sel,content})}).catch(()=>({ok:false}));
- msg.textContent=r&&r.ok?'✓ 已发布':'✗ '+(r&&r.error||'发布失败（需要机器人是群管理员）');
+ msg.textContent=r&&r.ok?'✓ 已发布':'✗ '+(r&&r.error||'发布失败');
+ toast(r&&r.ok?'公告已发布':'公告发布失败（需群管理员）',!!(r&&r.ok));
  if(r&&r.ok)__gaNoticeGet();
 }
 async function __gaWholeBan(on){
  if(!await dlgConfirm({title:on?'⚠ 开启全群禁言':'解除全群禁言',body:on?('将立即对「'+esc((__GA.names[__GA.sel]||'')+' '+__GA.sel)+'」开启全体禁言，全体成员（管理员除外）将无法发言。确认？'):('将解除「'+esc((__GA.names[__GA.sel]||'')+' '+__GA.sel)+'」的全体禁言。确认？'),okText:on?'开启禁言':'解除禁言',danger:on}))return;
  const r=await api('/api/whole-ban',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({group_id:__GA.sel,on})}).catch(()=>({ok:false}));
- alert(r&&r.ok?'已执行':'失败：'+(r&&r.error||'（需要机器人是群管理员）'));
+ toast(r&&r.ok?'已执行':'执行失败：'+((r&&r.error)||'需机器人是群管理员'),!!(r&&r.ok));
 }
 async function __gaMemberBan(){
  const uid=(document.getElementById('ga-mb-uid').value||'').replace(/\D/g,'');
  const min=parseInt(document.getElementById('ga-mb-min').value,10)||0;
- if(!uid){alert('请填QQ号');return;}
+ if(!uid){toast('请填QQ号',false);return;}
  if(!await dlgConfirm({title:'⚠ 禁言群成员',body:'将对 '+uid+' 禁言 '+min+' 分钟'+(min?'':'（0=解除禁言）')+'。确认？',okText:'禁言',danger:true}))return;
  const r=await api('/api/member-ban',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({group_id:__GA.sel,user_id:uid,minutes:min})}).catch(()=>({ok:false}));
- alert(r&&r.ok?'已执行':'失败：'+(r&&r.error||'（需要机器人是群管理员；群主无法被禁言）'));
+ toast(r&&r.ok?'已执行':'执行失败：'+((r&&r.error)||'需机器人是群管理员；群主无法被禁言'),!!(r&&r.ok));
 }
 async function vPersonas(){
  if(__PS_TAB==='style')return vFile('style');

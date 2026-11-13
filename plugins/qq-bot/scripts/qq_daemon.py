@@ -2669,10 +2669,15 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
                                           {"group_id": int(gid)}, timeout=15)
                     notices = []
                     for n in (data if isinstance(data, list) else [])[:20]:
+                        # NapCat 公告结构（实测）：正文在 message.text（无独立
+                        # 标题字段），publish_time/sender_id 平铺，可带附图
+                        msg = (n or {}).get("message") or {}
                         notices.append({
-                            "title": str(((n or {}).get("title")) or "")[:40],
-                            "text": str(((n or {}).get("text")) or "")[:600],
-                            "ts": (n or {}).get("publish_time") or 0})
+                            "title": "",
+                            "text": str(msg.get("text") or "")[:600],
+                            "ts": (n or {}).get("publish_time") or 0,
+                            "sender": str((n or {}).get("sender_id") or ""),
+                            "n_img": len(msg.get("images") or [])})
                     return self._reply(200, {"ok": True, "notices": notices})
                 except Exception as e:
                     return self._reply(200, {"ok": False, "error": repr(e)[:200]})

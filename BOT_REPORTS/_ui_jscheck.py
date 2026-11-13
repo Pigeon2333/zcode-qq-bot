@@ -19,4 +19,5 @@ for i, b in enumerate(blocks):
     if r.returncode != 0:
         fails += 1
         print(r.stderr[:800])
+    p.unlink(missing_ok=True)   # 检查完即删：留在仓库会被 Mimosa 扫出 SSRF 误报拦 commit
 sys.exit(1 if fails else 0)

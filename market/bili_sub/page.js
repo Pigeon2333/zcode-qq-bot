@@ -121,9 +121,9 @@ async function __bsDel(idx){
 }
 async function __bsTest(idx){
  var s=__BS.subs[idx];var g=(s.groups||[])[0];var p=(s.privates||[])[0];
- if(!g&&!p){alert('先给这个订阅选一个推送目标');return;}
+ if(!g&&!p){toast('先给这个订阅选一个推送目标',false);return;}
  var r=await api('/api/plugins/call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'bili_sub',method:'test_push',args:g?{group:g}:{private:p}})}).catch(()=>({ok:false}));
- alert(r&&r.ok?'测试消息已发（'+(g?('群 '+g):('私聊 '+p))+'）':'失败：'+(r&&r.error||'未知'));
+ toast(r&&r.ok?('测试消息已发（'+(g?('群 '+g):('私聊 '+p))+'）'):('失败：'+(r&&r.error||'未知')),!!(r&&r.ok));
 }
 // ---------------- 推送历史 + 手动重推 ----------------
 function __bsRenderHist(){
@@ -150,7 +150,7 @@ function __bsRenderHist(){
 }
 function __bsRepushDlg(hid){
  var e=null;__BS.hist.forEach(function(x){if(x.hid===hid)e=x;});
- if(!e){alert('记录不存在');return;}
+ if(!e){toast('记录不存在',false);return;}
  var failed=Object.keys(e.ok||{}).filter(function(k){return !e.ok[k];});
  var gOpts=Object.keys(__BS.wl).map(function(g){var k='group:'+g;var sel=failed.indexOf(k)>=0?' checked':'';
   return '<label class="k" style="font-size:12.5px"><input type="checkbox" class="bs-rp" value="g:'+esc(g)+'"'+sel+'> '+esc(__BS.wl[g]||g)+'（群）</label>';}).join(' ');
@@ -168,7 +168,7 @@ function __bsRepushDlg(hid){
   var g=[],p=[];
   m.querySelectorAll('.bs-rp:checked').forEach(function(c){
    if(c.value.indexOf('g:')===0)g.push(c.value.slice(2));else p.push(c.value.slice(2));});
-  if(!g.length&&!p.length){alert('至少选一个目标');return;}
+  if(!g.length&&!p.length){toast('至少选一个目标',false);return;}
   m.remove();__bsRepushDo(hid,g,p);};
  m.onkeydown=function(ev){if(ev.key==='Escape')m.remove()};
  m.onclick=function(ev){if(ev.target===m)m.remove()};
@@ -183,10 +183,10 @@ function __bsRepushDlg(hid){
 }
 async function __bsRepushDo(hid,g,p){
  var r=await api('/api/plugins/call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'bili_sub',method:'repush',args:{hid:hid,groups:g,privates:p}})}).catch(()=>({ok:false}));
- if(r&&r.ok){alert('已重推：'+Object.keys(r.results||{}).map(function(k){return k+(r.results[k]?'✓':'✗');}).join(' '));
+ if(r&&r.ok){toast('已重推：'+Object.keys(r.results||{}).map(function(k){return k+(r.results[k]?'✓':'✗');}).join(' '),true);
   var st=await api('/api/plugins/call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'bili_sub',method:'history'})}).catch(()=>null);
   if(st&&st.ok){__BS.hist=(st.history||[]).slice().reverse();__bsRenderHist();}
- } else alert('失败：'+(r&&r.error||'未知'));
+ } else toast('重推失败：'+(r&&r.error||'未知'),false);
 }
 async function __bsSetInterval(){
  var v=parseInt(document.getElementById('bs-interval').value,10);
