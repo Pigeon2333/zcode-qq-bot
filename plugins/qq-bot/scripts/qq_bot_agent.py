@@ -5357,8 +5357,13 @@ def process(daemon, msg):
                         _gfail_line = _gr.strip()[:150]
                 except Exception:
                     pass
-                reply = (reply.rstrip() + "\n" + _gfail_line) if reply.strip() \
-                    else _gfail_line
+                # 全失败：模型原 reply 是不知道结果时写的（多半已宣告"办好
+                # 了"）——留着必自相矛盾（实测"好啦解禁了～/试了下解禁不了"
+                # 连发），整段替换成重写句；有成功有失败才保留原话+追加。
+                if _g_ok_details:
+                    reply = (reply.rstrip() + "\n" + _gfail_line)
+                else:
+                    reply = _gfail_line
             # 群聊里模型常只输出标记本身（群场合话少）——剥完正文空了就用
             # 执行结果人话兜底，绝不能"办了事却一声不吭"（用户实测群@指挥
             # 禁言成功但零回复）。私聊模型一般带自然话，不受影响。
