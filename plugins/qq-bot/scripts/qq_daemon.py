@@ -678,6 +678,13 @@ def extract_message_info(segments, self_id, chat_ctx=("", "")):
     return info
 
 
+# 安抚性短词（整条消息恰好是这些词 = 对上一条说话人的安慰/亲昵回应；
+# 群友互相"摸摸"被机器人当成对自己说的根源——2026-11-13 实测连回两次）。
+# 整词匹配：带其他内容的句子不走此规则，正常判定。
+_COMFORT_RE = re.compile(
+    r"(?:摸摸|摸了摸|摸头|抱抱|抱一个|抱住|抱抱你|拍拍|拍一拍|贴贴|蹭蹭|揉揉"
+    r"|rua|mua|么么|亲亲|不哭|别哭|摸摸头|抱抱宝|安慰一下)")
+
 # ---------------------------------------------------------------------------
 # 守护进程主体（纯内存状态）
 # ---------------------------------------------------------------------------
@@ -1634,6 +1641,41 @@ class Daemon:
             pt_ts = self._peer_talk.get("%s_%s" % (chat_type, chat_id), 0.0)
         if now2 - pt_ts < self._peer_talk_window():
             return False, "peer_talk"
+        # 安抚性短词定向判定（2026-11-13 实测：群友互相"摸摸"安慰被当
+        # 成对机器人说，连回两次）：摸摸/抱抱这类词是对「上一条消息的
+        # 说话人」的回应——上一条不是机器人（是群友在互相安慰）就不触发；
+        # 紧跟机器人自己的话（人设说了难过的事被群友摸摸）→ 是对机器人
+        # 说的，放行。@/回复路径在上面已放行，不受影响。
+        _txt_c = str(info["text"] or "").strip().rstrip("~～!！。.")
+        if chat_type == "group" and _COMFORT_RE.fullmatch(_txt_c):
+            _key_h = "%s_%s" % (chat_type, chat_id)
+            with self.lock:
+                _hist = self.mem_history.get(_key_h, deque())
+                _last_spoke_to = None
+                for _r in reversed(list(_hist)[-8:]):
+                    if _r.get("ts", 0) < time.time() - 300:
+                        break
+                    _last_spoke_to = _r
+                    break
+            if not (_last_spoke_to and _last_spoke_to.get("is_bot")):
+                return False, "comfort_peer"
+        # 同文短消息复读防双回（同场景另一半）：同发送者 3 分钟内已发过
+        # 一模一样的短消息、且机器人回过那条 → 这条不再掷骰（实测：两次
+        # "摸摸"间隔 66s 越过 45s 闲聊冷却各自掷中，连回两次）。
+        if chat_type == "group" and len(_txt_c) <= 12 and _txt_c:
+            _key_h = "%s_%s" % (chat_type, chat_id)
+            with self.lock:
+                _hist2 = list(self.mem_history.get(_key_h, []))[-12:]
+            for _i in range(len(_hist2) - 1, -1, -1):
+                _r = _hist2[_i]
+                if time.time() - _r.get("ts", 0) > 180:
+                    break
+                if str(_r.get("sender_id") or "") == str(info.get("sender_id", "")) \
+                        and str(_r.get("text") or "").strip() == _txt_c:
+                    # 找到同文前条：其后有 bot 回复 → 本条跳过
+                    if any(h.get("is_bot") for h in _hist2[_i + 1:]):
+                        return False, "repeat_dup"
+                    break
         # 碎片合并：此人还在连发中，主动插话暂缓（@/回复不受影响；
         # 等此人静默 gap 秒后下一条自然走正常触发，上下文也更完整）
         # 带图消息豁免：连发中的「图+配文」正是话题主体（2026-11-11 实测
