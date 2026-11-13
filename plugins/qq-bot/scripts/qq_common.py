@@ -24,7 +24,7 @@ DATA_DIR = os.environ.get("QQBOT_DATA_DIR") or os.path.join(
     os.path.expanduser("~"), ".zcode-qq-bot")
 DATA_ROOT = pathlib.Path(DATA_DIR)
 
-APP_VERSION = "0.5.15"         # 发布版本号（更新检查与本页展示用；发版时同步改）
+APP_VERSION = "0.5.16"         # 发布版本号（更新检查与本页展示用；发版时同步改）
 
 # 表情回应（QQ 系统表情，NapCat set_msg_emoji_like 的 emoji_id）。
 # agent 教学 / daemon 执行 / 管理台勾选三方共用的全集；默认全开。
