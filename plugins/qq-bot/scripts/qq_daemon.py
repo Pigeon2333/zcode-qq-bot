@@ -607,7 +607,10 @@ def extract_message_info(segments, self_id, chat_ctx=("", "")):
                 except (TypeError, ValueError):
                     ft = ""
                 if not ft:
-                    ft = "[QQ表情#%s]" % str(d.get("id", "?"))
+                    # 未知 id 降级为通用 [表情]——不带编号（2026-11-13 实测：
+                    # [QQ表情#265] 占位进历史后被模型当输出格式模仿，
+                    # [QQ表情#63] 原样进了群）。表内照旧转文字。
+                    ft = "[表情]"
             elif not ft.startswith("["):
                 ft = "[%s]" % ft.strip("[]")
             texts.append(ft)
@@ -2087,11 +2090,17 @@ class Daemon:
     # 实测 [时:23:24]/[21:05]/[回应:63] 三种形态）。反复剥多组前缀；
     # markdown 链接 [文本](url) 例外（] 后紧跟 ( 不剥）。
     _LEAD_BRACKET_RE = re.compile(r"^\s*\[[^\[\]]{1,32}\](?!\()\s*")
+    # 入站占位被复读（2026-11-13 实测 [QQ表情#63] 原样进群）：daemon 给
+    # 模型的占位（[QQ表情#x]/[消息类型:x]/[表情包] 等）模型偶尔照抄进
+    # 正文——句中也要剥（这几种形态正常口语不会主动打出来）
+    _PLACEHOLDER_RE = re.compile(
+        r"\[\s*(?:QQ表情#\w{1,8}|消息类型[:：][^\[\]]{1,20}|表情包|语音|图片|视频|文件|骰子|猜拳)\s*\]")
 
     @classmethod
     def _strip_control_marks(cls, text):
         """剔除残留控制标记（剥完空了返回 None=跳过该条）。"""
         t = cls._MARK_LEAK_RE.sub("", str(text or ""))
+        t = cls._PLACEHOLDER_RE.sub("", t)
         for _ in range(6):          # 行首 [] 前缀连环剥（上限防病态输入）
             m = cls._LEAD_BRACKET_RE.match(t)
             if not m:
