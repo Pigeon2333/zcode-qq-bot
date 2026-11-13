@@ -554,6 +554,13 @@ def extract_message_info(segments, self_id, chat_ctx=("", "")):
             info["at_users"].append(qq)
             if self_id is not None and qq == str(self_id):
                 info["at_me"] = True
+            else:
+                # @其他人：渲染进文本（2026-11-13 实测：纯@消息 text 空，
+                # 历史显示空行被模型评论"怎么发了个空白"；渲染后模型也能
+                # 看出这句是对谁说的，不对别人的 @ 对话插嘴）。@机器人
+                # 本身不进文本（at_me 已标记，保持裸@检测的空文本约定）
+                _nm = str(d.get("name") or "").strip()
+                texts.append(("@%s" % _nm) if _nm else ("@QQ:%s" % qq))
         elif t == "image":
             info["image_urls"].append(str(d.get("url") or ""))
         elif t == "forward":
