@@ -5308,6 +5308,7 @@ def process(daemon, msg):
                 % (msg["id"], msg["chat_type"], msg["chat_id"]))
         else:
             _g_ok_details = []
+            _g_fails = []
             for _gop, _gargs in _gmarks[:3]:
                 _kv = {}
                 for _pair in _gargs.split("|"):
@@ -5339,7 +5340,25 @@ def process(daemon, msg):
                 if r.get("ok"):
                     _g_ok_details.append(str(r.get("detail") or "办好了"))
                 else:
-                    reply += "\n（系统：%s）" % str(r.get("detail") or "执行失败")[:120]
+                    _g_fails.append(str(r.get("detail") or "执行失败")[:120])
+            # 失败也不再甩机械注记——带人设上下文让模型用自己的口吻告诉
+            # 主人没办成+原因（用户实测：解禁管理员报 cannot ban admin
+            # 原文甩群里，要求人话+跟人设走）。改写失败才退回括号注记。
+            if _g_fails:
+                _gfail_line = "（%s）" % "；".join(_g_fails)
+                try:
+                    _gm, _gr = call_glm_with_fallback(messages + [
+                        {"role": "user", "content":
+                         "（系统提示：你刚才想帮主人执行的群管理操作没成功，"
+                         "原因是「%s」。请用你的口吻简短把这个结果告诉主人——"
+                         "一两句话，别提\"系统\"，别复述技术词。）"
+                         % "；".join(_g_fails)}], "")
+                    if _gr and len(_gr.strip()) > 1:
+                        _gfail_line = _gr.strip()[:150]
+                except Exception:
+                    pass
+                reply = (reply.rstrip() + "\n" + _gfail_line) if reply.strip() \
+                    else _gfail_line
             # 群聊里模型常只输出标记本身（群场合话少）——剥完正文空了就用
             # 执行结果人话兜底，绝不能"办了事却一声不吭"（用户实测群@指挥
             # 禁言成功但零回复）。私聊模型一般带自然话，不受影响。

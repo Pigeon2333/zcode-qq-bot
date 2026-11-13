@@ -2480,6 +2480,22 @@ class Daemon:
             return hit
         return None, "群里没找到叫「%s」的人（可让我按QQ号来）" % w[:20]
 
+    def _gadmin_human_err(self, e):
+        """群管接口错误 → 人话（2026-11-13 用户实测：解禁管理员报
+        cannot ban admin 被原样甩给主人）。按 NapCat 错误文本分类翻译，
+        认不出也绝不输出 RuntimeError 原文。"""
+        t = str(e)
+        if "cannot ban owner" in t or "群主" in t:
+            return "TA是群主——群主的禁言我动不了，得TA自己来"
+        if "cannot ban admin" in t:
+            return "TA也是管理员，同级管不了同级——这事儿得群主出手"
+        if "无权限" in t or "not admin" in t or "403" in t or "权限不足" in t:
+            return "我在这个群还没有管理员权限，办不动这个"
+        if "not found" in t or "不存在" in t:
+            return "QQ那边说找不到这个目标（人或群可能不对）"
+        t = t.replace("RuntimeError(", "").replace("OneBot 动作失败", "").strip(") '\"")
+        return "QQ那边没让这次操作成功（%s）" % t[:60]
+
     def gadmin_exec(self, body):
         """自然语言群管执行入口（agent 转发；[GADMIN] 标记解析结果）。
         op: ban 禁言 / unban 解禁 / whole 全体禁言 / notice 公告 / recall 撤回。
@@ -2562,9 +2578,7 @@ class Daemon:
         except Exception as e:
             out("AGENT_LOG {\"msg\": \"gadmin_exec_fail\", \"op\": %s, \"detail\": %s}"
                 % (json.dumps(op), json.dumps(repr(e)[:120])))
-            return {"ok": False,
-                    "detail": "执行失败（多半是我在这个群没有管理员权限）：%s"
-                              % repr(e)[:100]}
+            return {"ok": False, "detail": self._gadmin_human_err(e)}
 
     def _gadmin_keyword_check(self, chat_type, chat_id, info, message_id):
         """关键词撤回/禁言（群管模块；白名单群消息逐条检查）。
