@@ -205,19 +205,72 @@ def _api_send_text(api, chat_type, chat_id, texts):
         return fn(chat_type, chat_id, texts)
 
 
-def _send_out(api, sub, text, imgs=None):
-    for gid in (sub.get("groups") or []):
+# ---------------- 推送历史（手动重推的数据源；环形保留最近 60 条） ----------------
+
+def _hist_load(api):
+    return list(api.load("history", []) or [])
+
+
+def _hist_add(api, entry):
+    h = _hist_load(api)
+    h.append(entry)
+    api.store("history", h[-60:])
+
+
+def _hist_ok_update(api, hid, adds):
+    h = _hist_load(api)
+    for e in h:
+        if e.get("hid") == hid:
+            e["ok"].update(adds)
+            e["repush"] = int(e.get("repush") or 0) + 1
+            break
+    api.store("history", h[-60:])
+
+
+def _next_hid(api):
+    n = int(api.load("hist_seq", 0) or 0) + 1
+    api.store("hist_seq", n)
+    return n
+
+
+def _send_out(api, sub, text, imgs=None, record=True, kind=None):
+    """把一条内容发到订阅的全部目标（群+私聊）。
+    返回 {目标key: 成败}；record=True 时写推送历史（手动重推的数据源）。"""
+    ok = {}
+    targets = [("group", str(g)) for g in (sub.get("groups") or [])] + \
+              [("private", str(u)) for u in (sub.get("privates") or [])]
+    files = None
+    for ct, cid in targets:
+        key = "%s:%s" % (ct, cid)
+        good = True
         try:
-            _api_send_text(api, "group", str(gid), [text])
+            _api_send_text(api, ct, cid, [text])
         except Exception as e:
-            api.log("push fail group=%s %r" % (gid, e))
-        for i, u in enumerate((imgs or [])[:_IMG_MAX]):
-            p = _dl_img(u, "bili_%s_%d" % (sub.get("uid"), i))
-            if p:
+            good = False
+            api.log("push fail %s=%s %r" % (ct, cid, e))
+        if good and imgs:
+            if files is None:
+                files = []
+                for i, u in enumerate(imgs[:_IMG_MAX]):
+                    p = _dl_img(u, "bili_%s_%d" % (sub.get("uid"), i))
+                    if p:
+                        files.append(p)
+            for p in files:
                 try:
-                    api.send_image("group", str(gid), p, caption="")
+                    api.send_image(ct, cid, p, caption="")
                 except Exception:
-                    pass
+                    pass            # 文字已到即算成功；图失败不整条重发
+        ok[key] = good
+    if record:
+        _hist_add(api, {
+            "hid": _next_hid(api), "ts": time.time(),
+            "uid": str(sub.get("uid") or ""), "name": str(sub.get("name") or ""),
+            "kind": kind or ("av" if text.startswith("【B站新视频】")
+                             else ("live" if text.startswith("【B站直播】")
+                                   else "draw")),
+            "text": text[:400], "imgs": (imgs or [])[:_IMG_MAX],
+            "ok": ok, "repush": 0})
+    return ok
 
 
 def _poll_dyn_one(api, sub, last, updates):
@@ -250,7 +303,8 @@ def _poll_dyn_one(api, sub, last, updates):
                 continue
             if parsed["kind"] == "draw" and not sub.get("draw"):
                 continue
-            _send_out(api, sub, parsed["text"], parsed.get("imgs"))
+            _send_out(api, sub, parsed["text"], parsed.get("imgs"),
+                      kind=parsed["kind"])
             api.log("push uid=%s kind=%s id=%s" % (uid, parsed["kind"],
                                                    it.get("id_str")))
     if top:
@@ -276,7 +330,7 @@ def _poll_live_all(api, subs, live_on):
         prev = int(live_on.get(uid) or 0)
         if on and not prev:
             room = row.get("room_id") or ""
-            _send_out(api, s, "【B站直播】%s 开播了：\n「%s」\nhttps://live.bilibili.com/%s"
+            _send_out(api, s, kind="live", text="【B站直播】%s 开播了：\n「%s」\nhttps://live.bilibili.com/%s"
                       % (row.get("uname") or s.get("name") or "UP",
                          str(row.get("title") or "")[:60], room))
             api.log("push live uid=%s room=%s" % (uid, room))
@@ -348,6 +402,7 @@ def register(api):
         "interval": int(api.load("interval", 5)),
         "bili_login": bool(_cookie()),
         "wl_groups": _wl_groups(),
+        "history": _hist_load(api)[-30:],
         "next_poll": float(api.load("next_poll", 0) or 0)})
     api.route("probe", lambda args: _probe(args))
     api.route("sub_add", lambda args: _sub_add(api, args))
@@ -355,6 +410,9 @@ def register(api):
     api.route("sub_update", lambda args: _sub_update(api, args))
     api.route("set_interval", lambda args: _set_interval(api, args))
     api.route("test_push", lambda args: _test_push(api, args))
+    api.route("history", lambda args: {"ok": True,
+                                       "history": _hist_load(api)[-30:]})
+    api.route("repush", lambda args: _repush(api, args))
     api.log("ready")
 
 
@@ -378,13 +436,15 @@ def _sub_add(api, args):
         return {"ok": False, "error": "该 UP 已订阅"}
     groups = [str(g).strip() for g in (a.get("groups") or [])
               if str(g).strip()][:20]
-    if not groups:
-        return {"ok": False, "error": "至少选择一个目标群"}
+    privates = [str(u).strip() for u in (a.get("privates") or [])
+                if str(u).strip()][:20]
+    if not groups and not privates:
+        return {"ok": False, "error": "至少选择一个目标群或私聊对象"}
     sub = {"uid": uid, "name": str(a.get("name") or "")[:40] or ("UID:%s" % uid),
            "av": 1 if a.get("av") else 0,
            "draw": 1 if a.get("draw") else 0,
            "live": 1 if a.get("live") else 0,
-           "groups": groups}
+           "groups": groups, "privates": privates}
     if not (sub["av"] or sub["draw"] or sub["live"]):
         return {"ok": False, "error": "至少勾选一类内容"}
     subs.append(sub)
@@ -419,6 +479,9 @@ def _sub_update(api, args):
         if isinstance(a.get("groups"), list):
             s["groups"] = [str(g).strip() for g in a["groups"]
                            if str(g).strip()][:20]
+        if isinstance(a.get("privates"), list):
+            s["privates"] = [str(u).strip() for u in a["privates"]
+                             if str(u).strip()][:20]
     if not hit:
         return {"ok": False, "error": "订阅不存在"}
     api.store("subs", subs)
@@ -435,13 +498,49 @@ def _set_interval(api, args):
 
 
 def _test_push(api, args):
-    gid = str((args or {}).get("group") or "").strip()
-    if not gid.isdigit():
-        return {"ok": False, "error": "群号非法"}
+    a = args or {}
+    gid = str(a.get("group") or "").strip()
+    pid = str(a.get("private") or "").strip()
     try:
-        _api_send_text(api, "group", gid,
-                       ["【B站订阅推送】测试消息——插件工作正常，"
-                        "订阅的 UP 有新内容时会像这样推送到本群。"])
-        return {"ok": True}
+        if pid.isdigit():
+            _api_send_text(api, "private", pid,
+                           ["【B站订阅推送】测试消息——插件工作正常，"
+                            "订阅的 UP 有新内容时会像这样私聊推送给你。"])
+            return {"ok": True}
+        if gid.isdigit():
+            _api_send_text(api, "group", gid,
+                           ["【B站订阅推送】测试消息——插件工作正常，"
+                            "订阅的 UP 有新内容时会像这样推送到本群。"])
+            return {"ok": True}
+        return {"ok": False, "error": "群号/QQ号非法"}
     except Exception as e:
         return {"ok": False, "error": repr(e)[:120]}
+
+
+def _repush(api, args):
+    """手动重推历史里的某条：{hid, groups:[..], privates:[..]}。
+    图文带图按历史存的 URL 重新下载（hdslb 长效）；结果写回该条 ok 表。"""
+    a = args or {}
+    try:
+        hid = int(a.get("hid"))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "hid 非法"}
+    groups = [str(g).strip() for g in (a.get("groups") or [])
+              if str(g).strip().isdigit()][:20]
+    privates = [str(u).strip() for u in (a.get("privates") or [])
+                if str(u).strip().isdigit()][:20]
+    if not groups and not privates:
+        return {"ok": False, "error": "至少选一个重推目标"}
+    entry = None
+    for e in _hist_load(api):
+        if e.get("hid") == hid:
+            entry = e
+            break
+    if not entry:
+        return {"ok": False, "error": "历史记录不存在（可能已被清理）"}
+    sub = {"uid": entry.get("uid"), "groups": groups, "privates": privates}
+    ok = _send_out(api, sub, str(entry.get("text") or ""),
+                   entry.get("imgs") or [], record=False)
+    _hist_ok_update(api, hid, ok)
+    api.log("repush hid=%s -> groups=%s privates=%s" % (hid, groups, privates))
+    return {"ok": True, "results": ok}
