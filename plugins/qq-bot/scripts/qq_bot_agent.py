@@ -3947,6 +3947,10 @@ def _cron_run_task(daemon, fake_msg):
 
 _DEVCTRL_CODE = {"code": "", "expires": 0.0}
 _DEVCTRL_AUTH = {"ok_until": 0.0}
+# 「已发起索码」状态（2026-11-14 用户实测：聊天里随口出现的 6 位数字被当成
+# 授权码——此前无条件扫数字）。只有机器人真的问过授权码（ask 发出后 5 分钟
+# 内），主人的 6 位数字才算授权尝试；过期作废重新触发。
+_DEVCTRL_ASK = {"until": 0.0}
 
 # 系统目录自动识别（Windows 常见）+ 用户额外保护
 _PROTECTED_SYSTEM = [
@@ -4547,8 +4551,12 @@ def _handle_devctrl(daemon, msg):
                             route=("private", owner_qq()))])
 
     in_window = _DEVCTRL_AUTH["ok_until"] > time.time()
-    # 宽松授权码识别：消息里出现独立的 6 位数字即视为尝试（未授权时）
-    m_code = None if in_window else _re.search(r"(?<!\d)(\d{6})(?!\d)", text)
+    # 宽松授权码识别：消息里出现独立的 6 位数字即视为尝试（未授权时）。
+    # 门禁（2026-11-14）：仅当机器人真的发起过索码（5 分钟内）才认——主人
+    # 聊天里随口说的 6 位数（价格/编号/验证码闲聊）绝不触发设备操控
+    _ask_open = _DEVCTRL_ASK["until"] > time.time()
+    m_code = None if (in_window or not _ask_open) else \
+        _re.search(r"(?<!\d)(\d{6})(?!\d)", text)
     if m_code and cfg_2fa_on():
         code = m_code.group(1)
         if not _DEVCTRL_CODE["code"] or time.time() > _DEVCTRL_CODE["expires"]:
@@ -4577,12 +4585,14 @@ def _handle_devctrl(daemon, msg):
     if _devctrl_should_ask(text, str(flow.get("trigger_mode") or "auto"), flow):
         _say("ask_text", ("用你的语气向主人发起设备操控的「协议一」：需要他提供电脑控制台"
                           "「设备操控」页上显示的 6 位授权码才能连线（提醒他直接把数字发过来）。", ""))
+        _DEVCTRL_ASK["until"] = time.time() + 300   # 索码窗口：此后 5 分钟内认授权码
         return True
     return False
 
 
 def _devctrl_ask_by_mark(daemon, msg):
     """[连线] 标记触发的授权发起（主模型语境判定路径；话术与快速通道一致）。"""
+    _DEVCTRL_ASK["until"] = time.time() + 300   # 索码窗口：同关键词路径
     flow = devctrl_flow()
     owner_nick = _owner_call_name(msg)
     bot_name = _bot_self_name()
