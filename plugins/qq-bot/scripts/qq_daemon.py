@@ -1208,15 +1208,18 @@ class Daemon:
         out("AGENT_EVENT " + json.dumps(item, ensure_ascii=False))
 
     def _fwd_deferred_push(self, it, ck, text_ts):
-        """图文合并·向后捞的延迟入箱（独立线程）：睡 2.5s 后看同发送者
-        是否有晚于文字到达的图（_nearby_img 缓存 ts 比对），有则并入本条
+        """图文合并·延迟入箱（独立线程）：睡 2.5s 后看同发送者的图——
+        ① 图晚到/同秒到（ts >= text_ts，QQ 同发图文两条 time 同秒是常态，
+        严格 > 会漏并——"帮我搞定这几个人"识别失败实锤）；② 90s 内先发的图
+        （用户先贴图再 @机器人聊它，ts >= text_ts - 90）。两种都并入本条
         视觉输入再进收件箱（缓存一次性消费）。收件箱按 id>acked_max 拉取，
         延迟期间若 agent 已确认到更高 id，重新编号防止本条被永久跳过。"""
         time.sleep(2.5)
         got = []
         with self.lock:
             c = self._nearby_img.get(ck)
-            if c and c.get("ts", 0) > text_ts:
+            if c and (c.get("ts", 0) >= text_ts
+                      or c.get("ts", 0) >= text_ts - 90):
                 got = list(c.get("urls") or [])[:2]
                 self._nearby_img.pop(ck, None)
             self._fwd_pending.pop(ck, None)
