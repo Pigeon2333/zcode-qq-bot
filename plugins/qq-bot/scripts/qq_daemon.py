@@ -2172,11 +2172,19 @@ class Daemon:
         t = cls._MARK_LEAK_RE.sub("", str(text or ""))
         t = cls._PLACEHOLDER_RE.sub("", t)
         t = cls._META_CMD_RE.sub("", t, count=1)   # 句首元指令句（只剥第一句）
-        for _ in range(6):          # 行首 [] 前缀连环剥（上限防病态输入）
-            m = cls._LEAD_BRACKET_RE.match(t)
-            if not m:
-                break
-            t = t[m.end():]
+        # 行首 [] 前缀改为**逐行**剥（2026-11-16 实测：模型两行输出，第一行
+        # 行首时间被剥、第二行行首 [10:59] 漏网——此前 ^ 只匹配整条开头，
+        # 换行后的行首不在射程。每行连环剥，剥完的空行丢弃）
+        cleaned = []
+        for ln in t.split("\n"):
+            for _ in range(6):      # 单行内连环剥（上限防病态输入）
+                m = cls._LEAD_BRACKET_RE.match(ln)
+                if not m:
+                    break
+                ln = ln[m.end():]
+            if ln.strip():
+                cleaned.append(ln)
+        t = "\n".join(cleaned)
         t = re.sub(r"[ \t]{2,}", " ", t).strip(" \n，。,.")
         return (t or None)
 
