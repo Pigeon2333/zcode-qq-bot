@@ -3156,7 +3156,7 @@ _SKIP_LEAK_RE = re.compile(r"\[\s*(?:跳过|不说|不发|沉默)[^\]\n]{0,10}\]
 # [画: 描述] / [DRAW: desc] —— 模型自主补触发画图的标记（描述可跨行/较长，提取后剥离）
 _DRAW_MARK_RE = re.compile(r"\[\s*(?:画|DRAW)\s*[:：]\s*([^\]]{1,300}?)\s*\]",
                            re.I | re.S)
-_DRAW_LEAK_RE = re.compile(r"\[\s*(?:画|DRAW)\s*[:：][^\]]{0,300}\]",
+_DRAW_LEAK_RE = re.compile(r"\[\s*(?:画|DRAW)\s*[:：][^\]]{0,2000}\]",
                            re.I | re.S)
 # [语音] —— 模型结合语境自主决定用语音回复（与关键词触发互补，同 [连线] 模式）
 _VOICE_MARK_RE = re.compile(r"^\s*\[\s*语音\s*\]\s*$", re.M)

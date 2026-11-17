@@ -1837,11 +1837,26 @@ class Daemon:
         复制进 DATA_DIR/cache/images/（=缓存管理「消息图片暂存」分类，
         UI 可清）并做 200MB 环形上限。
         风控优化（条款825=第三方获取数据，download_file 是典型特征）：
-        限频开关开时每分钟最多 10 次、每日最多 60 次，超限返回跳过标记
-        （调用方视觉降级为纯文本，不硬拉）。返回 {ok, path|error}。"""
+        限频开关开时每分钟最多 10 次、每日最多 150 次，超限返回跳过标记
+        （调用方视觉降级为纯文本，不硬拉）。
+        **缓存优先**（2026-11-17 实测"一张图都看不到"：all_prob 全量识图
+        模式下日限 60 上午就耗尽；同一 URL 命中缓存直接返回——不计数、
+        不发 download_file，引用/回捞/裸@合并的重复图零成本）。"""
         u = str(url or "").strip()
         if not u.startswith("http"):
             return {"ok": False, "error": "url 非法"}
+        # ① 缓存命中：直接返回（限频计数与下载都不发生）
+        import hashlib as _hl
+        dst_dir = os.path.join(DATA_DIR, "cache", "images")
+        try:
+            import glob as _glob
+            _prefix = os.path.join(
+                dst_dir, _hl.sha256(u.encode("utf-8")).hexdigest()[:24])
+            for _hit in _glob.glob(_prefix + "*"):
+                if os.path.isfile(_hit):
+                    return {"ok": True, "path": _hit}
+        except OSError:
+            pass
         cfg = self.cfg
         if cfg.get("risk_limit_image_fetch", True):
             now = time.time()
@@ -1853,8 +1868,8 @@ class Daemon:
                     self._img_fetch_day = {"d": day_key, "n": 0}
                 if len(win) >= 10:
                     return {"ok": False, "error": "图片获取限频（每分钟 10 次上限）"}
-                if self._img_fetch_day["n"] >= 60:
-                    return {"ok": False, "error": "图片获取限频（今日 60 次上限）"}
+                if self._img_fetch_day["n"] >= 150:
+                    return {"ok": False, "error": "图片获取限频（今日 150 次上限）"}
                 win.append(now)
                 self._img_fetch_day["n"] += 1
         try:
@@ -2144,7 +2159,7 @@ class Daemon:
         r"|语音|连线|STICKER[:：]?\s*\d{0,4}|STICKER"
         r"|回应[:：]?\s*\d{0,4})\s*\]{1,2}"
         r"|\[\s*GADMIN\s*\][^\[\]\n]{0,300}"
-        r"|\[\s*(?:画|DRAW)\s*[:：][^\]\n]{0,300}\]"
+        r"|\[\s*(?:画|DRAW)\s*[:：][^\]]{0,2000}\]"
         r"|\[\s*发到群\s*[:：][^\]\n]{0,300}\]"
         r"|\[\s*记忆(\s*@)?[^\]\n]{0,60}\]"
         r"|\[\s*忘\s*[:：][^\]\n]{0,60}\]", re.I)
