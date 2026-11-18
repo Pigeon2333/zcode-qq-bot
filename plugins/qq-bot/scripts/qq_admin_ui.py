@@ -5644,6 +5644,7 @@ class UiHandler(BaseHTTPRequestHandler):
             return self._reply(200, {"ok": True, "enabled": on})
         if u.path == "/api/backends":
             # 框架管理页元信息：注册表 + 当前框架 + 安装状态 + QQ 版本现场
+            cfg = C.load_app_config()
             qqnt = C.qqnt_dir_resolved(cfg)
             qq_ver = C.qq_current_version(qqnt) if qqnt else ""
             napcat_on = bool(qqnt and os.path.isfile(
