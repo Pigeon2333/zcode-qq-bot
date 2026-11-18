@@ -28,6 +28,7 @@ import http.server
 import ipaddress
 import json
 import os
+import re
 import socket
 import ssl
 import sys
@@ -46,6 +47,12 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 MEDIA_SUBDIRS = ("cache/images", "images", "stickers")  # 允许发送的图片所在数据目录子集（images=AI生成图）
 AUDIO_SUBDIRS = ("cache/tts",)  # 允许发送的语音文件（TTS 引擎输出目录）
 AUDIO_EXTS = {".mp3", ".wav", ".silk", ".amr", ".m4a"}
+# 图文合并·历史回捞的续接/指代词：触发的纯文字条自身无图时，命中这些词
+# 说明对话正围着一张最近的图转（图在更早几条里），回看 5 分钟内最近带图
+# 消息并入视觉输入。刻意不含"什么/啥"这类过于泛化的词，防误配。
+_IMG_HIST_RE = re.compile(
+    r"继续|重试|再来|接着|然后|下一?[张个步]|这[张个]|那个|它"
+    r"|图|照片|截图|看看|看下|咋样|怎么样")
 GROUP_WHITELIST_PATH = os.path.realpath(os.path.join(DATA_DIR, "group_whitelist.json"))
 PRIVATE_CONFIG_PATH = os.path.realpath(os.path.join(DATA_DIR, "private_config.json"))
 
@@ -927,16 +934,25 @@ class Daemon:
                 if _pend_ts and _now - _pend_ts <= 6:
                     info["_fwd_merge_hold"] = True
                 self._nearby_img[_ck] = {
-                    "ts": _now, "urls": info["image_urls"][:2]}
+                    "ts": _now, "urls": info["image_urls"][:2], "n": 0}
         elif _txt.strip():
-            # 纯文字条 → 捞 90s 内同发送者的图并入（"这个/它"类指代即指此图）
+            # 纯文字条 → 捞 180s 内同发送者的图并入（"这个/它"类指代即指此图）。
+            # 2026-11-17 修复：此前缓存"一次性消费"（并入即 pop）——用户发图后
+            # 连发"继续"（未触发/失败）把缓存吞掉，再发"重试"触发时已无图可并，
+            # 机器人对着明显存在的图说"没看到图"（用户实测截图实锤）。改为
+            # 只并入不删除：未触发文字并图只进历史占位（无视觉成本），触发
+            # 文字并图才是要的视觉输入；缓存靠 TTL 自然过期，误配旧图的风险
+            # 窗口从 90s 翻倍到 180s，属可接受代价（漏图比配错图观感更差）。
             with self.lock:
                 _cached = self._nearby_img.get(_ck)
-            if _cached and _now - _cached.get("ts", 0) <= 90:
+                if _cached and _now - _cached.get("ts", 0) <= 180:
+                    _cached["n"] = int(_cached.get("n", 0)) + 1
+                    _consume = _cached["n"] >= 3   # 最多并给 3 条文字，防 TTL 内反复带旧图识图
+                    if _consume:
+                        self._nearby_img.pop(_ck, None)
+            if _cached and _now - _cached.get("ts", 0) <= 180:
                 info["image_urls"] = list(_cached["urls"])
                 info["merged_nearby_image"] = True
-                with self.lock:
-                    self._nearby_img.pop(_ck, None)   # 一次性，避免重复并图
         if info.get("forward_ids") and not info.get("forward_inline"):
             # 合并转发只带卡片 id：去拉取内部消息。get_forward_msg 要等 WS
             # 回包，而回包处理就跑在当前这条 WS 事件线程上——同步等会死锁到
@@ -1049,6 +1065,37 @@ class Daemon:
         # 往回找合不上）。推迟 2.5s 入收件箱，期间到的图并入本条视觉输入；
         # 该图自己的触发已被上面的 hold 压制，不会双回复。带图/引用/语音
         # 消息不走（各自已有图或有自己的延迟补查路径）。
+        # 图文合并·历史回捞：触发的纯文字条无图、但文字是"继续/重试/这图"
+        # 类续接或指代时，图往往在更早几条里（发图未触发被跳过/概率跳过/
+        # 已被并进历史条目——2026-11-17 用户实测：发图后连发"继续""重试"，
+        # 机器人说看不到图，观感极差）。从内存历史捞同会话 5 分钟内最近的
+        # 带图消息并入本条视觉输入：优先同发送者，退而求其次任何人（群里
+        # "这图"常指别人发的）。带图/引用消息不走（各自已有并图路径）。
+        if triggered and not info["image_urls"] and not info["has_reply"] \
+                and _IMG_HIST_RE.search(info["text"] or ""):
+            _hk = "%s_%s" % (chat_type, chat_id)
+            _hnow = time.time()
+            with self.lock:
+                _hrecs = list(self.mem_history.get(_hk, []))
+            _pick_same = _pick_any = None
+            for _rec in reversed(_hrecs):
+                if _rec.get("ts", 0) < _hnow - 300:
+                    break
+                if _rec.get("is_bot") or not _rec.get("image_urls"):
+                    continue
+                if _pick_any is None:
+                    _pick_any = _rec
+                if _pick_same is None \
+                        and str(_rec.get("sender_id")) == str(user_id):
+                    _pick_same = _rec
+            _hpick = _pick_same or _pick_any
+            if _hpick:
+                for mu in (_hpick.get("image_urls") or [])[:2]:
+                    if mu and mu not in info["image_urls"]:
+                        info["image_urls"].append(mu)
+                info["merged_nearby_image"] = True
+                out("DAEMON_IMG_HIST_MERGE chat=%s/%s user=%s (+%d图自历史回捞)"
+                    % (chat_type, chat_id, user_id, len(info["image_urls"])))
         _fwd_ck = "%s_%s_%s" % (chat_type, chat_id, user_id)
         _fwd_ts = ev.get("time") or now_ts()
         _fwd_defer = (triggered and not info["image_urls"]
@@ -1102,6 +1149,7 @@ class Daemon:
                 "at_me": info["at_me"],
                 "at_users": info["at_users"][:5],
                 "image_urls": info["image_urls"][:6],
+                "merged_nearby_image": bool(info.get("merged_nearby_image")),
                 "has_reply": info["has_reply"],
                 "reply_to": reply_to,
                 "reply_text": info.get("reply_text", ""),
