@@ -65,7 +65,15 @@ Proactive messages: let her start conversations herself, controlled separately f
 
 Scheduled tasks: "定时 22:00 write the weekly report" runs on time and reports back.
 
+Group admin: the "群管理" console page covers per-group management (scheduled whole-group mute with cross-midnight windows, keyword auto-recall, keyword recall+mute, group announcement view/edit/publish, quick actions) and batch management (pick multiple groups, blast one announcement everywhere, apply settings in bulk). The bot must be a group admin; dangerous actions all get confirm dialogs.
+
+Conversational group admin: with the switch on, no console needed — just tell her "post an announcement in group X", "mute 张三 for 10 minutes" (say the name, she resolves the card), "recall 张三's last two messages", "mute everyone". Works in private and group chat, across groups. Four layers of guardrails: off by default, capability teaching is injected only into the owner's messages (other members never even know it exists), hard owner verification before execution, protocol markers never leak. Members joking "mute me" get a persona-flavored deflection — she never pretends to have done it, and failures come back as human words in persona voice.
+
 Bilibili browsing (plugin): she browses with her own registered Bilibili account, driven by persona interests. What she watches becomes conversational material; videos she genuinely likes get shared to you proactively — Bilibili DM or QQ, with per-channel per-round caps. BV links in chat automatically pull in video info.
+
+Bilibili subscription push (plugin): subscribe to UP masters; new videos, image-text posts, and live-stream starts get forwarded to your chosen groups or private chats. Push history is tracked per target with success/fail badges; anything can be re-pushed to any group or private chat in one click.
+
+AI cover singing (plugin): quote a voice message and say "翻唱" — she sings the whole thing in the chosen voice (so-vits-svc local GPU inference, zero API cost). One-click engine deploy; community singing model packs import from the plugin page.
 
 Chat-log import (plugins for QQ and WeChat): merged-forward a chat history to her with "导入" and it lands in an isolated store; hit "learn as persona" on the plugin page to digest it. File import and one-click tool export also work.
 
@@ -191,7 +199,7 @@ A few things to keep in mind yourself:
 
 - **Device control really operates your PC.** Don't enable it on shared machines. Add protected dirs as needed, and turn it off when you're not using it.
 - **API keys sit in plaintext locally.** That's normal for desktop apps, but it means anyone with your `~/.zcode-qq-bot/` folder can spend your quota. Never commit it, never put it in a synced drive.
-- **NapCat is an unofficial protocol implementation**, so Tencent's risk control is a theoretical possibility. Weigh it yourself; a spare account is the safe call.
+- **NapCat is an unofficial protocol implementation**, so Tencent's risk control is a theoretical possibility. Weigh it yourself; a spare account is the safe call. The settings page has a "risk-control mitigation" section with three toggles: image-fetch rate limiting (per-minute/per-day windows; repeated images serve from cache without counting), proactive-message throttling (night silence + halved probability + doubled intervals), and humanized send pacing (random reaction delay on the first reply).
 - **Everything she says is AI-generated.** Plenty of safety rules, but no guarantees — keep an eye on group settings.
 
 ## FAQ
