@@ -377,12 +377,242 @@ def ensure_daemon(cfg):
     ctl_token = read_token_file("token")
     if not ctl_token:
         return "daemon 未启动：缺少控制 token（首次请用控制台初始化）"
+    # 协议框架分发：daemon 是标准 OneBot 11 WS 客户端——只换连接地址，
+    # 框架本身（NapCat/LLOneBot/…）对 daemon 完全透明
+    ws_port = protocol_ws_port(cfg)
     _spawn("qq_daemon.py", [
-        "--ws-url", "ws://127.0.0.1:%d" % cfg["napcat_ws_port"],
+        "--ws-url", "ws://127.0.0.1:%d" % ws_port,
         "--ws-token", ws_token,
         "--port", str(port),
         "--ctl-token", ctl_token], "daemon.log")
     return "daemon 已启动" if wait_port(port, 20) else "daemon 启动失败（看 logs/daemon.log）"
+
+
+# ======================= 协议框架注册表（多后端架构） =======================
+# 框架 = 消息协议端（OneBot 11 服务提供方）。daemon/UI/agent 不感知框架差异，
+# 只按这里的注册表分发生命周期与能力开关。新增框架：在 PROTOCOL_BACKENDS
+# 注册 + 实现生命周期函数 + 在 protocol_ws_port 分支里加端口来源——
+# 详见「框架管理」页底部的贡献指引。
+
+PROTOCOL_BACKENDS = {
+    "napcat": {
+        "title": "NapCat",
+        "status": "上游已停更（2026-11 删库），锁定版继续可用",
+        "maintained": False,
+        "mechanism": "注入你电脑上的 QQNT（协议跟随 QQ 版本）",
+        "pros": ["功能最全：群公告/表情回应/识图图片拉取全支持",
+                 "老用户现状——已装的继续用，无需任何迁移",
+                 "文档与社区经验最多"],
+        "cons": ["上游已删库停更：QQ 强制升级后可能永久失效",
+                 "依赖本机 QQ 版本（需配合版本锁定/回退）",
+                 "腾讯风控特征较明显（825 条款案例）"],
+        "capabilities": {"notice": True, "emoji_like": True,
+                         "image_fetch": True, "group_admin": True},
+        "need_qq": True,
+    },
+    "llonebot": {
+        "title": "LLOneBot",
+        "status": "活跃维护（2026-11 仍在更新，v8 独立协议实现）",
+        "maintained": True,
+        "mechanism": "独立协议实现（不依赖本机 QQ，类 Lagrange）",
+        "pros": ["不依赖 QQ 版本——QQ 更到多新都不影响",
+                 "上游活跃维护中",
+                 "独立进程，不注入不寄生，部署干净"],
+        "cons": ["群公告/表情回应/识图图片拉取暂不支持（功能降级）",
+                 "独立协议登录方式与 NapCat 不同（需重新登录）",
+                 "协议实现较新，风控风险需自行评估"],
+        "capabilities": {"notice": False, "emoji_like": False,
+                         "image_fetch": False, "group_admin": True},
+        "need_qq": False,
+    },
+}
+
+
+def protocol_backend(cfg):
+    """当前协议框架（默认 napcat；未知值兜底回 napcat）。"""
+    pb = str((cfg or {}).get("protocol_backend") or "napcat").strip().lower()
+    return pb if pb in PROTOCOL_BACKENDS else "napcat"
+
+
+def protocol_ws_port(cfg):
+    """当前框架的 OneBot WS 服务端口（daemon 连这个）。"""
+    if protocol_backend(cfg) == "llonebot":
+        return int(cfg.get("llonebot_ws_port") or 3002)
+    return int(cfg.get("napcat_ws_port") or 3001)
+
+
+def backend_meta(cfg):
+    """当前框架的注册表元数据（UI/状态页展示用）。"""
+    return PROTOCOL_BACKENDS.get(protocol_backend(cfg),
+                                  PROTOCOL_BACKENDS["napcat"])
+
+
+# ---------------- LLOneBot 生命周期 ----------------
+
+def llonebot_dir(cfg):
+    """LLOneBot 安装目录（默认数据目录/llonebot；可自定义）。切换框架不动
+    NapCat 的任何文件，切回来原样可用——用户数据与人设记忆在 DATA_DIR，
+    与框架无关，永不丢失。"""
+    d = str(cfg.get("llonebot_dir") or "").strip()
+    return d if d else os.path.join(C.DATA_DIR, "llonebot")
+
+
+def llonebot_installed(cfg):
+    """已安装判定：根目录有启动脚本，或有 dist/llbot.js 入口。"""
+    d = llonebot_dir(cfg)
+    return any(os.path.isfile(os.path.join(d, s))
+               for s in ("llonebot.cmd", "run.cmd", "start.cmd")) or \
+        os.path.isfile(os.path.join(d, "dist", "llbot.js"))
+
+
+_LLOB_UP = os.pardir          # zip 条目里的父目录片段（防 zip-slip 用的比对值）
+
+
+def llonebot_install_zip(cfg, zip_path, on_progress=None):
+    """从 release zip 安装 LLOneBot 到 llonebot_dir（zip 内通常是
+    LuckyLillia-CLI-win-x64/ 目录）。已装则覆盖升级（配置文件保留）。
+    安全：逐条校验解压路径不得逃出目标目录（zip-slip 防护）。"""
+    import zipfile
+    base = pathlib.Path(llonebot_dir(cfg))
+    base.mkdir(parents=True, exist_ok=True)
+    keep = {}
+    cfg_file = base / "config.json"
+    if cfg_file.is_file():
+        keep["config.json"] = cfg_file.read_bytes()
+    base_s = str(base.resolve()).rstrip("\\/") + os.sep
+    try:
+        with zipfile.ZipFile(zip_path) as z:
+            names = z.namelist()
+            strip = ""          # 去掉顶层包裹目录（LuckyLillia-CLI-win-x64/）
+            roots = {n.split("/")[0] for n in names if n and not n.endswith("/")}
+            if len(roots) == 1:
+                strip = list(roots)[0] + "/"
+            total = len([n for n in names if not n.endswith("/")])
+            for i, n in enumerate(names):
+                if n.endswith("/"):
+                    continue
+                rel = n[len(strip):] if strip and n.startswith(strip) else n
+                parts = rel.replace("\\", "/").split("/")
+                if not rel or any(p == _LLOB_UP for p in parts):
+                    continue      # 空名或试图跳出目录的条目直接跳过
+                tgt = base / rel
+                if not str(tgt.resolve()).startswith(base_s):
+                    continue      # 解析后逃出目标目录：丢弃
+                tgt.parent.mkdir(parents=True, exist_ok=True)
+                tgt.write_bytes(z.read(n))
+                if on_progress and i % 50 == 0:
+                    on_progress("解压 %d/%d" % (i, total))
+        for k, v in keep.items():
+            (base / k).write_bytes(v)
+        return "已安装到 " + str(base)
+    except Exception as e:
+        return "安装失败：%r" % (e,)
+
+
+def ensure_llonebot_config(cfg):
+    """确保 LLOneBot 的 config.json 开着 ob11 WS 服务（端口=llonebot_ws_port，
+    本机回环无 token）。配置格式来自源码 src/common/types.ts：
+    Config{ob11:{enable,connect:[{type:'ws',host,port,...}]}, webui:{...}}；
+    未装时预写一份（安装器解压后即生效，配置文件保留不覆盖）。"""
+    base = pathlib.Path(llonebot_dir(cfg))
+    base.mkdir(parents=True, exist_ok=True)
+    cfile = base / "config.json"
+    conf = {}
+    if cfile.is_file():
+        try:
+            conf = json.loads(cfile.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            conf = {}
+    if not isinstance(conf, dict):
+        conf = {}
+    ob11 = conf.setdefault("ob11", {})
+    ob11["enable"] = True
+    conns = ob11.setdefault("connect", [])
+    ws_port = int(cfg.get("llonebot_ws_port") or 3002)
+    hit = next((c for c in conns
+                if isinstance(c, dict) and c.get("type") == "ws"), None)
+    if hit is None:
+        conns.append({"type": "ws", "name": "zcode-qq-bot",
+                      "enable": True, "token": "",
+                      "host": "127.0.0.1", "port": ws_port,
+                      "heartInterval": 30000,
+                      "reportSelfMessage": False,
+                      "reportOfflineMessage": False,
+                      "messageFormat": "array", "debug": False})
+    else:
+        hit.update({"enable": True, "host": "127.0.0.1", "port": ws_port,
+                    "token": ""})
+    webui = conf.setdefault("webui", {"enable": True, "host": "127.0.0.1",
+                                      "port": 6099})
+    pathlib.Path(cfile).write_text(
+        json.dumps(conf, ensure_ascii=False, indent=2), encoding="utf-8")
+    return True
+
+
+def llonebot_webui_url(cfg):
+    try:
+        base = pathlib.Path(llonebot_dir(cfg))
+        conf = json.loads((base / "config.json").read_text(encoding="utf-8"))
+        w = conf.get("webui") or {}
+        return "http://%s:%s" % (w.get("host") or "127.0.0.1",
+                                 w.get("port") or 6099)
+    except (OSError, ValueError):
+        return "http://127.0.0.1:6099"
+
+
+def start_llonebot(cfg, on_progress=None):
+    """启动 LLOneBot CLI（后台进程；CWD=安装目录，其 data/与日志都落在
+    框架目录内，与机器人数据目录互不干扰）。入口按候选探测：根目录
+    启动脚本 → 自带 node + dist/llbot.js → 系统 node。"""
+    if on_progress:
+        on_progress("LLOneBot 启动中…")
+    ensure_llonebot_config(cfg)
+    base = llonebot_dir(cfg)
+    cands = []
+    for script in ("llonebot.cmd", "run.cmd", "start.cmd"):
+        p = os.path.join(base, script)
+        if os.path.isfile(p):
+            cands.append(["cmd", "/c", script])
+            break
+    if not cands:
+        entry = os.path.join(base, "dist", "llbot.js")
+        if os.path.isfile(entry):
+            bundled = os.path.join(base, "node.exe")
+            node = bundled if os.path.isfile(bundled) else "node"
+            cands.append([node, entry])
+    if not cands:
+        return False, "LLOneBot 未安装或入口未识别（框架管理页查看安装指引）"
+    logf = open(os.path.join(C.logs_dir(), "llonebot.log"), "a",
+                encoding="utf-8", errors="replace")
+    try:
+        subprocess.Popen(cands[0], cwd=base, stdout=logf,
+                         stderr=subprocess.STDOUT,
+                         creationflags=subprocess.CREATE_NO_WINDOW)
+    except Exception as e:
+        return False, "LLOneBot 启动失败：%r" % (e,)
+    return True, "LLOneBot 已启动（日志 logs/llonebot.log；登录见框架管理页）"
+
+
+def stop_llonebot():
+    """停止 LLOneBot 进程（按目录指纹杀，不误伤其他 node）。"""
+    import subprocess as _sp
+    try:
+        rows = _sp.run(["wmic", "process", "where",
+                        "name='node.exe' or name='llonebot.exe'",
+                        "get", "ProcessId,CommandLine"],
+                       capture_output=True, text=True, timeout=10).stdout or ""
+    except Exception:
+        return
+    for ln in rows.splitlines():
+        ln = ln.strip()
+        if "llonebot" in ln.lower():
+            pid = ln.split()[-1]
+            if pid.isdigit():
+                try:
+                    _sp.run(["taskkill", "/PID", pid, "/F"],
+                            capture_output=True, timeout=10)
+                except Exception:
+                    pass
 
 
 def ensure_agent(cfg):
@@ -952,19 +1182,30 @@ def power_on(cfg, on_note=None):
             except Exception:
                 pass
 
-    # 启动预检：QQ 版本与 NapCat 适配性（danger 时直接拦截，不盲启）
-    lvl, cmsg = napcat_compat_check(cfg)
-    if lvl == "danger":
-        _emit({"component": "napcat", "ok": False, "message": cmsg,
-               "progress": False})
-        return notes
-    if lvl == "warn":
-        _emit({"component": "napcat", "ok": None, "message": cmsg,
-               "progress": False})
-
-    ok, msg = start_napcat(cfg, on_progress=lambda m: _emit(
-        {"component": "napcat", "ok": None, "message": m, "progress": True}))
-    _emit({"component": "napcat", "ok": ok, "message": msg})
+    # 启动预检与协议端启动按框架分发（napcat=QQ 注入预检+启动；
+    # llonebot=独立进程，无需 QQ 版本检查）
+    if protocol_backend(cfg) == "llonebot":
+        if not llonebot_installed(cfg):
+            _emit({"component": "llonebot", "ok": False,
+                   "message": "LLOneBot 未安装：请到「框架管理」页安装",
+                   "progress": False})
+            return notes
+        ok, msg = start_llonebot(cfg, on_progress=lambda m: _emit(
+            {"component": "llonebot", "ok": None, "message": m,
+             "progress": True}))
+        _emit({"component": "llonebot", "ok": ok, "message": msg})
+    else:
+        lvl, cmsg = napcat_compat_check(cfg)
+        if lvl == "danger":
+            _emit({"component": "napcat", "ok": False, "message": cmsg,
+                   "progress": False})
+            return notes
+        if lvl == "warn":
+            _emit({"component": "napcat", "ok": None, "message": cmsg,
+                   "progress": False})
+        ok, msg = start_napcat(cfg, on_progress=lambda m: _emit(
+            {"component": "napcat", "ok": None, "message": m, "progress": True}))
+        _emit({"component": "napcat", "ok": ok, "message": msg})
 
     def _ok_note(m):
         # ensure_* 失败时返回文案含「失败/未启动」——据此标红，不再一律打绿勾
@@ -988,7 +1229,13 @@ def power_off(cfg, include_napcat=True, include_ui=False):
     notes = [_note("agent", stop_agent, cfg),
              _note("daemon", stop_daemon, cfg)]
     if include_napcat:
-        notes.append(_note("napcat", stop_napcat))
+        # 停当前框架的协议端（切框架时两个都停，防残留进程占端口）
+        pb = protocol_backend(cfg)
+        if pb == "llonebot":
+            notes.append(_note("llonebot", stop_llonebot))
+        else:
+            notes.append(_note("napcat", stop_napcat))
+            notes.append(_note("llonebot", stop_llonebot))
     if include_ui:
         notes.append(_note("ui", stop_ui, cfg))
     return notes

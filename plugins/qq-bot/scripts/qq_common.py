@@ -43,6 +43,9 @@ DEFAULT_CONFIG = {
     "bot_qq": "",              # 机器人 QQ 号
     "owner_qq": "",            # 主人 QQ（任务模式与私聊遥控的唯一白名单，空=禁用）
     "task_workspace": "",      # 任务沙箱根目录（空=~/.zcode-qq-bot/tasks；可指向 ZCode 工作区子目录）
+    "protocol_backend": "napcat",  # 协议框架：napcat=QQNT注入（默认）| llonebot=独立协议实现
+    "llonebot_ws_port": 3002,  # LLOneBot 的 OneBot WS 服务端口（与 NapCat 的 3001 分开）
+    "llonebot_dir": "",        # LLOneBot 安装目录（空=数据目录/llonebot；切换框架不丢数据）
     "napcat_ws_port": 3001,
     "daemon_port": 39763,
     "agent_admin_port": 39764,

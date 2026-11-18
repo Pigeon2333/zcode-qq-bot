@@ -506,6 +506,7 @@ select.mini,input.mini{padding:4px 8px;font-size:12.5px}
  <div class="brand"><span class="brand-mark"></span><div><b>ZCode QQ机器人</b><span class="k" id="headline">控制台</span></div></div>
  <nav id="nav">
   <button data-t="status" class="on">状态</button>
+  <button data-t="backend">框架管理</button>
   <button data-t="runlog">运行日志</button>
   <button data-t="models">模型管理</button>
   <button data-t="groups">群消息</button>
@@ -535,7 +536,7 @@ select.mini,input.mini{padding:4px 8px;font-size:12.5px}
 <script>
 const $=s=>document.querySelector(s);
 let TAB='status';
-const TITLES={status:'状态',runlog:'运行日志',models:'模型管理',groups:'群消息',gadmin:'群管理',private:'私聊消息',voice:'语音消息',persona:'人设与风格',style:'人设与风格',memory:'记忆',stickers:'表情包',devctrl:'设备操控',mcp:'MCP 服务',zcode:'ZCode 联动',plugins:'插件',settings:'设置',about:'关于'};
+const TITLES={status:'状态',backend:'框架管理',runlog:'运行日志',models:'模型管理',groups:'群消息',gadmin:'群管理',private:'私聊消息',voice:'语音消息',persona:'人设与风格',style:'人设与风格',memory:'记忆',stickers:'表情包',devctrl:'设备操控',mcp:'MCP 服务',zcode:'ZCode 联动',plugins:'插件',settings:'设置',about:'关于'};
 // 人设与风格合并页的子tab（persona=人设 / style=风格卡；数据与功能不变）
 var __PS_TAB='persona';
 function __psTabBar(){return '<div style="display:flex;gap:8px;margin-bottom:10px">'
@@ -630,7 +631,7 @@ function dirtyOn(el,btnId){el.classList.add('dirty');const b=document.getElement
 function dirtyOff(btnId){const b=document.getElementById(btnId);if(b)b.disabled=true;document.querySelectorAll('textarea.dirty,input.dirty').forEach(x=>x.classList.remove('dirty'))}
 async function dirtyGuard(){const d=document.querySelector('textarea.dirty,input.dirty');if(!d)return true;
  return await dlgConfirm({title:'有未保存的修改',body:'当前有未保存的修改（蓝色边框标记），离开将丢失。确定离开？',okText:'放弃修改',danger:true})}
-async function load(){try{if(TAB==='status')await vStatus();else if(TAB==='runlog')await vRunlog();else if(TAB==='models')await vModels();else if(TAB==='groups')await vGroups();else if(TAB==='gadmin')await vGroupAdmin();else if(TAB==='private')await vPrivate();else if(TAB==='voice')await vVoice();else if(TAB==='persona')await vPersonas();else if(TAB==='style'){__PS_TAB='style';TAB='persona';await vPersonas();}else if(TAB==='memory')await vMemory();else if(TAB==='stickers')await vStickers();else if(TAB==='devctrl')await vDevCtrl();else if(TAB==='mcp')await vMcp();else if(TAB==='zcode')await vZcode();else if(TAB==='plugins')await vPlugins();else if(TAB==='settings'){await vSettings();cacheReload();}else if(TAB==='about')await vAbout();}catch(e){$('#view').innerHTML='<div class="card">加载失败: '+esc(e)+'</div>'}}
+async function load(){try{if(TAB==='status')await vStatus();else if(TAB==='backend')await vBackend();else if(TAB==='runlog')await vRunlog();else if(TAB==='models')await vModels();else if(TAB==='groups')await vGroups();else if(TAB==='gadmin')await vGroupAdmin();else if(TAB==='private')await vPrivate();else if(TAB==='voice')await vVoice();else if(TAB==='persona')await vPersonas();else if(TAB==='style'){__PS_TAB='style';TAB='persona';await vPersonas();}else if(TAB==='memory')await vMemory();else if(TAB==='stickers')await vStickers();else if(TAB==='devctrl')await vDevCtrl();else if(TAB==='mcp')await vMcp();else if(TAB==='zcode')await vZcode();else if(TAB==='plugins')await vPlugins();else if(TAB==='settings'){await vSettings();cacheReload();}else if(TAB==='about')await vAbout();}catch(e){$('#view').innerHTML='<div class="card">加载失败: '+esc(e)+'</div>'}}
 document.querySelectorAll('#nav button').forEach(b=>b.onclick=async()=>{if(!await dirtyGuard())return;document.querySelectorAll('#nav button').forEach(x=>x.classList.remove('on'));b.classList.add('on');TAB=b.dataset.t;if(TAB!=='runlog'&&_runlogTimer){clearInterval(_runlogTimer);_runlogTimer=null}if(TAB!=='devctrl'&&_devCodeTimer){clearInterval(_devCodeTimer);_devCodeTimer=null}if(TAB!=='status'&&_ncTokTimer){clearInterval(_ncTokTimer);_ncTokTimer=null}if(TAB!=='voice'&&typeof _gsvPollTimer!=='undefined'&&_gsvPollTimer){clearInterval(_gsvPollTimer);_gsvPollTimer=null}skeleton();load()});
 const _urlTab=new URLSearchParams(location.search).get('tab');
 if(_urlTab&&TITLES[_urlTab]){TAB=_urlTab;document.querySelectorAll('#nav button').forEach(x=>x.classList.toggle('on',x.dataset.t===_urlTab));}
@@ -748,6 +749,7 @@ async function vStatus(){
  ]);
  manageBootTimer(b);
  const ws=d.ws_connected, login=d.login||{};
+ const BE_NAME=(window._beName||'NapCat');
  // 供启动任务卡判断"当前是否已全部在线"（历史登录等待失败不再亮红）
  window._lastStatus={wsNow:ws===true,daemonOk:d.ok===true,agentOk:(a&&a.ok&&a.ready!==false)||false};
  const booting=!!(b&&b.running);
@@ -778,6 +780,7 @@ async function vStatus(){
   +'<span class="badge" style="background:var(--tint);color:var(--dim)">新手引导 · 跟着做 10 分钟跑起来</span></div>'
   +'<div class="k" style="margin-bottom:4px;font-weight:600">第 0 步 · 环境自检（✓=就绪，!=缺什么补什么）</div>'
   +ck(qqntOk,'已安装 QQ（QQNT 桌面版）', qqntOk?'':'去 im.qq.com 下载安装普通版 QQ（不要 TIM/轻量版），装完回到本页刷新')
+  +'<div class="k" style="margin-top:6px;padding:6px 10px;border:1px dashed var(--line);border-radius:6px">协议框架说明：机器人靠协议框架收发消息，默认 <b>NapCat</b>（功能最全：识图/表情回应/群公告，但上游已停更，依赖 QQ 版本——本向导走这条路）；若你的 QQ 已更新到 NapCat 不适配的版本，可到「框架管理」页改用 <b>LLOneBot</b>（活跃维护、不依赖 QQ 版本，但识图/表情回应/群公告暂不支持）。框架可随时切换，数据不丢。</div>'
   +ck(!!c.napcat_ok,'QQ 里已装 NapCat Shell（机器人的消息通道）', c.napcat_ok?'':'最简单：「设置 → 运行环境 → 在线下载并安装 NapCat」一键完成（国内自动走镜像）。或自己下 zip（github.com/NapNeko/NapCatQQ/releases）后用「本地 zip 安装」。装完刷新本页')
   +ck(hasKey,'已配置 AI 大脑的 API Key', hasKey?'':'二选一：智谱 open.bigmodel.cn（免费额度、生图/联网/默认推荐）或 DeepSeek platform.deepseek.com（便宜、国产直连）。注册后建一个 Key，稍后在「设置 → API Key」粘贴（供应商选对应家）')
   +ck(!!c.zcode_installed,'（可选）ZCode 已安装', c.zcode_installed?'装了更强：任务收件箱 / MCP 工具 / 进程监控 / 复盘审阅（机器人本体不依赖它，随时可后补）：在 ZCode 里把本项目的 plugins/ 目录添加为插件市场（或等项目公开后直接在市场搜「QQ机器人」一键装），再到「ZCode 联动」页开启':'非必须，机器人所有聊天功能都不需要它。装了可以联动（任务收件箱 / MCP 工具等）：① zcode.ai 下载安装 ZCode；② 把本项目的 plugins/ 目录添加为 ZCode 插件市场来安装本插件（项目公开后可直接在市场搜「QQ机器人」）。装好后回本页刷新')
@@ -805,7 +808,7 @@ async function vStatus(){
  `${wizard}${keyWarn}${upBanner}
  <div class="card"><div class="kv">
   <div><span class="k">消息管道</span> <span class="badge ${d.ok?'b-ok':'b-bad'}">${d.ok?'运行':'停止'}</span></div>
-  <div><span class="k">NapCat WS</span> <span class="badge ${ws?'b-ok':'b-bad'}">${ws?'已连接':'断开'}</span></div>
+  <div><span class="k">协议框架</span> <span class="badge" style="background:var(--tint);color:var(--dim)">${esc(BE_NAME)}${ws?' · 已连接':' · 断开'}</span></div>
   <div><span class="k">自治大脑</span> ${a&&a.ok?(a.ready===false?'<span class="badge b-warn">等待 API Key</span>':'<span class="badge b-ok">运行</span>'):'<span class="badge b-bad">停止</span>'}</div>
   <div><span class="k">机器人</span> ${esc(login.nickname||'?')} <span class="mono">(${esc(String(login.user_id||'?'))})</span></div>
  </div>
@@ -1684,6 +1687,117 @@ async function __gaMemberBan(){
  const r=await api('/api/member-ban',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({group_id:__GA.sel,user_id:uid,minutes:min})}).catch(()=>({ok:false}));
  toast(r&&r.ok?'已执行':'执行失败：'+((r&&r.error)||'需机器人是群管理员；群主无法被禁言'),!!(r&&r.ok));
 }
+// ---------------- 框架管理（多协议后端：napcat/llonebot/… + QQ 版本回退） ----------------
+var __BE={data:null};
+async function vBackend(){
+ const d=await api('/api/backends').catch(()=>({ok:false}));
+ if(d&&d.ok){__BE.data=d;window._beName=(((d.backends||{})[d.current]||{}).title)||'NapCat';}
+ const B=__BE.data||{};
+ const cur=B.current||'napcat';
+ const backends=B.backends||{};
+ const curMeta=backends[cur]||{};
+ const cards=Object.keys(backends).map(k=>{
+  const m=backends[k];
+  const active=k===cur;
+  const pros=(m.pros||[]).map(x=>'<div style="color:var(--ok,#2e7d32)">＋ '+esc(x)+'</div>').join('');
+  const cons=(m.cons||[]).map(x=>'<div style="color:#c62828">－ '+esc(x)+'</div>').join('');
+  const caps=m.capabilities||{};
+  const capLine='<span class="k" style="font-size:11.5px">'+(caps.notice?'公告✓':'公告✗')+' '+(caps.emoji_like?'表情回应✓':'表情回应✗')+' '+(caps.image_fetch?'识图✓':'识图✗')+' '+(caps.group_admin?'群管✓':'群管✗')+'</span>';
+  return '<div class="card" style="'+(active?'border-color:var(--acc,#4f7cff)':'')+'">'
+  +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b>'+esc(m.title)+'</b>'
+  +(active?'<span style="font-size:11px;padding:1px 8px;border-radius:10px;background:var(--acc,#4f7cff);color:#fff">当前使用</span>':'')
+  +'<span class="k" style="font-size:12px">'+esc(m.status||'')+'</span>'
+  +(active?'':'<button class="act" style="margin:0 0 0 auto" onclick="__beSwitch(\''+k+'\')">切换到此框架</button>')+'</div>'
+  +'<div class="k" style="font-size:12px;margin-top:4px">'+esc(m.mechanism||'')+'　'+capLine+'</div>'
+  +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px;font-size:12.5px">'+pros+cons+'</div></div>';
+ }).join('');
+ const isNC=cur==='napcat';
+ const cfgd=await api('/api/app-config').catch(()=>({}));
+ const c=cfgd||{};
+ const napCard=isNC&&curMeta?('<div class="card"><div style="margin-bottom:6px"><b>NapCat 设置</b> <span class="k" style="font-size:12px">（当前框架的设置——切换框架后这里换为对应框架的设置）</span></div>'
+  +'<div class="k" style="margin-bottom:4px">QQNT 安装目录（留空=自动探测，探测到：'+esc(c.detected_qqnt||c.qqnt_dir||'未探测到')+'）</div>'
+  +'<input id="sqqnt" value="'+esc(String(c.qqnt_dir||''))+'" style="width:100%" onchange="saveEnv(\'sqqnt\',\'qqnt_dir\',0,\'QQNT 目录已保存\')">'
+  +'<div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+  +'<button class="act ghost" style="margin:0" onclick="napcatOnline()">在线下载并安装 NapCat…</button>'
+  +'<button class="act ghost" style="margin:0" onclick="napcatInstall()">本地 zip 安装…</button></div>'
+  +'<div id="ncdl-status" class="k" style="margin-top:6px"></div>'
+  +'<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)"><label class="master"><input type="checkbox" id="sqqlock" '+(c.qqnt_dir||c.detected_qqnt?'':'disabled')+' onchange="qqLockToggle(this.checked)">'
+  +'<span><b>锁定 QQ 版本（机器人兼容保护）</b><div class="k" style="margin-top:3px">屏蔽 QQ 自动更新下载源，把版本固定住。<span id="qqlock-state" class="k"></span></div></span></label></div>'
+  +'<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">'
+  +'<div class="k" style="margin-bottom:6px"><b>NapCat 运行方式</b></div>'
+  +'<label style="display:block;margin:6px 0"><input type="radio" name="ncmode" value="qqnt" '+(c.napcat_mode!=='runtime'?'checked':'')+' onchange="ncModeSet(\'qqnt\')"> <b>跟随你的 QQ 安装</b><span class="k">共用电脑上的 QQ，受 QQ 自动更新影响</span></label>'
+  +'<label style="display:block;margin:6px 0"><input type="radio" name="ncmode" value="runtime" '+(c.napcat_mode==='runtime'?'checked':'')+' onchange="ncModeSet(\'runtime\')"> <b>独立运行时（实验性）</b><span class="k">数据目录自带受控版 QQ+NapCat，与你的 QQ 分离</span></label>'
+  +'<div id="rt-status" class="k" style="margin-top:8px"></div>'
+  +'<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">'
+  +'<button class="act ghost" style="margin:0" onclick="rtInstall()">安装/修复独立运行时…</button>'
+  +'<button class="act ghost danger" style="margin:0" onclick="rtDelete()">删除运行时</button></div></div>'
+  +'<div class="k" style="margin-top:8px">扫码登录密钥与「打开登录页（免密钥）」按钮在「状态」页的 NapCat 登录密钥卡片。</div></div>'):'';
+ const llobCard=(cur==='llonebot')?('<div class="card"><div style="margin-bottom:6px"><b>LLOneBot 设置</b></div>'
+  +'<div class="k">安装位置：'+esc(B.llonebot_dir||'')+'　'+(B.llonebot_installed?'<span style="color:var(--ok,#2e7d32)">已安装 ✓</span>':'<span style="color:#c62828">未安装</span>')+'</div>'
+  +'<div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">'
+  +'<label class="k">WS 端口 <input type="number" id="pllob" value="'+(c.llonebot_ws_port||3002)+'" style="width:76px" onchange="saveEnv(\'pllob\',\'llonebot_ws_port\',1,\'端口已保存，重启组件后生效\')"></label>'
+  +'<button class="act ghost" style="margin:0" onclick="window.open(\''+esc(B.llonebot_webui||'http://127.0.0.1:6099')+'\',\'_blank\')">打开 LLOneBot 管理页</button></div>'
+  +'<div class="k" style="margin-top:8px">登录/扫码在 LLOneBot 自己的管理页完成（上面的按钮）；登录的是机器人 QQ 号。它的数据与日志在自身安装目录内，与本机器人数据目录互不影响。</div></div>'):'';
+ $('#view').innerHTML=head('框架管理')
+ +'<div class="card"><div class="k" style="line-height:1.7"><b>为什么有这一页？</b>机器人靠「协议框架」收发 QQ 消息。框架各有取舍：NapCat 功能最全但上游已停更（QQ 强制升级后可能失效）；LLOneBot 活跃维护且不依赖 QQ 版本，但群公告/表情回应/识图暂不支持。你的<b>人设、记忆、群设置等所有数据与框架无关</b>——切换框架不丢任何数据，随时可切回。<br><b>如何贡献新框架？</b>本项目按 OneBot 11 标准对接框架：在 qq_services.py 的 PROTOCOL_BACKENDS 注册元信息 + 实现安装/启动/停止三个函数即可（详见仓库 PLUGINS.md 与源码注释「协议框架注册表」）。</div></div>'
+ +cards
+ +napCard+llobCard
+ +(cur==='napcat'?('<div class="card"><div style="margin-bottom:6px"><b>QQ 版本回退（NapCat 续命通道）</b></div>'
+  +'<div class="k">当前 QQ 版本：<b class="mono">'+esc(B.qq_version||'未知')+'</b>　版本锁定：'+(B.qq_locked?'<span style="color:var(--ok,#2e7d32)">已生效</span>':'<span style="color:#c62828">未开启（上方开关）</span>')+'</div>'
+  +'<div class="k" style="margin-top:6px">QQ 被强制升级导致 NapCat 失效时的回退步骤：</div>'
+  +'<div class="k" style="margin-top:4px;padding-left:10px">① 备份 <span class="mono">~/.zcode-qq-bot/</span> 整个数据目录<br>② 控制面板卸载当前 QQ<br>③ 从旧版存档站下载 NapCat 还适配的版本（如 9.9.32-51246；<a href="#" onclick="window.open(\'https://www.uptodown.com\',\'_blank\');return false">Uptodown</a> 等第三方存档，腾讯官方不提供，注意校验文件）<br>④ 安装旧版 QQ → 重装 NapCat（上方在线安装即可）<br>⑤ 回本页确认「锁定 QQ 版本」已开（hosts 屏蔽自动更新）</div>'
+  +'<div class="k" style="margin-top:6px;color:#c62828">⚠ 回退是续命不是永生：腾讯随时可能按服务端最低版本拒绝旧客户端登录；降级可能丢新版已迁移的本地聊天数据（机器人数据不受影响）。</div></div>'):'')
+ +'<div class="card"><div style="margin-bottom:6px"><b>LLOneBot 安装</b> <span class="k" style="font-size:12px">（'+(B.llonebot_installed?'已安装 ✓，可随时切换':'未安装——切换到 LLOneBot 前需先装')+'）</span></div>'
+  +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+  +'<button class="act" style="margin:0" onclick="__beLlobDl(this)">在线下载安装（约95MB，失败看提示）</button>'
+  +'<input id="llob-zip" placeholder="或填本地 zip 路径（手动下载的 CLI-win-x64）" style="flex:1;min-width:240px">'
+  +'<button class="act ghost" style="margin:0" onclick="__beLlobPath()">从本地 zip 安装</button></div>'
+  +'<div class="k" id="llob-msg" style="margin-top:6px">在线版从 GitHub Releases 下载（github.com/LLOneBot/LLOneBot/releases，网络不畅时用本地 zip：下载 LuckyLillia-CLI-win-x64.zip 后填路径安装）。</div></div>'
+ +'<div class="card"><div class="k">框架切换会：停止全部组件 → 保存框架选择 → 按新框架重新启动（自动完成）。人设/记忆/群设置/插件数据全部保留。切换到 LLOneBot 前需先安装；两个框架可共存，随时切回。</div></div>';
+ setTimeout(function(){__beInit();},0);
+}
+function __beInit(){
+ // 复用设置页的 QQ 版本锁/独立运行时状态初始化（迁移过来的控件同 ID）
+ api('/api/qq-compat').then(q=>{
+  const el=document.getElementById('qqlock-state');
+  const box=document.getElementById('sqqlock');
+  if(box)box.checked=q.lock_active;
+  if(el)el.textContent=q.lock_active?'（已生效：QQ 更新源已屏蔽'+(q.qq_version&&q.qq_version!=='legacy'?'，当前 '+q.qq_version:'')+'）':(q.lock_wanted?'（⚠ 尚未生效：需管理员权限，点一次开关确认 UAC）':'（未开启）');
+ }).catch(()=>{});
+ api('/api/napcat-runtime').then(rt=>{rtPaint(rt)}).catch(()=>{});
+ api('/api/napcat-dl-status').then(st=>{if(st&&st.running)ncdlPoll()}).catch(()=>{});
+}
+async function __beLlobDl(btn){
+ const msg=document.getElementById('llob-msg');
+ const old=btn.textContent;btn.disabled=true;btn.textContent='下载安装中…（可能数分钟）';
+ msg.textContent='下载中…（GitHub 直连较慢，失败会自动试镜像；再失败用手动 zip）';
+ const r=await api('/api/llonebot-download',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>({ok:false}));
+ btn.disabled=false;btn.textContent=old;
+ if(r&&r.ok){msg.textContent='✓ '+(r.message||'安装成功');load();}
+ else msg.textContent='✗ '+(r&&r.error||'下载失败');
+}
+async function __beLlobPath(){
+ const msg=document.getElementById('llob-msg');
+ const p=(document.getElementById('llob-zip').value||'').trim();
+ if(!p){toast('先填 zip 路径',false);return;}
+ const r=await api('/api/llonebot-install-path',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:p})}).catch(()=>({ok:false}));
+ if(r&&r.ok){msg.textContent='✓ '+(r.message||'安装成功');load();}
+ else msg.textContent='✗ '+(r&&r.error||'安装失败');
+}
+async function __beSwitch(k){
+ const B=__BE.data||{};
+ const m=(B.backends||{})[k]||{};
+ if(!await dlgConfirm({title:'切换协议框架 → '+esc(m.title||k),body:'将停止全部组件并改用 '+esc(m.title||k)+'，然后自动按新框架启动。<br><br>'
+  +esc(m.title||k)+' 的特点：'+(m.mechanism?esc(m.mechanism):'')+'<br>'
+  +(k==='llonebot'?'切换后<b>群公告、表情回应、识图将不可用</b>（框架暂不支持）；需在 LLOneBot 管理页重新扫码登录机器人 QQ。':'切换回 NapCat 需要 QQ 版本与其兼容（配合版本锁定）。')
+  +'<br><br>你的所有数据（人设/记忆/群设置/插件）与框架无关，<b>不会丢失</b>，随时可切回。确认切换？',okText:'切换',danger:true}))return;
+ if(k==='llonebot'&&!B.llonebot_installed){toast('请先安装 LLOneBot（下方安装区）',false);return;}
+ toast('正在切换框架并重启组件…');
+ const r=await api('/api/backend-switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({backend:k})}).catch(()=>({ok:false}));
+ if(r&&r.ok){toast('已切换到 '+((B.backends||{})[k]||{}).title+'；启动结果见状态页');setTimeout(function(){load();},600);}
+ else toast('切换失败：'+(r&&r.error||'未知'),false);
+}
+
 async function vPersonas(){
  if(__PS_TAB==='style')return vFile('style');
  const [d,pr,gnr,fnr]=await Promise.all([
@@ -2128,27 +2242,8 @@ async function vSettings(){
   </div></div>
  <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">② 运行环境</div>
  <div class="card"><div class="k">安装位置与网络（端口一般无需改动，改动重启各组件后生效）</div>
-  <div style="margin-top:10px"><div class="k" style="margin-bottom:4px">QQNT 安装目录（留空=自动探测，探测到：${esc(c.detected_qqnt||'未探测到')}）</div>
-  <input id="sqqnt" value="${esc(String(c.qqnt_dir||''))}" style="width:100%" onchange="saveEnv('sqqnt','qqnt_dir',0,'QQNT 目录已保存（下次启动任务时生效）')">
-  <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-   <button class="act ghost" style="margin:0" onclick="napcatOnline()">在线下载并安装 NapCat…</button>
-   <button class="act ghost" style="margin:0" onclick="napcatInstall()">本地 zip 安装…</button>
-   <span class="k">在线版自动从 NapCat 官方 GitHub 下载最新 Shell 并安装（国内自动走镜像）；本地版选自己下载的 zip（github.com/NapNeko/NapCatQQ/releases）。Program Files 目录需管理员权限运行本程序</span></div>
-  <div id="ncdl-status" class="k" style="margin-top:6px"></div>
-  <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)"><label class="master"><input type="checkbox" id="sqqlock" ${c.qqnt_dir||c.detected_qqnt?'':'disabled'} onchange="qqLockToggle(this.checked)">
-   <span><b>锁定 QQ 版本（机器人兼容保护）</b><div class="k" style="margin-top:3px">QQ 自动更新可能让 NapCat 失效（机器人起不来/报「文件已损坏」）。开启后屏蔽 QQ 的更新下载源，把版本固定住；更新 NapCat 前建议保持开启。改动 hosts 需要管理员确认一次。<span id="qqlock-state" class="k"></span></div></span></label>
-   <div class="k" style="margin-top:8px">更彻底的做法是下面的「独立运行时」：机器人用自己的 QQ，与你的 QQ 互不干扰。</div></div>
-  <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">
-   <div class="k" style="margin-bottom:6px"><b>NapCat 运行方式</b>（决定机器人寄生在哪份 QQ 上）</div>
-   <label style="display:block;margin:6px 0"><input type="radio" name="ncmode" value="qqnt" ${c.napcat_mode!=='runtime'?'checked':''} onchange="ncModeSet('qqnt')"> <b>跟随你的 QQ 安装</b><span class="k">（现状）共用你电脑上的 QQ，受 QQ 自动更新影响，需要配合上面的版本锁定</span></label>
-   <label style="display:block;margin:6px 0"><input type="radio" name="ncmode" value="runtime" ${c.napcat_mode==='runtime'?'checked':''} onchange="ncModeSet('runtime')"> <b>独立运行时（实验性）</b><span class="k">数据目录里自带一份受控版 QQ + NapCat（约 600MB），你的 QQ 随便升级/重装/卸载都不影响机器人。⚠ 已知问题：部分机器上便携 QQ 注入成功但 NapCat 核心不启动（与 NapCat 上游兼容问题同族），失败时切回上一项即可</span></label>
-   <div id="rt-status" class="k" style="margin-top:8px"></div>
-   <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
-    <button class="act ghost" style="margin:0" id="rt-install-btn" onclick="rtInstall()">安装/修复独立运行时…</button>
-    <button class="act ghost danger" style="margin:0" onclick="rtDelete()">删除运行时</button>
-   </div>
-  </div>
-  <div class="k" style="margin-top:8px">扫码登录：密钥（登录页要填的 Token）与「打开登录页（免密钥）」按钮见「状态」页的 <b>NapCat 登录密钥</b> 卡片（密钥由程序自动从 NapCat 配置读取，不用手抄）。切换机器人账号在上方「① 身份与称呼 → 机器人 QQ 号」里改，改完自动走切换流程。</div></div>
+  <div class="k" style="margin-top:10px">协议框架（NapCat/LLOneBot）、QQNT 目录、版本锁定、运行方式、QQ 版本回退已移至<b>「框架管理」</b>页（侧边栏·状态下方）。</div>
+  <div class="k" style="margin-top:8px">扫码登录与框架详情见「框架管理」「状态」页。</div></div>
   <div class="k" style="margin-top:12px">端口（一般无需改动；改动重启各组件后生效）</div>
   <div style="display:flex;gap:10px;margin-top:6px;flex-wrap:wrap;align-items:center">
    <label>NapCat WS <input id="pnap" type="number" value="${c.napcat_ws_port}" style="width:76px" onchange="saveEnv('pnap','napcat_ws_port',1)"></label>
@@ -5547,6 +5642,23 @@ class UiHandler(BaseHTTPRequestHandler):
                           read_const(TOKEN_PATH), timeout=15)
             on = bool(isinstance(r, dict) and r.get("chat_enabled"))
             return self._reply(200, {"ok": True, "enabled": on})
+        if u.path == "/api/backends":
+            # 框架管理页元信息：注册表 + 当前框架 + 安装状态 + QQ 版本现场
+            qqnt = C.qqnt_dir_resolved(cfg)
+            qq_ver = C.qq_current_version(qqnt) if qqnt else ""
+            napcat_on = bool(qqnt and os.path.isfile(
+                os.path.join(qqnt, "NapCatWinBootMain.exe")))
+            return self._reply(200, {
+                "ok": True,
+                "current": S.protocol_backend(cfg),
+                "backends": S.PROTOCOL_BACKENDS,
+                "llonebot_installed": S.llonebot_installed(cfg),
+                "llonebot_dir": S.llonebot_dir(cfg),
+                "llonebot_webui": S.llonebot_webui_url(cfg),
+                "qq_version": str(qq_ver or ""),
+                "qq_locked": S.qq_update_block_active(),
+                "napcat_installed": napcat_on,
+                "version_lock_cfg": bool(cfg.get("qq_version_lock", True))})
         if u.path == "/api/zcode-status":
             import subprocess as _sp
             running = False
@@ -5613,6 +5725,96 @@ class UiHandler(BaseHTTPRequestHandler):
         if not self._authed(u, q):
             return self._reply(401, {"ok": False, "error": "unauthorized"})
         body = self._body()
+        # ---- 框架管理（多协议后端）----
+        if u.path == "/api/backend-switch":
+            # 切换协议框架：停全部组件（两个协议端都停防残留）→ 改配置 →
+            # 自动按新框架启动。用户数据/人设/记忆在 DATA_DIR 与框架无关。
+            pb = str(body.get("backend") or "").strip()
+            if pb not in S.PROTOCOL_BACKENDS:
+                return self._reply(400, {"ok": False, "error": "未知框架"})
+            if pb == "llonebot" and not S.llonebot_installed(cfg):
+                return self._reply(200, {"ok": False,
+                                         "error": "LLOneBot 未安装：先在下方安装"})
+            S.power_off(cfg, include_napcat=True)
+            cfg["protocol_backend"] = pb
+            C.save_app_config(cfg)
+            notes = S.power_on(cfg)
+            return self._reply(200, {"ok": True, "backend": pb, "notes": notes})
+        if u.path == "/api/llonebot-install-path":
+            # 从本地 zip 安装（在线下载被卡时的手动路径）
+            p = str(body.get("path") or "").strip()
+            if not p.lower().endswith(".zip") or not os.path.isfile(p):
+                return self._reply(200, {"ok": False, "error": "zip 文件不存在"})
+            msg = S.llonebot_install_zip(cfg, p)
+            return self._reply(200, {"ok": ("失败" not in msg), "message": msg})
+        if u.path == "/api/llonebot-download":
+            # 在线下载 LLOneBot release 并安装。http.client 域名白名单逐跳
+            # 跟随（302→objects.githubusercontent.com），数据进内存一次写盘
+            import http.client as _hc
+            import urllib.parse as _up
+            zdst = pathlib.Path(C.DATA_DIR) / "llob.zip"
+            _DL_HOSTS_OK = ("github.com", "gh-proxy.com")
+
+            def _dl(start_url):
+                cur = start_url
+                for _hop in range(5):
+                    pp = _up.urlsplit(cur)
+                    host = pp.hostname or ""
+                    if host not in _DL_HOSTS_OK and not (
+                            host.endswith(".githubusercontent.com")
+                            or host.endswith(".github.com")):
+                        return False, "跳到了不认识的域名：" + host
+                    conn = _hc.HTTPSConnection(host, timeout=180)
+                    try:
+                        conn.request("GET", pp.path + (("?" + pp.query)
+                                                       if pp.query else ""),
+                                     headers={"User-Agent": "zcode-qq-bot"})
+                        r = conn.getresponse()
+                        if r.status in (301, 302, 303, 307, 308):
+                            loc = r.getheader("Location") or ""
+                            r.read()
+                            if not loc:
+                                return False, "重定向无目标"
+                            cur = loc if "://" in loc else \
+                                "https://" + host + loc
+                            continue
+                        if r.status != 200:
+                            r.read()
+                            return False, "HTTP %d" % r.status
+                        buf = bytearray()
+                        while True:
+                            chunk = r.read(1 << 17)
+                            if not chunk:
+                                break
+                            buf.extend(chunk)
+                        zdst.write_bytes(bytes(buf))
+                        return True, ""
+                    except Exception as e:
+                        return False, repr(e)[:100]
+                    finally:
+                        conn.close()
+                return False, "重定向超过 5 跳"
+
+            base = ("https://github.com/LLOneBot/LLOneBot/releases/download/"
+                    "v8.3.2/LuckyLillia-CLI-win-x64.zip")
+            ok, err = _dl(base)
+            if not ok:
+                ok, err = _dl("https://gh-proxy.com/" + base)
+            if not ok:
+                try:
+                    zdst.unlink()
+                except OSError:
+                    pass
+                return self._reply(200, {"ok": False,
+                                         "error": "下载失败：%s。请到 GitHub "
+                                                  "Releases 手动下载 CLI-win-x64 "
+                                                  "zip 后用「从本地 zip 安装」" % err})
+            msg = S.llonebot_install_zip(cfg, str(zdst))
+            try:
+                zdst.unlink()
+            except OSError:
+                pass
+            return self._reply(200, {"ok": ("失败" not in msg), "message": msg})
         # ---- 群管模块（daemon ctl 转发；机器人需为目标群管理员）----
         if u.path == "/api/gadmin-save":
             r = proxy_post("127.0.0.1", _daemon_port(), "/group-admin/save",
@@ -6622,7 +6824,15 @@ class UiHandler(BaseHTTPRequestHandler):
                 cleaned["owner_qq"] = ov
             if "qqnt_dir" in cfg_in:
                 cleaned["qqnt_dir"] = str(cfg_in["qqnt_dir"]).strip()
-            for k in ("napcat_ws_port", "daemon_port", "agent_admin_port", "ui_port"):
+            if "protocol_backend" in cfg_in:
+                pb = str(cfg_in["protocol_backend"]).strip()
+                if pb not in ("napcat", "llonebot"):
+                    return self._reply(400, {"ok": False, "error": "未知的协议框架"})
+                cleaned["protocol_backend"] = pb
+            if "llonebot_dir" in cfg_in:
+                cleaned["llonebot_dir"] = str(cfg_in["llonebot_dir"]).strip()
+            for k in ("napcat_ws_port", "llonebot_ws_port", "daemon_port",
+                      "agent_admin_port", "ui_port"):
                 if k in cfg_in:
                     try:
                         port = int(cfg_in[k])

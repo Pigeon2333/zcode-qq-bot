@@ -1,0 +1,37 @@
+# -*- coding: utf-8 -*-
+# 载体：探 games 库在线/活跃数据表（为活跃玩家数定方案）
+src = open("_bt_vermatrix.py", encoding="utf-8").read()
+head = src.split("PATTERNS = [")[0]
+g = {"__name__": "_fw_carrier"}
+exec(head, g)
+if not g["try_restore"]():
+    g["login"]()
+req = g["req"]
+import urllib.parse, json, time
+
+OUT = "/home/fap-netease/update-plugins/_fwchk.out"
+CMD = (
+    'MYSQL=/www/server/mysql/bin/mysql; GP="Concrete20192024."; '
+    '{ echo ==ONLINE_TABLES==; $MYSQL -ugames -p"$GP" -e "SHOW TABLES LIKE \'%online%\'; SHOW TABLES LIKE \'%session%\'; SHOW TABLES LIKE \'%login%\'; SHOW TABLES LIKE \'%active%\';" games 2>&1 | grep -v "Using a password"; '
+    'echo ==LASTLOGIN==; $MYSQL -ugames -p"$GP" -e "SELECT COUNT(*) FROM nsgamebase WHERE data LIKE \'%lastLoginTime%\';" games 2>&1 | grep -v "Using a password" | tail -1; '
+    'echo ==TODAY_ACTIVE==; $MYSQL -ugames -p"$GP" -e "SELECT COUNT(*) FROM nsgamebase WHERE data LIKE \'%lastLoginTime%\' AND FROM_UNIXTIME(CAST(SUBSTRING_INDEX(SUBSTRING_INDEX(data, \'\\\"lastLoginTime\\\":\', -1), \',\', 1) AS BIGINT)/1000) >= CURDATE();" games 2>&1 | grep -v "Using a password" | tail -3; '
+    'echo ==PIT_COLS==; $MYSQL -ugames -p"$GP" -e "SHOW TABLES LIKE \'%rank%\';" games 2>&1 | grep -v "Using a password"; '
+    '} > ' + OUT + ' 2>&1'
+)
+
+try: req("POST", "/files?action=DeleteFile", urllib.parse.urlencode({"path": OUT}).encode())
+except Exception: pass
+
+r = json.loads(req("POST", "/crontab?action=AddCrontab", urllib.parse.urlencode({
+    "name": "_fwchkI", "type": "day", "where1": "", "hour": "3", "minute": "0",
+    "week": "", "sType": "ShellScript", "sName": "",
+    "sBody": CMD, "backupTo": "localhost", "urladdress": "", "save": "", "sFile": ""}).encode()))
+tid = r.get("id")
+req("POST", "/crontab?action=StartTask", urllib.parse.urlencode({"id": tid}).encode())
+time.sleep(10)
+d = json.loads(req("POST", "/files?action=GetFileBody",
+                   urllib.parse.urlencode({"path": OUT}).encode()).decode("utf-8", "ignore")).get("data")
+req("POST", "/crontab?action=DelCrontab", urllib.parse.urlencode({"id": tid}).encode())
+print((d or "(empty)")[:1800])
+try: req("POST", "/files?action=DeleteFile", urllib.parse.urlencode({"path": OUT}).encode())
+except Exception: pass
