@@ -3359,6 +3359,14 @@ def _owner_groups_line(daemon):
     return "、".join(items) + more
 
 
+# 句首「行动策略」句（模型把思考写进正文；与 daemon 同款白名单策略词）
+_STRATEGY_LEAD_RE = re.compile(
+    r"^[^\n。！？]{0,26}?"
+    r"(?:就回应|要回应|就回他|就回她|娇嗔|短句|撒娇|卖萌|怼回去|直接回"
+    r"|简单回|戳我|说了句|回答他|回复他|回应一下)"
+    r"[^\n。！？]{0,26}?(?:。|！|？)[ \t\n]*(?=\S)")
+
+
 def parse_reply(text):
     # 所有 return 必须同形（5 元组）：texts/stickers/memo/draw/sendgrp
     # 思考块剥离：部分模型（thinking 档）会把 <think>…</think> 混进正文，
@@ -3371,6 +3379,13 @@ def parse_reply(text):
         return "WAIT", [], None, None, None
     text = _WAIT_LEAK_RE.sub("", text)  # 等说完关闭/漏写时兜底剥离，绝不泄漏给用户
     text = _SKIP_LEAK_RE.sub("", text)  # 中文 SKIP 变体（跳过/不说/不发/沉默）兜底剥离
+    # 句首「行动策略」句（2026-11-19 戳一戳实测：模型把思考写成正文开头
+    # "被戳就回应，短句娇嗔。yinkui戳我。"）。daemon 出站还有一道同款兜底。
+    for _ in range(2):
+        _ms = _STRATEGY_LEAD_RE.match(text)
+        if not _ms:
+            break
+        text = text[_ms.end():]
     # [回应:id] 泄漏兜底（2026-11-12 实测：追聊/主动消息/连贯性重试路径
     # 不走主路径的标记剥离，[回应:63] 原样进群）。主路径在 parse 前已剥并
     # 执行表情动作，这里只是兜网；裸标记剥掉不影响正文。
