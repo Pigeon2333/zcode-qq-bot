@@ -170,6 +170,13 @@ API_PROVIDERS = {
              "path": "/v1/chat/completions"},
     "gemini": {"label": "Gemini", "base": "https://generativelanguage.googleapis.com",
                "path": "/v1beta/openai/chat/completions"},
+    # OpenCode Go（opencode.ai/inference/go）：OpenAI 兼容，但要求
+    # x-opencode-session 头（稳定会话 ID，用于路由与 prompt 缓存）+ 自报
+    # User-Agent（文档明确禁止通用 SDK/HTTP 库名）。base 只到 /inference/go，
+    # 用户若把 models 列表地址贴进 base_url 会拼成 .../v1/models/chat/completions
+    # → 404 HTML → JSONDecodeError（2026-11-19 实测踩坑）。
+    "opencode": {"label": "OpenCode Go", "base": "https://opencode.ai/inference/go",
+                 "path": "/v1/chat/completions", "session_header": True},
 }
 
 
@@ -189,14 +196,28 @@ def safe_api_host(host):
 
 
 def provider_endpoint(provider, base_url=""):
-    """供应商 → (base, path)。custom 必须给 base_url；未知供应商回落智谱。"""
+    """供应商 → (base, path)。custom 必须给 base_url；未知供应商回落智谱。
+    base_url 常见误填（2026-11-19 用户踩坑）：把「模型列表」或「完整
+    chat/completions 地址」贴进来 —— 统一纠偏：去掉结尾的 /v1/models、
+    /v1/models/、/chat/completions、/v1，再按供应商/自定义规则拼 path。"""
     p = API_PROVIDERS.get(str(provider or "zhipu").lower())
+    b = str(base_url or "").strip().rstrip("/")
+    for _suf in ("/v1/models", "/v1/chat/completions", "/chat/completions", "/v1"):
+        if b.endswith(_suf):
+            b = b[:-len(_suf)].rstrip("/")
+            break
     if p:
-        return p["base"], p["path"]
-    b = str(base_url or "").strip()
+        # 用户自定义 base 覆盖内置（例如 opencode 走自建反代）
+        return (b or p["base"]), p["path"]
     if b:
-        return b.rstrip("/"), "/chat/completions"
+        return b, "/chat/completions"
     return API_PROVIDERS["zhipu"]["base"], API_PROVIDERS["zhipu"]["path"]
+
+
+def provider_needs_session(provider):
+    """该供应商是否需要 x-opencode-session 头（opencode 系要求稳定会话 ID）。"""
+    p = API_PROVIDERS.get(str(provider or "").lower()) or {}
+    return bool(p.get("session_header"))
 
 
 def zcode_installed():

@@ -777,6 +777,12 @@ def glm_chat(model, messages, timeout=40, extra_body=None, key=None):
     if not C.safe_api_host(u.hostname):
         raise RuntimeError("API 主机被拒绝（禁止内网/环回地址）：%s" % u.hostname)
     port = u.port or (443 if scheme == "https" else 80)
+    # base 可能带路径前缀（opencode: /inference/go；自定义: /v1 反代）——
+    # 此前只取 hostname 丢掉前缀，请求打到域名根 → 404 HTML →
+    # JSONDecodeError（2026-11-19 opencode 实测）。前缀与 path 拼接。
+    _prefix = (u.path or "").rstrip("/")
+    if _prefix and not path.startswith(_prefix):
+        path = _prefix + path
     body = json.dumps({
         "model": model,
         "messages": messages,
@@ -786,10 +792,17 @@ def glm_chat(model, messages, timeout=40, extra_body=None, key=None):
     }).encode("utf-8")
     conn = _api_conn(u.hostname, port, scheme, timeout)
     try:
-        conn.request("POST", path, body=body, headers={
+        headers = {
             "Content-Type": "application/json",
             "Authorization": "Bearer " + cred,
-        })
+            # 自报 UA：opencode 文档明确禁止通用 SDK/HTTP 库名
+            "User-Agent": "zcode-qq-bot/%s" % C.APP_VERSION,
+        }
+        # OpenCode Go 路由要求稳定会话 ID（同会话复用可命中 prompt 缓存）。
+        # 进程内固定 ID：单机器人单实例场景足够，且不含任何用户消息内容。
+        if C.provider_needs_session(provider):
+            headers["x-opencode-session"] = _OPENCODE_SESSION
+        conn.request("POST", path, body=body, headers=headers)
         resp = conn.getresponse()
         return resp.status, json.loads(resp.read().decode("utf-8"))
     finally:
@@ -889,8 +902,19 @@ def call_glm_with_fallback(messages, text_ctx="", budget_sec=200):
             continue
         if status == 200:
             try:
-                text = data["choices"][0]["message"]["content"] or ""
-            except (KeyError, IndexError, TypeError):
+                _msg = data["choices"][0]["message"] or {}
+                text = _msg.get("content") or ""
+                # 推理系模型（deepseek-v4 等经 opencode 中转）会把正文写成
+                # reasoning_content、content 为空——max_tokens 小时正文被思考
+                # 吃光（实测 64 token 时 content=""）。此时回退取 reasoning，
+                # 并略去"思考"标记避免污染正文。
+                if not str(text).strip():
+                    _rc = str(_msg.get("reasoning_content") or "").strip()
+                    if _rc:
+                        text = _rc
+                        out("AGENT_REASONING_FALLBACK model=%s len=%d"
+                            % (model, len(_rc)))
+            except (KeyError, IndexError, TypeError, AttributeError):
                 RT.cooldown(ck)
                 tried.append("%s@%s" % (model, kid))
                 _pin_check_release(ck)
@@ -1722,6 +1746,10 @@ def _download_image(url, dest_path):
 
 
 _NO_VISION_MODELS = set()  # 运行中学习到的纯文本模型（发图必 400，视觉轮询直接跳过）
+
+# OpenCode Go 要求 x-opencode-session（稳定会话 ID，路由+prompt 缓存用）。
+# 进程级固定值——单机器人单实例足够；不含任何用户/会话内容。
+_OPENCODE_SESSION = "zcode-qq-bot-%d" % (os.getpid(),)
 
 
 def generate_image(prompt):
