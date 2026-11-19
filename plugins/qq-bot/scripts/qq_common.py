@@ -411,7 +411,10 @@ def econ_active(cfg):
 
 def tz_now_info():
     """按配置时区返回结构化当前时间（agent 注入 system prompt 用）。
-    时区名无效时回退系统本地时间。"""
+    时区名无效时回退系统本地时间。
+    时段划分按中文习惯（2026-11-20 修复：凌晨 0 点曾落进「上午」分支——
+    主动消息在 00:44 说「大家中午好」的根因）：
+    凌晨 0-5 / 早上 6-8 / 上午 9-11 / 中午 12-13 / 下午 14-17 / 晚上 18-23。"""
     import zoneinfo
     tz_name = str(load_app_config().get("timezone") or "Asia/Shanghai").strip()
     try:
@@ -421,14 +424,27 @@ def tz_now_info():
     import datetime
     now = datetime.datetime.now(tz) if tz else datetime.datetime.now()
     wd = ["一", "二", "三", "四", "五", "六", "日"][now.weekday()]
-    ampm = "上午" if now.hour < 12 else ("下午" if now.hour < 18 else "晚上")
-    h12 = now.hour if 0 < now.hour < 13 else (now.hour - 12 if now.hour >= 13 else 12)
+    h = now.hour
+    if h < 6:
+        ampm = "凌晨"
+    elif h < 9:
+        ampm = "早上"
+    elif h < 12:
+        ampm = "上午"
+    elif h < 14:
+        ampm = "中午"
+    elif h < 18:
+        ampm = "下午"
+    else:
+        ampm = "晚上"
+    h12 = h if 1 <= h <= 12 else (h - 12 if h > 12 else 12)
     return {
         "iso": now.strftime("%Y-%m-%d"),
         "weekday": "周%s" % wd,
         "clock24": now.strftime("%H:%M"),
         "clock12": "%s%d:%02d" % (ampm, h12, now.minute),
-        "hour": now.hour,
+        "hour": h,
+        "period": ampm,
         "tz": tz_name,
     }
 

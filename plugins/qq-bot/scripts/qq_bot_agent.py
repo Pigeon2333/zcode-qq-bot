@@ -2592,6 +2592,9 @@ def _nudge_tick(daemon):
     lt = time.localtime()
     if _in_silent_window(cfg, "private", lt) or _in_silent_window(cfg, "groups", lt):
         return
+    # 深夜确定性静默（0-7 点不追聊；与主动消息同款守卫）
+    if 0 <= C.tz_now_info()["hour"] < 7:
+        return
     try:
         chats = daemon.recent_chats(within=3600) or []
     except Exception:
@@ -3862,6 +3865,11 @@ def _proactive_pick(cfg, kind, pool, now, daemon=None):
         return None
     st["last_attempt"] = now
     if _in_silent_window(cfg, kind, time.localtime()):
+        return None
+    # 深夜确定性静默（2026-11-20 实测：00:44 主动消息说"大家中午好"——
+    # 时段 bug 修了，但"深夜该不该打扰"此前完全依赖模型自觉输出 [SKIP]，
+    # 不可靠。0-7 点确定性拦截：不构造调用、零 token 消耗）
+    if 0 <= C.tz_now_info()["hour"] < 7:
         return None
     import secrets
     want = "group" if kind == "groups" else "private"
