@@ -170,13 +170,20 @@ API_PROVIDERS = {
              "path": "/v1/chat/completions"},
     "gemini": {"label": "Gemini", "base": "https://generativelanguage.googleapis.com",
                "path": "/v1beta/openai/chat/completions"},
-    # OpenCode Go（opencode.ai/inference/go）：OpenAI 兼容，但要求
-    # x-opencode-session 头（稳定会话 ID，用于路由与 prompt 缓存）+ 自报
-    # User-Agent（文档明确禁止通用 SDK/HTTP 库名）。base 只到 /inference/go，
-    # 用户若把 models 列表地址贴进 base_url 会拼成 .../v1/models/chat/completions
-    # → 404 HTML → JSONDecodeError（2026-11-19 实测踩坑）。
-    "opencode": {"label": "OpenCode Go", "base": "https://opencode.ai/inference/go",
+    # OpenCode（opencode.ai/inference/go）：Go / Go Plus / Go Teams 三种订阅
+    # 共用同一端点、同一 API Key、同一套头（官方文档明确：额度不同，API 面
+    # 相同）→ 整合为单一「OpenCode」预设，用户无需按套餐分别配置。
+    # 要求：x-opencode-session 头（稳定会话 ID，路由+prompt 缓存）+ 自报 UA。
+    # base 只到 /inference/go（若贴 models 列表地址会被 provider_endpoint 纠偏）。
+    "opencode": {"label": "OpenCode（Go / Go Plus / Go Teams）",
+                 "base": "https://opencode.ai/inference/go",
                  "path": "/v1/chat/completions", "session_header": True},
+    # CommandCode（commandcode.ai）：OpenAI 兼容；模型 ID 带厂商前缀
+    # （deepseek/deepseek-v4-flash、moonshotai/Kimi-K3.1-Pro…）。
+    # Go 套餐无 API 权限（403 upgrade_required）——需 GOAT/Pro/Max 及以上。
+    "commandcode": {"label": "CommandCode",
+                    "base": "https://api.commandcode.ai/provider/v1",
+                    "path": "/chat/completions"},
 }
 
 
@@ -198,16 +205,28 @@ def safe_api_host(host):
 def provider_endpoint(provider, base_url=""):
     """供应商 → (base, path)。custom 必须给 base_url；未知供应商回落智谱。
     base_url 常见误填（2026-11-19 用户踩坑）：把「模型列表」或「完整
-    chat/completions 地址」贴进来 —— 统一纠偏：去掉结尾的 /v1/models、
-    /v1/models/、/chat/completions、/v1，再按供应商/自定义规则拼 path。"""
-    p = API_PROVIDERS.get(str(provider or "zhipu").lower())
+    chat/completions 地址」贴进来 —— 统一纠偏：先去掉结尾的
+    /v1/models 与 /(v1/)chat/completions；再视供应商决定是否剥裸 /v1：
+    内置供应商的 path 若已自带版本段（commandcode 的 /chat/completions 前面
+    已有 /v1 在 base 里），不剥；否则剥（多数 OpenAI 兼容端点 base 到域名根）。"""
+    key = str(provider or "zhipu").lower()
+    p = API_PROVIDERS.get(key)
     b = str(base_url or "").strip().rstrip("/")
-    for _suf in ("/v1/models", "/v1/chat/completions", "/chat/completions", "/v1"):
+    # 先只剥尾部的具体资源段（models / chat-completions），保留其前的版本段，
+    # 交给后面的版本段判定——否则 commandcode 的 /provider/v1 会被连带剥掉。
+    for _suf in ("/models", "/chat/completions", "/completions"):
         if b.endswith(_suf):
             b = b[:-len(_suf)].rstrip("/")
             break
+    # 裸 /v1 只在「内置供应商且其规范 base 不含版本段」时才剥——内置 path
+    # 通常已含 /v1（如 kimi 的 /v1/chat/completions）。custom 一律保留用户的
+    # /v1：OpenAI SDK 惯例 base_url 就带 /v1，剥掉会 404。
+    if p and b.endswith("/v1"):
+        base_has_ver = "/v1" in (p.get("base") or "")
+        if not base_has_ver:
+            b = b[:-len("/v1")].rstrip("/")
     if p:
-        # 用户自定义 base 覆盖内置（例如 opencode 走自建反代）
+        # 用户自定义 base 覆盖内置（例如 opencode/commandcode 走自建反代）
         return (b or p["base"]), p["path"]
     if b:
         return b, "/chat/completions"

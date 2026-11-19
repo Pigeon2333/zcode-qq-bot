@@ -2271,13 +2271,14 @@ async function vSettings(){
    <input value="${esc(k.label||'')}" data-kid="${esc(k.id)}" style="flex:1" onchange="renameKey('${esc(k.id)}',this)">
    <span class="mono" style="flex:none;width:150px">${esc(k.mask||'')}${k.base_url?'<br><span class="k mono" style="font-size:11px">'+esc(k.base_url)+'</span>':''}</span>
    <select class="mini" style="flex:none;width:96px" title="该 Key 的供应商" onchange="setKeyProvider('${esc(k.id)}',this.value)">
-    <option value="zhipu"${k.provider!=='deepseek'&&k.provider!=='kimi'&&k.provider!=='openai'&&k.provider!=='grok'&&k.provider!=='gemini'&&k.provider!=='opencode'&&k.provider!=='custom'?' selected':''}>智谱</option>
+    <option value="zhipu"${k.provider!=='deepseek'&&k.provider!=='kimi'&&k.provider!=='openai'&&k.provider!=='grok'&&k.provider!=='gemini'&&k.provider!=='opencode'&&k.provider!=='commandcode'&&k.provider!=='custom'?' selected':''}>智谱</option>
     <option value="deepseek"${k.provider==='deepseek'?' selected':''}>DeepSeek</option>
     <option value="kimi"${k.provider==='kimi'?' selected':''}>Kimi</option>
     <option value="openai"${k.provider==='openai'?' selected':''}>OpenAI</option>
     <option value="grok"${k.provider==='grok'?' selected':''}>Grok</option>
     <option value="gemini"${k.provider==='gemini'?' selected':''}>Gemini</option>
-    <option value="opencode"${k.provider==='opencode'?' selected':''}>OpenCode Go</option>
+    <option value="opencode"${k.provider==='opencode'?' selected':''}>OpenCode</option>
+    <option value="commandcode"${k.provider==='commandcode'?' selected':''}>CommandCode</option>
     <option value="custom"${k.provider==='custom'?' selected':''}>自定义</option>
    </select>
    <button class="act ghost danger" onclick="delKey('${esc(k.id)}')">删除</button></div>`).join('')||'<i class="k">尚未配置任何 Key</i>'}</div>
@@ -2290,13 +2291,14 @@ async function vSettings(){
     <option value="openai">OpenAI</option>
     <option value="grok">Grok</option>
     <option value="gemini">Gemini</option>
-    <option value="opencode">OpenCode Go</option>
+    <option value="opencode">OpenCode</option>
+    <option value="commandcode">CommandCode</option>
     <option value="custom">自定义兼容</option>
    </select>
    <input id="nkbase" placeholder="Base URL，如 https://api.xxx.com/v1" style="flex:1;min-width:200px;display:none">
    <input id="nkval" type="password" placeholder="粘贴 API Key" style="flex:1;min-width:180px">
    <button class="act" onclick="addKey()">添加 Key</button></div>
-  <div class="k" style="margin-top:6px">预制供应商（OpenAI 兼容）：智谱、DeepSeek（deepseek-chat / deepseek-reasoner）、Kimi（moonshot-v1-8k…）、OpenAI（gpt-4o 等）、Grok（grok-2 等）、Gemini（gemini-2.0-flash 等）、自定义（填 Base URL，禁止内网地址）、OpenCode Go（opencode.ai 的 Go 套餐；Base URL 留空即可）。智谱/DeepSeek/Kimi 国内直连；OpenAI/Grok/Gemini 需在下方配置 API 代理后使用。主 Key = 未指定条目默认用的 Key，可为任意供应商；生图和联网搜索目前仅支持智谱 Key。Key 仅存本机数据目录，列表仅显示掩码。</div>
+  <div class="k" style="margin-top:6px">预制供应商（OpenAI 兼容）：智谱、DeepSeek（deepseek-chat / deepseek-reasoner）、Kimi（moonshot-v1-8k…）、OpenAI（gpt-4o 等）、Grok（grok-2 等）、Gemini（gemini-2.0-flash 等）、自定义（填 Base URL，禁止内网地址）、OpenCode（Go/Go Plus/Go Teams 三套餐共用一套配置；Base URL 留空）、CommandCode（commandcode.ai，模型 ID 带厂商前缀如 deepseek/deepseek-v4-flash）。智谱/DeepSeek/Kimi 国内直连；OpenAI/Grok/Gemini 需在下方配置 API 代理后使用。主 Key = 未指定条目默认用的 Key，可为任意供应商；生图和联网搜索目前仅支持智谱 Key。Key 仅存本机数据目录，列表仅显示掩码。</div>
   <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
    <span class="k" style="flex:none">API 代理（可选）</span>
    <input id="apiproxy" value="${esc(String(c.api_proxy||''))}" style="width:240px" placeholder="http://127.0.0.1:7890（Clash 等本地代理）" onchange="saveKV('/api/app-config',{api_proxy:this.value.trim()},'API 代理已保存（即时生效；留空=直连）')">
@@ -7800,7 +7802,7 @@ class UiHandler(BaseHTTPRequestHandler):
                 provider = str(body.get("provider") or "zhipu").strip().lower()
                 base_url = str(body.get("base_url") or "").strip()[:300]
                 if provider not in ("zhipu", "deepseek", "kimi", "openai",
-                                    "grok", "gemini", "opencode", "custom"):
+                                    "grok", "gemini", "opencode", "commandcode", "custom"):
                     return self._reply(400, {"ok": False, "error": "供应商非法"})
                 if provider == "custom":
                     u2 = urllib.parse.urlsplit(base_url)
@@ -7843,7 +7845,7 @@ class UiHandler(BaseHTTPRequestHandler):
                     if "provider" in body:
                         prov = str(body.get("provider") or "zhipu").strip().lower()
                         if prov not in ("zhipu", "deepseek", "kimi", "openai",
-                                        "grok", "gemini", "opencode", "custom"):
+                                        "grok", "gemini", "opencode", "commandcode", "custom"):
                             return self._reply(400, {"ok": False, "error": "供应商非法"})
                         if prov == "custom":
                             b = str(body.get("base_url") or "").strip()[:300]
