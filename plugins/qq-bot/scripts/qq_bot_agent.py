@@ -2843,7 +2843,19 @@ def build_messages(daemon, msg, ctx_k=32):
                  "\n（对话关系判断：如果最近的对话是其他群友在互相说话"
                  "——互相@、互相引用、或短句接龙且当前这条不是对你说的，"
                  "就当没看见，输出 [跳过]，绝不对别人的对话插嘴；"
-                 "只有话题明确在等你/群体参与时才开口）")
+                 "只有话题明确在等你/群体参与时才开口）"
+                 # B·转述识别（2026-11-19 实测：你告白→机器人已回应；紧接着群友
+                 # 第三人称复述"有人要和你过一辈子"，机器人又演了一遍同样的害羞
+                 # ——把复述当成了新的告白。复述/引用刚发生的事应作调侃接梗，
+                 # 不重新演一遍情绪）
+                 "\n（复述判断：如果【现在】这句是用第三人称转述刚发生的事"
+                 "——如「有人要和你过一辈子」「他刚说…」「刚才那句」——先看最近"
+                 "对话里是不是刚有同样的事、你已回应过：是的话就当调侃/起哄接一句"
+                 "轻的（或只挂表情回应），绝不再完整演一遍刚才那个情绪）")
+    # A·同话题冷却（亲密/情绪类话题 60 秒内二次触发 → 附轻提示，不阻止回复）
+    _topic_note = _same_topic_note(msg)
+    if _topic_note:
+        hist_note += _topic_note
 
     rt = msg.get("reply_to") or None
     rt_text = str(msg.get("reply_text") or "").strip()
@@ -3359,7 +3371,51 @@ def _owner_groups_line(daemon):
     return "、".join(items) + more
 
 
-# 句首「行动策略」句（模型把思考写进正文；与 daemon 同款白名单策略词）
+# A·同话题冷却：会话 → {"ts": 上次回复时刻, "kws": 当时话题关键词}
+# （2026-11-19 实测：60 秒内两个人先后对同一件事@机器人——告白+第三方复述
+# ——各自触发一次完整回复，情绪演两遍。这里不阻止回复，只在检测到同话题
+# 时给模型加一句"刚才聊过了，简略带过/换说法"的提示。）
+_TOPIC_LAST = {}
+# 亲密/情绪类强度词（只有这类话题才启用冷却——普通技术/闲聊连问不抑制）
+_TOPIC_STRONG_RE = re.compile(
+    r"一辈子|永远|喜欢|爱你|告白|求婚|结婚|分手|想你|心动|宝贝|亲爱的"
+    r"|生日|纪念日|难过|哭|生气|吵架|道歉|原谅|绝交", re.I)
+
+
+def _same_topic_note(msg):
+    """同话题二次触发提示（60 秒窗口）。返回提示串或 ""。"""
+    try:
+        ck = "%s_%s" % (msg.get("chat_type"), msg.get("chat_id"))
+        now = time.time()
+        cur_kw = _content_keywords(str(msg.get("text") or ""))
+        strong = bool(_TOPIC_STRONG_RE.search(str(msg.get("text") or "")))
+        last = _TOPIC_LAST.get(ck)
+        if last and now - last["ts"] <= 60 and cur_kw:
+            overlap = cur_kw & last["kws"]
+            need = max(2, (len(cur_kw) + 2) // 3)
+            if strong and len(overlap) >= need:
+                out("AGENT_TOPIC_COOLDOWN chat=%s overlap=%s"
+                    % (ck, ",".join(sorted(overlap))[:40]))
+                return ("\n（注意：这个话题你 1 分钟内刚回应过一次（重叠点：%s）——"
+                        "现在换人/换个说法又提起来，别再完整演一遍同样的情绪，"
+                        "用一句轻的带过、换个角度或只挂个表情回应。）"
+                        % "、".join(sorted(overlap)[:4]))
+        return ""
+    except Exception:
+        return ""
+
+
+def _topic_remember(msg, reply_text):
+    """记录本次回复的话题特征（用于 A 的窗口判定）。"""
+    try:
+        ck = "%s_%s" % (msg.get("chat_type"), msg.get("chat_id"))
+        _TOPIC_LAST[ck] = {"ts": time.time(),
+                           "kws": _content_keywords(str(msg.get("text") or ""))}
+        if len(_TOPIC_LAST) > 200:
+            for k in list(_TOPIC_LAST)[:100]:
+                _TOPIC_LAST.pop(k, None)
+    except Exception:
+        pass
 _STRATEGY_LEAD_RE = re.compile(
     r"^[^\n。！？]{0,26}?"
     r"(?:就回应|要回应|就回他|就回她|娇嗔|短句|撒娇|卖萌|怼回去|直接回"
@@ -3585,6 +3641,47 @@ def _dedup_reply(daemon, msg, texts):
         if keep:
             fresh.append("\n\n".join(keep))
     return fresh, dropped
+
+
+# ---------------- C·语义去重（模型判等价） ----------------
+# 字面/关键词守卫拦不住"换措辞说同一个意思"（2026-11-19 实测：两句都对
+# 告白回应"我脸都热了…"，用词不同但语义等价）。仅当与最近 bot 发言有
+# 中等程度词面重叠（2~need 之间，字面守卫没拦住但明显同话题）时才多花
+# 一次轻量调用判定——避免每条消息都多一次模型调用。
+def _semantic_dup_check(msg, text, recent_bot):
+    """返回 True=语义重复（应丢弃）。仅在疑似时调用模型（fast 档、低token）。"""
+    t = str(text or "").strip()
+    if len(t) < 12 or not recent_bot:
+        return False
+    kw = _content_keywords(t)
+    best = None
+    for r in recent_bot:
+        rk = _content_keywords(r)
+        if not rk:
+            continue
+        ov = len(kw & rk)
+        if ov >= 2:                     # 有话题交集才值得判
+            if best is None or ov > best[0]:
+                best = (ov, r)
+    if not best:
+        return False
+    _ov, prev = best
+    try:
+        _m, verdict = call_glm_with_fallback([
+            {"role": "system", "content":
+             "你是重复检测器。判断两段话是否在表达同一个意思（同一个人对同一件事"
+             "的同类反应，即使措辞不同也算重复；话题相同但内容/角度不同算不重复）。"
+             "只输出一个字母：Y=语义重复，N=不重复。"},
+            {"role": "user", "content":
+             "上一句：%s\n\n这一句：%s" % (str(prev)[:200], t[:200])}], "")
+        v = str(verdict or "").strip().upper()
+        if v.startswith("Y"):
+            out("AGENT_SEMANTIC_DUP msg_id=%s prev=%.30s now=%.30s"
+                % (msg.get("id"), str(prev)[:30], t[:30]))
+            return True
+    except Exception:
+        pass
+    return False
 
 
 # ---------------- 主动发消息（proactive） ----------------
@@ -5557,6 +5654,15 @@ def process(daemon, msg):
             out("AGENT_DUP_DROP msg_id=%s dropped=%d/%d chat=%s/%s"
                 % (msg["id"], dropped, dropped + len(texts),
                    msg["chat_type"], msg["chat_id"]))
+        # C·语义去重（字面/关键词守卫的补网）：疑似同话题才多花一次轻量判定
+        if texts:
+            _recent_bot = [str(h.get("text", "")) for h in
+                           daemon.history(msg["chat_type"], msg["chat_id"], limit=8)
+                           if h.get("is_bot")][-4:]
+            _kept = [s for s in texts if not _semantic_dup_check(msg, s, _recent_bot)]
+            if len(_kept) != len(texts):
+                dropped += len(texts) - len(_kept)
+                texts = _kept
         if not texts and not stickers:
             recent_raw = [str(h.get("text", ""))[:60] for h in
                           daemon.history(msg["chat_type"], msg["chat_id"], limit=8)
@@ -5612,6 +5718,8 @@ def process(daemon, msg):
                 daemon.send(msg["chat_type"], msg["chat_id"], texts,
                             reply_message_id=reply_target)
                 sent_desc.append("text:%d%s" % (len(texts), "+quote" if reply_target else ""))
+                # A·记录本次话题（供 60 秒内同话题二次触发的轻提示判定）
+                _topic_remember(msg, " ".join(texts))
         if stickers:
             for sid in stickers:
                 path = sticker_file_path(sid, active_persona)
