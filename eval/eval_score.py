@@ -24,11 +24,16 @@ def main():
     ap.add_argument("runs", nargs="+")
     a = ap.parse_args()
     scens = {s["id"]: s for s in EC.load_jsonl(EC.EVAL_DIR / a.set_name)}
+    # 裸@场景：「现在」后面跟的是系统给模型的指路文字，不是对方说的话——不计分
+    bad = {k for k, s in scens.items() if str(s["msg"]["text"]).startswith("只@了你")}
+    if bad:
+        scens = {k: v for k, v in scens.items() if k not in bad}
+        print("（跳过 %d 个裸@场景：正文是系统指路文字）" % len(bad))
     trig = {k: s["trigger"] for k, s in scens.items()}
 
     all_rows = []
     for name in a.runs:
-        rows = EC.load_jsonl(EC.RUNS_DIR / name)
+        rows = [r for r in EC.load_jsonl(EC.RUNS_DIR / name) if r["id"] in scens]
         tag = (rows[0].get("variant") if rows else name) or name
         print("\n## %s（%s）" % (tag, name))
         by = collections.defaultdict(list)
@@ -45,7 +50,7 @@ def main():
             if err and t == "at":
                 for r in err[:3]:
                     print("    错误样例：%s" % str(r.get("error"))[:150])
-        ok = [r for r in rows if not r.get("error")]
+        ok = [r for r in rows if not r.get("error") and "latency" in r]
         if ok:
             lat = sorted(r["latency"] for r in ok)
             print("- 延迟：中位 %.1fs  p90 %.1fs" % (

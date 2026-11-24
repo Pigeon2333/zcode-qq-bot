@@ -1255,6 +1255,10 @@ class Daemon:
                 "sender_name": str(item.get("sender_name") or ""),
                 "text": str(item.get("text") or "")[:120],
                 "triggered": bool(item.get("triggered")),
+                # 后台识图按消息编号存描述，要这两项。只在 agent 内部用：外发给
+                # 插件观察钩子之前由 agent 摘掉，插件看到的记录与从前一致
+                "message_id": str(item.get("message_id") or ""),
+                "image_urls": [str(u) for u in (item.get("image_urls") or [])[:4] if u],
             })
             if len(self._observe) > 2000:
                 del self._observe[:len(self._observe) - 2000]
@@ -1372,8 +1376,11 @@ class Daemon:
             "text": text if text is not None else item.get("text", ""),
             "n_images": n_images,
             # 存前 2 张图 URL：之后有人引用这条消息时，被引原图可以
-            # 补进视觉输入（历史路径此前只有 n_images 计数，图拿不到）
-            "image_urls": [str(u)[:200]
+            # 补进视觉输入（历史路径此前只有 n_images 计数，图拿不到）。
+            # 上限 600：QQ 图床链接带 rkey 签名，普遍 300 字符以上——此前截到
+            # 200 等于把签名截掉，取图一律 Bad Request（线上历史 105 条里 97 条
+            # 是截断的，「引用一张图来问」时原图基本取不到）
+            "image_urls": [str(u)[:600]
                            for u in (item.get("image_urls") or [])[:2]],
         }
         self.mem_history["%s_%s" % (item.get("chat_type"), item.get("chat_id"))].append(rec)

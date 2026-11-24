@@ -22,6 +22,7 @@ v2 新增：
 """
 
 import argparse
+import collections
 import hmac
 import http.client
 import json
@@ -2568,6 +2569,9 @@ def _observe_pump(daemon):
     if seq < _OBS_PUMP["seq"]:
         _OBS_PUMP["seq"] = seq    # daemon 重启（seq 回零）：重新对齐，丢一段可接受
     for it in items:
+        # 消息编号/图链是后台识图内部用的，不外发给插件：观察记录与从前一致
+        it.pop("image_urls", None)
+        it.pop("message_id", None)
         PLUGIN_HOST.observe_all(it)
     _OBS_PUMP["seq"] = max(_OBS_PUMP["seq"], seq)
 
@@ -2736,21 +2740,32 @@ def _hist_text_v2(text, cap):
     return t[:cap] if t else "（无文字）"
 
 
-def _render_history_v2(history, now_ts, n_max, budget=5000):
-    """v2 历史渲染。返回 (block, qq_legend)。
+def _render_history_v2(history, now_ts, n_max, budget=5000, chat=None):
+    """v2 历史渲染。返回 (block, qq_legend, n_cap)。
     qq_legend：最近若干行里出现过的说话人「名字=QQ」列表，供记忆标记使用——
-    这样历史行本身不必每行都带 QQ 号。"""
+    这样历史行本身不必每行都带 QQ 号。
+    chat=(chat_type, chat_id)：给了就给带图的行补「（图：…）」描述。"""
     rows = []
+    n_cap = 0
+    _oq = owner_qq()   # 主人的行显式标出来：称呼规则（主人叫「宝宝」）不用模型自己拿 QQ 对照
     for h in (history[-n_max:] if n_max else history):
         is_bot = bool(h.get("is_bot"))
-        name = "你" if is_bot else str(h.get("sender_name") or "?")
+        raw_name = "你" if is_bot else str(h.get("sender_name") or "?")
+        name = raw_name + ("（主人）" if (_oq and str(h.get("sender_id") or "") == _oq) else "")
         text = _hist_text_v2(h.get("text"), 100 if is_bot else 120)
+        if chat and h.get("image_urls") and not is_bot:
+            _c = _caption_get(chat[0], chat[1], h.get("message_id"))
+            if _c and _c["texts"]:
+                # 图已经在后台看过：一行速写替掉「（发了张图）」占位
+                text = "%s（图：%s）" % ("" if text in ("（发了张图）", "（无文字）")
+                                       else text + " ", "；".join(_c["texts"]))
+                n_cap += 1
         try:
             delta = max(0, int(now_ts - float(h.get("ts") or now_ts)))
         except (TypeError, ValueError):
             delta = 0
         rows.append(("- %s %s：%s" % (_rel_time(delta), name, text),
-                     name, str(h.get("sender_id") or "")))
+                     raw_name, str(h.get("sender_id") or "")))
     kept, total = [], 0
     for row in reversed(rows):
         total += len(row[0])
@@ -2765,7 +2780,28 @@ def _render_history_v2(history, now_ts, n_max, budget=5000):
             seen.add(qq)
             legend.append("%s=%s" % (name, qq))
     legend.reverse()
-    return block, legend
+    return block, legend, n_cap
+
+
+def _group_len_hint(history):
+    """v2：按群里真人实际的消息长度给一条长度提示（样本不足就不给）。
+    机器人回复的长度中位是 30 字左右，而同一个群里真人只有 8 字——提示词里
+    「短句为主」写了很久没用，直接把这群人的真实长度告诉它。"""
+    lens = []
+    for h in history or []:
+        if h.get("is_bot"):
+            continue
+        t = str(h.get("text") or "").strip()
+        if not t or (t.startswith("[") and len(t) < 16):
+            continue
+        lens.append(len(t))
+    if len(lens) < 8:
+        return ""
+    med = sorted(lens)[len(lens) // 2]
+    if med > 40:      # 本来就以长消息为主的群，不必提示
+        return ""
+    return ("（这个群里真人一条消息通常只有 %d 个字左右——你的消息也照这个长度来，"
+            "除非对方在认真问你问题）" % med)
 
 
 # 热点相关性：标题的二字组合在最近对话里出现（排除通用词）才算相关
@@ -2961,6 +2997,21 @@ def _build_messages_impl(daemon, msg, ctx_k=32, v2=False):
             _h0 = []
         _aware = _aware_filter_hot(_aware, " ".join(
             [str(msg.get("text") or "")] + [str(h.get("text") or "") for h in _h0]))
+        # 后台识图开着：窗口里最近半小时还没描述过的图登记到后台
+        # （观察队列漏掉的、agent 重启前收到的，在这里补上）
+        if vision_caption_on() and not msg.get("_vcap"):
+            _now, _miss = time.time(), []
+            for h in _h0:
+                if (h.get("image_urls") and h.get("message_id") and not h.get("is_bot")
+                        and _row_recent(h, _now, 1800)
+                        and _caption_get(msg["chat_type"], msg["chat_id"],
+                                         h["message_id"]) is None):
+                    _miss.append(h)
+            if _miss:
+                _ok = _cap_chat_allowed(msg["chat_type"], msg["chat_id"])
+                for h in _miss:
+                    _caption_enqueue(msg["chat_type"], msg["chat_id"], h["message_id"],
+                                     h["image_urls"], allowed=_ok)
     if msg.get("trigger_reason") == "botloop_probe":
         guard_block = (
             "\n\n## 本次消息性质（互聊试探）\n"
@@ -3024,14 +3075,17 @@ def _build_messages_impl(daemon, msg, ctx_k=32, v2=False):
     _qq_legend = []
     if v2:
         # v2：长窗口 + 紧凑行（距现在多久 + 说话人 + 内容），QQ 号另给对照表
-        hist_block, _qq_legend = _render_history_v2(
+        _cap_chat = (msg["chat_type"], msg["chat_id"]) if vision_caption_on() else None
+        hist_block, _qq_legend, _n_cap = _render_history_v2(
             _h0 if _h0 is not None else [], time.time(), n_hist,
-            budget=hist_budget_v2())
+            budget=hist_budget_v2(), chat=_cap_chat)
         hist_note = ("（每行开头是这句话距现在多久，后面是谁说的——不同名字是不同的人，"
                      "相邻两行很可能是不同的人；回复前先分清哪句是谁说的，"
                      "不要把不同人的话当成一个人说的来回应）"
                      "（几小时前甚至昨天的旧话题不是「刚刚发生」的，"
                      "别当成现在正在聊的内容）" + _PEER_NOTES)
+        if _n_cap or msg.get("_vcap"):
+            hist_note += _VCAP_NOTE
     else:
         history = daemon.history(msg["chat_type"], msg["chat_id"], limit=n_hist + 2)
         hist_lines = []
@@ -3075,14 +3129,19 @@ def _build_messages_impl(daemon, msg, ctx_k=32, v2=False):
     if rt_text:
         rt_note = ("\n【被引用的原文】%s：%s%s%s" % (
             (rt or {}).get("sender_name") or "对方", rt_text,
-            "（这条被引用的消息带图片——下方附的图就是它，结合图回答）"
-            if _rt_img else "", _rt_bot_note))
+            ("（这条被引用的消息带图片——%s，结合图回答）" % (
+                "内容就是上面「图：…」那句速写" if msg.get("_vcap")
+                else "下方附的图就是它")
+            ) if _rt_img else "", _rt_bot_note))
     elif _rt_img:
-        rt_note = ("\n【被引用的原文】%s 发的是一条图片消息（图已附在下方）%s"
-                   % ((rt or {}).get("sender_name") or "对方", _rt_bot_note))
+        rt_note = ("\n【被引用的原文】%s 发的是一条图片消息（%s）%s"
+                   % ((rt or {}).get("sender_name") or "对方",
+                      "内容就是上面「图：…」那句速写" if msg.get("_vcap")
+                      else "图已附在下方", _rt_bot_note))
     if msg["chat_type"] == "group":
-        # v2：说话人行不带 QQ（QQ 在历史块后面给一行对照表）
-        speaker = (str(msg["sender_name"]) if v2
+        # v2：说话人行不带 QQ（QQ 在历史块后面给一行对照表），主人显式标出
+        speaker = (str(msg["sender_name"])
+                   + ("（主人）" if is_owner(msg) else "") if v2
                    else "%s(QQ:%s)" % (msg["sender_name"], msg["sender_id"]))
         # 被@列表：at_me 时保留其他人名（群友让她"跟XX聊"需知道XX是谁）
         others = [str(q) for q in (msg.get("at_users") or [])
@@ -3116,6 +3175,8 @@ def _build_messages_impl(daemon, msg, ctx_k=32, v2=False):
                          "图片）——直接看图/内容回应。")
         elif _bare_at:
             _now_body = "只@了你、没写正文，前后也没有 TA 刚发的消息——问 TA 想说什么。"
+        elif v2:
+            _now_body = _now_body_v2(msg)
         else:
             _now_body = msg["text"] or "（发了一张图/表情）"
         if v2:
@@ -3124,6 +3185,7 @@ def _build_messages_impl(daemon, msg, ctx_k=32, v2=False):
                 _lg_items.append("%s=%s" % (msg["sender_name"], msg["sender_id"]))
             _lg_items += [x for x in _qq_legend if x not in _lg_items]
             _lg = ("\n（说话人QQ：" + "，".join(_lg_items) + "）") if _lg_items else ""
+            _lg += _group_len_hint(_h0)
             content = ("【当前场景：群聊（%s，群内所有人可见你发的消息）】\n"
                        "【最近对话】（旧→新）\n%s%s\n%s\n\n【现在】%s%s%s" % (
                            msg["chat_name"], hist_block, _lg, hist_note, lead,
@@ -3146,7 +3208,7 @@ def _build_messages_impl(daemon, msg, ctx_k=32, v2=False):
                        "【最近对话】（旧→新）\n%s%s\n%s\n\n"
                        "【你在这些群（群号（群名））：%s】\n\n【现在】%s对你说：%s%s"
                        % (hist_block, _lg, hist_note, groups_line, msg["sender_name"],
-                          msg["text"] or "（发了一张图/表情）", rt_note))
+                          _now_body_v2(msg), rt_note))
         else:
             content = ("【当前场景：私聊（一对一对话，仅对方可见）| 最近对话】\n%s\n%s\n\n"
                        "【你在这些群（群号（群名））：%s】\n\n【现在】对方(QQ:%s)对你说：%s%s"
@@ -5188,6 +5250,22 @@ def _vision_truncated(data):
         return False
 
 
+def _vision_attempt(m, kv, vmsgs, th, mt):
+    """一次视觉尝试：模型不接受关闭思考 → low 档重试；正文为空且被截断
+    （思考占满了输出预算）→ 放大预算重试一次。返回 (status, data)。"""
+    status, data = glm_chat(m, vmsgs, timeout=60, key=kv,
+                            extra_body={**th, "max_tokens": max(mt, 1024)})
+    if status == 400 and "不支持关闭思考" in _vision_err(status, data):
+        status, data = glm_chat(m, vmsgs, timeout=60, key=kv, extra_body={
+            "thinking": {"type": "enabled", "level": "low"},
+            "max_tokens": max(mt, 2048)})
+    if status == 200 and _vision_text(status, data) is None \
+            and _vision_truncated(data):
+        status, data = glm_chat(m, vmsgs, timeout=60, key=kv, extra_body={
+            **th, "max_tokens": 8192})
+    return status, data
+
+
 def call_vision(messages_text, image_urls, daemon=None):
     """视觉调用：user 内容转 multimodal（图片本地下载转 base64 直传——
     模型端拉 QQ 临时图链常 400，见 _img_to_datauri 注）。
@@ -5217,21 +5295,6 @@ def call_vision(messages_text, image_urls, daemon=None):
     vmsgs = [{"role": "system", "content": messages_text[0]["content"]},
              {"role": "user", "content": content}]
 
-    def _try(m, kv, th, mt):
-        """一次视觉尝试：模型不接受关闭思考 → low 档重试；正文为空且被截断
-        （思考占满了输出预算）→ 放大预算重试一次。返回 (status, data)。"""
-        status, data = glm_chat(m, vmsgs, timeout=60, key=kv,
-                                extra_body={**th, "max_tokens": max(mt, 1024)})
-        if status == 400 and "不支持关闭思考" in _vision_err(status, data):
-            status, data = glm_chat(m, vmsgs, timeout=60, key=kv, extra_body={
-                "thinking": {"type": "enabled", "level": "low"},
-                "max_tokens": max(mt, 2048)})
-        if status == 200 and _vision_text(status, data) is None \
-                and _vision_truncated(data):
-            status, data = glm_chat(m, vmsgs, timeout=60, key=kv, extra_body={
-                **th, "max_tokens": 8192})
-        return status, data
-
     tried = []
     vm = vision_model()
     if vm and vm not in _NO_VISION_MODELS:
@@ -5239,7 +5302,7 @@ def call_vision(messages_text, image_urls, daemon=None):
         th, mt = resolve_thinking(vm, messages_text[1]["content"] if isinstance(
             messages_text[1]["content"], str) else "")
         try:
-            status, data = _try(vm, None, th, mt)
+            status, data = _vision_attempt(vm, None, vmsgs, th, mt)
         except (OSError, ValueError) as e:
             status, data = 0, {"error": {"message": repr(e)[:120]}}
         _text = _vision_text(status, data)
@@ -5268,7 +5331,7 @@ def call_vision(messages_text, image_urls, daemon=None):
             continue
         try:
             th, mt = resolve_thinking(m, "")
-            status, data = _try(m, kv, th, mt)
+            status, data = _vision_attempt(m, kv, vmsgs, th, mt)
         except (OSError, ValueError) as e:
             RT.cooldown(ck); tried.append(m)
             out("AGENT_VISION_FAIL model=%s key=%s net=%r" % (m, kid, e))
@@ -5296,6 +5359,303 @@ def call_vision(messages_text, image_urls, daemon=None):
         # 路径的冷却从不生效
         RT.cooldown(ck, cool); tried.append(m)
     raise RuntimeError("视觉调用：模型链全部不可用: %s" % (",".join(tried) or "链为空"))
+
+
+# ---------------------------------------------------------------------------
+# 后台识图（对话架构改造·第 3 步）
+# 图一到达就在后台写一行描述存起来：主模型看的是描述，不用在回复前同步等识图，
+# 「识图概率」骰子也不掷了——图看没看过和要不要接话从此是两件事。
+# 旧路径下带图的闲聊消息：概率为 0 时整条丢弃（11 天 4,326 次），概率不为 0 时
+# 先花一次带完整人设的视觉调用、再决定说不说。
+# ---------------------------------------------------------------------------
+VCAP_FORCE = None
+VCAP_DEFAULT = False
+
+_CAPTION_PROMPT = (
+    "用一句不超过 30 字的口语描述这张图：是什么（表情包/梗图/截图/照片/"
+    "聊天记录/界面…）、画了什么、传达的情绪或意思；文字截图或聊天记录就说出"
+    "在聊什么。只输出这句描述，不要任何解释。")
+_CAPTION_SYSTEM = "你的任务是客观描述图片内容，让看不到图的人知道图里有什么。只输出描述本身。"
+
+_CAP = {
+    "lock": threading.Lock(),
+    "by_mid": {},      # (chat_type, chat_id, message_id) → {"texts": [描述…], "ts": …}
+    "by_url": {},      # 图链 → 描述（同一张图被转发/重发不重复识图）
+    "queue": collections.deque(),
+    "pending": set(),
+    "cool": {},        # 识图专用冷却：不和回复链共用，免得识图失败连累正式回复
+    "wake": threading.Event(),
+    "stop": threading.Event(),   # 只给离线测试收线程用；运行中从不置位
+    "seq": 0, "init": False, "poll": 0.0,
+    "day": "", "n": 0, "drop_ts": 0.0,
+    "main_busy": False,   # 主线程正在生成回复：后台识图让路，不抢并发额度
+}
+
+
+def vision_caption_on():
+    """后台识图开关：识图总开关 + 本开关，且看图模式不是「仅明确要求才识」。"""
+    return (vision_enabled() and vision_mode() in ("all", "all_prob")
+            and _cfg_flag("vision_caption", VCAP_DEFAULT, VCAP_FORCE))
+
+
+def vision_caption_model():
+    return str(load_json_const(REPLY_CONFIG_PATH, {}).get("vision_caption_model")
+               or "glm-4.6v-flash").strip()
+
+
+def vision_caption_daily_cap():
+    """每天最多识多少条带图消息（默认 600）。"""
+    try:
+        return max(0, min(5000, int(load_json_const(REPLY_CONFIG_PATH, {}).get(
+            "vision_caption_daily_cap", 600))))
+    except (TypeError, ValueError):
+        return 600
+
+
+def _cap_chat_allowed(chat_type, chat_id):
+    """只给机器人有资格说话的会话识图：私聊一律可以；群须白名单启用且在列
+    （或 allow_all）、没被暂停。暂停的群一张图都不送去识。"""
+    if chat_type != "group":
+        return True
+    try:
+        wl = load_json_const(GROUP_WL_PATH, {})
+        if not (isinstance(wl, dict) and wl.get("enabled", True)):
+            return False
+        if not wl.get("allow_all") and str(chat_id) not in {
+                str(g) for g in wl.get("groups", [])}:
+            return False
+        ov = load_json_const(GROUP_MODES_AGENT_PATH, {}).get(str(chat_id)) or {}
+        return not ov.get("paused")
+    except Exception:
+        return False
+
+
+def _caption_norm(text):
+    """模型给的描述压成一行、限长，去掉「这张图片是」这类开头。"""
+    t = " ".join(str(text or "").split())
+    t = re.sub(r"^(?:这张(?:图片|照片|图)|该图)[是:：]?\s*", "", t)
+    return (t[:80]).rstrip("。.!！") or "看不清的图"
+
+
+def _row_recent(h, now, sec):
+    try:
+        return 0 <= now - float(h.get("ts") or 0) <= sec
+    except (TypeError, ValueError):
+        return False
+
+
+_VCAP_NOTE = ("（「（图：…）」是对方发的图的内容速写——图你看过了，速写就是你看到的："
+              "照着聊就行，别问图里是什么，也别说你看不到图）")
+_IMG_ONLY = ("[图片]", "[表情]", "[表情包]")
+
+
+def _now_body_v2(msg):
+    """v2 的「现在」正文：纯图消息的方括号占位换成口语；后台已识过的图带上速写。"""
+    t = str(msg.get("text") or "").strip()
+    cap = msg.get("_vcap")
+    body = "（发了张图）" if t in _IMG_ONLY else (t or "（发了一张图/表情）")
+    if cap:
+        body = ("%s（图：%s）" % (t + " ", cap)) if t and t not in _IMG_ONLY \
+            else ("（图：%s）" % cap)
+    return body
+
+
+def _caption_get(chat_type, chat_id, mid):
+    """取某条消息的图描述；没有（还没识 / 识不出）返回 None。"""
+    if not mid:
+        return None
+    with _CAP["lock"]:
+        return _CAP["by_mid"].get((str(chat_type), str(chat_id), str(mid)))
+
+
+def _caption_enqueue(chat_type, chat_id, mid, urls, front=False, allowed=None):
+    """登记一条带图消息。已有描述 / 已在排队 → 不重复。front=True 插队
+    （主线程正等着这条的描述）。"""
+    urls = [str(u) for u in (urls or []) if u and str(u).startswith("http")][:3]
+    if not (mid and urls):
+        return
+    if allowed is None:
+        allowed = _cap_chat_allowed(chat_type, chat_id)
+    if not allowed:
+        return
+    key = (str(chat_type), str(chat_id), str(mid))
+    with _CAP["lock"]:
+        if key in _CAP["by_mid"] or key in _CAP["pending"]:
+            return
+        known = [_CAP["by_url"].get(u) for u in urls]
+        if all(known):
+            # 每张图之前都识过（转发/重发）：直接复用，不花调用
+            _CAP["by_mid"][key] = {"texts": known, "ts": time.time()}
+            return
+        _CAP["pending"].add(key)
+        job = {"key": key, "urls": urls, "ts": time.time(), "front": bool(front)}
+        if front:
+            _CAP["queue"].appendleft(job)
+        else:
+            _CAP["queue"].append(job)
+        while len(_CAP["queue"]) > 80:       # 积压太多：丢最旧的一条普通任务
+            for i, j in enumerate(_CAP["queue"]):
+                if not j.get("front"):
+                    _CAP["pending"].discard(j["key"])
+                    del _CAP["queue"][i]
+                    break
+            else:
+                break
+    if front:
+        _CAP["wake"].set()
+
+
+def _caption_call(daemon, url):
+    """识一张图 → 描述原文。拿不到图 / 模型都不行 → None。
+    模型顺序：配置的识图模型（默认免费的 glm-4.6v-flash，走主 Key）→ 回复链。"""
+    try:
+        du = _img_to_datauri(url, daemon)
+    except Exception:
+        du = None
+    if not du:
+        return None
+    msgs = [{"role": "system", "content": _CAPTION_SYSTEM},
+            {"role": "user", "content": [
+                {"type": "text", "text": _CAPTION_PROMPT},
+                {"type": "image_url", "image_url": {"url": du}}]}]
+    pref = vision_caption_model()
+    cands = []
+    if pref and pref not in _NO_VISION_MODELS:
+        cands.append(("main", None, pref, 0, 0))
+    cands += [c for c in _chain_candidates() if c[2] != pref]
+    now = time.time()
+    for kid, kv, m, _ctx, _mo in cands:
+        ck = "%s:%s" % (kid, m)
+        if m in _NO_VISION_MODELS or _CAP["cool"].get(ck, 0) > now:
+            continue
+        try:
+            status, data = _vision_attempt(m, kv, msgs,
+                                           {"thinking": {"type": "disabled"}}, 600)
+        except (OSError, ValueError, RuntimeError) as e:
+            _CAP["cool"][ck] = now + 60
+            out("AGENT_VCAP_FAIL model=%s key=%s net=%r" % (m, kid, e))
+            continue
+        text = _vision_text(status, data)
+        if text is not None:
+            # 不改 RT 的「当前模型」：那是给状态页看的回复模型，识图不算
+            log_usage(m, (data.get("usage") if isinstance(data, dict) else {}) or {},
+                      kid if kv else "main")
+            return text
+        detail = _vision_err(status, data)[:80]
+        if status == 400 and ("取值范围" in detail or "content" in detail.lower()
+                              or "模型不存在" in detail):
+            if "取值范围" in detail or "content" in detail.lower():
+                _NO_VISION_MODELS.add(m)     # 纯文本模型：以后直接跳过
+            out("AGENT_VCAP_SKIP model=%s http=400 %s" % (m, detail))
+            continue
+        # 401/403/404 = 这把 Key 根本用不了这个模型：一刻钟内别再撞
+        cool = 900 if status in (401, 403, 404) else (
+            15 if status == 200 else _cooldown_sec(detail))
+        _CAP["cool"][ck] = now + cool
+        out("AGENT_VCAP_FAIL model=%s key=%s http=%d cool=%ds %s"
+            % (m, kid, status, cool, detail))
+    return None
+
+
+def _caption_poll(daemon):
+    """从观察队列登记新的带图消息（≥3 秒拉一次）。"""
+    now = time.time()
+    if now - _CAP["poll"] < 3:
+        return
+    _CAP["poll"] = now
+    if not _CAP["init"]:
+        seq, _items = daemon.observe(10 ** 9)
+        if seq is None:
+            return
+        # 刚启动：不回放全部，只补最近 200 条（重启后把眼前聊到的图补上）
+        _CAP["init"] = True
+        _CAP["seq"] = max(0, int(seq) - 200)
+    seq, items = daemon.observe(_CAP["seq"])
+    if seq is None:
+        return
+    if seq < _CAP["seq"]:
+        # daemon 重启（seq 回零）：重新对齐，丢一段可接受
+        _CAP["seq"], _CAP["init"] = 0, False
+        return
+    for it in items:
+        if it.get("image_urls"):
+            _caption_enqueue(it.get("chat_type"), it.get("chat_id"),
+                             it.get("message_id"), it.get("image_urls"))
+    _CAP["seq"] = max(_CAP["seq"], seq)
+
+
+def _caption_run(daemon, job):
+    """识一条带图消息并入库。失败的也记一笔（空描述），主线程不必干等。"""
+    day = time.strftime("%Y%m%d")
+    with _CAP["lock"]:
+        if _CAP["day"] != day:
+            _CAP["day"], _CAP["n"] = day, 0
+        if _CAP["n"] >= vision_caption_daily_cap():
+            _CAP["pending"].discard(job["key"])
+            if time.time() - _CAP["drop_ts"] > 600:
+                _CAP["drop_ts"] = time.time()
+                out("AGENT_VCAP_CAP day=%s 今天的识图额度用完" % day)
+            return
+        if not job.get("front") and time.time() - job["ts"] > 180:
+            # 排队超过 3 分钟才轮到：这条早聊过去了，不值得再花一次调用
+            _CAP["pending"].discard(job["key"])
+            return
+        _CAP["n"] += 1
+    texts = []
+    try:
+        for u in job["urls"]:
+            with _CAP["lock"]:
+                t = _CAP["by_url"].get(u)
+            if not t:
+                raw = _caption_call(daemon, u)
+                t = _caption_norm(raw) if raw else None
+                if t:
+                    with _CAP["lock"]:
+                        _CAP["by_url"][u] = t
+            if t:
+                texts.append(t)
+    finally:
+        with _CAP["lock"]:
+            _CAP["pending"].discard(job["key"])
+            _CAP["by_mid"][job["key"]] = {"texts": texts, "ts": time.time()}
+            if len(_CAP["by_mid"]) > 4000:
+                for k in sorted(_CAP["by_mid"], key=lambda k: _CAP["by_mid"][k]["ts"])[:1000]:
+                    del _CAP["by_mid"]
+
+
+def _caption_loop(daemon):
+    """后台识图线程：登记 → 一张一张识。单线程、两条之间至少隔 3 秒、主线程
+    生成回复时让路——不和正式回复抢并发额度。任何异常只记日志，线程常驻。"""
+    while not _CAP["stop"].is_set():
+        try:
+            if not vision_caption_on() or _in_sched_pause():
+                with _CAP["lock"]:
+                    _CAP["queue"].clear()
+                    _CAP["pending"].clear()
+                _CAP["wake"].wait(5)
+                _CAP["wake"].clear()
+                continue
+            _caption_poll(daemon)
+            job = None
+            with _CAP["lock"]:
+                for j in _CAP["queue"]:
+                    if j.get("front"):
+                        job = j            # 主线程正等着的这条：不让路
+                        break
+                if job is None and not _CAP["main_busy"] and _CAP["queue"]:
+                    job = _CAP["queue"][0]
+                if job is not None:
+                    _CAP["queue"].remove(job)
+            if job is None:
+                _CAP["wake"].wait(0.5)
+                _CAP["wake"].clear()
+                continue
+            _caption_run(daemon, job)
+            _CAP["wake"].wait(3)
+            _CAP["wake"].clear()
+        except Exception as e:
+            out("AGENT_VCAP_LOOP_ERR %r" % e)
+            time.sleep(3)
 
 
 def evolve_tick(daemon, msg, persona):
@@ -5412,6 +5772,253 @@ def _mcp_agent_loop(daemon, msg, messages, reply):
     final = _apply_owner_name([final])[0] if final else ""
     if final:
         daemon.send(msg["chat_type"], msg["chat_id"], [final[:1500]])
+
+
+# ---------------------------------------------------------------------------
+# 回复策略 v2（对话架构改造·第 2 步）
+#   把分散在多处的「该不该回」收拢成一个策略层：
+#   · 闲聊触发：一次带完整历史的「要不要接」判定（N 不接 / E 只挂表情 / Y 接话），
+#     判定通过才走主调用——旧闸门只看 10 行×80 字，且一律「宁可 N」
+#   · 直接对话（被 @ / 被回复）：不设闸门；模型若仍选择沉默或只挂表情，
+#     由代码层要求它重新回应一次
+#   · 可选的结构化输出（reply_json）：回复、表情回应、记忆、动作分字段返回，
+#     在代码里还原成旧协议文本，交给后面的既有管线——模型的「话」与「动作」
+#     从此物理分离，不再靠正则从正文里捞标记
+# 开关：reply_v2（策略层）、reply_json（结构化输出，依赖 reply_v2）。
+# ---------------------------------------------------------------------------
+REPLY_V2_FORCE = None
+REPLY_V2_DEFAULT = False
+REPLY_JSON_FORCE = None
+REPLY_JSON_DEFAULT = False
+
+
+def _cfg_flag(key, default, force):
+    if force is not None:
+        return bool(force)
+    cfg = load_json_const(REPLY_CONFIG_PATH, {})
+    return bool(cfg.get(key, default))
+
+
+def reply_v2_on():
+    return _cfg_flag("reply_v2", REPLY_V2_DEFAULT, REPLY_V2_FORCE)
+
+
+def reply_json_on():
+    return reply_v2_on() and _cfg_flag("reply_json", REPLY_JSON_DEFAULT, REPLY_JSON_FORCE)
+
+
+_GATE_V2_SYSTEM = (
+    "你是QQ群AI机器人「%s」的插话判定器。下面是这个群最近的对话（旧→新），"
+    "最后一条【现在】不是对你说的，是你旁观时注意到的。请站在「%s」的性格和"
+    "兴趣上判断：你此刻有没有真的想说的话？只输出一个字母：\n"
+    "- N：不接——这句话是对别人说的；或你没有什么想说的（可有可无的附和、"
+    "客套、「是的/哈哈/确实」这类不算想说的）\n"
+    "- E：不用说话，回个表情就够——对方发了图、表情包或好玩/离谱的东西，"
+    "你没话可接但想表示看到了\n"
+    "- Y：接话——这个话题你懂或感兴趣、能接上梗、对方的问题你能答、"
+    "或你能补一句让人觉得有意思/有用的话\n"
+    "判断依据：最近几行里如果有两三个人在短句往来，那他们在聊自己的事（N）；"
+    "只有当话题确实在等人接、或你真的有具体的话想说时才 Y。只输出 N、E 或 Y。")
+
+
+def _reply_gate_v2(daemon, msg, messages, persona_name):
+    """闲聊触发的统一「要不要接」判定。返回 'N' / 'E' / 'Y'；判定失败按 N。"""
+    user = messages[1].get("content") if len(messages) > 1 else ""
+    if not isinstance(user, str):
+        user = ""
+    name = persona_name or "智谱娘"
+    try:
+        _m, reply = call_glm_with_fallback(
+            [{"role": "system", "content": _GATE_V2_SYSTEM % (name, name)},
+             {"role": "user", "content": user}], "")
+    except Exception as e:
+        out("AGENT_GATE_ERR %r" % e)
+        return "N"   # 判定失败宁可沉默
+    ans = str(reply or "").strip().upper()[:1]
+    return ans if ans in ("N", "E", "Y") else "N"
+
+
+JSON_RULE_AGENT = (
+    "\n\n## 本次输出格式（必须严格遵守，优先级高于前文所有关于输出格式的说明）\n"
+    "只输出一个 JSON 对象，不要 Markdown 代码块，不要任何多余文字。字段：\n"
+    ' "want": 0到3的整数，你想回应这句话的程度（0=不回应；1=只给对方这条消息挂个表情；'
+    "2=回一句短话，十来个字；3=对方在认真问你、或聊到你有话想说的话题，正常回应——"
+    "通常也不超过两句话）\n"
+    ' "say": 要发给对方的消息，字符串数组，每个元素是一条消息（想连发就放多个元素，'
+    "最多3个）；不说话时为空数组。里面只写要发给对方看的话\n"
+    ' "emoji": 想挂在对方消息上的表情 id（整数）或 null\n'
+    ' "memory": 要长期记住的事，数组，每项 {"qq": "对方的QQ号", "text": "一句话"}；'
+    "没有就为空数组\n"
+    ' "wait": true 或 false——对方这句话像是说到一半，你想等 TA 说完\n'
+    ' "voice": true 或 false——这条要用语音发\n'
+    ' "sticker": 想发的表情包 id（整数）或 null\n'
+    ' "quiet_minutes": 觉得自己刚才话多了、想安静一会儿时填分钟数（如 10），否则 null\n'
+    ' "actions": 需要系统执行的动作标记，字符串数组（如 "[连线]"、"[画: 描述]"、'
+    '"[发到群: 群号|内容]"、群管标记），照前文说明的写法原样放进来；没有就为空数组\n'
+    '示例：{"want": 2, "say": ["哈哈这也太离谱了"], "emoji": null, "memory": [], '
+    '"wait": false, "voice": false, "sticker": null, "quiet_minutes": null, "actions": []}')
+
+
+def _parse_reply_json(text):
+    """结构化回复解析。返回 (ok, obj)；obj 的字段已校验并归一。"""
+    t = re.sub(r"(?is)<\s*think(?:ing)?\s*>.*?<\s*/\s*think(?:ing)?\s*>", "",
+               str(text or "")).strip()
+    if t.startswith("```"):
+        t = re.sub(r"^```[a-zA-Z]*\s*", "", t)
+        t = re.sub(r"\s*```$", "", t)
+    i, j = t.find("{"), t.rfind("}")
+    if i < 0 or j <= i:
+        return False, None
+    try:
+        obj = json.loads(t[i:j + 1])
+    except ValueError:
+        return False, None
+    if not isinstance(obj, dict):
+        return False, None
+
+    def _int(v):
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return None
+
+    say = obj.get("say")
+    if isinstance(say, str):
+        say = [say]
+    if not isinstance(say, list):
+        return False, None
+    say = [str(x).strip() for x in say if str(x).strip()][:3]
+    mem = []
+    for m in (obj.get("memory") if isinstance(obj.get("memory"), list) else []):
+        if isinstance(m, dict) and str(m.get("text") or "").strip():
+            q = re.sub(r"\D", "", str(m.get("qq") or ""))
+            mem.append((q if len(q) >= 5 else None, str(m["text"]).strip()[:100]))
+    acts = obj.get("actions") if isinstance(obj.get("actions"), list) else []
+    acts = [str(x).strip() for x in acts if str(x).strip()][:3]
+    want = _int(obj.get("want"))
+    return True, {
+        "want": want if (want is not None and 0 <= want <= 3) else (2 if say else 0),
+        "say": say, "emoji": _int(obj.get("emoji")), "memory": mem,
+        "wait": bool(obj.get("wait")), "voice": bool(obj.get("voice")),
+        "sticker": _int(obj.get("sticker")), "quiet": _int(obj.get("quiet_minutes")),
+        "actions": acts,
+    }
+
+
+def _json_to_legacy(o):
+    """结构化回复 → 旧协议文本。需要独占一行的标记（语音/连线）各占一行。"""
+    if o["wait"]:
+        return "[WAIT]"
+    lines = []
+    if o["say"] and o["want"] != 0:
+        lines.append("[[SPLIT]]".join(o["say"]))
+    if o["emoji"] is not None:
+        lines.append("[回应:%d]" % o["emoji"])
+    if o["sticker"] is not None:
+        lines.append("[STICKER:%d]" % o["sticker"])
+    for qq, text in o["memory"]:
+        lines.append(("[记忆@%s] %s" % (qq, text)) if qq else ("[记忆] %s" % text))
+    lines.extend(o["actions"])
+    if o["voice"]:
+        lines.append("[语音]")
+    if o["quiet"]:
+        lines.append("[QUIET:%d]" % max(1, min(720, o["quiet"])))
+    return "\n".join(lines) if lines else "[跳过]"
+
+
+_MUST_REPLY_NOTE = ("（系统提示：对方这条是在直接跟你说话。用你的口吻回应 TA——"
+                    "不知道说什么就简短应一声、或问问 TA 怎么了；不要不回应，"
+                    "也不要只挂表情。）")
+# 插话判定的结论带给主调用：判定看的是同一段历史，它说「回个表情就够」时
+# 主调用照办——否则等于白判，主调用还是会写一段话
+_GATE_E_NOTE_JSON = ("\n\n（系统提示·本次：刚才的插话判定结论是「这条不用说话，回个表情"
+                     "就够」。按这个来：want 填 1，say 留空，emoji 按前文的表情回应规则选一个"
+                     "合适的表情 id。只有通读全部上下文后确实有具体的话非说不可时才说话。）")
+_GATE_E_NOTE_TEXT = ("\n\n（系统提示·本次：刚才的插话判定结论是「这条不用说话，回个表情就够」。"
+                     "按这个来：只输出一行 [回应:表情id]，不输出别的内容。只有通读全部上下文后"
+                     "确实有具体的话非说不可时才说话。）")
+_GATE_Y_NOTE = ("\n\n（系统提示·本次：刚才的插话判定结论是「你有具体的话想说」——"
+                "那是你看过同一段历史后的判断，照它正常回应，不要又改口不说话。）")
+
+
+def _generate_reply_v2(daemon, msg, messages, gate=""):
+    """v2 主调用 + 策略层。返回 (model, reply)；reply 是旧协议文本，交给后面的
+    既有管线（parse_reply / 去重 / 出站清洗 / 发送）处理。
+    gate：闲聊触发的插话判定结论（'E' 回个表情就够 / 'Y' 有话想说），带进提示词。"""
+    text_ctx = str(msg.get("text", ""))
+    direct = msg.get("trigger_reason") in ("at", "reply_to_bot")
+    use_json = reply_json_on()
+    msgs = [dict(m) for m in messages]
+    if use_json:
+        msgs[0]["content"] = msgs[0]["content"] + JSON_RULE_AGENT
+    if gate == "E":
+        msgs[0]["content"] += _GATE_E_NOTE_JSON if use_json else _GATE_E_NOTE_TEXT
+    elif gate == "Y":
+        msgs[0]["content"] += _GATE_Y_NOTE
+
+    def _call(_msgs):
+        last = None
+        for _ in range(2):
+            try:
+                return call_glm_with_fallback(_msgs, text_ctx)
+            except Exception as e:
+                last = e
+                time.sleep(2)
+        raise last
+
+    def _with_note(note):
+        """把一条系统提示并进 user 消息末尾——保持 system/user 两条的常规形状
+        （直接再追加一条 user 会形成连续两条 user，部分接口会拒收）。"""
+        if len(msgs) > 1 and isinstance(msgs[1].get("content"), str):
+            return [msgs[0], dict(msgs[1], content=msgs[1]["content"] + "\n\n" + note)]
+        return msgs + [{"role": "user", "content": note}]
+
+    def _understand(raw):
+        """结构化模式下把输出转成旧协议文本；失败返回 None。"""
+        if not use_json:
+            return raw
+        s = str(raw or "").strip()
+        if re.fullmatch(r"\[\s*(?:跳过|SKIP)\s*\]", s, re.I):
+            # 模型沿用旧习惯表示沉默：这不是格式错误，不必重试
+            # （评测实录：38 条有效输出里 4 条如此，其余全部是合法 JSON）
+            return "[跳过]"
+        ok, obj = _parse_reply_json(raw)
+        return _json_to_legacy(obj) if ok else None
+
+    model, raw = _call(msgs)
+    reply = _understand(raw)
+    if reply is None:
+        out("AGENT_JSON_RETRY msg_id=%s head=%.40s"
+            % (msg["id"], str(raw)[:40].replace("\n", " ")))
+        model, raw2 = _call(_with_note(
+            "（系统提示：你上一次的输出不是要求的 JSON 对象。重新输出："
+            "只输出那个 JSON 对象，不要任何其它文字。）"))
+        reply = _understand(raw2)
+        if reply is None:
+            # 仍不是 JSON：按文本协议理解这次输出（模型多半还是写了能用的回复）
+            out("AGENT_JSON_FALLBACK msg_id=%s（按文本协议处理）" % msg["id"])
+            reply = raw2
+
+    if direct:
+        # 策略层：直接对话必须回应。戳一戳 / 裸@ 这类没有实质内容的，只挂表情也算回应
+        t = str(msg.get("text") or "").strip()
+        trivial = (not t) or t.startswith("[戳")
+        texts, _st, _mo, _dr, _sg = parse_reply(reply)
+        silent = (texts is None) and not _st and not _REACT_MARK_RE.search(reply)
+        only_react = (not texts) and (bool(_st) or bool(_REACT_MARK_RE.search(reply)))
+        if silent or (only_react and not trivial):
+            out("AGENT_MUST_REPLY_RETRY msg_id=%s why=%s"
+                % (msg["id"], "silent" if silent else "react-only"))
+            _m2, raw3 = _call(_with_note(_MUST_REPLY_NOTE))
+            reply3 = _understand(raw3)
+            if reply3 is None:
+                reply3 = raw3
+            t3, _s3, _mm3, _d3, _g3 = parse_reply(reply3)
+            if t3 and t3 != "WAIT":
+                model, reply = _m2, reply3
+            else:
+                out("AGENT_MUST_REPLY_FAIL msg_id=%s（重试后仍未回应）" % msg["id"])
+    return model, reply
 
 
 def process(daemon, msg):
@@ -5554,7 +6161,7 @@ def process(daemon, msg):
     # all_prob 档的带图消息跳过 gate：图必看，插话与否交给识图后的概率
     _vmode = vision_mode() if vision_enabled() else ""
     if msg.get("trigger_reason") == "chat_random" and chat_anti_interrupt_enabled() \
-            and lean_ctx_on() \
+            and lean_ctx_on() and not reply_v2_on() \
             and not (_vmode == "all_prob" and msg.get("image_urls")):
         _pcoll, _pname = load_persona_collection()
         if _interrupt_gate(daemon, msg, _pname or "智谱娘"):
@@ -5570,7 +6177,46 @@ def process(daemon, msg):
         _ctx_k = _cands[0][3] if _cands else 32
     else:
         _ctx_k = 99
+    # 后台识图（v2）：闲聊触发的带图消息先等后台把这张图描述出来（最多 4 秒），
+    # 描述进提示词；拿不到才退回旧的同步识图路径。直接对话（@/回复）仍让模型
+    # 亲眼看图——对着图提问最吃细节；这里登记只为以后的历史行有速写可用。
+    _vcap_mode = reply_v2_on() and vision_caption_on()
+    if _vcap_mode and msg.get("image_urls"):
+        _trig_kind = msg.get("trigger_reason")
+        _caption_enqueue(msg["chat_type"], msg["chat_id"], msg.get("message_id"),
+                         msg["image_urls"], front=(_trig_kind == "chat_random"))
+        if _trig_kind == "chat_random":
+            _t_end = time.time() + 4.0
+            _c = None
+            while True:
+                _c = _caption_get(msg["chat_type"], msg["chat_id"], msg.get("message_id"))
+                if _c is not None or time.time() > _t_end:
+                    break
+                time.sleep(0.15)
+            if _c and _c["texts"]:
+                msg["_vcap"] = "；".join(_c["texts"])
+                out("AGENT_VCAP_HIT msg_id=%s chat=%s/%s" % (
+                    msg["id"], msg["chat_type"], msg["chat_id"]))
+            else:
+                out("AGENT_VCAP_MISS msg_id=%s chat=%s/%s (%s)" % (
+                    msg["id"], msg["chat_type"], msg["chat_id"],
+                    "图没描述出来" if _c else "4 秒内没等到描述"))
     messages, active_persona = build_messages(daemon, msg, ctx_k=_ctx_k)
+    # v2：闲聊触发的「要不要接」判定挪到这里——用的是刚构造好的完整历史
+    # （旧闸门只看 10 行×80 字）。判定不接就到此为止，后面的搜索/落盘都不做
+    # 带图消息已有描述时同样交给判定（图看过了）；没描述的仍走旧路径
+    _gate_note = ""
+    if reply_v2_on() and msg.get("trigger_reason") == "chat_random" \
+            and chat_anti_interrupt_enabled() \
+            and not (_vmode == "all_prob" and msg.get("image_urls") and not msg.get("_vcap")):
+        _g = _reply_gate_v2(daemon, msg, messages, active_persona)
+        out("AGENT_GATE_V2 msg_id=%s chat=%s/%s verdict=%s"
+            % (msg["id"], msg["chat_type"], msg["chat_id"], _g))
+        if _g == "N":
+            daemon.ack([msg["id"]])
+            RT.count_processed()
+            return
+        _gate_note = _g
     # 联网搜索（两步法）：启发式判定 → 智谱资源包优先，DDG 免费兜底 → 注入 system
     if web_search_enabled() and needs_search(msg.get("text")):
         sres, sbackend = search_web(msg.get("text"))
@@ -5595,7 +6241,8 @@ def process(daemon, msg):
     # 视觉分支：开关开启 + 消息带图 + 已配视觉模型；失败降级文本链
     # 看图模式 vision_mode：all=所有图都识；all_prob=所有图都识+识图后按
     # 概率决定插话；ask=仅明确要求才识（@/回复机器人 → 任何档都直接识）
-    _vision_go = vision_enabled() and msg.get("image_urls") and (
+    # （v2 后台识图已给出描述的，不再同步识图）
+    _vision_go = vision_enabled() and msg.get("image_urls") and not msg.get("_vcap") and (
         _vmode in ("all", "all_prob")
         or msg.get("trigger_reason") in ("at", "reply_to_bot"))
     # 裸@反应降级（2026-11-13 用户实测+设计哲学：纯@=戳一戳——没有实质
@@ -5703,13 +6350,20 @@ def process(daemon, msg):
                 return
     if reply is None:
         last_err = None
-        for _ in range(2):
+        if reply_v2_on():
+            # v2：主调用 + 策略层（结构化输出、直接对话必回）都在里面
             try:
-                model, reply = call_glm_with_fallback(messages, str(msg.get("text", "")))
-                break
+                model, reply = _generate_reply_v2(daemon, msg, messages, gate=_gate_note)
             except Exception as e:
                 last_err = e
-                time.sleep(2)
+        else:
+            for _ in range(2):
+                try:
+                    model, reply = call_glm_with_fallback(messages, str(msg.get("text", "")))
+                    break
+                except Exception as e:
+                    last_err = e
+                    time.sleep(2)
     if reply is None:
         RT.count_error()
         out("AGENT_ERROR msg_id=%s llm_failed=%r" % (msg["id"], last_err))
@@ -5734,6 +6388,7 @@ def process(daemon, msg):
     # [回应:id]：给触发的那条消息打表情回应（模型自主决定；0.5.14+ daemon）。
     # 只回应触发源本身（msg 的 message_id），最多 1 个——表情回应是点缀不是刷屏。
     _react_ids = _REACT_MARK_RE.findall(reply)
+    _react_sent = False
     if _react_ids:
         reply = _REACT_MARK_RE.sub("", reply)
         try:
@@ -5743,6 +6398,7 @@ def process(daemon, msg):
             # 表情回应（此前 19 次全部 ValueError）——跳过表情，正文照发
             if _rc_on and _react_ids[0] in _rc_ems and mid0.isdigit():
                 ok_r, det_r = daemon.set_msg_reaction(mid0, _react_ids[0], True)
+                _react_sent = bool(ok_r)
                 out("AGENT_REACTION mid=%s emoji=%s ok=%s %s"
                     % (mid0, _react_ids[0], ok_r, det_r[:60]))
             elif not _rc_on or _react_ids[0] not in _rc_ems:
@@ -5924,6 +6580,15 @@ def process(daemon, msg):
         RT.count_processed()
         out("AGENT_SKIP msg_id=%s chat=%s/%s (chat_random 不感兴趣)"
             % (msg["id"], msg["chat_type"], msg["chat_id"]))
+        return
+    # v2：只挂了表情回应、没有正文——本条到此为止。旧流程会掉进下面的复读重试，
+    # 那条重试的提示词是「你刚才已经说过类似的话了」，会凭空再生成一段文字
+    if reply_v2_on() and not texts and _react_sent and not stickers:
+        daemon.ack([msg["id"]])
+        RT.count_processed()
+        out("AGENT_DONE msg_id=%s chat=%s/%s from=%s rt=%.1fs model=%s reaction-only"
+            % (msg["id"], msg["chat_type"], msg["chat_id"], msg["sender_id"],
+               time.time() - t0, model))
         return
     # 复读守卫：剔除与最近发言重复的段落；全重复时带"别复读"指令重试一次——
     # 主题守卫（n-gram 重叠）对正常话题延续有误杀，宁可重试也不能无视对方（不回最伤真人感）
@@ -6558,6 +7223,7 @@ def main():
         PLUGIN_HOST.load_all()
     except Exception as e:
         out("PLUGIN_INIT_FAIL %r" % e)
+    threading.Thread(target=_caption_loop, args=(daemon,), daemon=True).start()
     threading.Thread(target=lambda: (time.sleep(15), describe_all_stickers()), daemon=True).start()
     threading.Thread(target=_daily_review_loop, args=(daemon,), daemon=True).start()
     out("AGENT_READY chain=%s daemon=127.0.0.1:%d admin=127.0.0.1:%d"
@@ -6582,17 +7248,22 @@ def main():
             except Exception:
                 pass
             if not snap["paused"]:
-                items = daemon.inbox_triggered()
-                for msg in items:
-                    if isinstance(msg, dict) and "id" in msg:
-                        process(daemon, msg)
-                _proactive_tick(daemon)
-                _cron_tick(daemon)
-                PLUGIN_HOST.run_ticks(daemon)
+                # 主线程处理消息/主动发言期间，后台识图让路（不抢模型的并发额度）
+                _CAP["main_busy"] = True
                 try:
-                    _nudge_tick(daemon)
-                except Exception as _ne:
-                    out("AGENT_NUDGE_TICK_FAIL %r" % _ne)
+                    items = daemon.inbox_triggered()
+                    for msg in items:
+                        if isinstance(msg, dict) and "id" in msg:
+                            process(daemon, msg)
+                    _proactive_tick(daemon)
+                    _cron_tick(daemon)
+                    PLUGIN_HOST.run_ticks(daemon)
+                    try:
+                        _nudge_tick(daemon)
+                    except Exception as _ne:
+                        out("AGENT_NUDGE_TICK_FAIL %r" % _ne)
+                finally:
+                    _CAP["main_busy"] = False
                 global _last_zcode_return
                 now_ts = time.time()
                 if now_ts - _last_zcode_return > 60:

@@ -14,10 +14,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import eval_common as EC  # noqa: E402
 
 TIME_RE = re.compile(r"【当前真实时间：[^】]*】")
+# 环境感知块里随时间变化的行（开机时长 / CPU / 内存 / 前台窗口 / 磁盘剩余）
+LIVE_RE = re.compile(
+    r"(?m)^- (?:已开机|CPU 占用|内存占用|前台窗口|C盘剩余|电池)[^\n]*$")
+# 历史行开头的时间：v2 是「距现在多久」，v1 是 [时:分]——两次导出不在同一分钟就会变
+HIST_T_RE = re.compile(r"(?m)^- (?:刚刚|\d+分钟前|\d+小时前|昨天|\d+天前|\d\d:\d\d) ")
 
 
 def norm(s):
-    return TIME_RE.sub("【当前真实时间：T】", s)
+    s = TIME_RE.sub("【当前真实时间：T】", s)
+    s = LIVE_RE.sub("- 【实时状态】", s)
+    return HIST_T_RE.sub("- <时间> ", s)
 
 
 def first_diff(a, b, width=60):
