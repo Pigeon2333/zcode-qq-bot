@@ -2732,7 +2732,8 @@ def _nudge_tick(daemon):
             continue
         # 追！（每次巡检最多追 1 个会话）
         try:
-            text = (_nudge_compose_v2(daemon, ct, cid) if reply_v2_on()
+            text = (_nudge_compose_v2(daemon, ct, cid)
+                    if reply_v2_on() and nudge_mode() == "restrained"
                     else _nudge_compose(daemon, ct, cid))
         except Exception as e:
             out("AGENT_NUDGE_FAIL %s/%s %r" % (ct, cid, e))
@@ -2770,22 +2771,25 @@ def prompt_v2_on():
     return bool(cfg.get("prompt_v2", PROMPT_V2_DEFAULT))
 
 
+def _v2_int(key):
+    """读一个整数型的 v2 设置（历史窗口行数 / 字符预算），带取值范围，默认值取
+    qq_common.ARCH_V2_DEFAULTS。"""
+    _d = C.ARCH_V2_DEFAULTS
+    try:
+        lo, hi = C.ARCH_V2_RANGES[key]
+        return max(lo, min(hi, int(load_json_const(REPLY_CONFIG_PATH, {}).get(key, _d[key]))))
+    except (TypeError, ValueError):
+        return _d[key]
+
+
 def hist_lines_v2():
     """v2 历史窗口行数（取最近的这么多行，旧→新）。"""
-    cfg = load_json_const(REPLY_CONFIG_PATH, {})
-    try:
-        return max(10, min(120, int(cfg.get("hist_lines", 50))))
-    except (TypeError, ValueError):
-        return 50
+    return _v2_int("hist_lines")
 
 
 def hist_budget_v2():
     """v2 历史块的字符预算；超出时从最旧的行开始丢。"""
-    cfg = load_json_const(REPLY_CONFIG_PATH, {})
-    try:
-        return max(1000, min(20000, int(cfg.get("hist_budget_chars", 5000))))
-    except (TypeError, ValueError):
-        return 5000
+    return _v2_int("hist_budget_chars")
 
 
 def _rel_time(delta):
@@ -2859,10 +2863,17 @@ def _render_history_v2(history, now_ts, n_max, budget=5000, chat=None):
     return block, legend, n_cap
 
 
+def len_follow_group():
+    """设置项「向群友的消息长度看齐」（默认关）：开着才给下面这条提示。
+    让机器人向群里真人的长度靠拢是一种风格偏好——有的人要的就是比群友说得
+    多、说得完整——所以做成开关，不写死在提示词里。"""
+    return _cfg_flag("len_follow_group", C.ARCH_V2_DEFAULTS["len_follow_group"], None)
+
+
 def _group_len_hint(history):
-    """v2：按群里真人实际的消息长度给一条长度提示（样本不足就不给）。
-    机器人回复的长度中位是 30 字左右，而同一个群里真人只有 8 字——提示词里
-    「短句为主」写了很久没用，直接把这群人的真实长度告诉它。"""
+    """按群里真人实际的消息长度给一条提示（样本不足就不给；开关关着不给）。"""
+    if not len_follow_group():
+        return ""
     lens = []
     for h in history or []:
         if h.get("is_bot"):
@@ -2878,65 +2889,6 @@ def _group_len_hint(history):
         return ""
     return ("（这个群里真人一条消息通常只有 %d 个字左右——你的消息也照这个长度来，"
             "除非对方在认真问你问题）" % med)
-
-
-# 热点相关性：标题的二字组合在最近对话里出现（排除通用词）才算相关
-_HOT_SECTION_HEAD = "## 近几天热点速览"
-_NEWS_ASK_RE = re.compile(r"热点|热搜|新闻|今日|最新消息|有什么大事|发生了什么|大瓜|吃瓜")
-_HOT_STOP = set(
-    "官方 方通 通报 回应 引发 网友 表示 发布 最新 相关 报道 消息 出现 进行 成为 "
-    "举行 宣布 确认 回复 回击 中国 美国 公司 用户 平台 问题 情况 时间 今年 明年 "
-    "认为 指出 称已 目前 已经 正在 其中 以及 对于 关于 通过 根据 由于 来源 网络 "
-    "视频 直播 活动 期间 结果 影响 市场 全球 国家 地区 部分 工作 服务 支持 发现 "
-    "曝光 争议 热议 关注 讨论 冲击 大跌 上涨 下降 增加 减少".split())
-
-
-def _title_hits(title, conv):
-    t = re.sub(r"[\s，。！？、：:；;“”\"'（）()《》\-—…·0-9A-Za-z]+", "", str(title or ""))
-    if len(t) < 2:
-        return False
-    grams = [t[k:k + 2] for k in range(len(t) - 1)]
-    hits = [g for g in grams if g in conv and g not in _HOT_STOP]
-    if not hits:
-        return False
-    long_hit = any(g in conv and t[k:k + 3] in conv for k, g in enumerate(grams))
-    return long_hit or len(set(hits)) >= 2
-
-
-def _aware_filter_hot(aware, conv_text):
-    """v2：热点清单只保留与当前对话相关的条目；对方在问新闻时给全量；
-    一条都不相关就整段去掉（约 1700 字）。"""
-    i = (aware or "").find(_HOT_SECTION_HEAD)
-    if i < 0:
-        return aware
-    end = aware.find("\n## ", i + 2)
-    if end < 0:
-        end = len(aware)
-    if _NEWS_ASK_RE.search(conv_text or ""):
-        return aware
-    lines = aware[i:end].split("\n")
-    kept, cur_date = [], None
-    for ln in lines[1:]:
-        s = ln.strip()
-        if s.startswith("### "):
-            cur_date = s
-            continue
-        if not s.startswith("- "):
-            continue
-        item = s[2:].strip()
-        if item.startswith("- "):
-            item = item[2:].strip()   # 插件偶发的双项目符号
-        if _title_hits(item.split("：", 1)[0], conv_text):
-            kept.append((cur_date, "- " + item))
-    if not kept:
-        return aware[:i] + aware[end:]
-    out, last = [lines[0]], object()
-    for date, item in kept:
-        if date != last and date:
-            out.append(date)
-            last = date
-        out.append(item)
-    return aware[:i] + "\n".join(out) + aware[end:]
 
 
 # 历史块后面固定附带的两条判断说明（新旧两版共用）
@@ -3001,9 +2953,10 @@ def _build_messages_impl(daemon, msg, ctx_k=32, v2=False):
     style_block = ("\n\n## 说话风格卡（通用的语言底子；若与当前人设的性格冲突，以人设为准）\n" + style) if style else ""
     ev = evolved_notes(active_name) if active_name else {"enabled": False, "notes": []}
     evolved_block = ""
-    # v2：自进化观察（约 800 字的经验条目）只在对人直接回复时带上——旁观闲聊
-    # 的调用九成以 [跳过] 结束，带上只是白占预算
-    if ev["enabled"] and ev["notes"] and not (v2 and not _direct):
+    # 自进化风格观察对每次调用都带上（和改造前一致）：它是用户让机器人学说话的
+    # 途径，不能因为省 token 就只给直接回复。旁观消息的「要不要接」判定只读
+    # user 那一段，不带 system——所以这些内容只在真正生成回复时才计费。
+    if ev["enabled"] and ev["notes"]:
         evolved_block = ("\n\n## 自进化风格观察（你在真实聊天中积累的经验，"
                          "指导以后怎么说更自然）\n" + "\n".join("- %s" % n for n in ev["notes"][-_evolved_inject_n():]))
     skip_block = ""
@@ -3065,14 +3018,15 @@ def _build_messages_impl(daemon, msg, ctx_k=32, v2=False):
         _aware = "\n" + _aware.strip("\n") + "\n"
     _h0 = None
     if v2:
-        # v2 提前取历史：热点相关性要看最近对话；后面的历史渲染直接复用
+        # v2 提前取历史：后面的历史渲染直接用这一份。
+        # 热点清单不过滤（和改造前一致）：按「和当前对话相关」筛选等于替用户决定
+        # 机器人能聊什么——它本来就可以主动把话题带到热点上。省 token 靠的是
+        # 判定通过才发大调用，不靠删机器人知道的东西。
         try:
             _h0 = daemon.history(msg["chat_type"], msg["chat_id"],
                                  limit=hist_lines_v2() + 2)
         except Exception:
             _h0 = []
-        _aware = _aware_filter_hot(_aware, " ".join(
-            [str(msg.get("text") or "")] + [str(h.get("text") or "") for h in _h0]))
         # 后台识图开着：窗口里最近半小时还没描述过的图登记到后台
         # （观察队列漏掉的、agent 重启前收到的，在这里补上）
         if vision_caption_on() and not msg.get("_vcap"):
@@ -4277,9 +4231,10 @@ def _proactive_compose_v2(daemon, chat_type, chat_id):
            ("\n\n## 说话风格卡\n" + style) if style else "",
            evolved_block, mem_block, tstr, label,
            ((naming_lines() + "\n\n") if naming_lines() else "")))
-    content = ("【最近对话（旧→新；每行开头是距现在多久，后面是谁说的）】\n%s\n%s\n\n"
+    content = ("【最近对话（旧→新；每行开头是距现在多久，后面是谁说的）】\n%s\n%s\n%s\n\n"
                "【现在】按上面的要求判断：此刻有没有具体的由头让你说句话？"
-               % (hist_block, _zcode_context_line(chat_type, chat_id)))
+               % (hist_block, _zcode_context_line(chat_type, chat_id),
+                  _weather_proactive_bridge()))    # 天气插件的素材行，和旧版一样
     return [{"role": "system", "content": system},
             {"role": "user", "content": content}], persona_name
 
@@ -4445,8 +4400,9 @@ def _proactive_tick(daemon):
     _proactive_state_save()
     out("AGENT_PROACTIVE_TRY chat=%s/%s" % (chat_type, chat_id))
     try:
-        if reply_v2_on():
-            # v2：先问有没有具体由头（判定和措辞一次调用），解析不出按不发处理
+        if reply_v2_on() and proactive_mode() == "reason":
+            # v2 + 「有具体由头才发」：先问有没有具体由头（判定和措辞一次调用），
+            # 解析不出按不发处理。默认（open）走下面的旧版，和从前一样。
             msgs, active = _proactive_compose_v2(daemon, chat_type, chat_id)
             _model, reply = call_glm_with_fallback(msgs, "")
             _ok, _speak, texts, _kind, _anchor = _parse_proactive_json(reply)
@@ -5978,6 +5934,7 @@ REPLY_V2_FORCE = None
 REPLY_V2_DEFAULT = C.ARCH_V2_DEFAULTS["reply_v2"]
 REPLY_JSON_FORCE = None
 REPLY_JSON_DEFAULT = C.ARCH_V2_DEFAULTS["reply_json"]
+REACT_ONLY_FORCE = None      # 评测/测试用：强制「允许只挂表情不说话」的开/关
 
 
 def _cfg_flag(key, default, force):
@@ -5995,18 +5952,77 @@ def reply_json_on():
     return reply_v2_on() and _cfg_flag("reply_json", REPLY_JSON_DEFAULT, REPLY_JSON_FORCE)
 
 
-_GATE_V2_SYSTEM = (
+# ---------------------------------------------------------------------------
+# 回复策略里会改变「机器人表现」的几项，一律是设置，不写死在提示词或代码里。
+# 默认值 = 改造前的做法，只有「直接@必须回应」例外（见下）。
+# ---------------------------------------------------------------------------
+
+def direct_must_reply():
+    """「直接@或回复时必须回应」（默认开）。这是「被点名了要应一声」的可靠性保证，
+    不规定怎么说；想让机器人按人设偶尔不理人，关掉即可。"""
+    return _cfg_flag("direct_must_reply", C.ARCH_V2_DEFAULTS["direct_must_reply"], None)
+
+
+def _v2_mode(key):
+    """读一个枚举型的 v2 设置（主动消息风格 / 追聊风格）；取值不合法回到默认。"""
+    allowed = C.ARCH_V2_MODES[key]
+    v = str(load_json_const(REPLY_CONFIG_PATH, {}).get(key) or "")
+    return v if v in allowed else C.ARCH_V2_DEFAULTS[key]
+
+
+def proactive_mode():
+    """主动消息风格。open=从前的做法（默认）：结合最近对话、记忆、时间开个话头；
+    reason=有具体由头才发。"""
+    return _v2_mode("proactive_mode")
+
+
+def nudge_mode():
+    """追聊风格。classic=从前的做法（默认）；restrained=只在对方话说到一半断了、
+    或那件事有了新进展时才追，不起新话头。"""
+    return _v2_mode("nudge_mode")
+
+
+def _react_allowed():
+    """表情回应现在能不能用（设置页「表情回应」开关 + 允许的表情集合）。"""
+    try:
+        on, ems = reaction_allowed()
+        return bool(on and ems)
+    except Exception:
+        return False
+
+
+def react_only_on():
+    """「允许只挂表情不说话」（默认关）。关着时机器人总是说话、表情只作点缀——
+    和改造前一样；开着后「要不要接」的判定才可以判成「回个表情就够」。"""
+    return _cfg_flag("react_only", C.ARCH_V2_DEFAULTS["react_only"], REACT_ONLY_FORCE)
+
+
+def _gate_e_allowed():
+    """判定里「回个表情就够」这个选项能不能用：表情回应开着，且允许只挂表情不说话。"""
+    return _react_allowed() and react_only_on()
+
+
+_GATE_V2_HEAD = (
     "你是QQ群AI机器人「%s」的插话判定器。下面是这个群最近的对话（旧→新），"
     "最后一条【现在】不是对你说的，是你旁观时注意到的。请站在「%s」的性格和"
     "兴趣上判断：你此刻有没有真的想说的话？只输出一个字母：\n"
     "- N：不接——这句话是对别人说的；或你没有什么想说的（可有可无的附和、"
-    "客套、「是的/哈哈/确实」这类不算想说的）\n"
-    "- E：不用说话，回个表情就够——对方发了图、表情包或好玩/离谱的东西，"
-    "你没话可接但想表示看到了\n"
-    "- Y：接话——这个话题你懂或感兴趣、能接上梗、对方的问题你能答、"
-    "或你能补一句让人觉得有意思/有用的话\n"
-    "判断依据：最近几行里如果有两三个人在短句往来，那他们在聊自己的事（N）；"
-    "只有当话题确实在等人接、或你真的有具体的话想说时才 Y。只输出 N、E 或 Y。")
+    "客套、「是的/哈哈/确实」这类不算想说的）\n")
+_GATE_V2_E = ("- E：不用说话，回个表情就够——对方发了图、表情包或好玩/离谱的东西，"
+              "你没话可接但想表示看到了\n")
+_GATE_V2_TAIL = ("- Y：接话——这个话题你懂或感兴趣、能接上梗、对方的问题你能答、"
+                 "或你能补一句让人觉得有意思/有用的话\n"
+                 "判断依据：最近几行里如果有两三个人在短句往来，那他们在聊自己的事（N）；"
+                 "只有当话题确实在等人接、或你真的有具体的话想说时才 Y。只输出 %s。")
+
+
+def _gate_system(persona_name):
+    """判定提示词。「回个表情就够」这个选项只在表情回应开着、且用户允许只挂表情
+    不说话时才给——表情挂不了或用户要它总说话时，这个选项只会让消息白白沉默。"""
+    name = persona_name or "智谱娘"
+    e_on = _gate_e_allowed()
+    return ((_GATE_V2_HEAD % (name, name)) + (_GATE_V2_E if e_on else "")
+            + (_GATE_V2_TAIL % ("N、E 或 Y" if e_on else "N 或 Y")))
 
 
 def _reply_gate_v2(daemon, msg, messages, persona_name):
@@ -6014,27 +6030,27 @@ def _reply_gate_v2(daemon, msg, messages, persona_name):
     user = messages[1].get("content") if len(messages) > 1 else ""
     if not isinstance(user, str):
         user = ""
-    name = persona_name or "智谱娘"
     try:
         _m, reply = call_glm_with_fallback(
-            [{"role": "system", "content": _GATE_V2_SYSTEM % (name, name)},
+            [{"role": "system", "content": _gate_system(persona_name)},
              {"role": "user", "content": user}], "")
     except Exception as e:
         out("AGENT_GATE_ERR %r" % e)
         return "N"   # 判定失败宁可沉默
     ans = str(reply or "").strip().upper()[:1]
-    return ans if ans in ("N", "E", "Y") else "N"
+    if ans not in ("N", "E", "Y"):
+        return "N"
+    if ans == "E" and not _gate_e_allowed():
+        ans = "Y"    # 这个选项当前不可用（表情回应关着 / 要它总说话）：按接话处理
+    return ans
 
 
-JSON_RULE_AGENT = (
-    "\n\n## 本次输出格式（必须严格遵守，优先级高于前文所有关于输出格式的说明）\n"
-    "只输出一个 JSON 对象，不要 Markdown 代码块，不要任何多余文字。字段：\n"
-    ' "want": 0到3的整数，你想回应这句话的程度（0=不回应；1=只给对方这条消息挂个表情；'
-    "2=回一句短话，十来个字；3=对方在认真问你、或聊到你有话想说的话题，正常回应——"
-    "通常也不超过两句话）\n"
+JSON_RULE_HEAD = ("\n\n## 本次输出格式（必须严格遵守，优先级高于前文所有关于输出格式的说明）\n"
+                  "只输出一个 JSON 对象，不要 Markdown 代码块，不要任何多余文字。字段：\n")
+JSON_RULE_FIELDS = (
     ' "say": 要发给对方的消息，字符串数组，每个元素是一条消息（想连发就放多个元素，'
     "最多3个）；不说话时为空数组。里面只写要发给对方看的话\n"
-    ' "emoji": 想挂在对方消息上的表情 id（整数）或 null\n'
+    "%s"
     ' "memory": 要长期记住的事，数组，每项 {"qq": "对方的QQ号", "text": "一句话"}；'
     "没有就为空数组\n"
     ' "wait": true 或 false——对方这句话像是说到一半，你想等 TA 说完\n'
@@ -6042,9 +6058,54 @@ JSON_RULE_AGENT = (
     ' "sticker": 想发的表情包 id（整数）或 null\n'
     ' "quiet_minutes": 觉得自己刚才话多了、想安静一会儿时填分钟数（如 10），否则 null\n'
     ' "actions": 需要系统执行的动作标记，字符串数组（如 "[连线]"、"[画: 描述]"、'
-    '"[发到群: 群号|内容]"、群管标记），照前文说明的写法原样放进来；没有就为空数组\n'
-    '示例：{"want": 2, "say": ["哈哈这也太离谱了"], "emoji": null, "memory": [], '
-    '"wait": false, "voice": false, "sticker": null, "quiet_minutes": null, "actions": []}')
+    '"[发到群: 群号|内容]"、群管标记），照前文说明的写法原样放进来；没有就为空数组\n')
+JSON_RULE_TAIL = ('示例：{"want": 2, "say": ["哈哈这也太离谱了"], "emoji": null, "memory": [], '
+                  '"wait": false, "voice": false, "sticker": null, "quiet_minutes": null, "actions": []}')
+
+
+def _len_cap_for(msg):
+    """这次回复的长度上限（字）。闲聊类触发按设置页「闲聊回复长度上限」（0=不限）；
+    直接@和回复引用不受限——和改造前同一个口径。"""
+    if msg.get("trigger_reason") not in ("chat_random", "burst", "peer_talk"):
+        return 0
+    return chat_max_len()
+
+
+def _plain_len(reply):
+    """回复去掉各种标记、空白之后的纯文字长度。"""
+    t = str(reply or "")
+    t = re.sub(r"\[\[SPLIT\]\]", "", t)
+    t = re.sub(r"\[\w+:?[^\]]*\]", "", t)
+    return len("".join(t.split()))
+
+
+def json_rule_text(msg):
+    """结构化输出的格式说明。其中三处跟着设置走，不写死：
+    长度——闲聊类触发按「闲聊回复长度上限」（0=不限），直接对话不受限；
+    表情——「表情回应」关着时 emoji 固定填 null；
+    只挂表情——「允许只挂表情不说话」没开时没有 want=1（总是说话，和从前一样）。"""
+    cap = _len_cap_for(msg)
+    react = _react_allowed()
+    e_ok = _gate_e_allowed()
+    if e_ok:
+        want = (' "want": 0到3的整数，你想回应这句话的程度（0=不回应；1=只给对方这条消息挂个表情；'
+                "2=回应一句；3=对方在认真问你、或聊到你有话想说的话题，正常回应）\n")
+        emoji = ' "emoji": 想挂在对方消息上的表情 id（整数）或 null\n'
+    elif react:
+        want = (' "want": 0、2 或 3 的整数，你想回应这句话的程度（0=不回应；2=回应一句；'
+                "3=对方在认真问你、或聊到你有话想说的话题，正常回应）\n")
+        emoji = (' "emoji": 想挂在对方消息上的表情 id（整数）或 null'
+                 "（表情只作点缀，要搭配文字，不要只挂表情不说话）\n")
+    else:
+        want = (' "want": 0、2 或 3 的整数，你想回应这句话的程度（0=不回应；2=回应一句；'
+                "3=对方在认真问你、或聊到你有话想说的话题，正常回应）\n")
+        emoji = ' "emoji": 固定填 null（表情回应未开启）\n'
+    if cap > 0:
+        length = ("长度：这条按闲聊算，回复控制在 %d 字以内；只有对方是在认真问你时才答完整。\n"
+                  % cap)
+    else:
+        length = "长度：不设上限，按人设和场合决定。\n"
+    return JSON_RULE_HEAD + want + (JSON_RULE_FIELDS % emoji) + length + JSON_RULE_TAIL
 
 
 def _loads_lenient(text):
@@ -6178,7 +6239,7 @@ def _generate_reply_v2(daemon, msg, messages, gate=""):
     use_json = reply_json_on()
     msgs = [dict(m) for m in messages]
     if use_json:
-        msgs[0]["content"] = msgs[0]["content"] + JSON_RULE_AGENT
+        msgs[0]["content"] = msgs[0]["content"] + json_rule_text(msg)
     if gate == "E":
         msgs[0]["content"] += _GATE_E_NOTE_JSON if use_json else _GATE_E_NOTE_TEXT
     elif gate == "Y":
@@ -6227,8 +6288,9 @@ def _generate_reply_v2(daemon, msg, messages, gate=""):
             out("AGENT_JSON_FALLBACK msg_id=%s（按文本协议处理）" % msg["id"])
             reply = raw2
 
-    if direct:
-        # 策略层：直接对话必须回应。戳一戳 / 裸@ 这类没有实质内容的，只挂表情也算回应
+    if direct and direct_must_reply():
+        # 策略层：直接对话必须回应（设置项，默认开）。戳一戳 / 裸@ 这类没有实质
+        # 内容的，只挂表情也算回应
         t = str(msg.get("text") or "").strip()
         trivial = (not t) or t.startswith("[戳")
         texts, _st, _mo, _dr, _sg = parse_reply(reply)
@@ -6246,6 +6308,43 @@ def _generate_reply_v2(daemon, msg, messages, gate=""):
                 model, reply = _m2, reply3
             else:
                 out("AGENT_MUST_REPLY_FAIL msg_id=%s（重试后仍未回应）" % msg["id"])
+
+    # 「只挂表情不说话」没开（默认）：旁观回复只挂了表情 → 请它说一句。
+    # 从前的机器人总是说话、表情只作点缀，这里保持一致；直接对话的情况上面已经处理过
+    if not direct and not _gate_e_allowed() and gate != "E":
+        _t5, _s5, _m5, _d5, _g5 = parse_reply(reply)
+        if (not _t5) and (bool(_s5) or bool(_REACT_MARK_RE.search(reply))):
+            out("AGENT_REACT_ONLY_RETRY msg_id=%s (未开启「只挂表情不说话」)" % msg["id"])
+            _m6, raw6 = _call(_with_note(
+                "（系统提示：你这次只挂了表情没有说话。请用你的口吻回一句话——不知道说什么"
+                "就简短应一声。%s）" % ("仍然只输出要求的 JSON 对象。" if use_json else "")))
+            reply6 = _understand(raw6)
+            if reply6 is None:
+                reply6 = raw6
+            if parse_reply(reply6)[0] and reply6 != "[WAIT]":
+                model, reply = _m6, reply6
+
+    # 长度兜底：设置页「闲聊回复长度上限」在 v2 下照样管用。生成时已经按上限
+    # 要求过（见 json_rule_text）；还是超了就带要求重试一次，仍按结构化输出。
+    # 上限为 0（不限）或直接对话（不受限）时不走这里。
+    cap = _len_cap_for(msg)
+    if cap > 0:
+        _long = _plain_len(reply)
+        if _long > cap and reply not in ("[跳过]", "[WAIT]"):
+            try:
+                _m4, raw4 = _call(_with_note(
+                    "（系统提示：你刚才的回复太长了，超过了 %d 字。把意思压缩成不超过 %d 字的"
+                    "一两句话，保留人设口吻和最有趣的一点，其余删掉。%s）"
+                    % (cap, cap, "仍然只输出要求的 JSON 对象。" if use_json else "只输出压缩后的回复。")))
+                reply4 = _understand(raw4)
+                if reply4 is None:
+                    reply4 = raw4
+                if reply4 not in ("[跳过]", "[WAIT]") and 0 < _plain_len(reply4) < _long:
+                    out("AGENT_CHAT_LEN_SQUEEZE msg_id=%s %d→%d 字"
+                        % (msg["id"], _long, _plain_len(reply4)))
+                    model, reply = _m4, reply4
+            except Exception as _se:
+                out("AGENT_CHAT_LEN_SQUEEZE_FAIL %r" % _se)
     return model, reply
 
 
@@ -6425,6 +6524,18 @@ def process(daemon, msg):
                 msg["_vcap"] = "；".join(_c["texts"])
                 out("AGENT_VCAP_HIT msg_id=%s chat=%s/%s" % (
                     msg["id"], msg["chat_type"], msg["chat_id"]))
+                # 设置页的「识图概率」在这条路径上照样管用，和旧路径同一个骰子、
+                # 同一个例外（话里明确提到这张图的直接过）：all_prob 档下，看到图
+                # 之后要不要评论仍然按概率来，概率为 0 就只留描述、不评论
+                if _vmode == "all_prob" and not _IMG_REF_RE.search(
+                        str(msg.get("text") or "") + " " + str(msg.get("reply_text") or "")):
+                    _p = vision_prob()
+                    if _p <= 0 or __import__("random").random() >= _p:
+                        daemon.ack([msg["id"]])
+                        RT.count_processed()
+                        out("AGENT_VISION_PROB_SKIP msg_id=%s chat=%s/%s (后台识图：识图概率 %.0f%% 未中)"
+                            % (msg["id"], msg["chat_type"], msg["chat_id"], _p * 100))
+                        return
             else:
                 out("AGENT_VCAP_MISS msg_id=%s chat=%s/%s (%s)" % (
                     msg["id"], msg["chat_type"], msg["chat_id"],
@@ -6432,10 +6543,12 @@ def process(daemon, msg):
     messages, active_persona = build_messages(daemon, msg, ctx_k=_ctx_k)
     # v2：闲聊触发的「要不要接」判定挪到这里——用的是刚构造好的完整历史
     # （旧闸门只看 10 行×80 字）。判定不接就到此为止，后面的搜索/落盘都不做
-    # 带图消息已有描述时同样交给判定（图看过了）；没描述的仍走旧路径
+    # 带图消息已有描述时同样交给判定（图看过了）；没描述的仍走旧路径。
+    # 和旧闸门同一个前提：「精简上下文」开着才先判定——关着精简上下文等于
+    # 用户要的是「不计 token、追求表现」，那就一次调用直接决定
     _gate_note = ""
     if reply_v2_on() and msg.get("trigger_reason") == "chat_random" \
-            and chat_anti_interrupt_enabled() \
+            and chat_anti_interrupt_enabled() and lean_ctx_on() \
             and not (_vmode == "all_prob" and msg.get("image_urls") and not msg.get("_vcap")):
         _g = _reply_gate_v2(daemon, msg, messages, active_persona)
         out("AGENT_GATE_V2 msg_id=%s chat=%s/%s verdict=%s"

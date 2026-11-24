@@ -168,7 +168,7 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
             chk("3a 模型输出 [跳过] → 一次调用、按沉默处理",
                 len(calls) == 1 and r == "[跳过]", (len(calls), r))
             chk("3b 结构化规则只加在副本上，不改传入的 messages",
-                calls[0][0]["content"].startswith("S") and A.JSON_RULE_AGENT in calls[0][0]["content"]
+                calls[0][0]["content"].startswith("S") and A.JSON_RULE_HEAD in calls[0][0]["content"]
                 and calls[0][1]["content"] == "U" and SU[0]["content"] == "S")
         with patched(A, call_glm_with_fallback=_always("这不是 JSON，是一句普通回复")):
             calls.clear()
@@ -212,7 +212,7 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
             sys_e = calls[0][0]["content"]
             chk("3h 判定「回个表情就够」→ 结论写进 system（结构化版），且不改传入的 messages",
                 A._GATE_E_NOTE_JSON in sys_e and A._GATE_E_NOTE_TEXT not in sys_e
-                and A._GATE_Y_NOTE not in sys_e and sys_e.index(A.JSON_RULE_AGENT) < sys_e.index(A._GATE_E_NOTE_JSON)
+                and A._GATE_Y_NOTE not in sys_e and sys_e.index(A.JSON_RULE_HEAD) < sys_e.index(A._GATE_E_NOTE_JSON)
                 and SU[0]["content"] == "S", sys_e[-60:])
         calls.clear()
         with patched(A, call_glm_with_fallback=_always("[回应:74]"), REPLY_JSON_FORCE=False):
@@ -430,10 +430,13 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
 
     # ---------- 10. 处理流程分流（真实 process()） ----------
     def run_process(msg, gate_verdict="N", preloaded=None, vcap=True,
-                    main_reply='{"say": ["在呢"]}', v2=True, emoji_ok=False):
+                    main_reply='{"say": ["在呢"]}', v2=True, emoji_ok=False, lean=True, vprob=1.0,
+                    react_only=True):
         """走真实 process()，记录：同步识图有没有被调、判定看到的内容、确认了几次、
-        一共调了几次模型、发没发文字。"""
-        vis, gates, mcalls, sent = [], [], [], []
+        一共调了几次模型、发没发文字。
+        lean=「精简上下文」开关；vprob=「识图概率」（默认 1.0：后台识图下带图的旁观消息
+        不被概率拦下，才测得到后面的判定）；react_only=「允许只挂表情不说话」。"""
+        vis, gates, gate_sys, mcalls, sent = [], [], [], [], []
         dm = NullDaemon(history=hist)
         dm.send = lambda ct, cid, texts, reply_message_id=None: sent.append(list(texts))
         dm.set_msg_reaction = lambda mid, emoji, on=False: (bool(emoji_ok), "")   # 真实客户端返回 (ok, detail)
@@ -447,16 +450,18 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
             mcalls.append(messages[0]["content"][:20])
             if len(messages) == 2 and _gate_head in messages[0]["content"]:
                 gates.append(messages[1]["content"])
+                gate_sys.append(messages[0]["content"])
                 return "m", gate_verdict
             return "m", main_reply
 
         _gate_head = "的插话判定器"     # 判定提示词的固定片段（人设名在它前面）
 
         with patched(A, PROMPT_V2_FORCE=True, REPLY_V2_FORCE=v2, REPLY_JSON_FORCE=v2,
-                     VCAP_FORCE=vcap,
+                     VCAP_FORCE=vcap, REACT_ONLY_FORCE=react_only,
                      vision_enabled=lambda: True, vision_mode=lambda: "all_prob",
-                     vision_prob=lambda: 0.0, call_vision=_vision,
+                     vision_prob=lambda: vprob, call_vision=_vision,
                      call_glm_with_fallback=_chain, chat_anti_interrupt_enabled=lambda: True,
+                     lean_ctx_on=lambda: lean,
                      _cap_chat_allowed=lambda ct, cid: True,
                      reaction_allowed=lambda: (True, ["63"])):
             reset_cap()
@@ -470,8 +475,8 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
                 A.process(dm, msg)
             except _Stop:
                 where = "vision"
-            return dict(vis=vis, gates=gates, acked=dm.acked, logs=list(LOG), where=where,
-                        mcalls=len(mcalls), sent=sent)
+            return dict(vis=vis, gates=gates, gate_sys=gate_sys, acked=dm.acked, logs=list(LOG),
+                        where=where, mcalls=len(mcalls), sent=sent)
 
     r = run_process(group_msg("[图片]", "p1", [U1]), preloaded=["一张猫咪表情包"])
     chk("10a 闲聊触发+图已有描述 → 不再同步识图，交给统一判定",
@@ -484,7 +489,7 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
         A._caption_get("group", "555001", "p1") is not None)
 
     t0 = time.time()
-    r = run_process(group_msg("[图片]", "p2", [U1]))
+    r = run_process(group_msg("[图片]", "p2", [U1]), vprob=0.0)
     chk("10e 4 秒内没等到描述 → 退回旧路径：识图概率为 0 时不调模型、直接沉默",
         r["vis"] == [] and r["gates"] == [] and r["acked"] == [7001]
         and any(x.startswith("AGENT_VCAP_MISS") for x in r["logs"])
@@ -503,12 +508,33 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
     chk("10i 直接@+图 → 即使有描述也让模型亲眼看图（同步识图）",
         r["vis"] == [1] and r["where"] == "vision", r["vis"])
 
-    r = run_process(group_msg("今天天气不错", "p6", [U1]), vcap=False)
+    r = run_process(group_msg("今天天气不错", "p6", [U1]), vcap=False, vprob=0.0)
     chk("10j 识图开关关着 → 整个后台识图分支不参与（等都不等，直接走旧路径）",
         not any("VCAP" in x for x in r["logs"]) and r["vis"] == []
         and any("VISION_ZERO_SKIP" in x for x in r["logs"]), r["logs"][:4])
     r = run_process(group_msg("哈哈哈", "p7", []), preloaded=None)
     chk("10k 不带图的消息 → 不涉及识图，照常判定", r["vis"] == [] and len(r["gates"]) == 1)
+    # 设置页的「识图概率」在后台识图下照样管用（和旧路径同一个骰子、同一个例外）
+    r = run_process(group_msg("[图片]", "p10", [U1]), preloaded=["一张梗图"], vprob=0.0)
+    chk("10o 后台识图开着 + 识图概率为 0：描述照样拿到，但不评论这张图",
+        r["gates"] == [] and r["mcalls"] == 0 and r["acked"] == [7001]
+        and any(x.startswith("AGENT_VISION_PROB_SKIP") for x in r["logs"]), (len(r["gates"]), r["logs"][-2:]))
+    r = run_process(group_msg("看看这张图", "p11", [U1]), preloaded=["一张梗图"], vprob=0.0)
+    chk("10p 话里明确在问这张图 → 不受识图概率影响，照常交给判定",
+        len(r["gates"]) == 1 and r["vis"] == [], (len(r["gates"]), r["vis"]))
+    r = run_process(group_msg("哈哈哈", "p12", []), gate_verdict="N", lean=False)
+    chk("10q「精简上下文」关着 → 不先判定，一次调用直接决定（和旧闸门同一个前提）",
+        r["gates"] == [] and r["mcalls"] == 1 and r["sent"] == [["在呢"]],
+        (len(r["gates"]), r["mcalls"], r["sent"]))
+    # 「允许只挂表情不说话」默认关：判定里没有这个选项；模型仍答 E 时按接话处理
+    r = run_process(group_msg("发了个表情包", "9001", []), gate_verdict="E", react_only=False,
+                    main_reply='{"say": ["哈哈这个好玩"]}')
+    chk("10r 默认（不允许只挂表情）：判定提示词里没有「回个表情就够」；模型答 E 也按接话处理，照常说话",
+        "回个表情就够" not in (r["gate_sys"] or [""])[0] and r["sent"] == [["哈哈这个好玩"]],
+        (r["gate_sys"][:1], r["sent"]))
+    r = run_process(group_msg("发了个表情包", "9001", []), gate_verdict="E", react_only=True,
+                    main_reply='{"say": ["哈哈这个好玩"]}')
+    chk("10s 设置页打开后：判定里才有这个选项", "回个表情就够" in (r["gate_sys"] or [""])[0])
 
     # 只挂表情的回复：表情发出去了就到此为止；没发出去也不补话
     _REACT = '{"want": 1, "say": [], "emoji": 63}'
@@ -718,21 +744,31 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
     chk("14l 群聊版更保守：明说冷场是常态、不@人不找话",
         "冷场是常态" in g14[0][0]["content"] and "不@人" in g14[0][0]["content"])
 
-    def _nudge_run(v2):
+    def _nudge_run(v2, mode=None):
+        """mode=None → 不打桩，读真实的 nudge_mode（配置里没写 = 默认 classic）。"""
         used = []
         A._NUDGE_STATE.clear()
         A._NUDGE_LAST_RUN = 0.0
+        _pm = {"nudge_mode": lambda: mode} if mode else {}
         with patched(A, REPLY_V2_FORCE=v2, _nudge_cfg=lambda: (True, 30, 300, 1, False),
                      _in_silent_window=lambda cfg, kind, lt: False,
                      load_json_const=_cfg_ljc({}),
                      _nudge_compose_v2=lambda dm, ct, cid: used.append("v2") or "",
-                     _nudge_compose=lambda dm, ct, cid: used.append("v1") or ""), \
+                     _nudge_compose=lambda dm, ct, cid: used.append("v1") or "", **_pm), \
                 patched(A.C, tz_now_info=lambda: dict(HOUR15)):
             A._nudge_tick(ndm)
         return used
 
-    chk("14m 回复策略 v2 开 → 追聊走 v2", _nudge_run(True) == ["v2"])
-    chk("14n 关 → 仍走旧版", _nudge_run(False) == ["v1"])
+    chk("14m 回复策略 v2 开 + 追聊风格「克制」→ 走 v2", _nudge_run(True, "restrained") == ["v2"])
+    chk("14n 回复策略 v2 关 → 仍走旧版（风格设置不起作用）", _nudge_run(False, "restrained") == ["v1"])
+    chk("14o 回复策略 v2 开 + 默认风格（经典）→ 仍走旧版：风格默认保持从前的做法",
+        _nudge_run(True) == ["v1"] and A.nudge_mode() == "classic")
+    with patched(A, load_json_const=_cfg_ljc({"nudge_mode": "whatever"})):
+        _bad_mode = A.nudge_mode()
+    chk("14p 配置里的值不合法 → 回到默认", _bad_mode == "classic", _bad_mode)
+    with patched(A, load_json_const=_cfg_ljc({"nudge_mode": "restrained"})):
+        chk("14q 设置页选了「克制」→ 生效", A.nudge_mode() == "restrained")
+    chk("14r 打桩已还原（又读到默认值）", A.nudge_mode() == "classic", A.nudge_mode())
 
     # ---------- 15. 主动消息 v2 ----------
     ok, speak, say, kind, anchor = A._parse_proactive_json('{"speak": false}')
@@ -768,9 +804,14 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
     chk("15h 提示词：由头只认三种、十次里九次不该发、结构化输出、历史带相对时间",
         "由头只认三种" in ptxt and "十次里九次都不该发" in ptxt and '"speak": false' in ptxt
         and "距现在多久" in pmsgs[1]["content"] and "不算由头" in ptxt)
-    chk("15i 不再是「主动开个话头」", "开个话头" not in ptxt, ptxt[-120:])
+    chk("15i「有具体由头才发」模式的提示词不再是「主动开个话头」", "开个话头" not in ptxt, ptxt[-120:])
+    with patched(A, _weather_proactive_bridge=lambda: "【所在地天气】晴 12 度"):
+        _wm = A._proactive_compose_v2(pdm, "group", "555001")[0]
+    chk("15i' 天气插件给的素材行照旧带上（和旧版一样，不因为换模式而丢功能）",
+        "【所在地天气】晴 12 度" in _wm[1]["content"], _wm[1]["content"][-80:])
 
-    def _pro_run(v2, reply):
+    def _pro_run(v2, reply, mode="reason"):
+        """mode=None → 不打桩，读真实的 proactive_mode（配置里没写 = 默认 open）。"""
         sent, used = [], []
         dm = NullDaemon(history=[])
         dm.send = lambda ct, cid, texts, reply_message_id=None: sent.append(list(texts))
@@ -780,6 +821,7 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
                                    "private": {"last_attempt": 0.0, "last_sent": 0.0}})
         A._proactive_send_times.clear()
         LOG.clear()
+        _pm = {"proactive_mode": lambda: mode} if mode else {}
         with patched(A, REPLY_V2_FORCE=v2, _proactive_targets=lambda dm, cfg: [("group", "555001")],
                      _proactive_pick=lambda cfg, kind, pool, now, daemon=None: ("group", "555001"),
                      _proactive_cap_left=lambda cfg, now: 1,
@@ -788,21 +830,29 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
                      load_json_const=_cfg_ljc({"proactive_groups_enabled": True}),
                      call_glm_with_fallback=lambda ms, t, budget_sec=200: used.append(ms[0]["content"][:12]) or ("m", reply),
                      _proactive_compose=lambda dm, ct, cid: (used.append("v1") or [
-                         {"role": "system", "content": "S"}, {"role": "user", "content": "U"}], "p")):
+                         {"role": "system", "content": "S"}, {"role": "user", "content": "U"}], "p"), **_pm):
             A._proactive_tick(dm)
         return sent, used, [x for x in LOG if x.startswith("AGENT_PROACTIVE")]
 
     sent, used, logs = _pro_run(True, '{"speak": false}')
-    chk("15j v2 没有由头 → 不发", sent == [] and used and used[0] != "v1"
+    chk("15j「有具体由头才发」：没有由头 → 不发", sent == [] and used and used[0] != "v1"
         and any("没有具体由头" in x for x in logs), (sent, used, logs))
     sent, used, logs = _pro_run(True, '{"speak": true, "kind": "接话", "anchor": "小张问有没有人打过", "say": ["我打过"]}')
-    chk("15k v2 有由头 → 发出那句话，并记下由头", sent == [["我打过"]]
+    chk("15k「有具体由头才发」：有由头 → 发出那句话，并记下由头", sent == [["我打过"]]
         and any(x.startswith("AGENT_PROACTIVE_REASON") and "接话" in x for x in logs), (sent, logs))
     sent, used, logs = _pro_run(True, "大家晚上好呀")
-    chk("15l v2 输出不是 JSON → 不发并记日志", sent == []
+    chk("15l「有具体由头才发」：输出不是 JSON → 不发并记日志", sent == []
         and any(x.startswith("AGENT_PROACTIVE_JSON_FAIL") for x in logs), (sent, logs))
     sent, used, logs = _pro_run(False, "大家晚上好呀")
-    chk("15m 关着 → 走旧版主动消息（原文照发）", used[:1] == ["v1"] and sent == [["大家晚上好呀"]], (used, sent))
+    chk("15m 回复策略关着 → 走旧版主动消息（原文照发）", used[:1] == ["v1"] and sent == [["大家晚上好呀"]], (used, sent))
+    sent, used, logs = _pro_run(True, "大家晚上好呀", mode=None)
+    chk("15m' 回复策略 v2 开 + 默认风格（随缘找话头）→ 仍走旧版：风格默认保持从前的做法",
+        used[:1] == ["v1"] and sent == [["大家晚上好呀"]] and A.proactive_mode() == "open", (used, sent))
+    with patched(A, load_json_const=_cfg_ljc({"proactive_mode": "nope"})):
+        _bm = A.proactive_mode()
+    chk("15m'' 主动消息风格取值不合法 → 回到默认", _bm == "open", _bm)
+    with patched(A, load_json_const=_cfg_ljc({"proactive_mode": "reason"})):
+        chk("15m''' 设置页选了「有具体由头才发」→ 生效", A.proactive_mode() == "reason")
 
     src_agent = read_src("qq_bot_agent.py")
     chk("15n v2 下停用「闲聊超长压缩重试」；旧路径原样保留",
@@ -811,7 +861,138 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
         "_same_topic_note(msg)" in src_agent and "_semantic_dup_check(msg, s, _recent_bot)" in src_agent
         and "_coherence_issue(texts)" in src_agent)
 
-    # ---------- 16. 设置页开关（保存路径指向临时文件，不碰真实配置） ----------
+    # ---------- 17. 风格不写死：长度、必须回应、表情选项、提示词内容 ----------
+    _chat17 = group_msg("哈哈哈", "9101", [])
+    _at17 = group_msg("在吗", "9102", [], trig="at")
+    _SU = [{"role": "system", "content": "S"}, {"role": "user", "content": "U"}]
+    with patched(A, reaction_allowed=lambda: (True, ["63"]), chat_max_len=lambda: 80):
+        _r_chat = A.json_rule_text(_chat17)
+        _r_at = A.json_rule_text(_at17)
+        _cap_chat, _cap_at = A._len_cap_for(_chat17), A._len_cap_for(_at17)
+    chk("17a 闲聊回复：长度要求来自设置页的「闲聊回复长度上限」",
+        "80 字以内" in _r_chat and _cap_chat == 80, _r_chat[-80:])
+    chk("17b 直接@：不受长度限制（和从前一致）", "不设上限" in _r_at and _cap_at == 0)
+    chk("17c 不再写死「十来个字 / 不超过两句话」",
+        "十来个字" not in _r_chat and "不超过两句话" not in _r_chat)
+    with patched(A, reaction_allowed=lambda: (True, ["63"]), chat_max_len=lambda: 0):
+        chk("17d 上限设为 0（不限）→ 闲聊回复也不限制长度",
+            "不设上限" in A.json_rule_text(_chat17) and A._len_cap_for(_chat17) == 0)
+    with patched(A, reaction_allowed=lambda: (False, [])):
+        _r_off = A.json_rule_text(_chat17)
+        _g_off = A._gate_system("智谱娘")
+    chk("17e 表情回应关着：格式说明里没有「只挂表情」这一档",
+        "1=只给对方这条消息挂个表情" not in _r_off and "固定填 null" in _r_off
+        and "0、2 或 3" in _r_off, _r_off[:150])
+    chk("17f 表情回应关着：判定提示词里没有「回个表情就够」这个选项",
+        "回个表情就够" not in _g_off and "只输出 N 或 Y" in _g_off, _g_off[-30:])
+    with patched(A, reaction_allowed=lambda: (True, ["63"]), REACT_ONLY_FORCE=True):
+        _g_on = A._gate_system("智谱娘")
+        _r_e = A.json_rule_text(_chat17)
+    chk("17g 表情回应开着 + 允许只挂表情：判定才有「回个表情就够」",
+        "回个表情就够" in _g_on and "N、E 或 Y" in _g_on)
+    chk("17g' 允许只挂表情时格式说明里才有 want=1", "1=只给对方这条消息挂个表情" in _r_e)
+    with patched(A, reaction_allowed=lambda: (True, ["63"]), REACT_ONLY_FORCE=False):
+        _g_ro = A._gate_system("智谱娘")
+        _r_ro = A.json_rule_text(_chat17)
+    chk("17g'' 默认（表情回应开着、但不允许只挂表情）：判定里没有这个选项，格式里没有 want=1，"
+        "并写明表情只作点缀——和从前一样总是说话",
+        "回个表情就够" not in _g_ro and "1=只给对方这条消息挂个表情" not in _r_ro
+        and "不要只挂表情不说话" in _r_ro and A.react_only_on() is False, _r_ro[:150])
+    with patched(A, reaction_allowed=lambda: (False, []),
+                 call_glm_with_fallback=lambda ms, t, budget_sec=200: ("m", "E")):
+        chk("17h 表情回应关着时模型仍答了 E → 按接话处理，不白白沉默",
+            A._reply_gate_v2(NullDaemon(), _chat17, list(_SU), "智谱娘") == "Y")
+    # 默认下旁观回复只挂了表情 → 请它说一句（重试一次）；重试仍是表情就保持原样，不硬凑
+    c17 = []
+    _seq = iter(['{"want": 1, "say": [], "emoji": 63}', '{"say": ["哈哈这个好玩"]}'])
+    with patched(A, REPLY_V2_FORCE=True, REPLY_JSON_FORCE=True, REACT_ONLY_FORCE=False,
+                 reaction_allowed=lambda: (True, ["63"]),
+                 call_glm_with_fallback=lambda ms, t, budget_sec=200: c17.append(ms) or ("m", next(_seq))):
+        LOG.clear()
+        _m, _r = A._generate_reply_v2(NullDaemon(), _chat17, [dict(x) for x in _SU], gate="Y")
+    chk("17h' 默认：只挂了表情 → 重试一次并采用文字回复",
+        A.parse_reply(_r)[0] == ["哈哈这个好玩"] and len(c17) == 2
+        and any(x.startswith("AGENT_REACT_ONLY_RETRY") for x in LOG), (len(c17), LOG[-1:]))
+    c17[:] = []
+    _seq = iter(['{"want": 1, "say": [], "emoji": 63}', '{"want": 1, "say": [], "emoji": 63}'])
+    with patched(A, REPLY_V2_FORCE=True, REPLY_JSON_FORCE=True, REACT_ONLY_FORCE=False,
+                 reaction_allowed=lambda: (True, ["63"]),
+                 call_glm_with_fallback=lambda ms, t, budget_sec=200: c17.append(ms) or ("m", next(_seq))):
+        _m, _r = A._generate_reply_v2(NullDaemon(), _chat17, [dict(x) for x in _SU], gate="Y")
+    chk("17h'' 重试后还是只挂表情 → 不再重试（保持原样，由后面的流程处理）",
+        len(c17) == 2 and A._REACT_MARK_RE.search(_r) is not None, (len(c17), _r))
+    c17[:] = []
+    _seq = iter(['{"want": 1, "say": [], "emoji": 63}'])
+    with patched(A, REPLY_V2_FORCE=True, REPLY_JSON_FORCE=True, REACT_ONLY_FORCE=True,
+                 reaction_allowed=lambda: (True, ["63"]),
+                 call_glm_with_fallback=lambda ms, t, budget_sec=200: c17.append(ms) or ("m", next(_seq))):
+        _m, _r = A._generate_reply_v2(NullDaemon(), _chat17, [dict(x) for x in _SU], gate="E")
+    chk("17h''' 允许只挂表情时 → 不重试", len(c17) == 1, len(c17))
+
+    # 超长兜底：设置页的上限在 v2 下照样管用（按结构化输出重试，不走旧的文本协议重试）
+    _LONG = '{"say": ["' + "很长" * 60 + '"]}'
+    c17 = []
+    _seq = iter([_LONG, '{"say": ["短的了"]}'])
+    with patched(A, REPLY_V2_FORCE=True, REPLY_JSON_FORCE=True, chat_max_len=lambda: 40,
+                 direct_must_reply=lambda: True,
+                 call_glm_with_fallback=lambda ms, t, budget_sec=200: c17.append(ms) or ("m", next(_seq))):
+        LOG.clear()
+        _m, _r = A._generate_reply_v2(NullDaemon(), _chat17, [dict(x) for x in _SU])
+    chk("17i 闲聊回复超过上限 → 带上限要求重试一次，采用压缩后的",
+        A.parse_reply(_r)[0] == ["短的了"] and len(c17) == 2 and "40 字" in c17[1][1]["content"]
+        and any(x.startswith("AGENT_CHAT_LEN_SQUEEZE") for x in LOG), (len(c17), LOG[-1:]))
+    c17[:] = []
+    _seq = iter([_LONG])
+    with patched(A, REPLY_V2_FORCE=True, REPLY_JSON_FORCE=True, chat_max_len=lambda: 40,
+                 call_glm_with_fallback=lambda ms, t, budget_sec=200: c17.append(ms) or ("m", next(_seq))):
+        _m, _r = A._generate_reply_v2(NullDaemon(), _at17, [dict(x) for x in _SU])
+    chk("17j 直接@的长回复不触发压缩重试", len(c17) == 1 and "很长" in _r, len(c17))
+    c17[:] = []
+    _seq = iter([_LONG])
+    with patched(A, REPLY_V2_FORCE=True, REPLY_JSON_FORCE=True, chat_max_len=lambda: 0,
+                 call_glm_with_fallback=lambda ms, t, budget_sec=200: c17.append(ms) or ("m", next(_seq))):
+        _m, _r = A._generate_reply_v2(NullDaemon(), _chat17, [dict(x) for x in _SU])
+    chk("17k 上限为 0 → 再长也不重试", len(c17) == 1 and "很长" in _r, len(c17))
+    c17[:] = []
+    _seq = iter([_LONG, "```json\n{\"say\": [], \"want\": 0}\n```"])
+    with patched(A, REPLY_V2_FORCE=True, REPLY_JSON_FORCE=True, chat_max_len=lambda: 40,
+                 call_glm_with_fallback=lambda ms, t, budget_sec=200: c17.append(ms) or ("m", next(_seq))):
+        LOG.clear()
+        _m, _r = A._generate_reply_v2(NullDaemon(), _chat17, [dict(x) for x in _SU])
+    chk("17l 压缩后变成了「不回」→ 不采纳，保留原来的长回复（宁可长也不丢回复）",
+        len(c17) == 2 and "很长" in _r and not any("SQUEEZE msg_id" in x for x in LOG), (_r[:20], LOG[-1:]))
+
+    # 「直接@必须回应」是开关
+    calls.clear()
+    with patched(A, REPLY_V2_FORCE=True, REPLY_JSON_FORCE=True, direct_must_reply=lambda: False,
+                 call_glm_with_fallback=_always('```json\n{"say": [], "want": 0}\n```')):
+        m, r = A._generate_reply_v2(dm, group_msg("在吗", "m1", [], trig="at"), SU)
+        chk("17m 关掉「直接@必须回应」→ 模型沉默就沉默，不重试", len(calls) == 1 and r == "[跳过]", (len(calls), r))
+
+    # 「向群友的消息长度看齐」默认关；设置页打开后才给
+    _hist10 = [row(time.time() - i * 30, "小张%d" % i, "好的没问题%d" % i, qq=str(20000 + i)) for i in range(10)]
+    with patched(A, load_json_const=_cfg_ljc({})):
+        chk("17n 默认不给「向群友长度看齐」提示", A._group_len_hint(_hist10) == "" and not A.len_follow_group())
+    with patched(A, load_json_const=_cfg_ljc({"len_follow_group": True})):
+        chk("17o 设置页打开后才给", "个字左右" in A._group_len_hint(_hist10), A._group_len_hint(_hist10))
+
+    # 提示词内容：自进化风格观察每次都带（不再只给直接回复）；热点清单不再按相关性过滤
+    chk("17p 热点相关性过滤已移除（机器人知道的热点和从前一样）", not hasattr(A, "_aware_filter_hot"))
+    with patched(A, PROMPT_V2_FORCE=True, VCAP_FORCE=False,
+                 evolved_notes=lambda name: {"enabled": True, "notes": ["观察甲", "观察乙"]}):
+        _bystander = A.build_messages(NullDaemon(history=hist), group_msg("哈哈哈", "h20", []))[0][0]["content"]
+        _direct = A.build_messages(NullDaemon(history=hist), group_msg("在吗", "h21", [], trig="at"))[0][0]["content"]
+    chk("17q 旁观消息的提示词也带自进化风格观察", "观察甲" in _bystander and "观察乙" in _bystander)
+    chk("17r 直接回复同样带", "观察甲" in _direct)
+
+    # 历史窗口：默认值与取值范围
+    with patched(A, load_json_const=_cfg_ljc({})):
+        chk("17s 历史窗口默认 50 行 / 5000 字", A.hist_lines_v2() == 50 and A.hist_budget_v2() == 5000)
+    with patched(A, load_json_const=_cfg_ljc({"hist_lines": 9999, "hist_budget_chars": 10})):
+        chk("17t 超出范围被夹住", A.hist_lines_v2() == 120 and A.hist_budget_v2() == 1000,
+            (A.hist_lines_v2(), A.hist_budget_v2()))
+
+    # ---------- 18. 设置页开关（保存路径指向临时文件，不碰真实配置） ----------
     import io
     import shutil
     import tempfile
@@ -838,40 +1019,75 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
 
     try:
         r = _ui_call("do_POST", {"prompt_v2": 1, "reply_v2": True, "reply_json": 0, "vision_caption": True,
-                                 "vision_caption_model": " glm-4.6v-flash ", "vision_caption_daily_cap": 300})
+                                 "vision_caption_model": " glm-4.6v-flash ", "vision_caption_daily_cap": 300,
+                                 "direct_must_reply": 0, "len_follow_group": True,
+                                 "proactive_mode": "reason", "nudge_mode": "restrained",
+                                 "hist_lines": 80, "hist_budget_chars": 8000})
         s = _saved() if pathlib.Path(U.REPLY_CONFIG_PATH).exists() else {}
-        chk("16a 四个开关 + 识图模型 + 每日上限都能保存",
+        chk("18a 四个开关 + 识图模型 + 每日上限都能保存",
             bool(r) and r[0][0] == 200 and s.get("prompt_v2") is True and s.get("reply_v2") is True
             and s.get("reply_json") is False and s.get("vision_caption") is True
             and s.get("vision_caption_model") == "glm-4.6v-flash" and s.get("vision_caption_daily_cap") == 300, s)
+        chk("18a' 风格选项都能保存：必须回应、向群友长度看齐、主动消息风格、追聊风格、历史窗口",
+            s.get("direct_must_reply") is False and s.get("len_follow_group") is True
+            and s.get("proactive_mode") == "reason" and s.get("nudge_mode") == "restrained"
+            and s.get("hist_lines") == 80 and s.get("hist_budget_chars") == 8000, s)
+        r = _ui_call("do_POST", {"proactive_mode": "随便", "nudge_mode": ""})
+        chk("18a'' 风格取值不合法 → 回到默认，不报错", bool(r) and r[0][0] == 200
+            and _saved().get("proactive_mode") == "open" and _saved().get("nudge_mode") == "classic", r[:1])
+        _ui_call("do_POST", {"hist_lines": 5, "hist_budget_chars": 999999})
+        chk("18a'' 历史窗口超出范围 → 夹到 10 / 20000",
+            _saved().get("hist_lines") == 10 and _saved().get("hist_budget_chars") == 20000, _saved())
+        r = _ui_call("do_POST", {"hist_lines": "x"})
+        chk("18a''' 历史窗口不是整数 → 400", bool(r) and r[0][0] == 400, r[:1])
         _ui_call("do_POST", {"vision_caption_daily_cap": 99999})
-        chk("16b 上限夹到 5000", _saved().get("vision_caption_daily_cap") == 5000)
+        chk("18b 上限夹到 5000", _saved().get("vision_caption_daily_cap") == 5000)
         r = _ui_call("do_POST", {"vision_caption_daily_cap": "abc"})
-        chk("16c 上限不是整数 → 400", bool(r) and r[0][0] == 400, r[:1])
+        chk("18c 上限不是整数 → 400", bool(r) and r[0][0] == 400, r[:1])
         r = _ui_call("do_POST", {"vision_caption_model": 'a"b{c}'})
-        chk("16d 模型名去掉引号和花括号", _saved().get("vision_caption_model") == "abc", _saved().get("vision_caption_model"))
+        chk("18d 模型名去掉引号和花括号", _saved().get("vision_caption_model") == "abc", _saved().get("vision_caption_model"))
         r = _ui_call("do_POST", {"vision_caption_model": "   "})
-        chk("16e 模型名留空 → 回到默认", _saved().get("vision_caption_model") == "glm-4.6v-flash")
+        chk("18e 模型名留空 → 回到默认", _saved().get("vision_caption_model") == "glm-4.6v-flash")
         _ui_call("do_POST", {"chat_probability": 0.2, "prompt_v2": False})
         s = _saved()
-        chk("16f 保存其它设置时新开关不丢；再点一次能关掉",
+        chk("18f 保存其它设置时新开关不丢；再点一次能关掉",
             s.get("prompt_v2") is False and s.get("reply_v2") is True and s.get("vision_caption") is True
             and s.get("chat_probability") == 0.2, s)
         r = _ui_call("do_GET")
         g = r[0][1] if r else {}
-        chk("16g GET 返回新开关，取值与保存的一致",
+        chk("18g GET 返回新开关，取值与保存的一致",
             bool(r) and r[0][0] == 200 and g.get("prompt_v2") is False and g.get("reply_v2") is True
-            and g.get("vision_caption_daily_cap") == 5000, {k: g.get(k) for k in (
-                "prompt_v2", "reply_v2", "reply_json", "vision_caption", "vision_caption_model",
-                "vision_caption_daily_cap")} if isinstance(g, dict) else r[:1])
+            and g.get("vision_caption_daily_cap") == 5000
+            and g.get("direct_must_reply") is False and g.get("len_follow_group") is True
+            and g.get("proactive_mode") == "open" and g.get("nudge_mode") == "classic"
+            and g.get("hist_lines") == 10 and g.get("hist_budget_chars") == 20000,
+            {k: g.get(k) for k in ("prompt_v2", "reply_v2", "reply_json", "vision_caption",
+                                   "vision_caption_model", "vision_caption_daily_cap", "direct_must_reply",
+                                   "len_follow_group", "proactive_mode", "nudge_mode", "hist_lines",
+                                   "hist_budget_chars")} if isinstance(g, dict) else r[:1])
+        # 配置里一项都没写时，GET 给出的是默认值（= 从前的做法，「直接@必须回应」除外）
+        pathlib.Path(U.REPLY_CONFIG_PATH).unlink(missing_ok=True)
+        r = _ui_call("do_GET")
+        g = r[0][1] if r else {}
+        chk("18g' 配置里没写的键：GET 给默认值（风格默认保持从前的做法）",
+            g.get("prompt_v2") is True and g.get("direct_must_reply") is True
+            and g.get("len_follow_group") is False and g.get("proactive_mode") == "open"
+            and g.get("nudge_mode") == "classic" and g.get("hist_lines") == 50
+            and g.get("hist_budget_chars") == 5000 and g.get("vision_caption") is False,
+            {k: g.get(k) for k in ("prompt_v2", "direct_must_reply", "len_follow_group", "proactive_mode",
+                                   "nudge_mode", "hist_lines", "hist_budget_chars", "vision_caption")})
     finally:
         U.REPLY_CONFIG_PATH = _real_rc
         shutil.rmtree(_tmpd, ignore_errors=True)
-    chk("16h 真实的回复配置没有被这组测试改动", os.path.realpath(U.REPLY_CONFIG_PATH) == os.path.realpath(_real_rc))
+    chk("18h 真实的回复配置没有被这组测试改动", os.path.realpath(U.REPLY_CONFIG_PATH) == os.path.realpath(_real_rc))
     src_ui = read_src("qq_admin_ui.py")
-    chk("16i 设置页有四个开关", all(("{%s:this.checked?1:0}" % k) in src_ui
-                                   for k in C_KEYS) if (C_KEYS := tuple(A.C.ARCH_V2_BOOL_KEYS)) else False)
-    chk("16j 默认值只有一处：agent 与设置页都读 qq_common.ARCH_V2_DEFAULTS",
+    chk("18i 设置页有全部开关（含「直接@必须回应」「向群友长度看齐」）", all(("{%s:this.checked?1:0}" % k) in src_ui
+                                   for k in C_KEYS) if (C_KEYS := tuple(A.C.ARCH_V2_BOOL_KEYS)) else False,
+        tuple(A.C.ARCH_V2_BOOL_KEYS))
+    chk("18i' 设置页有风格下拉与历史窗口输入框",
+        all(k in src_ui for k in ("{proactive_mode:this.value}", "{nudge_mode:this.value}",
+                                  "{hist_lines:parseInt(this.value)||50}", "{hist_budget_chars:parseInt(this.value)||5000}")))
+    chk("18j 默认值只有一处：agent 与设置页都读 qq_common.ARCH_V2_DEFAULTS",
         A.PROMPT_V2_DEFAULT is A.C.ARCH_V2_DEFAULTS["prompt_v2"]
         and A.REPLY_V2_DEFAULT is A.C.ARCH_V2_DEFAULTS["reply_v2"]
         and A.REPLY_JSON_DEFAULT is A.C.ARCH_V2_DEFAULTS["reply_json"]
@@ -879,18 +1095,21 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
         and A.vision_caption_model() == A.C.ARCH_V2_DEFAULTS["vision_caption_model"]
         and A.vision_caption_daily_cap() == A.C.ARCH_V2_DEFAULTS["vision_caption_daily_cap"])
     _d = A.C.ARCH_V2_DEFAULTS
-    chk("16k 发布默认值：提示词 / 回复策略 / 结构化输出开，后台识图关",
+    chk("18k 发布默认值：提示词 / 回复策略 / 结构化输出开，后台识图关",
         _d["prompt_v2"] is True and _d["reply_v2"] is True and _d["reply_json"] is True
         and _d["vision_caption"] is False, {k: _d[k] for k in A.C.ARCH_V2_BOOL_KEYS})
+    chk("18k' 风格类的默认值 = 从前的做法（只有「直接@必须回应」默认开）",
+        _d["len_follow_group"] is False and _d["proactive_mode"] == "open"
+        and _d["nudge_mode"] == "classic" and _d["direct_must_reply"] is True, _d)
     _no_force = dict(PROMPT_V2_FORCE=None, REPLY_V2_FORCE=None, REPLY_JSON_FORCE=None, VCAP_FORCE=None,
                      vision_enabled=lambda: True, vision_mode=lambda: "all_prob")
     with patched(A, load_json_const=_cfg_ljc({}), **_no_force):
-        chk("16l 配置里一项都没写 → 按默认值生效", A.prompt_v2_on() is True and A.reply_v2_on() is True
+        chk("18l 配置里一项都没写 → 按默认值生效", A.prompt_v2_on() is True and A.reply_v2_on() is True
             and A.reply_json_on() is True and A.vision_caption_on() is False)
     with patched(A, load_json_const=_cfg_ljc({"vision_caption": True}), **_no_force):
-        chk("16m 在设置页打开后台识图 → 生效", A.vision_caption_on() is True)
+        chk("18m 在设置页打开后台识图 → 生效", A.vision_caption_on() is True)
     with patched(A, load_json_const=_cfg_ljc({"prompt_v2": False, "reply_json": False, "reply_v2": False}), **_no_force):
-        chk("16n 关掉任一项 → 这一项回到从前，其余照旧",
+        chk("18n 关掉任一项 → 这一项回到从前，其余照旧",
             A.prompt_v2_on() is False and A.reply_v2_on() is False and A.reply_json_on() is False)
 
 print("\n%d 项失败" % len(fails) + (": " + "; ".join(fails) if fails else "（全部通过）"))

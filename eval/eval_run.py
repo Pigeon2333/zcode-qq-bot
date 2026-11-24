@@ -125,6 +125,9 @@ def main():
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--no-reply-v2", action="store_true",
                     help="只用 v2 提示词、不开回复策略 v2（给还没有回复策略的旧提交导提示词用）")
+    ap.add_argument("--cfg", action="append", default=[],
+                    help="临时覆盖回复配置里的一个键，可重复，如 --cfg len_follow_group=true；"
+                         "只影响本次评测，不写配置文件")
     a = ap.parse_args()
     # 走被测代码的真实处理流程（--no-reply-v2 时只开 v2 提示词）
     pipe = a.mode in ("v2", "json") and not a.no_reply_v2
@@ -133,11 +136,29 @@ def main():
     # 评测进程不得产生任何生产副作用
     A.log_usage = lambda *x, **k: None
 
+    if a.cfg:
+        _orig_ljc, _ov = A.load_json_const, {}
+        for _kv in a.cfg:
+            _k, _sep, _v = _kv.partition("=")
+            if not _sep:
+                raise SystemExit("--cfg 应写成 键=值：%s" % _kv)
+            _ov[_k.strip()] = {"true": True, "false": False}.get(_v.strip().lower(), _v.strip())
+
+        def _ljc_override(path, default=None):
+            d = _orig_ljc(path, {} if default is None else default)
+            if path == A.REPLY_CONFIG_PATH and isinstance(d, dict):
+                d = dict(d)
+                d.update(_ov)
+            return d
+        A.load_json_const = _ljc_override
+        print("配置覆盖（仅本次评测）：%s" % _ov)
+
     def _collect(line):
         # 只留判定/重试类事件，随结果行存下来（看某条场景为什么多调了几次）
-        if str(line).startswith(("AGENT_JSON", "AGENT_MUST_REPLY")):
+        if str(line).startswith(("AGENT_JSON", "AGENT_MUST_REPLY", "AGENT_CHAT_LEN_SQUEEZE",
+                                 "AGENT_GATE_V2")):
             _tls.logs = getattr(_tls, "logs", [])
-            _tls.logs.append(str(line)[:80])
+            _tls.logs.append(str(line)[:110])
 
     A.out = _collect
     A.PLUGIN_HOST.on_message_all = lambda msg: None
@@ -238,7 +259,8 @@ def main():
             if pipe:
                 fake = _NullDaemon(s)
                 g = ""     # 闲聊触发的判定结论；直接对话没有判定
-                if s["trigger"] == "chat_random" and A.chat_anti_interrupt_enabled():
+                if s["trigger"] == "chat_random" and A.chat_anti_interrupt_enabled() \
+                        and A.lean_ctx_on():      # 与 process() 同一个前提
                     g = A._reply_gate_v2(fake, msg, messages, persona)
                     row["gate"] = g
                     if g == "N":

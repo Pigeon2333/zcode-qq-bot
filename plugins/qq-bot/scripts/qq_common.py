@@ -26,21 +26,35 @@ DATA_ROOT = pathlib.Path(DATA_DIR)
 
 APP_VERSION = "0.5.20"         # 发布版本号（更新检查与本页展示用；发版时同步改）
 
-# 对话架构 v2 各开关的默认值（agent 读、设置页展示，共用这一份；没在
+# 对话架构 v2 各项的默认值（agent 读、设置页展示，共用这一份；没在
 # reply_config.json 里写过的键就取这里的值）。
-# prompt_v2 / reply_v2 / reply_json 默认开：评测通过（直接@必回 14/14、长文
-# 20%→5%~9%、token −40%、盲评 18:5:8），关掉任一项即回到从前的做法。
-# vision_caption 默认关：后台识图会把会话里的图片发给模型服务商识别，属于
-# 第三方信息类功能——独立开关、默认关闭，由用户在设置页自行打开。
+# 原则：会改变「机器人表现」的选项一律是设置，不写死；默认值保持改造前的做法。
+#   - prompt_v2 / reply_v2 / reply_json 默认开：换的是做法（怎么判定、怎么输出、
+#     怎么装配提示词），不是风格；关掉任一项即回到从前。
+#   - vision_caption 默认关：后台识图会把会话里的图片发给模型服务商识别，属于
+#     第三方信息类功能——独立开关、默认关闭。
+#   - len_follow_group / proactive_mode=reason / nudge_mode=restrained / react_only
+#     默认关或为旧值：这四种是风格偏好（更短、更克制、可以不说话），要用户自己选。
+#   - direct_must_reply 默认开：只保证「被点名了会应一声」，不规定怎么说。
 ARCH_V2_DEFAULTS = {
     "prompt_v2": True,                   # 提示词 v2：长历史窗口 + 紧凑行
-    "reply_v2": True,                    # 回复策略 v2：统一判定 + 策略层（主动/追聊也跟随）
+    "reply_v2": True,                    # 回复策略 v2：统一判定 + 策略层
     "reply_json": True,                  # v2 下主调用用结构化输出（要 reply_v2 开着才生效）
     "vision_caption": False,             # 后台识图：图到达即在后台生成一行描述（要 reply_v2）
     "vision_caption_model": "glm-4.6v-flash",
     "vision_caption_daily_cap": 600,     # 每天最多识多少条带图消息（0=不识）
+    "direct_must_reply": True,           # 直接@或回复时必须回应（模型沉默时带提示重试一次）
+    "len_follow_group": False,           # 向群友的消息长度看齐（关：长度只受「闲聊回复长度上限」约束）
+    "proactive_mode": "open",            # 主动消息风格：open=随缘找话头（从前）；reason=有具体由头才发
+    "nudge_mode": "classic",             # 追聊风格：classic=从前；restrained=只在话没说完/有新进展时
+    "react_only": False,                 # 允许只挂表情不说话（关：总是说话，表情只作点缀）
+    "hist_lines": 50,                    # v2 历史窗口行数（10-120）
+    "hist_budget_chars": 5000,           # v2 历史块字符预算，超出时丢最旧的（1000-20000）
 }
-ARCH_V2_BOOL_KEYS = ("prompt_v2", "reply_v2", "reply_json", "vision_caption")
+ARCH_V2_BOOL_KEYS = ("prompt_v2", "reply_v2", "reply_json", "vision_caption",
+                     "direct_must_reply", "len_follow_group", "react_only")
+ARCH_V2_MODES = {"proactive_mode": ("open", "reason"), "nudge_mode": ("classic", "restrained")}
+ARCH_V2_RANGES = {"hist_lines": (10, 120), "hist_budget_chars": (1000, 20000)}
 
 # 表情回应（QQ 系统表情，NapCat set_msg_emoji_like 的 emoji_id）。
 # agent 教学 / daemon 执行 / 管理台勾选三方共用的全集；默认全开。
