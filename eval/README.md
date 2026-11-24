@@ -9,7 +9,7 @@
 
 ```
 set_short.jsonl      题库·短历史（每个场景带当时提示词里的 14 行历史）
-set_long.jsonl       题库·长历史（从 daemon 会话历史切出，带 40 行以上历史）
+set_long.jsonl       题库·长历史（从 daemon 会话历史切出，每个场景带 60 行之前的历史）
 snapshots/           daemon 会话历史的快照
 runs/                每次评测的逐条结果
 ```
@@ -32,25 +32,36 @@ runs/                每次评测的逐条结果
 python eval/eval_build.py --n-at 15 --n-random 35
 
 # 2. 改了提示词装配之后，先确认旧路径一字未变
+#    （两份导出要在同一时刻做：自进化观察、相对时间都跟着线上数据变）
 python eval/eval_run.py --src <主分支 scripts> --mode v1 --tag g1 --dry --dump a.jsonl
 python eval/eval_run.py --src <待测 scripts>   --mode v1 --tag g2 --dry --dump b.jsonl
 python eval/golden_compare.py a.jsonl b.jsonl --show
 
-# 3. 两个版本各跑一遍（--mode v2 打开被测开关；--resume 只补跑出错的场景）
-python eval/eval_run.py --src <scripts> --mode v1 --tag 基线名 --workers 2
-python eval/eval_run.py --src <scripts> --mode v2 --tag 对照名 --workers 2
+# 3. 各跑一遍。三种模式：
+#      v1   旧行为（提示词 + 主调用 + 文本协议，强制关掉 v2 开关）
+#      v2   只用 v2 提示词，回复逻辑还是旧的 —— 隔离「历史扩窗」的效果
+#      json 完整的新流程（判定 → 结构化输出 → 策略层）—— 将来上线的那条路径
+python eval/eval_run.py --src <scripts> --mode v1   --tag 基线名 --workers 2
+python eval/eval_run.py --src <scripts> --mode v2   --tag 只换提示词 --workers 2
+python eval/eval_run.py --src <scripts> --mode json --tag 完整新流程 --workers 2
+#    --resume 只补跑出错/缺失的场景；--set 换题库（默认 set_short.jsonl）
 
-# 4. 打分与盲评
-python eval/eval_score.py 基线名.jsonl 对照名.jsonl
-python eval/eval_judge.py --src <scripts> 基线名.jsonl 对照名.jsonl
+# 4. 打分与盲评（裁判甲乙位置对调各判一次，稳胜才计）
+python eval/eval_score.py --set set_short.jsonl 基线名.jsonl 完整新流程.jsonl
+python eval/eval_judge.py --src <scripts> --set set_short.jsonl 基线名.jsonl 完整新流程.jsonl --workers 2
 
-# 结构化输出稳定性（v2 提示词 + JSON 要求，一半场景带 response_format）
-python eval/eval_run.py --src <scripts> --mode json --tag json测试名 --workers 2
+# 长历史题库：daemon 跑了几小时之后
+python eval/eval_snapshot.py capture
+python eval/eval_snapshot.py carve --n-at 10 --n-random 30 --hist 60   # 每个场景带 60 行之前的历史
+#    然后把上面的 --set 换成 set_long.jsonl 再跑一遍
 ```
 
 `--src` 指向 `plugins/qq-bot/scripts`，可以是主分支或任意分支的工作目录。
 脚本只读生产的人设、配置与密钥，不写生产文件，不发送消息；模型调用会产生费用
-（50 个场景约 40 万输入 token）。
+（短历史 50 个场景：基线约 40 万输入 token，完整新流程约 25 万）。
+并发保持 `--workers 2`：并发 3 会触发限流（1305）。
+跑的过程中不要改被测目录里的源码；需要同时改代码时，先用 `git archive <提交> plugins/qq-bot/scripts`
+导出一份冻结副本，`--src` 指向它。
 
 ## 指标口径
 
