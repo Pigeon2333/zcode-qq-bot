@@ -618,5 +618,245 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
     hist_src = src[src.index("def _mem_push"):src.index("def _mem_push") + 2600]
     chk("13c 历史行仍只存前 2 张", "[:2]]" in hist_src)
 
+# ================= 第 4 步：主动消息 / 追聊 v2、停用旧补丁、设置页开关 =================
+_real_ljc = A.load_json_const
+
+
+def _cfg_ljc(reply_cfg):
+    """替换 agent 的配置读取：回复配置用给定字典，其余文件照常读（只读）。"""
+    def _f(path, default=None):
+        if path == A.REPLY_CONFIG_PATH:
+            return dict(reply_cfg)
+        return _real_ljc(path, {} if default is None else default)
+    return _f
+
+
+HOUR15 = {"hour": 15, "iso": "2026-11-24 15:00", "weekday": "周二", "clock24": "15:00", "clock12": "下午3:00"}
+
+
+def row(ts, name, text, is_bot=False, qq="10001", **kw):
+    r = {"ts": ts, "sender_id": "1" if is_bot else qq, "sender_name": "BOT" if is_bot else name,
+         "is_bot": is_bot, "text": text}
+    r.update(kw)
+    return r
+
+
+with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k: None,
+             out=lambda line: LOG.append(str(line)), search_web=lambda q: ([], "none"),
+             web_search_enabled=lambda: False, glm_chat=_no_net):
+    A.PLUGIN_HOST.on_message_all = lambda msg: None
+    A.PLUGIN_HOST.log = lambda line: None
+
+    # ---------- 14. 追聊 v2 ----------
+    ok, on, say = A._parse_flag_json('{"nudge": true, "say": "后来去成了吗"}', "nudge")
+    chk("14a 结构化判断：要追", ok and on and say == "后来去成了吗", (ok, on, say))
+    ok, on, say = A._parse_flag_json('```json\n{"nudge": false, "say": ""}\n```', "nudge")
+    chk("14b 不追", ok and not on and say == "", (ok, on, say))
+    for _mk in ("[不发]", "[跳过]", "[SKIP]"):
+        ok, on, say = A._parse_flag_json(_mk, "nudge")
+        chk("14c %s 算合法的不追" % _mk, ok and not on)
+    ok, on, say = A._parse_flag_json('{"nudge": "true", "say": ["那后来呢", "去成了吗"]}', "nudge")
+    chk("14d 字符串 true / say 是数组 → 拼成一句", ok and on and say == "那后来呢 去成了吗", (ok, on, say))
+    chk("14e 不是 JSON → 解析失败（调用方按不追处理）", A._parse_flag_json("我觉得应该问一下", "nudge")[0] is False)
+    ok, on, say = A._parse_flag_json('{"nudge": "maybe"}', "nudge")
+    chk("14f 布尔值写成别的字符串 → 按不追", ok and not on)
+    chk("14g 布尔字段不是布尔 → 解析失败", A._parse_flag_json('{"nudge": 1, "say": "x"}', "nudge")[0] is False)
+
+    class _NudgeDm(NullDaemon):
+        def status(self):
+            return {}
+
+        def recent_chats(self, within=0):
+            return [{"chat_type": "private", "chat_id": "20002"}]
+
+    now = time.time()
+    ndm = _NudgeDm(history=[
+        row(now - 400, "阿明", "我去趟楼下", qq="20002"),
+        row(now - 200, "BOT", "行，顺便帮我带瓶可乐", is_bot=True)])
+    c14 = []
+    with patched(A, call_glm_with_fallback=lambda ms, t, budget_sec=200: c14.append(ms) or (
+            "m", '{"nudge": true, "say": "楼下的事办完了吗"}')):
+        t14 = A._nudge_compose_v2(ndm, "private", "20002")
+    txt14 = c14[0][0]["content"] + "\n" + c14[0][1]["content"]
+    chk("14h 追聊 v2：要追时返回那句话", t14 == "楼下的事办完了吗", t14)
+    chk("14i 提示词：只问「话说到一半断了 / 有新进展」，没有分类框架，不找新话头",
+        "说到一半" in txt14 and "新进展" in txt14 and "距现在多久" in txt14
+        and "先判断对话停在哪一种" not in txt14 and "新话头" not in txt14
+        and '"nudge": false' in txt14)
+    with patched(A, call_glm_with_fallback=lambda ms, t, budget_sec=200: ("m", '{"nudge": false, "say": ""}')):
+        chk("14j 判断不追 → 空串", A._nudge_compose_v2(ndm, "private", "20002") == "")
+    LOG.clear()
+    with patched(A, call_glm_with_fallback=lambda ms, t, budget_sec=200: ("m", "要问一下吗")):
+        chk("14k 输出不是 JSON → 不追并记日志",
+            A._nudge_compose_v2(ndm, "private", "20002") == ""
+            and any(x.startswith("AGENT_NUDGE_JSON_FAIL") for x in LOG), LOG[-2:])
+    g14 = []
+    with patched(A, call_glm_with_fallback=lambda ms, t, budget_sec=200: g14.append(ms) or (
+            "m", '{"nudge": false}')):
+        A._nudge_compose_v2(ndm, "group", "555001")
+    chk("14l 群聊版更保守：明说冷场是常态、不@人不找话",
+        "冷场是常态" in g14[0][0]["content"] and "不@人" in g14[0][0]["content"])
+
+    def _nudge_run(v2):
+        used = []
+        A._NUDGE_STATE.clear()
+        A._NUDGE_LAST_RUN = 0.0
+        with patched(A, REPLY_V2_FORCE=v2, _nudge_cfg=lambda: (True, 30, 300, 1, False),
+                     _in_silent_window=lambda cfg, kind, lt: False,
+                     load_json_const=_cfg_ljc({}),
+                     _nudge_compose_v2=lambda dm, ct, cid: used.append("v2") or "",
+                     _nudge_compose=lambda dm, ct, cid: used.append("v1") or ""), \
+                patched(A.C, tz_now_info=lambda: dict(HOUR15)):
+            A._nudge_tick(ndm)
+        return used
+
+    chk("14m 回复策略 v2 开 → 追聊走 v2", _nudge_run(True) == ["v2"])
+    chk("14n 关 → 仍走旧版", _nudge_run(False) == ["v1"])
+
+    # ---------- 15. 主动消息 v2 ----------
+    ok, speak, say, kind, anchor = A._parse_proactive_json('{"speak": false}')
+    chk("15a 不发", ok and not speak and say == [], (ok, speak, say))
+    ok, speak, say, kind, anchor = A._parse_proactive_json(
+        '```json\n{"speak": true, "kind": "接话", "anchor": "小张问有没有人打过那个游戏", "say": ["我打过，后面特别刀"]}\n```')
+    chk("15b 发：取出要说的话、类型、由头", ok and speak and say == ["我打过，后面特别刀"]
+        and kind == "接话" and anchor == "小张问有没有人打过那个游戏", (ok, speak, say, kind, anchor))
+    ok, speak, say, kind, anchor = A._parse_proactive_json('{"speak": true, "say": []}')
+    chk("15c 说要发但没给内容 → 不发", ok and not speak and say == [])
+    ok, speak, say, kind, anchor = A._parse_proactive_json('{"speak": true, "say": "一\\n二  三", "kind": "' + "x" * 20 + '"}')
+    chk("15d say 是字符串、带换行 → 压成一行；类型限长", ok and speak and say == ["一 二 三"] and len(kind) == 8, (ok, say))
+    ok, speak, say, kind, anchor = A._parse_proactive_json('{"speak": true,\n "say": "我打过，\n后面特别刀"}')
+    chk("15d2 字符串里直接换行（不合法 JSON）→ 容错解析成功", ok and speak and say == ["我打过， 后面特别刀"], (ok, say))
+    ok, on, say = A._parse_flag_json('{"nudge": true, "say": "后来\n去成了吗"}', "nudge")
+    chk("15d3 追聊判断同样容错", ok and on and say == "后来 去成了吗", (ok, on, say))
+    ok, o = A._parse_reply_json('{"say": ["第一行\n第二行"], "want": 2}')
+    chk("15d4 回复的结构化解析同样容错", ok and o["say"] == ["第一行\n第二行"], o)
+    chk("15d5 容错不改变合法 JSON 的结果", A._loads_lenient('{"a": "x\\ny", "b": [1, 2]}') == {"a": "x\ny", "b": [1, 2]})
+    chk("15d6 真解析不了的仍然失败", A._loads_lenient('{"a": ') is None
+        and A._parse_proactive_json('{"speak": true, "say": "a')[0] is False
+        and A._parse_flag_json('{"nudge": true, "say": "a', "nudge")[0] is False)
+    ok, speak, say, kind, anchor = A._parse_proactive_json('{"speak": true, "say": ["a", "b", "c"]}')
+    chk("15e 最多两条", speak and len(say) == 2, say)
+    for _mk in ("[SKIP]", "[跳过]"):
+        ok, speak, say, kind, anchor = A._parse_proactive_json(_mk)
+        chk("15f %s 算不发" % _mk, ok and not speak)
+    chk("15g 不是 JSON → 解析失败（不发）", A._parse_proactive_json("大家晚上好呀")[0] is False)
+
+    pdm = NullDaemon(history=hist)
+    pmsgs, _pn = A._proactive_compose_v2(pdm, "group", "555001")
+    ptxt = pmsgs[0]["content"] + "\n" + pmsgs[1]["content"]
+    chk("15h 提示词：由头只认三种、十次里九次不该发、结构化输出、历史带相对时间",
+        "由头只认三种" in ptxt and "十次里九次都不该发" in ptxt and '"speak": false' in ptxt
+        and "距现在多久" in pmsgs[1]["content"] and "不算由头" in ptxt)
+    chk("15i 不再是「主动开个话头」", "开个话头" not in ptxt, ptxt[-120:])
+
+    def _pro_run(v2, reply):
+        sent, used = [], []
+        dm = NullDaemon(history=[])
+        dm.send = lambda ct, cid, texts, reply_message_id=None: sent.append(list(texts))
+        dm.status = lambda: {}
+        A._proactive_state.clear()
+        A._proactive_state.update({"groups": {"last_attempt": 0.0, "last_sent": 0.0},
+                                   "private": {"last_attempt": 0.0, "last_sent": 0.0}})
+        A._proactive_send_times.clear()
+        LOG.clear()
+        with patched(A, REPLY_V2_FORCE=v2, _proactive_targets=lambda dm, cfg: [("group", "555001")],
+                     _proactive_pick=lambda cfg, kind, pool, now, daemon=None: ("group", "555001"),
+                     _proactive_cap_left=lambda cfg, now: 1,
+                     _proactive_state_save=lambda: None,      # 不写真实的 proactive_state.json
+                     _dedup_reply=lambda dm, m, texts: (list(texts), 0),
+                     load_json_const=_cfg_ljc({"proactive_groups_enabled": True}),
+                     call_glm_with_fallback=lambda ms, t, budget_sec=200: used.append(ms[0]["content"][:12]) or ("m", reply),
+                     _proactive_compose=lambda dm, ct, cid: (used.append("v1") or [
+                         {"role": "system", "content": "S"}, {"role": "user", "content": "U"}], "p")):
+            A._proactive_tick(dm)
+        return sent, used, [x for x in LOG if x.startswith("AGENT_PROACTIVE")]
+
+    sent, used, logs = _pro_run(True, '{"speak": false}')
+    chk("15j v2 没有由头 → 不发", sent == [] and used and used[0] != "v1"
+        and any("没有具体由头" in x for x in logs), (sent, used, logs))
+    sent, used, logs = _pro_run(True, '{"speak": true, "kind": "接话", "anchor": "小张问有没有人打过", "say": ["我打过"]}')
+    chk("15k v2 有由头 → 发出那句话，并记下由头", sent == [["我打过"]]
+        and any(x.startswith("AGENT_PROACTIVE_REASON") and "接话" in x for x in logs), (sent, logs))
+    sent, used, logs = _pro_run(True, "大家晚上好呀")
+    chk("15l v2 输出不是 JSON → 不发并记日志", sent == []
+        and any(x.startswith("AGENT_PROACTIVE_JSON_FAIL") for x in logs), (sent, logs))
+    sent, used, logs = _pro_run(False, "大家晚上好呀")
+    chk("15m 关着 → 走旧版主动消息（原文照发）", used[:1] == ["v1"] and sent == [["大家晚上好呀"]], (used, sent))
+
+    src_agent = read_src("qq_bot_agent.py")
+    chk("15n v2 下停用「闲聊超长压缩重试」；旧路径原样保留",
+        'if not reply_v2_on() and _cml and msg.get("trigger_reason")' in src_agent)
+    chk("15o 旧补丁保留：同话题提示、语义去重、连贯性守卫都还在",
+        "_same_topic_note(msg)" in src_agent and "_semantic_dup_check(msg, s, _recent_bot)" in src_agent
+        and "_coherence_issue(texts)" in src_agent)
+
+    # ---------- 16. 设置页开关（保存路径指向临时文件，不碰真实配置） ----------
+    import io
+    import shutil
+    import tempfile
+    import qq_admin_ui as U
+
+    _tmpd = tempfile.mkdtemp(prefix="qqbot_smoke_rc_")
+    _real_rc = U.REPLY_CONFIG_PATH
+    U.REPLY_CONFIG_PATH = os.path.join(_tmpd, "reply_config.json")
+
+    def _ui_call(method, bodyq=None):
+        h = U.UiHandler.__new__(U.UiHandler)
+        h.path = "/api/reply-config"
+        raw = json.dumps(bodyq).encode("utf-8") if bodyq is not None else b""
+        h.headers = {"Content-Length": str(len(raw))}
+        h.rfile = io.BytesIO(raw)
+        replies = []
+        h._reply = lambda code, obj: replies.append((code, obj))
+        h._authed = lambda u, q: True
+        getattr(h, method)()
+        return replies
+
+    def _saved():
+        return json.loads(pathlib.Path(U.REPLY_CONFIG_PATH).read_text(encoding="utf-8"))
+
+    try:
+        r = _ui_call("do_POST", {"prompt_v2": 1, "reply_v2": True, "reply_json": 0, "vision_caption": True,
+                                 "vision_caption_model": " glm-4.6v-flash ", "vision_caption_daily_cap": 300})
+        s = _saved() if pathlib.Path(U.REPLY_CONFIG_PATH).exists() else {}
+        chk("16a 四个开关 + 识图模型 + 每日上限都能保存",
+            bool(r) and r[0][0] == 200 and s.get("prompt_v2") is True and s.get("reply_v2") is True
+            and s.get("reply_json") is False and s.get("vision_caption") is True
+            and s.get("vision_caption_model") == "glm-4.6v-flash" and s.get("vision_caption_daily_cap") == 300, s)
+        _ui_call("do_POST", {"vision_caption_daily_cap": 99999})
+        chk("16b 上限夹到 5000", _saved().get("vision_caption_daily_cap") == 5000)
+        r = _ui_call("do_POST", {"vision_caption_daily_cap": "abc"})
+        chk("16c 上限不是整数 → 400", bool(r) and r[0][0] == 400, r[:1])
+        r = _ui_call("do_POST", {"vision_caption_model": 'a"b{c}'})
+        chk("16d 模型名去掉引号和花括号", _saved().get("vision_caption_model") == "abc", _saved().get("vision_caption_model"))
+        r = _ui_call("do_POST", {"vision_caption_model": "   "})
+        chk("16e 模型名留空 → 回到默认", _saved().get("vision_caption_model") == "glm-4.6v-flash")
+        _ui_call("do_POST", {"chat_probability": 0.2, "prompt_v2": False})
+        s = _saved()
+        chk("16f 保存其它设置时新开关不丢；再点一次能关掉",
+            s.get("prompt_v2") is False and s.get("reply_v2") is True and s.get("vision_caption") is True
+            and s.get("chat_probability") == 0.2, s)
+        r = _ui_call("do_GET")
+        g = r[0][1] if r else {}
+        chk("16g GET 返回新开关，取值与保存的一致",
+            bool(r) and r[0][0] == 200 and g.get("prompt_v2") is False and g.get("reply_v2") is True
+            and g.get("vision_caption_daily_cap") == 5000, {k: g.get(k) for k in (
+                "prompt_v2", "reply_v2", "reply_json", "vision_caption", "vision_caption_model",
+                "vision_caption_daily_cap")} if isinstance(g, dict) else r[:1])
+    finally:
+        U.REPLY_CONFIG_PATH = _real_rc
+        shutil.rmtree(_tmpd, ignore_errors=True)
+    chk("16h 真实的回复配置没有被这组测试改动", os.path.realpath(U.REPLY_CONFIG_PATH) == os.path.realpath(_real_rc))
+    src_ui = read_src("qq_admin_ui.py")
+    chk("16i 设置页有四个开关", all(("{%s:this.checked?1:0}" % k) in src_ui
+                                   for k in C_KEYS) if (C_KEYS := tuple(A.C.ARCH_V2_BOOL_KEYS)) else False)
+    chk("16j 默认值只有一处：agent 与设置页都读 qq_common.ARCH_V2_DEFAULTS",
+        A.PROMPT_V2_DEFAULT is A.C.ARCH_V2_DEFAULTS["prompt_v2"]
+        and A.REPLY_V2_DEFAULT is A.C.ARCH_V2_DEFAULTS["reply_v2"]
+        and A.REPLY_JSON_DEFAULT is A.C.ARCH_V2_DEFAULTS["reply_json"]
+        and A.VCAP_DEFAULT is A.C.ARCH_V2_DEFAULTS["vision_caption"]
+        and A.vision_caption_model() == A.C.ARCH_V2_DEFAULTS["vision_caption_model"]
+        and A.vision_caption_daily_cap() == A.C.ARCH_V2_DEFAULTS["vision_caption_daily_cap"])
+
 print("\n%d 项失败" % len(fails) + (": " + "; ".join(fails) if fails else "（全部通过）"))
 sys.exit(1 if fails else 0)

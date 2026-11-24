@@ -2544,6 +2544,81 @@ def _nudge_compose(daemon, chat_type, chat_id):
     return out_text
 
 
+def _parse_flag_json(text, key):
+    """解析「要不要做」这类结构化判断：{"<key>": true/false, "say": "…"}。
+    返回 (ok, on, say)。[不发]/[跳过]/[SKIP] 算合法的「不做」；其余解析不出
+    一律 ok=False——调用方按「不做」处理，宁可少发。"""
+    t = re.sub(r"(?is)<\s*think(?:ing)?\s*>.*?<\s*/\s*think(?:ing)?\s*>", "",
+               str(text or "")).strip()
+    if t.startswith("```"):
+        t = re.sub(r"^```[a-zA-Z]*\s*", "", t)
+        t = re.sub(r"\s*```$", "", t)
+    if re.fullmatch(r"\[\s*(?:不发|跳过|SKIP)\s*\]", t, re.I):
+        return True, False, ""
+    i, j = t.find("{"), t.rfind("}")
+    if i < 0 or j <= i:
+        return False, False, ""
+    obj = _loads_lenient(t[i:j + 1])
+    if not isinstance(obj, dict):
+        return False, False, ""
+    on = obj.get(key)
+    if isinstance(on, str):
+        on = on.strip().lower() in ("true", "yes", "1")
+    if not isinstance(on, bool):
+        return False, False, ""
+    say = obj.get("say")
+    if isinstance(say, list):
+        say = " ".join(str(x).strip() for x in say if str(x).strip())
+    say = " ".join(str(say or "").split())
+    return True, on, say
+
+
+def _nudge_compose_v2(daemon, chat_type, chat_id):
+    """v2 追聊：不分类、不起新话头。只问一件事——对方自己的话是不是说到一半
+    断了，或者你说的那件事刚好有了新进展；判定和措辞一次调用，默认不发。
+    旧版的 A/B/C/D 分类框架本身就是泄漏源（回声兜底 14 天只拦到 1 次），
+    这里连框架带「分类前缀剥离」「回声词表」一起撤掉。"""
+    hist = daemon.history(chat_type, chat_id, limit=10) or []
+    block, _lg, _nc = _render_history_v2(hist, time.time(), 10)
+    _ti = C.tz_now_info()
+    _tnow = ("【当前真实时间：%s %s（24小时制 %s）】（时间只用来判断隔了多久："
+             "追问里绝不出现任何钟点，只用早上/中午/晚上这类时段）"
+             % (_ti["iso"], _ti["weekday"], _ti["clock24"]))
+    if chat_type == "group":
+        scene = ("这是群聊。你刚在群里说完一句话，之后没人接。群里冷场是常态，"
+                 "绝大多数时候不该再开口。\n"
+                 "值得补一句的只有一种情况：你刚说的那句本身没说完（后半句断了），"
+                 "或者你说的那件事刚好有了新进展。你问出去的话没人答、抛出的邀约"
+                 "没人接，都不算——不催、不@人、不找话。")
+    else:
+        scene = ("你刚说完一句话，对方有一阵子没回。\n"
+                 "值得补一句的只有两种情况：对方自己上一句说到一半就断了（说了"
+                 "「我去…」「等下」「那个…」之类没了下文），或者你说的那件事刚好"
+                 "有了新进展。\n"
+                 "你问出去的对方没答、你抛的邀约没人接、话题已经聊完、对方明显在忙"
+                 "——都不算。不催、不查岗、不换话题找话、不重复你刚说过的内容。")
+    sys_p = (_persona_stack_text((chat_type, chat_id)) + "\n" + _tnow +
+             "\n\n## 场景\n" + scene +
+             "\n\n## 最近对话（旧→新；行首是那句话距现在多久）\n" + block +
+             "\n\n## 本次输出格式（必须严格遵守）\n"
+             "只输出一个 JSON 对象，不要 Markdown 代码块，不要任何多余文字：\n"
+             ' {"nudge": true 或 false, "say": "要发的那一句话"}\n'
+             "拿不准就是 false，say 留空字符串。要发时 say 只有一句、二十来个字，"
+             "用你的口吻顺着那半句问下文或把新进展说出来，不提「没回我」「没人理」。\n"
+             '多数情况的输出：{"nudge": false, "say": ""}')
+    _m, text = call_glm_with_fallback(
+        [{"role": "system", "content": sys_p},
+         {"role": "user", "content": "对方沉默了。要不要补一句？"}], "")
+    ok, on, say = _parse_flag_json(text, "nudge")
+    if not ok:
+        out("AGENT_NUDGE_JSON_FAIL chat=%s/%s head=%.40s"
+            % (chat_type, chat_id, str(text)[:40].replace("\n", " ")))
+        return ""
+    if not on or not say:
+        return ""
+    return say[:120]
+
+
 _OBS_PUMP = {"seq": 0, "ts": 0.0, "init": False}
 
 
@@ -2657,7 +2732,8 @@ def _nudge_tick(daemon):
             continue
         # 追！（每次巡检最多追 1 个会话）
         try:
-            text = _nudge_compose(daemon, ct, cid)
+            text = (_nudge_compose_v2(daemon, ct, cid) if reply_v2_on()
+                    else _nudge_compose(daemon, ct, cid))
         except Exception as e:
             out("AGENT_NUDGE_FAIL %s/%s %r" % (ct, cid, e))
             text = ""
@@ -2684,7 +2760,7 @@ def _nudge_tick(daemon):
 # 旧逻辑原样保留在 _build_messages_impl 的 v2=False 分支，由开关选择。
 # ---------------------------------------------------------------------------
 PROMPT_V2_FORCE = None       # 评测/测试用：True/False 强制；None = 读配置
-PROMPT_V2_DEFAULT = False    # 分支阶段默认关；评测通过、合并前改为 True
+PROMPT_V2_DEFAULT = C.ARCH_V2_DEFAULTS["prompt_v2"]    # 分支阶段默认关；合并前改 True
 
 
 def prompt_v2_on():
@@ -4143,6 +4219,103 @@ def _proactive_compose(daemon, chat_type, chat_id):
             {"role": "user", "content": content}], persona_name
 
 
+def _proactive_compose_v2(daemon, chat_type, chat_id):
+    """v2 主动消息：先问「此刻有没有具体的由头」，判定和措辞一次调用。
+    由头只认三种——接某句没人回的话、跟进某人之前提过的事、接群里正在聊的
+    话题且你恰好有相关的经历。没有由头就不发，提示词里明说十次里九次不该发。
+    旧版的任务说明是「主动开个话头或说句话」，模型几乎从不选 [SKIP]，
+    每天二三十条开场白多半是没有由头的。人设、记忆、风格卡这些素材沿用旧版。"""
+    data, _g = load_persona_collection()
+    global_base = data["global"]
+    persona_name = persona_for(chat_type, chat_id)[0] or data["active"]
+    coll_raw = load_json_const(PERSONA_COLLECTION_PATH, {})
+    persona = str(coll_raw.get(persona_name, "")).strip() if persona_name else ""
+    style = composed_style(persona_name)
+    ev = evolved_notes(persona_name) if persona_name else {"enabled": False, "notes": []}
+    evolved_block = ("\n\n## 自进化风格观察\n" + "\n".join("- %s" % n for n in ev["notes"][-_evolved_inject_n():])
+                     if ev["enabled"] and ev["notes"] else "")
+    mem_scope, mem_id = (("group", chat_id) if chat_type == "group"
+                         else ("contact", chat_id))
+    mems = memory_snippets(mem_scope, mem_id)
+    mem_block = ("\n\n## 长期记忆\n" + "\n".join(mems[-8:])) if mems else ""
+    _ti = C.tz_now_info()
+    tstr = "%s %s %s（%s）" % (_ti["iso"], _ti["weekday"], _ti["clock12"], _ti["clock24"])
+    hist = daemon.history(chat_type, chat_id, limit=40) or []
+    hist_block, _lg, _ncap = _render_history_v2(
+        hist, time.time(), 30, budget=3500, chat=(chat_type, chat_id))
+    label = "这个群" if chat_type == "group" else "和这位对象的对话"
+    system = (
+        "你是QQ里的AI机器人。身份由「全局通用设定」和「当前人设」唯一决定，"
+        "严格按人设行动。\n\n## 全局通用设定\n%s\n\n## 当前人设\n%s%s\n\n"
+        "## 硬性规则\n"
+        "- 输出是QQ聊天文本：禁止Markdown，口语化，遵守人设语气\n"
+        "- 绝对禁止任何脏话粗口（任何语境都不行），用\"哎呀/天哪\"表达情绪\n"
+        "%s%s\n"
+        "## 本次任务（判断要不要主动说一句）\n"
+        "现在是 %s。这不是在回复谁——你在看%s最近的记录，判断「此刻有没有一个"
+        "具体的由头让你想说句话」。\n"
+        "由头只认三种：\n"
+        "- 接话：有人说了什么、问了什么或发了什么，一直没人接，而你接得上\n"
+        "- 跟进：某人之前跟你或群里提过的事，现在到了可以问一句的时候"
+        "（有了新进展，或时间上该问了）\n"
+        "- 插一句：正在聊的话题，你恰好有相关的经历或一手信息\n"
+        "不算由头（一律不发）：想刷存在感、问候早晚和吃饭、提醒加衣喝水、"
+        "没话找话、复述别人已经说过的结论、深夜或清早的寒暄。\n"
+        "拿不准就不发——实际情形是十次里九次都不该发。\n"
+        "时间感只用来判断该不该说、说什么；绝不把具体钟点念出来，只用早上/中午/"
+        "晚上这类时段。上午/中午绝不说\"今晚/早点休息\"，深夜绝不说\"早上好\"。\n"
+        "%s\n"
+        "## 输出格式（必须严格遵守，优先级高于前文所有关于输出格式的说明）\n"
+        "只输出一个 JSON 对象，不要 Markdown 代码块，不要任何多余文字：\n"
+        " {\"speak\": false}\n"
+        " {\"speak\": true, \"kind\": \"接话\", \"anchor\": \"由头：谁说了什么、或谁之前提过什么\", "
+        "\"say\": [\"要发的那句话\"]}\n"
+        "say 里只写发给对方看的话：通常一条、二十来个字，最多两条；"
+        "不出现任何标记、括号动作或说明文字。anchor 是给你自己核对由头用的，不会发出去。\n"
+        "不发的时候：{\"speak\": false}"
+        % (global_base or "（无）", persona or "（无）",
+           ("\n\n## 说话风格卡\n" + style) if style else "",
+           evolved_block, mem_block, tstr, label,
+           ((naming_lines() + "\n\n") if naming_lines() else "")))
+    content = ("【最近对话（旧→新；每行开头是距现在多久，后面是谁说的）】\n%s\n%s\n\n"
+               "【现在】按上面的要求判断：此刻有没有具体的由头让你说句话？"
+               % (hist_block, _zcode_context_line(chat_type, chat_id)))
+    return [{"role": "system", "content": system},
+            {"role": "user", "content": content}], persona_name
+
+
+def _parse_proactive_json(text):
+    """v2 主动消息的结构化判断。返回 (ok, speak, say 列表, kind, anchor)。
+    [跳过]/[SKIP] 算合法的「不发」；解析不出一律 ok=False，调用方按不发处理。"""
+    t = re.sub(r"(?is)<\s*think(?:ing)?\s*>.*?<\s*/\s*think(?:ing)?\s*>", "",
+               str(text or "")).strip()
+    if t.startswith("```"):
+        t = re.sub(r"^```[a-zA-Z]*\s*", "", t)
+        t = re.sub(r"\s*```$", "", t)
+    if re.fullmatch(r"\[\s*(?:跳过|SKIP)\s*\]", t, re.I):
+        return True, False, [], "", ""
+    i, j = t.find("{"), t.rfind("}")
+    if i < 0 or j <= i:
+        return False, False, [], "", ""
+    obj = _loads_lenient(t[i:j + 1])
+    if not isinstance(obj, dict):
+        return False, False, [], "", ""
+    speak = obj.get("speak")
+    if isinstance(speak, str):
+        speak = speak.strip().lower() in ("true", "yes", "1")
+    if not isinstance(speak, bool):
+        return False, False, [], "", ""
+    say = obj.get("say")
+    if isinstance(say, str):
+        say = [say]
+    if not isinstance(say, list):
+        say = []
+    say = [" ".join(str(x).split())[:120] for x in say if str(x).strip()][:2]
+    return (True, speak and bool(say), say,
+            str(obj.get("kind") or "")[:8],
+            " ".join(str(obj.get("anchor") or "").split())[:60])
+
+
 def _proactive_pick(cfg, kind, pool, now, daemon=None):
     """某一类（groups/private）的主动判定：开关/间隔/时段/概率通过则返回目标。
     群目标支持分群覆盖（group_reply_modes 的 proactive_probability/
@@ -4272,12 +4445,27 @@ def _proactive_tick(daemon):
     _proactive_state_save()
     out("AGENT_PROACTIVE_TRY chat=%s/%s" % (chat_type, chat_id))
     try:
-        msgs, active = _proactive_compose(daemon, chat_type, chat_id)
-        _model, reply = call_glm_with_fallback(msgs, "")
-        texts, stickers, _memo, _draw, _sendgrp = parse_reply(reply)
-        if texts is None:
-            out("AGENT_PROACTIVE_SKIP chat=%s/%s (模型判断不合适)" % (chat_type, chat_id))
-            return
+        if reply_v2_on():
+            # v2：先问有没有具体由头（判定和措辞一次调用），解析不出按不发处理
+            msgs, active = _proactive_compose_v2(daemon, chat_type, chat_id)
+            _model, reply = call_glm_with_fallback(msgs, "")
+            _ok, _speak, texts, _kind, _anchor = _parse_proactive_json(reply)
+            if not _ok:
+                out("AGENT_PROACTIVE_JSON_FAIL chat=%s/%s head=%.40s"
+                    % (chat_type, chat_id, str(reply)[:40].replace("\n", " ")))
+                return
+            if not _speak or not texts:
+                out("AGENT_PROACTIVE_SKIP chat=%s/%s (没有具体由头)" % (chat_type, chat_id))
+                return
+            out("AGENT_PROACTIVE_REASON chat=%s/%s kind=%s anchor=%.40s"
+                % (chat_type, chat_id, _kind, _anchor))
+        else:
+            msgs, active = _proactive_compose(daemon, chat_type, chat_id)
+            _model, reply = call_glm_with_fallback(msgs, "")
+            texts, stickers, _memo, _draw, _sendgrp = parse_reply(reply)
+            if texts is None:
+                out("AGENT_PROACTIVE_SKIP chat=%s/%s (模型判断不合适)" % (chat_type, chat_id))
+                return
         fake_msg = {"chat_type": chat_type, "chat_id": chat_id, "id": "pro"}
         texts, dropped = _dedup_reply(daemon, fake_msg, texts)
         if not texts:
@@ -5369,7 +5557,7 @@ def call_vision(messages_text, image_urls, daemon=None):
 # 先花一次带完整人设的视觉调用、再决定说不说。
 # ---------------------------------------------------------------------------
 VCAP_FORCE = None
-VCAP_DEFAULT = False
+VCAP_DEFAULT = C.ARCH_V2_DEFAULTS["vision_caption"]
 
 _CAPTION_PROMPT = (
     "用一句不超过 30 字的口语描述这张图：是什么（表情包/梗图/截图/照片/"
@@ -5400,16 +5588,16 @@ def vision_caption_on():
 
 def vision_caption_model():
     return str(load_json_const(REPLY_CONFIG_PATH, {}).get("vision_caption_model")
-               or "glm-4.6v-flash").strip()
+               or C.ARCH_V2_DEFAULTS["vision_caption_model"]).strip()
 
 
 def vision_caption_daily_cap():
     """每天最多识多少条带图消息（默认 600）。"""
     try:
         return max(0, min(5000, int(load_json_const(REPLY_CONFIG_PATH, {}).get(
-            "vision_caption_daily_cap", 600))))
+            "vision_caption_daily_cap", C.ARCH_V2_DEFAULTS["vision_caption_daily_cap"]))))
     except (TypeError, ValueError):
-        return 600
+        return C.ARCH_V2_DEFAULTS["vision_caption_daily_cap"]
 
 
 def _cap_chat_allowed(chat_type, chat_id):
@@ -5787,9 +5975,9 @@ def _mcp_agent_loop(daemon, msg, messages, reply):
 # 开关：reply_v2（策略层）、reply_json（结构化输出，依赖 reply_v2）。
 # ---------------------------------------------------------------------------
 REPLY_V2_FORCE = None
-REPLY_V2_DEFAULT = False
+REPLY_V2_DEFAULT = C.ARCH_V2_DEFAULTS["reply_v2"]
 REPLY_JSON_FORCE = None
-REPLY_JSON_DEFAULT = False
+REPLY_JSON_DEFAULT = C.ARCH_V2_DEFAULTS["reply_json"]
 
 
 def _cfg_flag(key, default, force):
@@ -5859,6 +6047,49 @@ JSON_RULE_AGENT = (
     '"wait": false, "voice": false, "sticker": null, "quiet_minutes": null, "actions": []}')
 
 
+def _loads_lenient(text):
+    """解析 JSON；失败时把字符串里面的原始换行/制表符按转义处理再试一次
+    （模型偶尔会在 say 字段里直接换行，标准解析会整条失败、白多一次重试调用）。
+    只动字符串内部的控制字符，结构原样。仍然失败返回 None。"""
+    try:
+        return json.loads(text)
+    except ValueError:
+        pass
+    out, i, n, in_str, esc = [], 0, len(text), False, False
+    while i < n:
+        ch = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            elif ch == "\n":
+                out.append("\\n")
+                i += 1
+                continue
+            elif ch == "\r":
+                i += 1
+                continue
+            elif ch == "\t":
+                out.append("\\t")
+                i += 1
+                continue
+            elif ord(ch) < 32:
+                out.append(" ")
+                i += 1
+                continue
+        elif ch == '"':
+            in_str = True
+        out.append(ch)
+        i += 1
+    try:
+        return json.loads("".join(out))
+    except ValueError:
+        return None
+
+
 def _parse_reply_json(text):
     """结构化回复解析。返回 (ok, obj)；obj 的字段已校验并归一。"""
     t = re.sub(r"(?is)<\s*think(?:ing)?\s*>.*?<\s*/\s*think(?:ing)?\s*>", "",
@@ -5869,10 +6100,7 @@ def _parse_reply_json(text):
     i, j = t.find("{"), t.rfind("}")
     if i < 0 or j <= i:
         return False, None
-    try:
-        obj = json.loads(t[i:j + 1])
-    except ValueError:
-        return False, None
+    obj = _loads_lenient(t[i:j + 1])
     if not isinstance(obj, dict):
         return False, None
 
@@ -6501,8 +6729,11 @@ def process(daemon, msg):
         reply = _MCP_ACT_ANY_RE.sub("", reply)
     # P3·闲聊长度上限：闲聊类触发的回复超长 → 带压缩指令重试一次
     # （明确对话 @/回复不受限——那是正经回答问题的场景）
+    # v2 不走这一步：长度在生成时就给了目标（群消息长度提示 + 输出格式里的
+    # 字数要求），评测里超 60 字的回复已从约 20% 降到 5%~9%；而且压缩重试
+    # 是按文本协议追加一条 user 指令，和结构化输出对不上。
     _cml = chat_max_len()
-    if _cml and msg.get("trigger_reason") in ("chat_random", "burst", "peer_talk") \
+    if not reply_v2_on() and _cml and msg.get("trigger_reason") in ("chat_random", "burst", "peer_talk") \
             and len(re.sub(r"\[\w+:?[^\]]*\]", "", reply).strip()) > _cml:
         try:
             _m2, _r2 = call_glm_with_fallback(messages + [

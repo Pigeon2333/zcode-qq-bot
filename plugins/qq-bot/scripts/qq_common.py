@@ -26,6 +26,19 @@ DATA_ROOT = pathlib.Path(DATA_DIR)
 
 APP_VERSION = "0.5.20"         # 发布版本号（更新检查与本页展示用；发版时同步改）
 
+# 对话架构 v2 各开关的默认值（agent 读、设置页展示，共用这一份；没在
+# reply_config.json 里写过的键就取这里的值）。分支阶段全部默认关，行为与从前
+# 完全一致；评测通过、合并发布时只改这里。
+ARCH_V2_DEFAULTS = {
+    "prompt_v2": False,                  # 提示词 v2：长历史窗口 + 紧凑行
+    "reply_v2": False,                   # 回复策略 v2：统一判定 + 策略层（主动/追聊也跟随）
+    "reply_json": False,                 # v2 下主调用用结构化输出（要 reply_v2 开着才生效）
+    "vision_caption": False,             # 后台识图：图到达即在后台生成一行描述（要 reply_v2）
+    "vision_caption_model": "glm-4.6v-flash",
+    "vision_caption_daily_cap": 600,     # 每天最多识多少条带图消息（0=不识）
+}
+ARCH_V2_BOOL_KEYS = ("prompt_v2", "reply_v2", "reply_json", "vision_caption")
+
 # 表情回应（QQ 系统表情，NapCat set_msg_emoji_like 的 emoji_id）。
 # agent 教学 / daemon 执行 / 管理台勾选三方共用的全集；默认全开。
 REACT_EMOJIS = [

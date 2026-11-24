@@ -2307,6 +2307,21 @@ async function vSettings(){
    <span><b>精简上下文（推荐开启）</b><div class="k" style="margin-top:3px">开启后：旁观消息先经约 0.5k token 的轻量判定决定是否开口（决定开口才用全量提示词生成），回复时按<b>模型链第一个模型自己的上下文大小</b>裁剪历史与记忆（模型 8k→最近 10 条历史+4 条记忆；16k→10 条+5 条；128k 大模型仍按精简档注入）——人设/风格/安全规则始终全量，回复质量不受影响。关闭后：<b>固定按最高档注入</b>（历史 14 条×100 字+记忆 8/6 条，不看模型窗口大小），追求最佳表现，token 消耗大约 +50%~80%</div></span></label></div>
  <div class="card"><label class="master"><input type="checkbox" ${rv.dyn_ctx_enabled!==false?'checked':''} onchange="saveKVLoad('/api/reply-config',{dyn_ctx_enabled:this.checked?1:0},'动态上下文预算已'+(this.checked?'开启':'关闭'))">
    <span><b>动态上下文预算（推荐开启）</b><div class="k" style="margin-top:3px">注入量感知的双向自适应，两层：<b>升档</b>（精简上下文开启时）——本条回复的注入量大（热点速览/风格参考/成员画像等大块头）自动升到最高档（历史 10→14 条），多带历史帮模型消化大话题；<b>降档守卫</b>（任何档位都生效，含精简关闭的最高档）——固定开销逼近模型窗口时反向减历史（砍到 5 条+记忆 2 条），宁可少带历史也绝不截断注入与对话。普通聊天维持原档不动。<b>关闭本开关</b>＝完全按上面的档位固定注入，不做任何自动调整。运行日志可搜 CTX_ADAPT 看每次决策</div></span></label></div>
+ <div class="card"><div class="k" style="margin-bottom:8px"><b>对话架构 v2</b>（逐项独立开关；关闭时行为与从前完全一致）</div>
+  <label class="master"><input type="checkbox" ${rv.prompt_v2?'checked':''} onchange="saveKVLoad('/api/reply-config',{prompt_v2:this.checked?1:0},'提示词 v2 已'+(this.checked?'开启':'关闭'))">
+   <span><b>提示词 v2</b><div class="k" style="margin-top:3px">历史窗口从 14 行扩到 50 行，每行「距现在多久 + 谁说的 + 内容」；带话、画图、设备操控的教学只对主人注入。提示词体积约小四分之一，回复风格没有变化</div></span></label>
+  <label class="master" style="margin-top:10px"><input type="checkbox" ${rv.reply_v2?'checked':''} onchange="saveKVLoad('/api/reply-config',{reply_v2:this.checked?1:0},'回复策略 v2 已'+(this.checked?'开启':'关闭'))">
+   <span><b>回复策略 v2</b><div class="k" style="margin-top:3px">旁观消息用完整历史判断要不要接，结论带进回复；对方直接@或回复时必须回应；主动消息改成有具体由头才发；追聊不再分类找话。实测直接@的回应从约九成提高到全部回应，超长回复明显减少，总 token 约省四成；代价是旁观消息的回复多等 1 到 2 秒</div></span></label>
+  <label class="master" style="margin-top:10px"><input type="checkbox" ${rv.reply_json?'checked':''} onchange="saveKVLoad('/api/reply-config',{reply_json:this.checked?1:0},'结构化输出已'+(this.checked?'开启':'关闭'))">
+   <span><b>结构化输出</b><div class="k" style="margin-top:3px">回复策略 v2 下，模型按固定字段输出（说不说、说什么、挂什么表情），不再靠文本标记。需要先开启回复策略 v2</div></span></label>
+  <label class="master" style="margin-top:10px"><input type="checkbox" ${rv.vision_caption?'checked':''} onchange="saveKVLoad('/api/reply-config',{vision_caption:this.checked?1:0},'后台识图已'+(this.checked?'开启':'关闭'))">
+   <span><b>后台识图</b><div class="k" style="margin-top:3px">群里的图片到达后在后台生成一行描述，机器人据此判断接不接话，不再整条跳过带图消息；@机器人或引用图片提问时仍然直接看图。开启后图片会发送给模型服务商识别。需要先开启识图总开关和回复策略 v2</div></span></label>
+  <div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap">
+   <span class="k">识图模型</span>
+   <input value="${esc(String(rv.vision_caption_model||''))}" style="width:200px" placeholder="glm-4.6v-flash" onchange="saveKVLoad('/api/reply-config',{vision_caption_model:this.value.trim()},'识图模型已保存')">
+   <span class="k">每天最多识</span>
+   <input type="number" min="0" max="5000" value="${rv.vision_caption_daily_cap}" style="width:90px" onchange="saveKVLoad('/api/reply-config',{vision_caption_daily_cap:parseInt(this.value)||0},'每日识图上限已保存')">
+   <span class="k">条带图消息（0=不识）</span></div></div>
  <div class="card"><div class="k" style="display:flex;gap:10px;align-items:center;margin-bottom:8px">高峰降耗
   ${rv.econ_active?'<span class="badge" style="background:var(--warn);color:#fff">降耗进行中</span>':'<span class="badge" style="background:var(--tint);color:var(--dim)">未生效</span>'}</div>
   <label class="master"><input type="checkbox" ${rv.econ_enabled?'checked':''} onchange="saveEcon('econ_enabled',this.checked)">
@@ -5584,6 +5599,18 @@ class UiHandler(BaseHTTPRequestHandler):
                                      "bili_scroll_keywords": str(data.get("bili_scroll_keywords", "")),
                                      "lean_ctx_enabled": data.get("lean_ctx_enabled", True),
                                      "dyn_ctx_enabled": data.get("dyn_ctx_enabled", True),
+                                     # 对话架构 v2：没在配置里写过的键取 agent 的默认值，页面显示的
+                                     # 就是实际生效的
+                                     "prompt_v2": bool(data.get("prompt_v2", C.ARCH_V2_DEFAULTS["prompt_v2"])),
+                                     "reply_v2": bool(data.get("reply_v2", C.ARCH_V2_DEFAULTS["reply_v2"])),
+                                     "reply_json": bool(data.get("reply_json", C.ARCH_V2_DEFAULTS["reply_json"])),
+                                     "vision_caption": bool(data.get("vision_caption",
+                                                                      C.ARCH_V2_DEFAULTS["vision_caption"])),
+                                     "vision_caption_model": str(data.get("vision_caption_model")
+                                                                 or C.ARCH_V2_DEFAULTS["vision_caption_model"]),
+                                     "vision_caption_daily_cap": data.get(
+                                         "vision_caption_daily_cap",
+                                         C.ARCH_V2_DEFAULTS["vision_caption_daily_cap"]),
                                      "wait_gate_enabled": data.get("wait_gate_enabled", True),
                                      "burst_merge_enabled": data.get("burst_merge_enabled", True),
                                      "botloop_guard_enabled": data.get("botloop_guard_enabled", True),
@@ -6616,6 +6643,19 @@ class UiHandler(BaseHTTPRequestHandler):
                 data["lean_ctx_enabled"] = bool(body["lean_ctx_enabled"])
             if "dyn_ctx_enabled" in body:
                 data["dyn_ctx_enabled"] = bool(body["dyn_ctx_enabled"])
+            # 对话架构 v2 的四个开关 + 识图模型 / 每日上限
+            for _v2 in C.ARCH_V2_BOOL_KEYS:
+                if _v2 in body:
+                    data[_v2] = bool(body[_v2])
+            if "vision_caption_model" in body:
+                _vcm = re.sub(r"[\s\"'{}\\]", "", str(body["vision_caption_model"] or ""))[:60]
+                data["vision_caption_model"] = _vcm or C.ARCH_V2_DEFAULTS["vision_caption_model"]
+            if "vision_caption_daily_cap" in body:
+                try:
+                    data["vision_caption_daily_cap"] = max(0, min(
+                        5000, int(body["vision_caption_daily_cap"])))
+                except (TypeError, ValueError):
+                    return self._reply(400, {"ok": False, "error": "每日识图上限应为 0-5000 的整数"})
             if "wait_gate_enabled" in body:
                 data["wait_gate_enabled"] = bool(body["wait_gate_enabled"])
             if "burst_merge_enabled" in body:
