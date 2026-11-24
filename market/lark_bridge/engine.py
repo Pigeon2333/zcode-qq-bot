@@ -20,7 +20,15 @@ import qq_common as C
 CFG_PATH = pathlib.Path(C.DATA_DIR) / "lark_config.json"
 _TOKEN = {"value": "", "exp": 0.0}
 _DAEMON = None            # on_tick 注入，供飞书→QQ 方向发消息
-_WS_THREAD = {"started": False}
+_WS_THREAD = {"started": False}   # 模块级标记：宿主热重载会清零，仅作兼容
+
+
+def _ws_started():
+    """长连接是否已在运行——标记放在 qq_common 模块对象上（进程级）。
+    宿主每次热重载（启停任意插件、保存任意插件设置）都会重新执行本文件，
+    模块级变量随之清零；旧的长连接线程还活着，新模块又起一条 → 同一条飞书
+    消息被转发多遍。qq_common 是常驻模块，不会被重载。"""
+    return bool(getattr(C, "_LARK_WS_STARTED", False))
 
 
 def cfg():
@@ -174,7 +182,7 @@ def start_ws_bridge(daemon):
         return
     if not any(b.get("to_qq") for b in (c.get("bridges") or [])):
         return
-    if not sdk_available() or _WS_THREAD["started"]:
+    if not sdk_available() or _ws_started():
         return
 
     def _run():
@@ -210,8 +218,10 @@ def start_ws_bridge(daemon):
             client = lark.ws.Client(c.get("app_id"), c.get("app_secret"),
                                     event_handler=P2ImMessageReceiveV1(handler))
             client.start()
-        except Exception as e:
+        except Exception:
             _WS_THREAD["started"] = False
+            C._LARK_WS_STARTED = False   # 线程退出：允许下一个节拍重新拉起
 
     _WS_THREAD["started"] = True
+    C._LARK_WS_STARTED = True
     threading.Thread(target=_run, daemon=True).start()
