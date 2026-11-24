@@ -237,6 +237,7 @@ def main():
         try:
             if pipe:
                 fake = _NullDaemon(s)
+                g = ""     # 闲聊触发的判定结论；直接对话没有判定
                 if s["trigger"] == "chat_random" and A.chat_anti_interrupt_enabled():
                     g = A._reply_gate_v2(fake, msg, messages, persona)
                     row["gate"] = g

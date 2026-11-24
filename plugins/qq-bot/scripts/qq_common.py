@@ -27,12 +27,15 @@ DATA_ROOT = pathlib.Path(DATA_DIR)
 APP_VERSION = "0.5.20"         # 发布版本号（更新检查与本页展示用；发版时同步改）
 
 # 对话架构 v2 各开关的默认值（agent 读、设置页展示，共用这一份；没在
-# reply_config.json 里写过的键就取这里的值）。分支阶段全部默认关，行为与从前
-# 完全一致；评测通过、合并发布时只改这里。
+# reply_config.json 里写过的键就取这里的值）。
+# prompt_v2 / reply_v2 / reply_json 默认开：评测通过（直接@必回 14/14、长文
+# 20%→5%~9%、token −40%、盲评 18:5:8），关掉任一项即回到从前的做法。
+# vision_caption 默认关：后台识图会把会话里的图片发给模型服务商识别，属于
+# 第三方信息类功能——独立开关、默认关闭，由用户在设置页自行打开。
 ARCH_V2_DEFAULTS = {
-    "prompt_v2": False,                  # 提示词 v2：长历史窗口 + 紧凑行
-    "reply_v2": False,                   # 回复策略 v2：统一判定 + 策略层（主动/追聊也跟随）
-    "reply_json": False,                 # v2 下主调用用结构化输出（要 reply_v2 开着才生效）
+    "prompt_v2": True,                   # 提示词 v2：长历史窗口 + 紧凑行
+    "reply_v2": True,                    # 回复策略 v2：统一判定 + 策略层（主动/追聊也跟随）
+    "reply_json": True,                  # v2 下主调用用结构化输出（要 reply_v2 开着才生效）
     "vision_caption": False,             # 后台识图：图到达即在后台生成一行描述（要 reply_v2）
     "vision_caption_model": "glm-4.6v-flash",
     "vision_caption_daily_cap": 600,     # 每天最多识多少条带图消息（0=不识）

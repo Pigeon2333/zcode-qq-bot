@@ -429,10 +429,14 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
             and "图已附在下方" not in c_on2)
 
     # ---------- 10. 处理流程分流（真实 process()） ----------
-    def run_process(msg, gate_verdict="N", preloaded=None, vcap=True):
-        """走真实 process()，记录：同步识图有没有被调、判定看到的内容、确认了几次。"""
-        vis, gates = [], []
+    def run_process(msg, gate_verdict="N", preloaded=None, vcap=True,
+                    main_reply='{"say": ["在呢"]}', v2=True, emoji_ok=False):
+        """走真实 process()，记录：同步识图有没有被调、判定看到的内容、确认了几次、
+        一共调了几次模型、发没发文字。"""
+        vis, gates, mcalls, sent = [], [], [], []
         dm = NullDaemon(history=hist)
+        dm.send = lambda ct, cid, texts, reply_message_id=None: sent.append(list(texts))
+        dm.set_msg_reaction = lambda mid, emoji, on=False: (bool(emoji_ok), "")   # 真实客户端返回 (ok, detail)
         A.PLUGIN_HOST.daemon = dm
 
         def _vision(ms, urls, daemon=None):
@@ -440,19 +444,21 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
             raise _Stop()
 
         def _chain(messages, text_ctx="", budget_sec=200):
+            mcalls.append(messages[0]["content"][:20])
             if len(messages) == 2 and _gate_head in messages[0]["content"]:
                 gates.append(messages[1]["content"])
                 return "m", gate_verdict
-            return "m", '{"say": ["在呢"]}'
+            return "m", main_reply
 
         _gate_head = "的插话判定器"     # 判定提示词的固定片段（人设名在它前面）
 
-        with patched(A, PROMPT_V2_FORCE=True, REPLY_V2_FORCE=True, REPLY_JSON_FORCE=True,
+        with patched(A, PROMPT_V2_FORCE=True, REPLY_V2_FORCE=v2, REPLY_JSON_FORCE=v2,
                      VCAP_FORCE=vcap,
                      vision_enabled=lambda: True, vision_mode=lambda: "all_prob",
                      vision_prob=lambda: 0.0, call_vision=_vision,
                      call_glm_with_fallback=_chain, chat_anti_interrupt_enabled=lambda: True,
-                     _cap_chat_allowed=lambda ct, cid: True):
+                     _cap_chat_allowed=lambda ct, cid: True,
+                     reaction_allowed=lambda: (True, ["63"])):
             reset_cap()
             if preloaded:
                 with A._CAP["lock"]:
@@ -464,7 +470,8 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
                 A.process(dm, msg)
             except _Stop:
                 where = "vision"
-            return dict(vis=vis, gates=gates, acked=dm.acked, logs=list(LOG), where=where)
+            return dict(vis=vis, gates=gates, acked=dm.acked, logs=list(LOG), where=where,
+                        mcalls=len(mcalls), sent=sent)
 
     r = run_process(group_msg("[图片]", "p1", [U1]), preloaded=["一张猫咪表情包"])
     chk("10a 闲聊触发+图已有描述 → 不再同步识图，交给统一判定",
@@ -502,6 +509,20 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
         and any("VISION_ZERO_SKIP" in x for x in r["logs"]), r["logs"][:4])
     r = run_process(group_msg("哈哈哈", "p7", []), preloaded=None)
     chk("10k 不带图的消息 → 不涉及识图，照常判定", r["vis"] == [] and len(r["gates"]) == 1)
+
+    # 只挂表情的回复：表情发出去了就到此为止；没发出去也不补话
+    _REACT = '{"want": 1, "say": [], "emoji": 63}'
+    r = run_process(group_msg("发了个表情包", "9001", []), gate_verdict="E", main_reply=_REACT, emoji_ok=True)
+    chk("10l v2 判定「回个表情就够」+ 模型只挂表情 → 到此为止：不补文字、不进复读重试（共 2 次调用）",
+        r["acked"] == [7001] and r["sent"] == [] and r["mcalls"] == 2
+        and any("reaction-only" in x and "表情未发出" not in x for x in r["logs"]), (r["acked"], r["sent"], r["mcalls"]))
+    r = run_process(group_msg("发了个表情包", "9001", []), gate_verdict="E", main_reply=_REACT, emoji_ok=False)
+    chk("10m 表情没发出去（被关掉/接口失败）→ 同样不回，不凭空生成一段话",
+        r["acked"] == [7001] and r["sent"] == [] and r["mcalls"] == 2
+        and any("reaction-only (表情未发出，本条不回)" in x for x in r["logs"]), (r["sent"], r["mcalls"], r["logs"][-2:]))
+    r = run_process(group_msg("发了个表情包", "9001", []), gate_verdict="Y", main_reply='{"say": ["哈哈这也太离谱了"]}')
+    chk("10n v2 判定「有话想说」+ 正常回复 → 文字发出去",
+        r["sent"] == [["哈哈这也太离谱了"]] and r["acked"] == [7001], (r["sent"], r["logs"][-2:]))
 
     # ---------- 11. 视觉调用重构后行为不变 ----------
     asks = []
@@ -857,6 +878,20 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
         and A.VCAP_DEFAULT is A.C.ARCH_V2_DEFAULTS["vision_caption"]
         and A.vision_caption_model() == A.C.ARCH_V2_DEFAULTS["vision_caption_model"]
         and A.vision_caption_daily_cap() == A.C.ARCH_V2_DEFAULTS["vision_caption_daily_cap"])
+    _d = A.C.ARCH_V2_DEFAULTS
+    chk("16k 发布默认值：提示词 / 回复策略 / 结构化输出开，后台识图关",
+        _d["prompt_v2"] is True and _d["reply_v2"] is True and _d["reply_json"] is True
+        and _d["vision_caption"] is False, {k: _d[k] for k in A.C.ARCH_V2_BOOL_KEYS})
+    _no_force = dict(PROMPT_V2_FORCE=None, REPLY_V2_FORCE=None, REPLY_JSON_FORCE=None, VCAP_FORCE=None,
+                     vision_enabled=lambda: True, vision_mode=lambda: "all_prob")
+    with patched(A, load_json_const=_cfg_ljc({}), **_no_force):
+        chk("16l 配置里一项都没写 → 按默认值生效", A.prompt_v2_on() is True and A.reply_v2_on() is True
+            and A.reply_json_on() is True and A.vision_caption_on() is False)
+    with patched(A, load_json_const=_cfg_ljc({"vision_caption": True}), **_no_force):
+        chk("16m 在设置页打开后台识图 → 生效", A.vision_caption_on() is True)
+    with patched(A, load_json_const=_cfg_ljc({"prompt_v2": False, "reply_json": False, "reply_v2": False}), **_no_force):
+        chk("16n 关掉任一项 → 这一项回到从前，其余照旧",
+            A.prompt_v2_on() is False and A.reply_v2_on() is False and A.reply_json_on() is False)
 
 print("\n%d 项失败" % len(fails) + (": " + "; ".join(fails) if fails else "（全部通过）"))
 sys.exit(1 if fails else 0)

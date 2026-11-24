@@ -2307,7 +2307,7 @@ async function vSettings(){
    <span><b>精简上下文（推荐开启）</b><div class="k" style="margin-top:3px">开启后：旁观消息先经约 0.5k token 的轻量判定决定是否开口（决定开口才用全量提示词生成），回复时按<b>模型链第一个模型自己的上下文大小</b>裁剪历史与记忆（模型 8k→最近 10 条历史+4 条记忆；16k→10 条+5 条；128k 大模型仍按精简档注入）——人设/风格/安全规则始终全量，回复质量不受影响。关闭后：<b>固定按最高档注入</b>（历史 14 条×100 字+记忆 8/6 条，不看模型窗口大小），追求最佳表现，token 消耗大约 +50%~80%</div></span></label></div>
  <div class="card"><label class="master"><input type="checkbox" ${rv.dyn_ctx_enabled!==false?'checked':''} onchange="saveKVLoad('/api/reply-config',{dyn_ctx_enabled:this.checked?1:0},'动态上下文预算已'+(this.checked?'开启':'关闭'))">
    <span><b>动态上下文预算（推荐开启）</b><div class="k" style="margin-top:3px">注入量感知的双向自适应，两层：<b>升档</b>（精简上下文开启时）——本条回复的注入量大（热点速览/风格参考/成员画像等大块头）自动升到最高档（历史 10→14 条），多带历史帮模型消化大话题；<b>降档守卫</b>（任何档位都生效，含精简关闭的最高档）——固定开销逼近模型窗口时反向减历史（砍到 5 条+记忆 2 条），宁可少带历史也绝不截断注入与对话。普通聊天维持原档不动。<b>关闭本开关</b>＝完全按上面的档位固定注入，不做任何自动调整。运行日志可搜 CTX_ADAPT 看每次决策</div></span></label></div>
- <div class="card"><div class="k" style="margin-bottom:8px"><b>对话架构 v2</b>（逐项独立开关；关闭时行为与从前完全一致）</div>
+ <div class="card"><div class="k" style="margin-bottom:8px"><b>对话架构 v2</b>（前三项默认开启；关掉任一项就回到从前的做法。后台识图默认关闭，需要你自己打开）</div>
   <label class="master"><input type="checkbox" ${rv.prompt_v2?'checked':''} onchange="saveKVLoad('/api/reply-config',{prompt_v2:this.checked?1:0},'提示词 v2 已'+(this.checked?'开启':'关闭'))">
    <span><b>提示词 v2</b><div class="k" style="margin-top:3px">历史窗口从 14 行扩到 50 行，每行「距现在多久 + 谁说的 + 内容」；带话、画图、设备操控的教学只对主人注入。提示词体积约小四分之一，回复风格没有变化</div></span></label>
   <label class="master" style="margin-top:10px"><input type="checkbox" ${rv.reply_v2?'checked':''} onchange="saveKVLoad('/api/reply-config',{reply_v2:this.checked?1:0},'回复策略 v2 已'+(this.checked?'开启':'关闭'))">

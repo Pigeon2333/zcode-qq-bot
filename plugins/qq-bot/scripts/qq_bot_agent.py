@@ -2760,7 +2760,7 @@ def _nudge_tick(daemon):
 # 旧逻辑原样保留在 _build_messages_impl 的 v2=False 分支，由开关选择。
 # ---------------------------------------------------------------------------
 PROMPT_V2_FORCE = None       # 评测/测试用：True/False 强制；None = 读配置
-PROMPT_V2_DEFAULT = C.ARCH_V2_DEFAULTS["prompt_v2"]    # 分支阶段默认关；合并前改 True
+PROMPT_V2_DEFAULT = C.ARCH_V2_DEFAULTS["prompt_v2"]    # 默认值只在 qq_common 一处
 
 
 def prompt_v2_on():
@@ -6812,14 +6812,15 @@ def process(daemon, msg):
         out("AGENT_SKIP msg_id=%s chat=%s/%s (chat_random 不感兴趣)"
             % (msg["id"], msg["chat_type"], msg["chat_id"]))
         return
-    # v2：只挂了表情回应、没有正文——本条到此为止。旧流程会掉进下面的复读重试，
-    # 那条重试的提示词是「你刚才已经说过类似的话了」，会凭空再生成一段文字
-    if reply_v2_on() and not texts and _react_sent and not stickers:
+    # v2：模型这次只挂了表情回应、没有正文——本条到此为止（表情没发出去也不补话）。
+    # 旧流程会掉进下面的复读重试，那条重试的提示词是「你刚才已经说过类似的话了」，
+    # 会凭空再生成一段文字
+    if reply_v2_on() and not texts and _react_ids and not stickers:
         daemon.ack([msg["id"]])
         RT.count_processed()
-        out("AGENT_DONE msg_id=%s chat=%s/%s from=%s rt=%.1fs model=%s reaction-only"
+        out("AGENT_DONE msg_id=%s chat=%s/%s from=%s rt=%.1fs model=%s reaction-only%s"
             % (msg["id"], msg["chat_type"], msg["chat_id"], msg["sender_id"],
-               time.time() - t0, model))
+               time.time() - t0, model, "" if _react_sent else " (表情未发出，本条不回)"))
         return
     # 复读守卫：剔除与最近发言重复的段落；全重复时带"别复读"指令重试一次——
     # 主题守卫（n-gram 重叠）对正常话题延续有误杀，宁可重试也不能无视对方（不回最伤真人感）

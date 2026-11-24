@@ -21,25 +21,38 @@ import time
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 HERE = ROOT / "BOT_REPORTS"
 DATA = pathlib.Path.home() / ".zcode-qq-bot"
-# 线上机器人自己会周期性写的状态文件：它在运行时这些文件本来就会变，不算冒烟的副作用
-VOLATILE = {"proactive_state.json", "daily_word.json"}
+# 线上机器人自己会周期性写的状态文件。机器人在线时它们本来就会变，不算冒烟的副作用，
+# 这时跳过比对；机器人不在线时全部严格比对（任何变化都报）。
+LIVE_WRITTEN = {"proactive_state.json", "daily_word.json",
+                "plugins_data/bili_sub.json", "plugins_data/style_learn.json"}
 # 个别脚本按自己所在的目录找源码
 CWD_OVERRIDE = {"_smoke_vision_merge2.py": HERE}
 TIMEOUT = 300
 
 
-def sigs():
+def daemon_online():
+    """daemon 控制端口能不能连上（只连不发）。"""
+    import socket
+    try:
+        s = socket.create_connection(("127.0.0.1", 39763), timeout=1.5)
+    except OSError:
+        return False
+    s.close()
+    return True
+
+
+def sigs(strict):
     out = {}
     pats = ("*.json", "plugins_data/*.json")
     for pat in pats:
         for p in sorted(DATA.glob(pat)):
-            if p.name in VOLATILE:
+            rel = str(p.relative_to(DATA)).replace("\\", "/")
+            if not strict and rel in LIVE_WRITTEN:
                 continue
             try:
-                out[str(p.relative_to(DATA)).replace("\\", "/")] = hashlib.sha256(
-                    p.read_bytes()).hexdigest()
+                out[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
             except OSError as e:
-                out[str(p)] = "unreadable:%r" % e
+                out[rel] = "unreadable:%r" % e
     return out
 
 
@@ -51,7 +64,10 @@ def main():
         raise SystemExit("没有匹配的冒烟脚本")
     if not DATA.is_dir():
         raise SystemExit("找不到数据目录：%s" % DATA)
-    before = sigs()
+    strict = not daemon_online()
+    print("线上 daemon %s：配置核对%s" % ("在线" if not strict else "不在线",
+                                   "跳过机器人自己会写的 %d 个文件" % len(LIVE_WRITTEN) if not strict else "覆盖全部文件"))
+    before = sigs(strict)
     bad, rows = 0, []
     t0 = time.time()
     for s in scripts:
@@ -77,7 +93,7 @@ def main():
     print("合计：%d 个脚本，%d 项通过，%d 项失败，用时 %.0f 秒" % (
         len(rows), sum(r[2] for r in rows), sum(r[3] for r in rows), time.time() - t0))
 
-    after = sigs()
+    after = sigs(strict)
     changed = sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k))
     if changed:
         print("\n⚠ 数据目录里的配置文件在冒烟期间被改动（%d 个）：" % len(changed))
