@@ -781,7 +781,7 @@ async function vStatus(){
   +'<div class="k" style="margin-bottom:4px;font-weight:600">第 0 步 · 环境自检（✓=就绪，!=缺什么补什么）</div>'
   +ck(qqntOk,'已安装 QQ（QQNT 桌面版）', qqntOk?'':'去 im.qq.com 下载安装普通版 QQ（不要 TIM/轻量版），装完回到本页刷新')
   +'<div class="k" style="margin-top:6px;padding:6px 10px;border:1px dashed var(--line);border-radius:6px">协议框架说明：机器人靠协议框架收发消息，默认 <b>NapCat</b>（功能最全：识图/表情回应/群公告，但上游已停更，依赖 QQ 版本——本向导走这条路）；若你的 QQ 已更新到 NapCat 不适配的版本，可到「框架管理」页改用 <b>LLOneBot</b>（活跃维护、不依赖 QQ 版本，但识图/表情回应/群公告暂不支持）。框架可随时切换，数据不丢。</div>'
-  +ck(!!c.napcat_ok,'QQ 里已装 NapCat Shell（机器人的消息通道）', c.napcat_ok?'':'最简单：「设置 → 运行环境 → 在线下载并安装 NapCat」一键完成（国内自动走镜像）。或自己下 zip（github.com/NapNeko/NapCatQQ/releases）后用「本地 zip 安装」。装完刷新本页')
+  +ck(!!c.napcat_ok,'QQ 里已装 NapCat Shell（机器人的消息通道）', c.napcat_ok?'':'最简单：「框架管理」页在线下载并安装 NapCat，一键完成（国内自动走镜像）。或自己下 zip（github.com/NapNeko/NapCatQQ/releases）后用「本地 zip 安装」。装完刷新本页')
   +ck(hasKey,'已配置 AI 大脑的 API Key', hasKey?'':'二选一：智谱 open.bigmodel.cn（免费额度、生图/联网/默认推荐）或 DeepSeek platform.deepseek.com（便宜、国产直连）。注册后建一个 Key，稍后在「设置 → API Key」粘贴（供应商选对应家）')
   +ck(!!c.zcode_installed,'（可选）ZCode 已安装', c.zcode_installed?'装了更强：任务收件箱 / MCP 工具 / 进程监控 / 复盘审阅（机器人本体不依赖它，随时可后补）：在 ZCode 里把本项目的 plugins/ 目录添加为插件市场（或等项目公开后直接在市场搜「QQ机器人」一键装），再到「ZCode 联动」页开启':'非必须，机器人所有聊天功能都不需要它。装了可以联动（任务收件箱 / MCP 工具等）：① zcode.ai 下载安装 ZCode；② 把本项目的 plugins/ 目录添加为 ZCode 插件市场来安装本插件（项目公开后可直接在市场搜「QQ机器人」）。装好后回本页刷新')
   +'<div class="k" style="margin:12px 0 4px;font-weight:600">第 1 步 · 告诉机器人它是谁</div>'
@@ -794,7 +794,7 @@ async function vStatus(){
   +'<div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="act" onclick="wizardSave()">保存</button>'
   +'<span class="k">保存后，若上面还有「!」项，先按提示补齐，再做第 2 步</span></div>'
   +'<div class="k" style="margin:12px 0 4px;font-weight:600">第 2 步 · 填 API Key（智谱 或 DeepSeek）</div>'
-  +'<div class="k">到「设置 → ③ 接口与模型消耗 → API Key」：粘贴 Key 点添加（智谱 Key 供应商留「智谱」，DeepSeek Key 选「DeepSeek」，模型链已预置两家默认模型）。智谱有免费额度够日常聊天；DeepSeek 便宜量足。也支持 Kimi / OpenAI / Grok / Gemini / 自定义（详见「设置 → ③ 接口与模型消耗」）。</div>'
+  +'<div class="k">到「设置 → 模型与消耗 → API Key」：粘贴 Key 点添加（智谱 Key 供应商留「智谱」，DeepSeek Key 选「DeepSeek」，模型链已预置两家默认模型）。智谱有免费额度够日常聊天；DeepSeek 便宜量足。也支持 Kimi / OpenAI / Grok / Gemini / 自定义（详见「设置 → 模型与消耗」）。</div>'
   +'<div class="k" style="margin:12px 0 4px;font-weight:600">第 3 步 · 启动并扫码</div>'
   +'<div class="k">回本页点「启动机器人」→ 会自动弹出 NapCat 登录页 → 用<b>机器人那个 QQ 号</b>扫码。登录页若要求填「登录密钥 / Token」：回本页「NapCat 登录密钥」卡片点<b>「打开登录页（免密钥）」</b>直接进（密钥自动从 NapCat 配置读取，也能一键复制）。登录成功后，把机器人拉进群或私聊它，@它说句话试试。第一条回复到了，就全部完成了🎉</div>'
   +'<div class="k" style="margin-top:10px;border-top:1px solid var(--line);padding-top:8px">常见卡点：①登录页没弹出→看本页启动日志；②登录页要密钥→用「打开登录页（免密钥）」；③扫码后 WebUI 又要求登录→NapCat 换新密钥了，回「NapCat 登录密钥」卡片点「刷新」；④机器人不回→确认群里没被「暂停回应」、Key 有效。更多说明见 README（github.com/Pigeon2333/zcode-qq-bot）</div></div>'
@@ -802,8 +802,8 @@ async function vStatus(){
  const keyWarn=(String(c.bot_qq||'').trim()&&!hasKey)?
   '<div class="card" style="border:1px solid var(--warn)"><b>还差最后一步：AI 大脑还没有 API Key</b>'
   +'<div class="k" style="margin-top:4px">机器人现在能连上 QQ，但不会说话（agent 会一直在线等待，不会算启动失败）。'
-  +'填好后立即生效、无需重启：免费注册 <a href="https://open.bigmodel.cn" target="_blank">open.bigmodel.cn</a> → 创建 API Key → 到「设置 → ③ 接口与模型消耗 → API Key」粘贴（供应商选「智谱」），或用 DeepSeek Key（供应商选 DeepSeek）；也支持 Kimi/OpenAI 等其他供应商。</div>'
-  +'<div style="margin-top:8px"><button class="act" onclick="goTab(\'settings\')">去填 Key</button></div></div>':'';
+  +'填好后立即生效、无需重启：免费注册 <a href="https://open.bigmodel.cn" target="_blank">open.bigmodel.cn</a> → 创建 API Key → 到「设置 → 模型与消耗 → API Key」粘贴（供应商选「智谱」），或用 DeepSeek Key（供应商选 DeepSeek）；也支持 Kimi/OpenAI 等其他供应商。</div>'
+  +'<div style="margin-top:8px"><button class="act" onclick="goSettings(\'model\')">去填 Key</button></div></div>':'';
  $('#view').innerHTML=head('组件运行状态与机器人开关')+
  `${wizard}${keyWarn}${upBanner}
  <div class="card"><div class="kv">
@@ -1001,6 +1001,7 @@ async function vCtxLog(){
 }
 async function ctxToggle(on){
  const r=await saveKV('/api/ctx-log-toggle',{on:on});
+ if(r.ok===false)return;   // 保存失败时 saveKV 已提示，不再报「已开启/已停止」
  toast(on?'已开启记录（新消息起）':'已停止记录（已有记录保留）');
 }
 async function ctxClear(){
@@ -2213,6 +2214,22 @@ async function vZcode(){
   ${sw('zcode_context_enabled',c.zcode_context_enabled,'主动消息感知你在忙什么','开启后机器人主动发消息前会参考你最近在 ZCode 工作区活跃的项目目录（只读目录名和修改时间，不读文件内容、不读会话记录），关心更贴题。数据不出本机；介意请保持关闭',true)}</div>`;
 }
 
+// ---- 设置页的子分页（做法同人设与风格的 __psTabBar）----
+// 一页一类：只改卡片的摆放位置，控件、配置键、保存方式都不变。
+// vSettings 按当前分页把对应的卡片函数拼起来；每个卡片函数是一段原样搬过来的 HTML。
+var __ST_TAB='general';
+const _ST_TABS=[
+ ['general','通用','机器人是谁、运行在哪、哪些功能开着、应用怎么启停'],
+ ['model','模型与消耗','用哪家的 Key、每次带多少上下文、高峰时段怎么省'],
+ ['style','聊天风格','说话长不长、看不看图、接话的时机；多爱说话在「群消息」「私聊消息」两页里调'],
+ ['safe','安全与隐私','防滥用、黑名单、账号风控，以及哪些数据会离开本机'],
+ ['maint','自动化与维护','自动复盘、备份、缓存清理、看门狗'],
+];
+function __stTabBar(){return '<div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center">'
+ +_ST_TABS.map(t=>'<button class="act'+(__ST_TAB===t[0]?'':' ghost')+'" style="margin:0" onclick="__ST_TAB=\''+t[0]+'\';load()">'+t[1]+'</button>').join('')
+ +'<span class="k" style="font-size:12px">'+esc((_ST_TABS.find(x=>x[0]===__ST_TAB)||_ST_TABS[0])[2])+'</span></div>'}
+function goSettings(tab){__ST_TAB=_ST_TABS.some(x=>x[0]===tab)?tab:'general';goTab('settings')}
+function stSec(t){return '<div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">'+t+'</div>'}
 async function vSettings(){
  const [c,rv,kl]=await Promise.all([
   api('/api/app-config').catch(()=>({})),
@@ -2220,8 +2237,46 @@ async function vSettings(){
   api('/api/keys').catch(()=>({keys:[]})),
  ]);
  const keysL=kl.keys||[];
- $('#view').innerHTML=head('机器人设置：身份、环境、接口与行为')+saveHint(_SAVE_HINT)+
- `<div class="k" style="margin:2px 0 -6px;font-weight:600;letter-spacing:1px">① 身份与称呼</div>
+ const body=
+  __ST_TAB==='model'
+  ?stSec('API Key 与代理')+stKeys(c,keysL)
+  +stSec('上下文（每次带多少历史和记忆）')+stLean(rv)+stDyn(rv)+stHist(rv)
+  +stSec('省额度')+stEcon(rv)
+  :__ST_TAB==='style'
+  ?stSec('活跃程度')+stActivityGuide(c,rv)
+  +stSec('对话架构（怎么生成回复）')+stArchV2(rv)
+  +stSec('风格与活跃程度')+stStyle(rv)+stLen(rv)
+  +stSec('接话时机')+stTiming(rv)
+  +stSec('看图')+stVision(rv)
+  :__ST_TAB==='safe'
+  ?stSec('防滥用')+stAbuse(rv)+stBlack(c)
+  +stSec('账号风控')+stRisk(rv)
+  +stSec('隐私与数据')+stPrivacy(rv)
+  :__ST_TAB==='maint'
+  ?stSec('自动化')+stReview(c,rv)+stBackup(c)
+  +stSec('维护')+stCache()+stWatchdog(c)
+  :stSec('身份与称呼')+stIdentity(c)
+  +stSec('运行环境')+stEnv(c)
+  +stSec('功能开关')+stWebSearch(rv)+stOwnerFeatures(rv)
+  +stSec('应用行为')+stApp(c);
+ $('#view').innerHTML=__stTabBar()+head('机器人设置')+saveHint(_SAVE_HINT)+body;
+ if(__ST_TAB==='maint')bkGroupsRender();
+ if(__ST_TAB==='general'){
+  // 下面三项的控件（NapCat 下载进度、QQ 版本锁、独立运行时）已迁到「框架管理」页，这里保留原来的时序，
+  // 元素不在本页时各自直接返回
+  api('/api/napcat-dl-status').then(st=>{if(st&&st.running)ncdlPoll()}).catch(()=>{});
+  api('/api/qq-compat').then(q=>{
+   const el=document.getElementById('qqlock-state');
+   const box=document.getElementById('sqqlock');
+   if(box)box.checked=q.lock_active;
+   if(el)el.textContent=q.lock_active
+    ?'（已生效：QQ 更新源已屏蔽'+(q.qq_version&&q.qq_version!=='legacy'?'，当前 '+q.qq_version:'')+'）'
+    :(q.lock_wanted?'（⚠ 尚未生效：需要管理员权限，点一次开关并确认 UAC）':'（未开启）');
+  }).catch(()=>{});
+  api('/api/napcat-runtime').then(rt=>{rtPaint(rt)}).catch(()=>{});
+ }
+}
+function stIdentity(c){return `
  <div class="card"><div class="k">机器人是谁、怎么称呼（每项改动回车/失焦后自动保存，即时生效）</div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px">
    <div><div class="k" style="margin-bottom:4px">机器人 QQ 号（改它 = 切换登录账号）</div><input id="sbotqq" value="${esc(String(c.bot_qq||''))}" style="width:100%" placeholder="如 123456789" onchange="botQqSwitch(this.value,'${esc(String(c.bot_qq||''))}')"></div>
@@ -2239,11 +2294,11 @@ async function vSettings(){
     <span><b>固定对你的称呼</b><div class="k" style="margin-top:3px">开启后机器人一律用下面的称呼叫你（所有场景，含设备操控话术）；关闭则按当前人设的叫法/消息昵称</div></span></label>
    <div class="${c.owner_name_enabled?'':'dimmed'}" style="display:flex;gap:8px;align-items:center"><span class="k" style="flex:none">如何称呼你</span>
     <input id="sownername" value="${esc(String(c.owner_name_value||'主人'))}" style="width:160px" onchange="saveKV('/api/app-config',{owner_name_value:this.value.trim()||'主人'},'称呼已保存（即时生效）')"></div>
-  </div></div>
- <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">② 运行环境</div>
+  </div></div>`}
+function stEnv(c){return `
  <div class="card"><div class="k">安装位置与网络（端口一般无需改动，改动重启各组件后生效）</div>
   <div class="k" style="margin-top:10px">协议框架（NapCat/LLOneBot）、QQNT 目录、版本锁定、运行方式、QQ 版本回退已移至<b>「框架管理」</b>页（侧边栏·状态下方）。</div>
-  <div class="k" style="margin-top:8px">扫码登录与框架详情见「框架管理」「状态」页。</div></div>
+  <div class="k" style="margin-top:8px">扫码登录与框架详情见「框架管理」「状态」页。</div>
   <div class="k" style="margin-top:12px">端口（一般无需改动；改动重启各组件后生效）</div>
   <div style="display:flex;gap:10px;margin-top:6px;flex-wrap:wrap;align-items:center">
    <label>NapCat WS <input id="pnap" type="number" value="${c.napcat_ws_port}" style="width:76px" onchange="saveEnv('pnap','napcat_ws_port',1)"></label>
@@ -2261,9 +2316,8 @@ async function vSettings(){
    <div class="${c.logs_autoclean_enabled?'':'dimmed'}" style="display:flex;gap:8px;align-items:center;margin-top:6px"><span class="k" style="flex:none">保留天数</span>
     <input type="number" min="1" max="365" value="${c.logs_keep_days||30}" style="width:76px" onchange="saveKVLoad('/api/app-config',{logs_keep_days:Math.max(1,Math.min(365,parseInt(this.value)||30))},'日志保留天数已更新')"><span class="k">天（1–365；默认 30）</span></div>
   </div>
-  <div class="k" style="margin-top:4px">日志目录改动重启各组件后生效；运行日志页会从新目录读取</div></div></div>
-
- <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">③ 接口与模型消耗</div>
+  <div class="k" style="margin-top:4px">日志目录改动重启各组件后生效；运行日志页会从新目录读取</div></div></div>`}
+function stKeys(c,keysL){return `
  <div class="card"><div class="k">API Key（各供应商官网注册获取；支持智谱、DeepSeek、Kimi、OpenAI、Grok、Gemini、自定义。多个 Key 时选一个「主」——模型链未指定 Key 的条目都用主 Key，模型链每行可在「模型管理」单独指定。生图与联网搜索目前仅支持智谱 Key）</div>
   <div style="margin-top:10px">${keysL.map(k=>`<div class="row">
    <label style="margin:0;flex:none;white-space:nowrap"><input type="radio" name="primkey" ${k.primary?'checked':''} onchange="setPrimary('${esc(k.id)}')"> 主</label>
@@ -2302,11 +2356,14 @@ async function vSettings(){
   <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
    <span class="k" style="flex:none">API 代理（可选）</span>
    <input id="apiproxy" value="${esc(String(c.api_proxy||''))}" style="width:240px" placeholder="http://127.0.0.1:7890（Clash 等本地代理）" onchange="saveKV('/api/app-config',{api_proxy:this.value.trim()},'API 代理已保存（即时生效；留空=直连）')">
-   <span class="k">供 OpenAI / Grok / Gemini 等境外供应商出站用；国内供应商建议留空直连</span></div></div>
+   <span class="k">供 OpenAI / Grok / Gemini 等境外供应商出站用；国内供应商建议留空直连</span></div></div>`}
+function stLean(rv){return `
  <div class="card"><label class="master"><input type="checkbox" ${rv.lean_ctx_enabled!==false?'checked':''} onchange="saveLeanCtx(this.checked)">
-   <span><b>精简上下文（推荐开启）</b><div class="k" style="margin-top:3px">开启后：旁观消息先经约 0.5k token 的轻量判定决定是否开口（决定开口才用全量提示词生成），回复时按<b>模型链第一个模型自己的上下文大小</b>裁剪历史与记忆（模型 8k→最近 10 条历史+4 条记忆；16k→10 条+5 条；128k 大模型仍按精简档注入）——人设/风格/安全规则始终全量，回复质量不受影响。关闭后：<b>固定按最高档注入</b>（历史 14 条×100 字+记忆 8/6 条，不看模型窗口大小），追求最佳表现，token 消耗大约 +50%~80%</div></span></label></div>
+   <span><b>精简上下文（推荐开启）</b><div class="k" style="margin-top:3px">开启后：旁观消息先经约 0.5k token 的轻量判定决定是否开口（决定开口才用全量提示词生成），回复时按<b>模型链第一个模型自己的上下文大小</b>裁剪历史与记忆（模型 8k→最近 10 条历史+4 条记忆；16k→10 条+5 条；128k 大模型仍按精简档注入）——人设/风格/安全规则始终全量，回复质量不受影响。关闭后：<b>固定按最高档注入</b>（历史 14 条×100 字+记忆 8/6 条，不看模型窗口大小），追求最佳表现，token 消耗大约 +50%~80%</div></span></label></div>`}
+function stDyn(rv){return `
  <div class="card"><label class="master"><input type="checkbox" ${rv.dyn_ctx_enabled!==false?'checked':''} onchange="saveKVLoad('/api/reply-config',{dyn_ctx_enabled:this.checked?1:0},'动态上下文预算已'+(this.checked?'开启':'关闭'))">
-   <span><b>动态上下文预算（推荐开启）</b><div class="k" style="margin-top:3px">注入量感知的双向自适应，两层：<b>升档</b>（精简上下文开启时）——本条回复的注入量大（热点速览/风格参考/成员画像等大块头）自动升到最高档（历史 10→14 条），多带历史帮模型消化大话题；<b>降档守卫</b>（任何档位都生效，含精简关闭的最高档）——固定开销逼近模型窗口时反向减历史（砍到 5 条+记忆 2 条），宁可少带历史也绝不截断注入与对话。普通聊天维持原档不动。<b>关闭本开关</b>＝完全按上面的档位固定注入，不做任何自动调整。运行日志可搜 CTX_ADAPT 看每次决策</div></span></label></div>
+   <span><b>动态上下文预算（推荐开启）</b><div class="k" style="margin-top:3px">注入量感知的双向自适应，两层：<b>升档</b>（精简上下文开启时）——本条回复的注入量大（热点速览/风格参考/成员画像等大块头）自动升到最高档（历史 10→14 条），多带历史帮模型消化大话题；<b>降档守卫</b>（任何档位都生效，含精简关闭的最高档）——固定开销逼近模型窗口时反向减历史（砍到 5 条+记忆 2 条），宁可少带历史也绝不截断注入与对话。普通聊天维持原档不动。<b>关闭本开关</b>＝完全按上面的档位固定注入，不做任何自动调整。运行日志可搜 CTX_ADAPT 看每次决策</div></span></label></div>`}
+function stArchV2(rv){return `
  <div class="card"><div class="k" style="margin-bottom:8px"><b>对话架构 v2</b>（提示词 / 回复策略 / 结构化输出默认开启，关掉任一项就回到从前的做法。会改变说话风格和活跃程度的选项都是设置，默认保持从前的做法）</div>
   <label class="master"><input type="checkbox" ${rv.prompt_v2?'checked':''} onchange="saveKVLoad('/api/reply-config',{prompt_v2:this.checked?1:0},'提示词 v2 已'+(this.checked?'开启':'关闭'))">
    <span><b>提示词 v2</b><div class="k" style="margin-top:3px">历史窗口从 14 行扩到 50 行，每行「距现在多久 + 谁说的 + 内容」；带话、画图、设备操控的教学只对主人注入。提示词体积约小四分之一，回复风格没有变化</div></span></label>
@@ -2314,15 +2371,19 @@ async function vSettings(){
    <span><b>回复策略 v2</b><div class="k" style="margin-top:3px">旁观消息先用完整历史判断要不要接，结论带进回复；判定通过才发带完整人设的那次调用，所以更省 token，代价是旁观消息的回复多等一两秒。对方直接@或回复时保证会回应（下面可以关）。这里换的是做法，不是风格：说话多不多、长不长、能不能只挂表情，由下面的选项和上面的概率、长度设置决定</div></span></label>
   <label class="master" style="margin-top:10px"><input type="checkbox" ${rv.reply_json?'checked':''} onchange="saveKVLoad('/api/reply-config',{reply_json:this.checked?1:0},'结构化输出已'+(this.checked?'开启':'关闭'))">
    <span><b>结构化输出</b><div class="k" style="margin-top:3px">回复策略 v2 下，模型按固定字段输出（说不说、说什么、挂什么表情），不再靠文本标记。需要先开启回复策略 v2</div></span></label>
-  <label class="master" style="margin-top:10px"><input type="checkbox" ${rv.vision_caption?'checked':''} onchange="saveKVLoad('/api/reply-config',{vision_caption:this.checked?1:0},'后台识图已'+(this.checked?'开启':'关闭'))">
-   <span><b>后台识图</b><div class="k" style="margin-top:3px">群里的图片到达后在后台生成一行描述，机器人据此判断接不接话，不再整条跳过带图消息；@机器人或引用图片提问时仍然直接看图。开启后图片会发送给模型服务商识别。需要先开启识图总开关和回复策略 v2</div></span></label>
+  <div class="k" style="margin-top:10px">这里的三项是生成回复的做法。说话多不多、长不长由下方「风格与活跃程度」决定；后台识图在「看图」卡片里</div></div>`}
+function stCaption(rv){return `
+  <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
+  <label class="master"><input type="checkbox" ${rv.vision_caption?'checked':''} onchange="saveKVLoad('/api/reply-config',{vision_caption:this.checked?1:0},'后台识图已'+(this.checked?'开启':'关闭'))">
+   <span><b>后台识图</b><div class="k" style="margin-top:3px">群里的图片到达后在后台生成一行描述，机器人据此判断接不接话，不再整条跳过带图消息；@机器人或引用图片提问时仍然直接看图。开启后，机器人收到的带图消息都会交给模型服务商识别（受下面的每日上限约束）。需要看图模式开着、范围选前两档，并且开了「对话架构」里的回复策略 v2</div></span></label>
   <div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap">
    <span class="k">识图模型</span>
    <input value="${esc(String(rv.vision_caption_model||''))}" style="width:200px" placeholder="glm-4.6v-flash" onchange="saveKVLoad('/api/reply-config',{vision_caption_model:this.value.trim()},'识图模型已保存')">
    <span class="k">每天最多识</span>
    <input type="number" min="0" max="5000" value="${rv.vision_caption_daily_cap}" style="width:90px" onchange="saveKVLoad('/api/reply-config',{vision_caption_daily_cap:parseInt(this.value)||0},'每日识图上限已保存')">
-   <span class="k">条带图消息（0=不识）</span></div>
-  <div class="k" style="margin-top:12px"><b>风格与活跃程度</b></div>
+   <span class="k">条带图消息（0=不识）</span></div></div>`}
+function stStyle(rv){return `
+ <div class="card"><div class="k">这几项决定说话长不长、能不能只挂表情不说话、主动消息和追聊的口味。默认都保持从前的做法，想要新的风格在这里打开</div>
   <label class="master" style="margin-top:6px"><input type="checkbox" ${rv.direct_must_reply!==false?'checked':''} onchange="saveKVLoad('/api/reply-config',{direct_must_reply:this.checked?1:0},'直接@必须回应已'+(this.checked?'开启':'关闭'))">
    <span><b>直接@或回复时必须回应</b><div class="k" style="margin-top:3px">对方@你或引用回复你时，模型沉默或只挂表情会带提示重试一次。只保证被点名了会应一声，不规定怎么说。想让机器人按人设偶尔不理人，关掉即可</div></span></label>
   <label class="master" style="margin-top:10px"><input type="checkbox" ${rv.len_follow_group?'checked':''} onchange="saveKVLoad('/api/reply-config',{len_follow_group:this.checked?1:0},'向群友长度看齐已'+(this.checked?'开启':'关闭'))">
@@ -2337,12 +2398,16 @@ async function vSettings(){
    <span class="k">追聊风格</span>
    <select onchange="saveKVLoad('/api/reply-config',{nudge_mode:this.value},'追聊风格已保存')">
     <option value="classic" ${rv.nudge_mode!=='restrained'?'selected':''}>经典（默认，和从前一样）</option>
-    <option value="restrained" ${rv.nudge_mode==='restrained'?'selected':''}>克制：只在对方话没说完或有新进展时</option></select></div>
-  <div class="k" style="margin-top:10px">「有具体由头才发」：只有接某句没人回的话、跟进某人之前提过的事、接群里正在聊的话题这三种情况才发。「克制」：不再催自己问出去的话，也不起新话头。频率仍然由上面的主动消息概率、间隔和追聊延迟决定</div>
-  <div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap">
-   <span class="k">历史窗口</span>
-   <input type="number" min="10" max="120" value="${rv.hist_lines}" style="width:80px" onchange="saveKVLoad('/api/reply-config',{hist_lines:parseInt(this.value)||50},'历史行数已保存')"><span class="k">行</span>
-   <input type="number" min="1000" max="20000" step="500" value="${rv.hist_budget_chars}" style="width:96px" onchange="saveKVLoad('/api/reply-config',{hist_budget_chars:parseInt(this.value)||5000},'历史字符预算已保存')"><span class="k">字以内（超出时从最旧的开始丢）</span></div></div>
+    <option value="restrained" ${rv.nudge_mode==='restrained'?'selected':''}>克制：只在对方话没说完或有新进展时</option></select>
+  <div class="k" style="margin-top:6px">「有具体由头才发」：只有接某句没人回的话、跟进某人之前提过的事、接群里正在聊的话题这三种情况才发。「克制」：不再催自己问出去的话，也不起新话头。这两种新风格需要开着上方「对话架构」里的回复策略 v2。发不发、发多勤，仍然由本页最上方的活跃程度决定</div></div></div>`}
+function stHist(rv){return `
+ <div class="card"><div class="k" style="margin-bottom:8px"><b>历史窗口</b>（提示词 v2 开着时生效）</div>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+   <span class="k">每次最多带最近</span>
+   <input type="number" min="10" max="120" value="${rv.hist_lines}" style="width:80px" onchange="saveKVLoad('/api/reply-config',{hist_lines:parseInt(this.value)||50},'历史行数已保存')"><span class="k">行聊天记录，合计</span>
+   <input type="number" min="1000" max="20000" step="500" value="${rv.hist_budget_chars}" style="width:96px" onchange="saveKVLoad('/api/reply-config',{hist_budget_chars:parseInt(this.value)||5000},'历史字符预算已保存')"><span class="k">字以内（超出时从最旧的开始丢）</span></div>
+  <div class="k" style="margin-top:6px">带得多，机器人更容易接上前面聊过的内容，token 也花得多。提示词 v2 关着时不用这一项，按上面的精简上下文档位带</div></div>`}
+function stEcon(rv){return `
  <div class="card"><div class="k" style="display:flex;gap:10px;align-items:center;margin-bottom:8px">高峰降耗
   ${rv.econ_active?'<span class="badge" style="background:var(--warn);color:#fff">降耗进行中</span>':'<span class="badge" style="background:var(--tint);color:var(--dim)">未生效</span>'}</div>
   <label class="master"><input type="checkbox" ${rv.econ_enabled?'checked':''} onchange="saveEcon('econ_enabled',this.checked)">
@@ -2355,10 +2420,9 @@ async function vSettings(){
   <div style="display:flex;gap:14px;margin-top:10px;flex-wrap:wrap;align-items:center">
    <label>时段 <input type="time" value="${esc(rv.econ_start||'14:00')}" onchange="saveEconTime('econ_start',this.value)"> – <input type="time" value="${esc(rv.econ_end||'18:00')}" onchange="saveEconTime('econ_end',this.value)"></label>
    <span style="display:inline-flex;gap:2px;align-items:center">${['一','二','三','四','五','六','日'].map((d,i)=>`<label style="margin:0"><input type="checkbox" class="ecday" data-d="${i}" ${(rv.econ_days||[]).includes(i)?'checked':''} onchange="saveEconDays()"> 周${d}</label>`).join('')}</span>
-   <span class="k">（全不选=每天）</span>
-  </div></div>
-
- <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">④ 对话行为与防打扰</div>
+    <span class="k">（全不选=每天）</span>
+  </div></div>`}
+function stTiming(rv){return `
  <div class="card"><label class="master"><input type="checkbox" ${rv.wait_gate_enabled!==false?'checked':''} onchange="saveKVLoad('/api/reply-config',{wait_gate_enabled:this.checked?1:0},'等说完协议已'+(this.checked?'开启':'关闭'))">
   <span><b>等说完协议（推荐开启）</b><div class="k" style="margin-top:3px">AI 回复前会判断对方这条消息是否是叙述的中间部分（语义没说完、刚开头就断、明显还有下文）。如果判断对方还在说，AI 会先安静等对方说完再回复——避免在别人一句话还没打完时就急着插嘴打断。对完整的问题和闲聊不影响（立刻回复），零额外消耗，仅增加一条判断规则</div></span></label></div>
  <div class="card"><label class="master"><input type="checkbox" ${rv.burst_merge_enabled!==false?'checked':''} onchange="saveKVLoad('/api/reply-config',{burst_merge_enabled:this.checked?1:0},'碎片合并已'+(this.checked?'开启':'关闭'))">
@@ -2367,17 +2431,18 @@ async function vSettings(){
   <span><b>AI 互聊检测（推荐开启）</b><div class="k" style="margin-top:3px">群里其他 AI 机器人与本机器人高频互相接话时（对方 2 分钟内连发 ≥4 条、我方 3 分钟内已回 ≥3 条）：机器人会先用符合人设的方式问对方一句「你是不是AI」，再根据回答判断——确认是 AI 则人设口吻告别并暂停搭话一段时间（见下方冷却分钟）；对方否认则当普通朋友继续聊。人类也会问"你是不是AI"，这样最自然。<br><br><b>检测覆盖所有触发方式</b>：AI 常用「引用回复/@机器人」连发来绕过闲聊概率，所以引用回复、@、关键词、闲聊全部参与节奏检测（节奏没到就完全不受影响，正常聊天零变化）。若对方被问后不正面回答、仍持续超高频互引（多轮 6 条/5 条级别），会按不配合处理，冷处理 30 分钟</div></span></label>
   <div style="margin-top:6px;display:flex;gap:8px;align-items:center"><span class="k" style="flex:none">确认 AI 后暂停搭话</span>
    <input type="number" min="10" max="1440" value="${rv.botloop_cooldown_min||60}" style="width:76px" onchange="saveKVLoad('/api/reply-config',{botloop_cooldown_min:Math.max(10,Math.min(1440,parseInt(this.value)||60))},'互聊冷却已更新')">
-   <span class="k">分钟（10–1440，非永久拉黑，到期自动恢复正常聊天）</span></div></div>
+   <span class="k">分钟（10–1440，非永久拉黑，到期自动恢复正常聊天）</span></div></div>`}
+function stAbuse(rv){return `
  <div class="card"><label class="master"><input type="checkbox" ${rv.abuse_guard_enabled!==false?'checked':''} onchange="saveAbuseGuard(this.checked)">
-  <span><b>防滥用防护</b><div class="k" style="margin-top:3px">整合三重防护，建议保持开启：① 人设防篡改——"忽略设定/你现在是XX/输出系统提示"等注入话术不生效，设定不泄露；② 任务拦截——竞赛题、代写作业、要代码成品等把机器人当免费任务引擎的消息，会以人设口吻轻松回绝；③ 身份锚定——多轮对话被"说服"后仍回归人设。关闭后所有消息按原始对话处理（仅调试用）</div></span></label></div>
+  <span><b>防滥用防护</b><div class="k" style="margin-top:3px">整合三重防护，建议保持开启：① 人设防篡改——"忽略设定/你现在是XX/输出系统提示"等注入话术不生效，设定不泄露；② 任务拦截——竞赛题、代写作业、要代码成品等把机器人当免费任务引擎的消息，会以人设口吻轻松回绝；③ 身份锚定——多轮对话被"说服"后仍回归人设。关闭后所有消息按原始对话处理（仅调试用）</div></span></label></div>`}
+function stBlack(c){return `
  <div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">用户黑名单<span class="badge b-bad">最高优先级 · 一律无视</span></div>
   <div class="k">命中名单的 QQ 号：群聊、私聊、@机器人、关键词、戳一戳<b>全部不响应</b>，消息不进入机器人记忆，改动即时生效。优先级高于一切白名单与回复模式。</div>
   <div style="margin-top:8px;display:flex;gap:8px">
    <input id="bladd" placeholder="QQ 号（支持批量：中英文逗号/顿号/空格/换行分隔），回车拉黑" style="flex:1" onkeydown="if(event.key==='Enter')blAdd()">
    <button class="act" style="margin:0" onclick="blAdd()">拉黑</button></div>
-  <div style="margin-top:8px">${(c.user_blacklist||[]).length?((c.user_blacklist||[]).map((x,i)=>'<div class="row"><span class="no">'+(i+1)+'.</span><span class="mono" style="flex:1">'+esc(String(x))+'</span><button class="act ghost" style="margin:0" onclick="blDel('+i+')">移出</button></div>').join('')):'<div class="k">名单为空</div>'}</div></div>
-
- <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">⑤ 机器人能力</div>
+  <div style="margin-top:8px">${(c.user_blacklist||[]).length?((c.user_blacklist||[]).map((x,i)=>'<div class="row"><span class="no">'+(i+1)+'.</span><span class="mono" style="flex:1">'+esc(String(x))+'</span><button class="act ghost" style="margin:0" onclick="blDel('+i+')">移出</button></div>').join('')):'<div class="k">名单为空</div>'}</div></div>`}
+function stVision(rv){return `
  <div class="card"><label class="master"><input type="checkbox" ${rv.vision_enabled?'checked':''} onchange="saveVision(this.checked)">
   <span><b>看图模式</b><div class="k" style="margin-top:3px">开启后，消息里的图片会交给视觉模型识别并回应（群聊与私聊均生效）；视觉模型在「模型管理」页配置，识别失败自动降级纯文本</div></span></label>
   <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
@@ -2391,18 +2456,19 @@ async function vSettings(){
     <span class="k">%（0%=不主动评论图片，仅当对话明确提到这张图或有人 @她时才看图回应；100%=见图必聊）</span>
    </div>
    <div class="k" style="margin-top:8px">「看后再定」= 看图与插话解耦：每张图都会真的看过（内容理解准确），要不要开口由概率单独控制——在热情与克制之间。前两档也会把带图消息更积极地送到机器人面前；「仅明确要求」最省资源</div>
-  </div></div>
+  </div>${stCaption(rv)}</div>`}
+function stLen(rv){return `
  <div class="card"><div class="k" style="margin-bottom:6px"><b>闲聊回复长度上限</b>（活人感复盘 P3——消除小作文感）</div>
   <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
    <span class="k">闲聊插话的单条回复超过</span>
    <input type="number" min="0" max="500" step="10" value="${rv.chat_max_len===undefined?80:rv.chat_max_len}" style="width:70px" onchange="saveKVLoad('/api/reply-config',{chat_max_len:Math.max(0,Math.min(500,parseInt(this.value)||0))},'闲聊长度上限已保存（0=不限制）')">
    <span class="k">字时自动压缩成一句（0=不限制）。仅管闲聊插话；@她/回复她的正经回答不受限。</span>
   </div>
-  <div class="k" style="margin-top:6px">超长回复会带着「压缩成一两句、保留人设口吻和最有趣的一点」的指令重写一次——不是硬截断，意思和人设都在。</div></div>
+  <div class="k" style="margin-top:6px">超长回复会带着「压缩成一两句、保留人设口吻和最有趣的一点」的指令重写一次——不是硬截断，意思和人设都在。</div></div>`}
+function stWebSearch(rv){return `
  <div class="card"><label class="master"><input type="checkbox" ${rv.web_search_enabled?'checked':''} onchange="saveWebSearch(this.checked)">
-  <span><b>联网搜索</b><div class="k" style="margin-top:3px">遇到实时性问题（新闻/天气/价格/最新版本等）自动先联网搜索再回答，普通闲聊不触发不计费。搜索后端：优先用智谱搜索资源包（若有），未开通自动切换必应免费搜索兜底——不买资源包也能搜；两个都失败时机器人会坦白拿不到最新消息</div></span></label></div>
-
- <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">⑥ 主人专属功能</div>
+  <span><b>联网搜索</b><div class="k" style="margin-top:3px">遇到实时性问题（新闻/天气/价格/最新版本等）自动先联网搜索再回答，普通闲聊不触发不计费。搜索后端：优先用智谱搜索资源包（若有），未开通自动切换必应免费搜索兜底——不买资源包也能搜；两个都失败时机器人会坦白拿不到最新消息。搜索时，这条消息的文字会发给搜索服务商</div></span></label></div>`}
+function stOwnerFeatures(rv){return `
  <div class="card"><div class="k" style="margin-bottom:8px">主人专属功能（仅对设置的主人 QQ 生效；关闭后对应入口不再响应）</div>
   <label class="master" style="margin-bottom:6px"><input type="checkbox" ${rv.task_bridge_enabled!==false?'checked':''} onchange="saveFeature('task_bridge_enabled',this.checked)">
    <span><b>任务沙箱</b><div class="k" style="margin-top:3px">主人发「任务：…」转交沙箱执行器写代码/跑脚本，结果自动回传；产物在任务目录（可在 app_config.task_workspace 配置，指向 ZCode 工作区即可在 ZCode 中接管）</div></span></label>
@@ -2410,14 +2476,14 @@ async function vSettings(){
    <span><b>私聊遥控</b><div class="k" style="margin-top:3px">主人私聊发指令管理机器人（状态/用量/人设/群管理/功能开关/暂停恢复），私聊机器人发「帮助」查看全部</div></span></label>
   <label class="master" style="margin-bottom:6px"><input type="checkbox" ${rv.draw_enabled!==false?'checked':''} onchange="saveFeature('draw_enabled',this.checked)">
    <span><b>AI 生图</b><div class="k" style="margin-top:3px">主人发「画：描述」或自然说法（帮我画一张/给我画个/来一张…，私聊或群里@）→ 用智谱 Key 调 CogView 生成并发图（消耗该账号额度）</div></span></label>
- </div>
-
- <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">⑦ 自动化与维护</div>
+ </div>`}
+function stReview(c,rv){return `
  <div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">自动复盘<span class="badge" style="background:var(--tint);color:var(--dim)">夜间自动执行</span></div>
   <label class="master"><input type="checkbox" ${rv.daily_review_enabled!==false?'checked':''} onchange="saveKVLoad('/api/reply-config',{daily_review_enabled:this.checked?1:0},'自动复盘已'+(this.checked?'开启':'关闭'))">
    <span><b>启用自动复盘</b><div class="k" style="margin-top:3px">每天在设定时间自动汇总自上次复盘以来的机器人表现（回复/沉默/错误次数），由 AI 提炼 1-2 条说话风格观察写入自进化，并向主人私聊发送一份简短日报。覆盖范围：全部群聊与私聊的回复质量数据（不记录聊天内容本身）</div></span></label>
   <div style="margin-top:8px"><label>触发时间 <input type="time" value="${esc(c.review_time||'03:30')}" onchange="saveNight('review_time',this.value)"></label>
-  <span class="k" style="margin-left:8px">错过当天会在 2 小时窗口内补跑</span></div></div>
+  <span class="k" style="margin-left:8px">错过当天会在 2 小时窗口内补跑</span></div></div>`}
+function stBackup(c){return `
  <div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">自动备份<span class="badge" style="background:var(--tint);color:var(--dim)">每日快照 · 可随时恢复</span></div>
   <label class="master"><input type="checkbox" ${c.backup_enabled!==false?'checked':''} onchange="saveNight('backup_enabled',this.checked?1:0)">
    <span><b>启用自动备份</b><div class="k" style="margin-top:3px">把人设、风格卡、自进化观察、长期记忆、回复/分群/白名单等关键数据文件复制一份到备份目录；误删或数据损坏时可从备份一键恢复（密钥类文件出于安全不备份）</div></span></label>
@@ -2433,14 +2499,16 @@ async function vSettings(){
   <button class="act" style="margin:0" onclick="restorePicker()">从备份恢复…</button></div>
   <div class="k" style="margin-top:10px"><b>备份数据范围</b>（默认全选；取消勾选的类别不再备份）</div>
   <div id="bk-groups" style="margin-top:6px">加载中…</div>
-  <div class="k" style="margin-top:4px">密钥类文件（API Key/token）出于安全不备份，恢复后如缺失需重新填写。超过保留天数或保留份数的旧备份自动清理（最旧的先清）</div></div></div>
+  <div class="k" style="margin-top:4px">密钥类文件（API Key/token）出于安全不备份，恢复后如缺失需重新填写。超过保留天数或保留份数的旧备份自动清理（最旧的先清）</div></div></div>`}
+function stCache(){return `
  <div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:8px">缓存管理<span class="badge" style="background:var(--tint);color:var(--dim)">手动清理 · 进回收站 · 不会自动清理</span></div>
   <div class="k" style="margin-bottom:4px">机器人会把重复使用的数据缓存在本机以省 token 和流量（安装包、当天素材、图片暂存等）。下面是各类缓存的实际大小，勾选后手动清理——<b>只释放磁盘空间</b>，人设/记忆/表情包/聊天导入库等个人数据不在此列；被清的都是可再生内容，文件移入回收站可反悔。</div>
   <div id="cachelist"></div>
   <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
    <button class="act ghost" style="margin:0" onclick="cacheReload()">刷新大小</button>
    <button class="act" style="margin:0" onclick="cacheClean()">清理所选缓存…</button>
-   <span class="k" id="cachetotal"></span></div></div>
+   <span class="k" id="cachetotal"></span></div></div>`}
+function stWatchdog(c){return `
  <div class="card"><div class="k" style="margin-bottom:8px">NapCat 活性看门狗<span class="badge" style="background:var(--tint);color:var(--dim)">防消息推送静默失联</span></div>
   <label class="master"><input type="checkbox" ${c.watchdog_enabled!==false?'checked':''} onchange="saveKVLoad('/api/app-config',{watchdog_enabled:this.checked?1:0},'看门狗已'+(this.checked?'开启':'关闭'))">
    <span><b>启用看门狗</b><div class="k" style="margin-top:3px">定期探测 NapCat 消息通道是否真的活着（TCP 连着但对端不响应/不推事件的「半死」状态，控制台显示在线但机器人实际收不到消息）；探测到失联会在「状态」页告警并私聊通知主人</div></span></label>
@@ -2448,21 +2516,19 @@ async function vSettings(){
   <label style="display:block;margin:4px 0"><input type="radio" name="wdmode" value="auto" ${(c.watchdog_mode||'auto')==='auto'?'checked':''} onchange="saveKVLoad('/api/app-config',{watchdog_mode:'auto'},'看门狗模式：自动恢复')"> 自动恢复<span class="k">：先由 daemon 自动重连；重连无效则自动重启 NapCat 与组件（需要重新登录时会打开扫码页）</span></label>
   <label style="display:block;margin:4px 0"><input type="radio" name="wdmode" value="alert" ${c.watchdog_mode==='alert'?'checked':''} onchange="saveKVLoad('/api/app-config',{watchdog_mode:'alert'},'看门狗模式：仅告警')"> 仅告警<span class="k">：只通知，不做任何重启，等主人到控制台手动处理</span></label>
   <div style="margin-top:8px"><label>探测间隔 <input type="number" min="60" max="600" step="30" value="${c.watchdog_interval||120}" style="width:70px" onchange="saveKVLoad('/api/app-config',{watchdog_interval:Math.max(60,Math.min(600,parseInt(this.value)||120))},'探测间隔已保存')"> 秒（连续 2 次异常才触发动作）</label></div>
-  <div class="k" style="margin-top:6px">当前状态可在「状态」页查看（含最近事件）</div></div>
-
- <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">⑦.5 风控优化（2026-11-10 条款825 风控后新增）</div>
+  <div class="k" style="margin-top:6px">当前状态可在「状态」页查看（含最近事件）</div></div>`}
+function stRisk(rv){return `
  <div class="card"><div class="k" style="margin-bottom:10px">降低机器人账号的"非人工行为"特征，减少触发风控（条款8.2.5=第三方软件获取数据/非人工操作）的概率。所有开关都<strong>可随时开/关并即时生效</strong>——关闭即完全回退原始行为，已有设置不丢失。</div>
   <label class="master" style="margin-bottom:10px"><input type="checkbox" ${rv.risk_limit_image_fetch!==false?'checked':''} onchange="saveKVLoad('/api/reply-config',{risk_limit_image_fetch:this.checked},'图片获取限频已'+(this.checked?'开启':'关闭'))">
    <span><b>图片获取限频</b><div class="k" style="margin-top:3px">机器人下载 QQ 图片（看图用）每分钟最多 10 次、每日最多 60 次——批量拉取图片是条款825「第三方获取数据」最典型的特征。超限时段机器人会"暂时看不到图"（诚实回复看不到），恢复后自动继续。</div></span></label>
   <label class="master" style="margin-bottom:10px"><input type="checkbox" ${rv.risk_proactive_downscale?'checked':''} onchange="saveKVLoad('/api/reply-config',{risk_proactive_downscale:this.checked},'主动消息降频已'+(this.checked?'开启':'关闭'))">
-   <span><b>主动消息降频 + 夜间静默</b><div class="k" style="margin-top:3px">开启后：凌晨 0-8 点主动消息全静默；其他时段主动消息概率×0.5、最小间隔×2。上方的主动消息设置保留不丢，关闭本开关即完全回退原始频率。</div></span></label>
+   <span><b>主动消息降频 + 夜间静默</b><div class="k" style="margin-top:3px">开启后：凌晨 0-8 点主动消息全静默；其他时段主动消息概率×0.5、最小间隔×2。「群消息」「私聊消息」页的主动消息设置保留不丢，关闭本开关即完全回退原始频率。</div></span></label>
   <label class="master"><input type="checkbox" ${rv.risk_human_pace!==false?'checked':''} onchange="saveKVLoad('/api/reply-config',{risk_human_pace:this.checked},'发送节奏拟人化已'+(this.checked?'开启':'关闭'))">
    <span><b>发送节奏拟人化</b><div class="k" style="margin-top:3px">回复首条消息带 0.8-2.5 秒随机"看到消息到开口"的反应延迟（秒回是机器人最典型的特征）。关闭=首条立即发出。</div></span></label>
-  <div class="k" style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--line)">⚠ 这些措施降低的是风险概率，无法完全消除——第三方协议（NapCat）本身就在条款禁止范围内。账号解封后建议先冷启动 1-2 天（只看不说），再逐步恢复。</div></div>
-
- <div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">⑧ 应用行为</div>
+  <div class="k" style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--line)">⚠ 这些措施降低的是风险概率，无法完全消除——第三方协议（NapCat）本身就在条款禁止范围内。账号解封后建议先冷启动 1-2 天（只看不说），再逐步恢复。</div></div>`}
+function stApp(c){return `
  <div class="card"><div class="k">开机自启（登录 Windows 后自动打开控制台窗口${c.autostart_with_windows?'，已开启':'，未开启'}）</div>
-  <div style="margin-top:8px"><label><input type="checkbox" id="sauto" ${c.autostart_with_windows||S_autostartRegistry()?'checked':''} onchange="saveAuto(this.checked)"> 开机自动启动本应用</label></div></div>
+  <div style="margin-top:8px"><label><input type="checkbox" id="sauto" ${c.autostart_with_windows?'checked':''} onchange="saveAuto(this.checked)"> 开机自动启动本应用</label></div></div>
  <div class="card"><div class="k">启动行为</div>
   <div style="margin-top:8px"><label class="master"><input type="checkbox" id="spoweron" ${c.auto_power_on?'checked':''} onchange="savePowerOn(this.checked)">
    <span>打开本应用时自动启动机器人<div class="k" style="margin-top:2px">与上一项同时勾选时，开机会先启动应用、紧接着自动启动机器人</div></span></label></div></div>
@@ -2478,22 +2544,27 @@ async function vSettings(){
   <label style="display:block;margin:6px 0"><input type="radio" name="unmode" value="wipe"> <b>彻底卸载</b><span class="k">：连同 ~/.zcode-qq-bot 一起删除——人设、记忆、备份、API Key 全部消失且不可恢复</span></label>
   <div style="margin-top:8px;display:flex;gap:8px">
    <button class="act danger" onclick="doUninstall()">卸载</button>
-   <span class="k">点击后程序会自动退出并完成清理</span></div></div>`;
- // 下载进行中：切走再切回设置页/重开管理台后，自动恢复进度轮询
- api('/api/napcat-dl-status').then(st=>{if(st&&st.running)ncdlPoll()}).catch(()=>{});
- bkGroupsRender();
- // QQ 版本锁状态标注（hosts 实际生效态 vs 配置意图）
- api('/api/qq-compat').then(q=>{
-  const el=document.getElementById('qqlock-state');
-  const box=document.getElementById('sqqlock');
-  if(box)box.checked=q.lock_active;
-  if(el)el.textContent=q.lock_active
-   ?'（已生效：QQ 更新源已屏蔽'+(q.qq_version&&q.qq_version!=='legacy'?'，当前 '+q.qq_version:'')+'）'
-   :(q.lock_wanted?'（⚠ 尚未生效：需要管理员权限，点一次开关并确认 UAC）':'（未开启）');
- }).catch(()=>{});
- // 独立运行时状态
- api('/api/napcat-runtime').then(rt=>{rtPaint(rt)}).catch(()=>{});
-}
+   <span class="k">点击后程序会自动退出并完成清理</span></div></div>`}
+function stActivityGuide(rv){
+ const m={standard:'标准（只在被 @ 或被回复时说话）',keyword:'关键词（命中关键词也会回）',chat:'闲聊（按概率插话）'}[rv.reply_mode]||rv.reply_mode||'标准';
+ return `<div class="card"><div class="k" style="display:flex;gap:8px;align-items:center;margin-bottom:6px"><b>活跃程度</b><span class="badge" style="background:var(--tint);color:var(--dim)">在另外两页设置</span></div>
+  <div class="k">机器人多爱说话，由「群消息」「私聊消息」两页里的回复模式、插话概率、最小间隔、主动发消息的概率和间隔、表情回应决定。当前全局回复模式：<b>${esc(m)}</b>。本页下面管的是风格：在决定开口的前提下，怎么说。</div>
+  <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+   <button class="act ghost" style="margin:0" onclick="goTab('groups')">去「群消息」调概率与间隔</button>
+   <button class="act ghost" style="margin:0" onclick="goTab('private')">去「私聊消息」调主动与追问</button>
+  </div></div>`}
+function stPrivacy(rv){return `
+ <div class="card"><div class="k" style="margin-bottom:8px"><b>哪些数据会离开这台电脑</b></div>
+  <div class="k">机器人的回答由大模型生成，所以聊天文字会发给「模型与消耗」里配置的模型服务商，这是它能说话的前提。下面几项会把更多内容发出去，或者在本机留存聊天内容，各有独立开关。</div>
+  <div style="margin-top:10px">
+   <label class="master"><input type="checkbox" ${rv.context_log_enabled!==false?'checked':''} onchange="ctxToggle(this.checked)">
+    <span><b>记录注入上下文</b><span class="badge" style="background:var(--tint);color:var(--dim);margin-left:6px">本机留存 · 默认开启</span><div class="k" style="margin-top:3px">把每条触发消息发给模型的完整内容（人设、记忆、带上的聊天记录）写进本机日志目录的 logs/context，用来排查「她为什么这么回」。只存在本机；已有的记录可以在「运行日志」页的上下文日志里一键清空</div></span></label></div>
+  <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
+   <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap"><span class="badge" style="background:var(--tint);color:var(--dim);flex:none">联网搜索 · ${rv.web_search_enabled?'已开启':'未开启'}</span><span class="k">开启后，需要搜索的那条消息文字会发给搜索服务商。开关在「通用 → 功能开关」</span></div>
+   <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;margin-top:8px"><span class="badge" style="background:var(--tint);color:var(--dim);flex:none">看图 · ${rv.vision_enabled?'已开启':'未开启'}</span><span class="k">开启后，要看的图片会发给模型服务商；再开了后台识图，机器人收到的带图消息都会发。开关在「聊天风格 → 看图」</span></div>
+   <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;margin-top:8px"><span class="badge" style="background:var(--tint);color:var(--dim);flex:none">群成员画像、电脑状态感知 · ${(rv.member_profiles_enabled||rv.env_pulse_enabled)?'有开启的':'都未开启'}</span><span class="k">把群成员的昵称和部分发言、或这台电脑的状态放进发给模型的上下文。它们是插件，开关在「插件」页，默认关闭</span></div>
+  </div>
+  <div class="k" style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--line)">API Key 只存在本机数据目录，自动备份不含密钥。</div></div>`}
 let _rtTimer=null;
 function rtPaint(rt){
  const el=document.getElementById('rt-status');
@@ -5620,6 +5691,9 @@ class UiHandler(BaseHTTPRequestHandler):
                                      "bili_scroll_keywords": str(data.get("bili_scroll_keywords", "")),
                                      "lean_ctx_enabled": data.get("lean_ctx_enabled", True),
                                      "dyn_ctx_enabled": data.get("dyn_ctx_enabled", True),
+                                     # 上下文日志的开关：设置页「隐私与数据」卡要显示当前状态
+                                     # （写入仍走 /api/ctx-log-toggle，运行日志页那个开关是同一个）
+                                     "context_log_enabled": bool(data.get("context_log_enabled", True)),
                                      # 对话架构 v2：没在配置里写过的键取 agent 的默认值，页面显示的
                                      # 就是实际生效的
                                      "prompt_v2": bool(data.get("prompt_v2", C.ARCH_V2_DEFAULTS["prompt_v2"])),
@@ -6177,7 +6251,8 @@ class UiHandler(BaseHTTPRequestHandler):
         if u.path == "/api/ctx-log-toggle":
             data = load_json_const(REPLY_CONFIG_PATH, {})
             data["context_log_enabled"] = bool(body.get("on"))
-            write_const(REPLY_CONFIG_PATH, data)
+            # write_const 只收字符串。这里曾直接传字典，保存一律 500，开关从没真正生效过
+            write_const(REPLY_CONFIG_PATH, json.dumps(data, ensure_ascii=False, indent=2))
             return self._reply(200, {"ok": True,
                                      "enabled": data["context_log_enabled"]})
         if u.path == "/api/shutdown":
