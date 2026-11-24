@@ -33,6 +33,8 @@ JUDGE_SYS = (
     "把别人之间的对话当成对自己说的。\n"
     "3. 不出戏：没有系统腔、说教、自我说明、多余的关心叮嘱、刻意堆砌的语气词或表情。\n"
     "两边的短处都要看：过长的、像小作文的、模板化的、把天聊死的，都算差。\n"
+    "回复里的①②表示机器人分几条消息连发，不是几个备选；连发短句在QQ里很常见，"
+    "按连起来的整体来判断。\n"
     '只输出一个 JSON 对象：{"like_human": "甲" 或 "乙", "fits": "甲" 或 "乙", '
     '"reason": "一句话理由"}')
 
@@ -49,8 +51,20 @@ def scene_text(s, max_hist=30):
         "\n".join(lines) or "（无）", who, s["msg"]["text"])),
 
 
+_BUBBLE_MARKS = "①②③④⑤⑥⑦⑧⑨"
+
+
 def shown(r):
-    return " / ".join(x for x in str(r.get("final") or "").split("\n") if x.strip())
+    """把回复呈现给裁判。多条消息（连发）用 ①② 标出。
+    此前是拿「 / 」拼成一串，裁判会把「A / B」读成拼接痕迹或几个备选——
+    冤枉了连发这种很真人的说话方式，而结构化输出连发更多，等于系统性压低它的分。"""
+    parts = [x.strip() for x in str(r.get("final") or "").split("\n") if x.strip()]
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    return " ".join("%s%s" % (_BUBBLE_MARKS[i] if i < len(_BUBBLE_MARKS) else "(%d)" % (i + 1), p)
+                    for i, p in enumerate(parts))
 
 
 def main():
