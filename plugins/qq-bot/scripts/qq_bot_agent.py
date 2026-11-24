@@ -2671,10 +2671,184 @@ def _nudge_tick(daemon):
 
 
 
+# ---------------------------------------------------------------------------
+# 提示词 v2（对话架构改造·第 1 步）
+#   ① 历史窗口从 14 行拉到可配的 50 行；每行「距现在多久 + 说话人 + 内容」，
+#      不再带 QQ 号和方括号时间戳（模型会模仿方括号格式报时）；QQ 另给对照表
+#   ② 仅主人可用的能力教学（带话/画图/设备操控）只对主人注入
+#   ③ 自进化观察只在对人直接回复时注入；热点清单只留与当前对话相关的条目
+# 旧逻辑原样保留在 _build_messages_impl 的 v2=False 分支，由开关选择。
+# ---------------------------------------------------------------------------
+PROMPT_V2_FORCE = None       # 评测/测试用：True/False 强制；None = 读配置
+PROMPT_V2_DEFAULT = False    # 分支阶段默认关；评测通过、合并前改为 True
+
+
+def prompt_v2_on():
+    if PROMPT_V2_FORCE is not None:
+        return bool(PROMPT_V2_FORCE)
+    cfg = load_json_const(REPLY_CONFIG_PATH, {})
+    return bool(cfg.get("prompt_v2", PROMPT_V2_DEFAULT))
+
+
+def hist_lines_v2():
+    """v2 历史窗口行数（取最近的这么多行，旧→新）。"""
+    cfg = load_json_const(REPLY_CONFIG_PATH, {})
+    try:
+        return max(10, min(120, int(cfg.get("hist_lines", 50))))
+    except (TypeError, ValueError):
+        return 50
+
+
+def hist_budget_v2():
+    """v2 历史块的字符预算；超出时从最旧的行开始丢。"""
+    cfg = load_json_const(REPLY_CONFIG_PATH, {})
+    try:
+        return max(1000, min(20000, int(cfg.get("hist_budget_chars", 5000))))
+    except (TypeError, ValueError):
+        return 5000
+
+
+def _rel_time(delta):
+    """距现在的时长 → 口语化的相对时间。"""
+    if delta < 60:
+        return "刚刚"
+    if delta < 3600:
+        return "%d分钟前" % (delta // 60)
+    if delta < 86400:
+        return "%d小时前" % (delta // 3600)
+    if delta < 172800:
+        return "昨天"
+    return "%d天前" % (delta // 86400)
+
+
+_HIST_TEXT_V2 = (("[图片]", "（发了张图）"), ("[表情包]", "（表情包）"),
+                 ("[表情]", "（表情）"), ("[语音]", "（语音）"),
+                 ("[视频]", "（视频）"), ("[文件]", "（文件）"))
+
+
+def _hist_text_v2(text, cap):
+    """历史行文本：折成一行、去掉会被模型模仿的方括号占位、截断。"""
+    t = " ".join(str(text or "").split())
+    for a, b in _HIST_TEXT_V2:
+        if t == a:
+            return b
+    t = re.sub(r"\[QQ表情#\w{1,8}\]", "[QQ表情]", t)
+    return t[:cap] if t else "（无文字）"
+
+
+def _render_history_v2(history, now_ts, n_max, budget=5000):
+    """v2 历史渲染。返回 (block, qq_legend)。
+    qq_legend：最近若干行里出现过的说话人「名字=QQ」列表，供记忆标记使用——
+    这样历史行本身不必每行都带 QQ 号。"""
+    rows = []
+    for h in (history[-n_max:] if n_max else history):
+        is_bot = bool(h.get("is_bot"))
+        name = "你" if is_bot else str(h.get("sender_name") or "?")
+        text = _hist_text_v2(h.get("text"), 100 if is_bot else 120)
+        try:
+            delta = max(0, int(now_ts - float(h.get("ts") or now_ts)))
+        except (TypeError, ValueError):
+            delta = 0
+        rows.append(("- %s %s：%s" % (_rel_time(delta), name, text),
+                     name, str(h.get("sender_id") or "")))
+    kept, total = [], 0
+    for row in reversed(rows):
+        total += len(row[0])
+        if kept and total > budget:
+            break
+        kept.append(row)
+    kept.reverse()
+    block = "\n".join(r[0] for r in kept) if kept else "（暂无）"
+    legend, seen = [], set()
+    for _line, name, qq in reversed(kept[-12:]):
+        if name != "你" and qq and qq not in seen:
+            seen.add(qq)
+            legend.append("%s=%s" % (name, qq))
+    legend.reverse()
+    return block, legend
+
+
+# 热点相关性：标题的二字组合在最近对话里出现（排除通用词）才算相关
+_HOT_SECTION_HEAD = "## 近几天热点速览"
+_NEWS_ASK_RE = re.compile(r"热点|热搜|新闻|今日|最新消息|有什么大事|发生了什么|大瓜|吃瓜")
+_HOT_STOP = set(
+    "官方 方通 通报 回应 引发 网友 表示 发布 最新 相关 报道 消息 出现 进行 成为 "
+    "举行 宣布 确认 回复 回击 中国 美国 公司 用户 平台 问题 情况 时间 今年 明年 "
+    "认为 指出 称已 目前 已经 正在 其中 以及 对于 关于 通过 根据 由于 来源 网络 "
+    "视频 直播 活动 期间 结果 影响 市场 全球 国家 地区 部分 工作 服务 支持 发现 "
+    "曝光 争议 热议 关注 讨论 冲击 大跌 上涨 下降 增加 减少".split())
+
+
+def _title_hits(title, conv):
+    t = re.sub(r"[\s，。！？、：:；;“”\"'（）()《》\-—…·0-9A-Za-z]+", "", str(title or ""))
+    if len(t) < 2:
+        return False
+    grams = [t[k:k + 2] for k in range(len(t) - 1)]
+    hits = [g for g in grams if g in conv and g not in _HOT_STOP]
+    if not hits:
+        return False
+    long_hit = any(g in conv and t[k:k + 3] in conv for k, g in enumerate(grams))
+    return long_hit or len(set(hits)) >= 2
+
+
+def _aware_filter_hot(aware, conv_text):
+    """v2：热点清单只保留与当前对话相关的条目；对方在问新闻时给全量；
+    一条都不相关就整段去掉（约 1700 字）。"""
+    i = (aware or "").find(_HOT_SECTION_HEAD)
+    if i < 0:
+        return aware
+    end = aware.find("\n## ", i + 2)
+    if end < 0:
+        end = len(aware)
+    if _NEWS_ASK_RE.search(conv_text or ""):
+        return aware
+    lines = aware[i:end].split("\n")
+    kept, cur_date = [], None
+    for ln in lines[1:]:
+        s = ln.strip()
+        if s.startswith("### "):
+            cur_date = s
+            continue
+        if not s.startswith("- "):
+            continue
+        item = s[2:].strip()
+        if item.startswith("- "):
+            item = item[2:].strip()   # 插件偶发的双项目符号
+        if _title_hits(item.split("：", 1)[0], conv_text):
+            kept.append((cur_date, "- " + item))
+    if not kept:
+        return aware[:i] + aware[end:]
+    out, last = [lines[0]], object()
+    for date, item in kept:
+        if date != last and date:
+            out.append(date)
+            last = date
+        out.append(item)
+    return aware[:i] + "\n".join(out) + aware[end:]
+
+
+# 历史块后面固定附带的两条判断说明（新旧两版共用）
+# 对话关系：别人的对话不插嘴；复述：第三人称转述刚发生的事不重演一遍情绪
+_PEER_NOTES = ("\n（对话关系判断：如果最近的对话是其他群友在互相说话"
+               "——互相@、互相引用、或短句接龙且当前这条不是对你说的，"
+               "就当没看见，输出 [跳过]，绝不对别人的对话插嘴；"
+               "只有话题明确在等你/群体参与时才开口）"
+               "\n（复述判断：如果【现在】这句是用第三人称转述刚发生的事"
+               "——如「有人要和你过一辈子」「他刚说…」「刚才那句」——先看最近"
+               "对话里是不是刚有同样的事、你已回应过：是的话就当调侃/起哄接一句"
+               "轻的（或只挂表情回应），绝不再完整演一遍刚才那个情绪）")
+
+
 def build_messages(daemon, msg, ctx_k=32):
+    """装配入口：按开关选择 v2 或旧版。返回 (messages, active_persona_name)。"""
+    return _build_messages_impl(daemon, msg, ctx_k=ctx_k, v2=prompt_v2_on())
+
+
+def _build_messages_impl(daemon, msg, ctx_k=32, v2=False):
     """按上下文档位（ctx_k=千 token 预算）装配消息：
     ≥16k 全量 / 8-16k 标准 / <8k 精简（历史更短、记忆更少、安全段压缩）。"""
     """返回 (messages, active_persona_name)。"""
+    _direct = msg.get("trigger_reason") in ("at", "reply_to_bot")   # 对方在直接跟机器人说
     pc, _global_active = load_persona_collection()
     # 分对象人设路由：私聊按对方 QQ；群按群号；群无专属时回退发言人的私聊路由。
     # 路由只在这里决定一次，正文/自进化/语气全部跟随此结果——防人设串味的根本。
@@ -2715,7 +2889,9 @@ def build_messages(daemon, msg, ctx_k=32):
     style_block = ("\n\n## 说话风格卡（通用的语言底子；若与当前人设的性格冲突，以人设为准）\n" + style) if style else ""
     ev = evolved_notes(active_name) if active_name else {"enabled": False, "notes": []}
     evolved_block = ""
-    if ev["enabled"] and ev["notes"]:
+    # v2：自进化观察（约 800 字的经验条目）只在对人直接回复时带上——旁观闲聊
+    # 的调用九成以 [跳过] 结束，带上只是白占预算
+    if ev["enabled"] and ev["notes"] and not (v2 and not _direct):
         evolved_block = ("\n\n## 自进化风格观察（你在真实聊天中积累的经验，"
                          "指导以后怎么说更自然）\n" + "\n".join("- %s" % n for n in ev["notes"][-_evolved_inject_n():]))
     skip_block = ""
@@ -2775,6 +2951,16 @@ def build_messages(daemon, msg, ctx_k=32):
     # （群成员画像已插件化：由上面的 PLUGIN_HOST.inject_all 注入）
     if _aware:
         _aware = "\n" + _aware.strip("\n") + "\n"
+    _h0 = None
+    if v2:
+        # v2 提前取历史：热点相关性要看最近对话；后面的历史渲染直接复用
+        try:
+            _h0 = daemon.history(msg["chat_type"], msg["chat_id"],
+                                 limit=hist_lines_v2() + 2)
+        except Exception:
+            _h0 = []
+        _aware = _aware_filter_hot(_aware, " ".join(
+            [str(msg.get("text") or "")] + [str(h.get("text") or "") for h in _h0]))
     if msg.get("trigger_reason") == "botloop_probe":
         guard_block = (
             "\n\n## 本次消息性质（互聊试探）\n"
@@ -2819,6 +3005,11 @@ def build_messages(daemon, msg, ctx_k=32):
     if _shrink_hist:
         n_hist = min(n_hist, 5)
         n_gmem = min(n_gmem, 2)
+    if v2:
+        # v2 不走档位表：模型链里已没有小窗口模型，历史窗口直接按配置取
+        n_hist = hist_lines_v2()
+        if _shrink_hist:
+            n_hist = min(n_hist, 10)
 
     g_mem = memory_snippets("group", msg["chat_id"])
     c_mem = memory_snippets("contact", msg["sender_id"])
@@ -2830,34 +3021,35 @@ def build_messages(daemon, msg, ctx_k=32):
         if c_mem:
             mem_block += "\n### 关于发言者\n" + "\n".join(c_mem[-n_cmem:])
 
-    history = daemon.history(msg["chat_type"], msg["chat_id"], limit=n_hist + 2)
-    hist_lines = []
-    for h in history:
-        name = "你" if h.get("is_bot") else str(h.get("sender_name", "?"))
-        # 历史 带 QQ：模型标注 [记忆@QQ] 时需要知道每句话是谁说的
-        # 用户（非 bot）的话少截断——刚说过的事实被截丢会导致"刚说完就忘"
-        cap = (120 if not h.get("is_bot") else c_hist)
-        # "- [时:分] " 行首符 + 每行独立说话人：实测不给格式说明时模型会把相邻
-        # 不同人的话当成同一个人说的（"吃萨莉亚"+"弹幕游戏"被合并回复）；
-        # 时间戳防旧话题被当成"正在聊"（中午说"今晚早点休息"事故）
-        hist_lines.append("- [%s] %s(QQ:%s): %s" % (
-            _hhmm(h.get("ts")), name, h.get("sender_id", "?"), str(h.get("text", ""))[:cap]))
-    hist_block = "\n".join(hist_lines[-n_hist:]) if hist_lines else "（暂无）"
-    hist_note = ("（每行[时:分]后面的名字就是这句话的说话人——不同名字=不同的几个人，"
-                 "相邻两行很可能是不同的人；回复前先分清哪句是谁说的，"
-                 "不要把不同人的话当成一个人说的来回应）" + _HIST_TIME_NOTE +
-                 "\n（对话关系判断：如果最近的对话是其他群友在互相说话"
-                 "——互相@、互相引用、或短句接龙且当前这条不是对你说的，"
-                 "就当没看见，输出 [跳过]，绝不对别人的对话插嘴；"
-                 "只有话题明确在等你/群体参与时才开口）"
-                 # B·转述识别（2026-11-19 实测：你告白→机器人已回应；紧接着群友
-                 # 第三人称复述"有人要和你过一辈子"，机器人又演了一遍同样的害羞
-                 # ——把复述当成了新的告白。复述/引用刚发生的事应作调侃接梗，
-                 # 不重新演一遍情绪）
-                 "\n（复述判断：如果【现在】这句是用第三人称转述刚发生的事"
-                 "——如「有人要和你过一辈子」「他刚说…」「刚才那句」——先看最近"
-                 "对话里是不是刚有同样的事、你已回应过：是的话就当调侃/起哄接一句"
-                 "轻的（或只挂表情回应），绝不再完整演一遍刚才那个情绪）")
+    _qq_legend = []
+    if v2:
+        # v2：长窗口 + 紧凑行（距现在多久 + 说话人 + 内容），QQ 号另给对照表
+        hist_block, _qq_legend = _render_history_v2(
+            _h0 if _h0 is not None else [], time.time(), n_hist,
+            budget=hist_budget_v2())
+        hist_note = ("（每行开头是这句话距现在多久，后面是谁说的——不同名字是不同的人，"
+                     "相邻两行很可能是不同的人；回复前先分清哪句是谁说的，"
+                     "不要把不同人的话当成一个人说的来回应）"
+                     "（几小时前甚至昨天的旧话题不是「刚刚发生」的，"
+                     "别当成现在正在聊的内容）" + _PEER_NOTES)
+    else:
+        history = daemon.history(msg["chat_type"], msg["chat_id"], limit=n_hist + 2)
+        hist_lines = []
+        for h in history:
+            name = "你" if h.get("is_bot") else str(h.get("sender_name", "?"))
+            # 历史 带 QQ：模型标注 [记忆@QQ] 时需要知道每句话是谁说的
+            # 用户（非 bot）的话少截断——刚说过的事实被截丢会导致"刚说完就忘"
+            cap = (120 if not h.get("is_bot") else c_hist)
+            # "- [时:分] " 行首符 + 每行独立说话人：实测不给格式说明时模型会把相邻
+            # 不同人的话当成同一个人说的（"吃萨莉亚"+"弹幕游戏"被合并回复）；
+            # 时间戳防旧话题被当成"正在聊"（中午说"今晚早点休息"事故）
+            hist_lines.append("- [%s] %s(QQ:%s): %s" % (
+                _hhmm(h.get("ts")), name, h.get("sender_id", "?"), str(h.get("text", ""))[:cap]))
+        hist_block = "\n".join(hist_lines[-n_hist:]) if hist_lines else "（暂无）"
+        hist_note = ("（每行[时:分]后面的名字就是这句话的说话人——不同名字=不同的几个人，"
+                     "相邻两行很可能是不同的人；回复前先分清哪句是谁说的，"
+                     "不要把不同人的话当成一个人说的来回应）" + _HIST_TIME_NOTE
+                     + _PEER_NOTES)
     # A·同话题冷却（亲密/情绪类话题 60 秒内二次触发 → 附轻提示，不阻止回复）
     _topic_note = _same_topic_note(msg)
     if _topic_note:
@@ -2889,7 +3081,9 @@ def build_messages(daemon, msg, ctx_k=32):
         rt_note = ("\n【被引用的原文】%s 发的是一条图片消息（图已附在下方）%s"
                    % ((rt or {}).get("sender_name") or "对方", _rt_bot_note))
     if msg["chat_type"] == "group":
-        speaker = "%s(QQ:%s)" % (msg["sender_name"], msg["sender_id"])
+        # v2：说话人行不带 QQ（QQ 在历史块后面给一行对照表）
+        speaker = (str(msg["sender_name"]) if v2
+                   else "%s(QQ:%s)" % (msg["sender_name"], msg["sender_id"]))
         # 被@列表：at_me 时保留其他人名（群友让她"跟XX聊"需知道XX是谁）
         others = [str(q) for q in (msg.get("at_users") or [])
                   if str(q) != str(msg.get("bot_qq") or "3126940548")]
@@ -2924,9 +3118,20 @@ def build_messages(daemon, msg, ctx_k=32):
             _now_body = "只@了你、没写正文，前后也没有 TA 刚发的消息——问 TA 想说什么。"
         else:
             _now_body = msg["text"] or "（发了一张图/表情）"
-        content = ("【当前场景：群聊（群号 %s，群内所有人可见你发的消息）| 最近对话】\n%s\n%s\n\n【现在】%s%s%s" % (
-            msg["chat_name"], hist_block, hist_note, lead,
-            _now_body, rt_note))
+        if v2:
+            _lg_items = []
+            if str(msg.get("sender_id") or ""):
+                _lg_items.append("%s=%s" % (msg["sender_name"], msg["sender_id"]))
+            _lg_items += [x for x in _qq_legend if x not in _lg_items]
+            _lg = ("\n（说话人QQ：" + "，".join(_lg_items) + "）") if _lg_items else ""
+            content = ("【当前场景：群聊（%s，群内所有人可见你发的消息）】\n"
+                       "【最近对话】（旧→新）\n%s%s\n%s\n\n【现在】%s%s%s" % (
+                           msg["chat_name"], hist_block, _lg, hist_note, lead,
+                           _now_body, rt_note))
+        else:
+            content = ("【当前场景：群聊（群号 %s，群内所有人可见你发的消息）| 最近对话】\n%s\n%s\n\n【现在】%s%s%s" % (
+                msg["chat_name"], hist_block, hist_note, lead,
+                _now_body, rt_note))
     else:
         # 私聊：告诉模型它在哪些群（否则它以为"活动范围只有当前聊天"，
         # 主人让它去群里说话时会拒绝）；群名拉不到时只给群号
@@ -2934,10 +3139,19 @@ def build_messages(daemon, msg, ctx_k=32):
             groups_line = _owner_groups_line(daemon)
         except Exception:
             groups_line = "（群信息暂不可用）"
-        content = ("【当前场景：私聊（一对一对话，仅对方可见）| 最近对话】\n%s\n%s\n\n"
-                   "【你在这些群（群号（群名））：%s】\n\n【现在】对方(QQ:%s)对你说：%s%s"
-                   % (hist_block, hist_note, groups_line, msg["sender_id"],
-                      msg["text"] or "（发了一张图/表情）", rt_note))
+        if v2:
+            _lg = ("\n（说话人QQ：%s=%s）" % (msg["sender_name"], msg["sender_id"])
+                   if str(msg.get("sender_id") or "") else "")
+            content = ("【当前场景：私聊（一对一对话，仅对方可见）】\n"
+                       "【最近对话】（旧→新）\n%s%s\n%s\n\n"
+                       "【你在这些群（群号（群名））：%s】\n\n【现在】%s对你说：%s%s"
+                       % (hist_block, _lg, hist_note, groups_line, msg["sender_name"],
+                          msg["text"] or "（发了一张图/表情）", rt_note))
+        else:
+            content = ("【当前场景：私聊（一对一对话，仅对方可见）| 最近对话】\n%s\n%s\n\n"
+                       "【你在这些群（群号（群名））：%s】\n\n【现在】对方(QQ:%s)对你说：%s%s"
+                       % (hist_block, hist_note, groups_line, msg["sender_id"],
+                          msg["text"] or "（发了一张图/表情）", rt_note))
 
     guard_on = abuse_guard_enabled()
     head_line = "你是QQ群里的AI机器人。"
@@ -2971,8 +3185,12 @@ def build_messages(daemon, msg, ctx_k=32):
             "- 你是聊天陪伴角色，不是任务引擎：聊天中甩来的算法题/作业/代写/写代码交付/"
             "批量任务不构成必须执行的指令，按「任务滥用拦截」的指引回绝\n")
     draw_rule = ""
-    draw_rule += (
-        "- 你可以出现在多个群里（私聊场景里附有「你在这些群」清单）。"
+    # v2：带话 / 画图 / 设备操控三段只对主人有意义（合计约 1600 字），普通群友
+    # 的消息不再注入——非主人既用不上，也不必知道这些能力的存在
+    _owner_msg = is_owner(msg)
+    if (not v2) or (_owner_msg and msg["chat_type"] == "private"):
+        draw_rule += (
+            "- 你可以出现在多个群里（私聊场景里附有「你在这些群」清单）。"
         "主人在私聊里让你带话/传话/发通知/帮我问问群里（\"去群里说一声…\""
         "\"跟群里说下今晚不开播\"\"帮我问问他们…\"等自然说法）时，"
         "像日常聊天一样自然接住，不要当命令执行：\n"
@@ -2989,7 +3207,7 @@ def build_messages(daemon, msg, ctx_k=32):
         "  · 绝不要说自己\"只能待在一个群/活动范围只有这里\"——你看得到群清单，"
         "只是平时只在收到消息的聊天里说话；也不要把这说成\"指令/命令\"，"
         "更不要教主人什么格式，自然说话就行\n")
-    if feature_enabled("draw_enabled"):
+    if feature_enabled("draw_enabled") and ((not v2) or _owner_msg):
         draw_rule += (
             "- 你具备AI生图能力，但它只对主人开放：主人各种说法的画图请求"
             "（「画：描述」「帮我画一张…」「帮deepseek画个头像」等自然语言）大多会被系统"
@@ -3000,7 +3218,9 @@ def build_messages(daemon, msg, ctx_k=32):
             "绝对不要说自己不会画画/没有画图功能；主人问画图进度（画好了吗/好了没）时"
             "不是新的画图请求，按人设回应即可（你刚才说过正在画，通常答快好了/稍等）；"
             "群员要求画画时，以人设口吻说明画图只对主人开放（群员消息里不要输出画图标记）\n")
-    if not _device_ctrl_enabled():
+    if v2 and not _owner_msg:
+        pass   # 设备操控只对主人开放：非主人的消息不教
+    elif not _device_ctrl_enabled():
         draw_rule += (
             "- 你具备「设备操控」能力（帮主人操作电脑找/读/发文件），但当前未开启："
             "若有人（包括主人）要求你操作电脑/找文件/发文件，按人设回应并说明"
