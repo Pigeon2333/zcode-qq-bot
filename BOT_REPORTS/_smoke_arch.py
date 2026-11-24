@@ -761,14 +761,19 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
 
     chk("14m 回复策略 v2 开 + 追聊风格「克制」→ 走 v2", _nudge_run(True, "restrained") == ["v2"])
     chk("14n 回复策略 v2 关 → 仍走旧版（风格设置不起作用）", _nudge_run(False, "restrained") == ["v1"])
+    # 下面几项验的是「配置里没写时的默认值」——必须显式打桩成空配置，不能读
+    # 线上真实配置：用户可能已经把风格开关打开了，那样测的就不是默认值。
+    with patched(A, load_json_const=_cfg_ljc({})):
+        _def_nudge = A.nudge_mode()
     chk("14o 回复策略 v2 开 + 默认风格（经典）→ 仍走旧版：风格默认保持从前的做法",
-        _nudge_run(True) == ["v1"] and A.nudge_mode() == "classic")
+        _nudge_run(True) == ["v1"] and _def_nudge == "classic", _def_nudge)
     with patched(A, load_json_const=_cfg_ljc({"nudge_mode": "whatever"})):
         _bad_mode = A.nudge_mode()
     chk("14p 配置里的值不合法 → 回到默认", _bad_mode == "classic", _bad_mode)
     with patched(A, load_json_const=_cfg_ljc({"nudge_mode": "restrained"})):
         chk("14q 设置页选了「克制」→ 生效", A.nudge_mode() == "restrained")
-    chk("14r 打桩已还原（又读到默认值）", A.nudge_mode() == "classic", A.nudge_mode())
+    with patched(A, load_json_const=_cfg_ljc({})):
+        chk("14r 打桩已还原（又读到默认值）", A.nudge_mode() == "classic", A.nudge_mode())
 
     # ---------- 15. 主动消息 v2 ----------
     ok, speak, say, kind, anchor = A._parse_proactive_json('{"speak": false}')
@@ -846,8 +851,10 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
     sent, used, logs = _pro_run(False, "大家晚上好呀")
     chk("15m 回复策略关着 → 走旧版主动消息（原文照发）", used[:1] == ["v1"] and sent == [["大家晚上好呀"]], (used, sent))
     sent, used, logs = _pro_run(True, "大家晚上好呀", mode=None)
+    with patched(A, load_json_const=_cfg_ljc({})):
+        _def_pm = A.proactive_mode()
     chk("15m' 回复策略 v2 开 + 默认风格（随缘找话头）→ 仍走旧版：风格默认保持从前的做法",
-        used[:1] == ["v1"] and sent == [["大家晚上好呀"]] and A.proactive_mode() == "open", (used, sent))
+        used[:1] == ["v1"] and sent == [["大家晚上好呀"]] and _def_pm == "open", (used, sent, _def_pm))
     with patched(A, load_json_const=_cfg_ljc({"proactive_mode": "nope"})):
         _bm = A.proactive_mode()
     chk("15m'' 主动消息风格取值不合法 → 回到默认", _bm == "open", _bm)
@@ -894,10 +901,13 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
     with patched(A, reaction_allowed=lambda: (True, ["63"]), REACT_ONLY_FORCE=False):
         _g_ro = A._gate_system("智谱娘")
         _r_ro = A.json_rule_text(_chat17)
+        # 默认值同样要打桩成空配置：线上可能已被用户打开
+        with patched(A, load_json_const=_cfg_ljc({})):
+            _def_ro = A.react_only_on()
     chk("17g'' 默认（表情回应开着、但不允许只挂表情）：判定里没有这个选项，格式里没有 want=1，"
         "并写明表情只作点缀——和从前一样总是说话",
         "回个表情就够" not in _g_ro and "1=只给对方这条消息挂个表情" not in _r_ro
-        and "不要只挂表情不说话" in _r_ro and A.react_only_on() is False, _r_ro[:150])
+        and "不要只挂表情不说话" in _r_ro and _def_ro is False, _r_ro[:150])
     with patched(A, reaction_allowed=lambda: (False, []),
                  call_glm_with_fallback=lambda ms, t, budget_sec=200: ("m", "E")):
         chk("17h 表情回应关着时模型仍答了 E → 按接话处理，不白白沉默",
@@ -1087,13 +1097,17 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
     chk("18i' 设置页有风格下拉与历史窗口输入框",
         all(k in src_ui for k in ("{proactive_mode:this.value}", "{nudge_mode:this.value}",
                                   "{hist_lines:parseInt(this.value)||50}", "{hist_budget_chars:parseInt(this.value)||5000}")))
+    # 识图模型/每日上限这两项读的是配置（用户可能改过），只在空配置下才等于默认值
+    with patched(A, load_json_const=_cfg_ljc({})):
+        _def_cap = A.vision_caption_daily_cap()
+        _def_vm = A.vision_caption_model()
     chk("18j 默认值只有一处：agent 与设置页都读 qq_common.ARCH_V2_DEFAULTS",
         A.PROMPT_V2_DEFAULT is A.C.ARCH_V2_DEFAULTS["prompt_v2"]
         and A.REPLY_V2_DEFAULT is A.C.ARCH_V2_DEFAULTS["reply_v2"]
         and A.REPLY_JSON_DEFAULT is A.C.ARCH_V2_DEFAULTS["reply_json"]
         and A.VCAP_DEFAULT is A.C.ARCH_V2_DEFAULTS["vision_caption"]
-        and A.vision_caption_model() == A.C.ARCH_V2_DEFAULTS["vision_caption_model"]
-        and A.vision_caption_daily_cap() == A.C.ARCH_V2_DEFAULTS["vision_caption_daily_cap"])
+        and _def_vm == A.C.ARCH_V2_DEFAULTS["vision_caption_model"]
+        and _def_cap == A.C.ARCH_V2_DEFAULTS["vision_caption_daily_cap"], (_def_vm, _def_cap))
     _d = A.C.ARCH_V2_DEFAULTS
     chk("18k 发布默认值：提示词 / 回复策略 / 结构化输出开，后台识图关",
         _d["prompt_v2"] is True and _d["reply_v2"] is True and _d["reply_json"] is True
@@ -1111,6 +1125,35 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
     with patched(A, load_json_const=_cfg_ljc({"prompt_v2": False, "reply_json": False, "reply_v2": False}), **_no_force):
         chk("18n 关掉任一项 → 这一项回到从前，其余照旧",
             A.prompt_v2_on() is False and A.reply_v2_on() is False and A.reply_json_on() is False)
+
+    # ---------- 19. 识图速写不外泄（2026-11-24 实测：整段「（图：…）」发进了群） ----------
+    for src_txt, want in [
+        ("(图：东方灵梦Q版表情包：黑发大红蝴蝶结女孩半睁红眼啃西瓜，一脸不爽)", []),
+        ("（图：一只猫）", []),
+        ("哈哈这个好玩(图：柴犬表情包)", ["哈哈这个好玩"]),
+        ("[Attached image/png: image.png]", []),
+        ("笑死 [Attached image/jpeg: photo.jpg] 太逗了", ["笑死  太逗了"]),
+        ("这小拳头举起来是在给自己打气还是在憋着要揍人啊",
+         ["这小拳头举起来是在给自己打气还是在憋着要揍人啊"]),
+    ]:
+        _p19 = A.parse_reply(src_txt)[0]
+        chk("19a 识图速写/附件回显不外泄：%r" % src_txt[:22], _p19 == want, _p19)
+    chk("19b 提示词里的速写说明写了「别把这个写法带到回复里」",
+        "别把「（图：…）」这几个字或它的写法带到回复里" in A._VCAP_NOTE)
+    # 视觉模型不能被选作文本回复模型（它被这样调用会照抄速写、对纯文字臆造图片）
+    chk("19c 视觉模型识别：4v/4.6v/4.5v/4.1v 都算，文本模型不算",
+        A._looks_vision_model("glm-4v-flash") and A._looks_vision_model("glm-4.6v-flash")
+        and A._looks_vision_model("glm-4.1v-thinking-flash")
+        and not A._looks_vision_model("glm-5.4")
+        and not A._looks_vision_model("deepseek-chat"))
+    _calls19 = []
+    with patched(A, _chain_candidates=lambda: [("k1", {"key": "x"}, "glm-4v-flash", 4, 0),
+                                               ("k3", {"key": "y"}, "deepseek-chat", 4, 0)],
+                 glm_chat=lambda model, msgs, key=None, extra_body=None: (
+                     _calls19.append(model) or (200, {"choices": [{"message": {"content": "ok"}}]}))):
+        A.call_glm_with_fallback([{"role": "system", "content": "s"},
+                                  {"role": "user", "content": "u"}])
+    chk("19d 文本回复跳过视觉模型，只用文本模型", _calls19 == ["deepseek-chat"], _calls19)
 
 print("\n%d 项失败" % len(fails) + (": " + "; ".join(fails) if fails else "（全部通过）"))
 sys.exit(1 if fails else 0)

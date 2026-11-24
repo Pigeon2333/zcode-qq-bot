@@ -678,6 +678,13 @@ def load_api_keys():
     return out
 
 
+def _looks_vision_model(model):
+    """是不是视觉模型（名字里的 v 标记：glm-4v / 4.6v / 4.5v / 4.1v…）。
+    只用来阻止它被选作文本回复模型——识图那条路是主动挑它的，不看这个。"""
+    m = str(model).lower()
+    return bool(re.search(r"\d+(?:\.\d+)?v(?:-|$)", m))
+
+
 def _model_default_ctx(model):
     """模型默认上下文档位（千 token）：4.6v 系小窗口，flash/旗舰 128k。"""
     m = str(model).lower()
@@ -866,6 +873,12 @@ def call_glm_with_fallback(messages, text_ctx="", budget_sec=200):
     now = time.time()
     _t0 = now
     for kid, kv, model, _ctx, _mo in cands:
+        # 视觉模型不当文本回复模型：它被这样调用时会照抄提示词里的「（图：…）」
+        # 速写、甚至对着纯文字臆造图片内容（2026-11-24 实测）。识图走
+        # _caption_call / call_vision，那条路会自己挑视觉模型，不依赖这里。
+        if _looks_vision_model(model):
+            tried.append("%s@%s(视觉模型,跳过)" % (model, kid))
+            continue
         if time.time() - _t0 > budget_sec:
             out("AGENT_BUDGET_OUT tried=%s elapsed=%.0fs（服务端不稳，本条放弃）"
                 % ("/".join(tried)[:120], time.time() - _t0))
@@ -3526,6 +3539,11 @@ _VOICE_MARK_RE = re.compile(r"^\s*\[\s*语音\s*\]\s*$", re.M)
 # 真人常用"表情回应代替打字"，比硬接话更自然。id=QQ 系统表情编号。
 _REACT_MARK_RE = re.compile(r"\[\s*回应\s*[:：]\s*(\d{1,4})\s*\]")
 _VOICE_MARK_ANY_RE = re.compile(r"\[\s*语音\s*\]")   # 兜底：正文残留剥掉
+# 出站兜底：模型偶尔会把内部的「（图：…）」速写当正文吐出来（2026-11-24 实测：
+# glm-4v-flash 被当作文本模型调用时，把整段速写原样发进了群）。这种括号说明不是人话。
+_VCAP_LEAK_RE = re.compile(r"[(（]\s*图\s*[:：][^)）]{0,200}[)）]")
+# 视觉模型的多模态回显格式（部分实现会把附件占位当成整条回复吐出来）
+_ATTACHED_ECHO_RE = re.compile(r"\[Attached\s+image/[a-z]+:\s*[^\]\n]{0,80}\]", re.I)
 
 
 # ---------------- 上下文注入日志（排查"她怎么想出这话的"） ----------------
@@ -3768,6 +3786,9 @@ def parse_reply(text):
     # 不走主路径的标记剥离，[回应:63] 原样进群）。主路径在 parse 前已剥并
     # 执行表情动作，这里只是兜网；裸标记剥掉不影响正文。
     text = _REACT_MARK_RE.sub("", text)
+    # 「（图：…）」速写 / 多模态附件回显泄漏兜底（2026-11-24：整段速写被发进群）
+    text = _VCAP_LEAK_RE.sub("", text)
+    text = _ATTACHED_ECHO_RE.sub("", text)
     # [画: 描述] 标记：模型自主补触发画图（系统没自动识别但主人明显想画时）
     dm = _DRAW_MARK_RE.search(text)
     draw = re.sub(r"\s+", " ", dm.group(1)).strip()[:100] if dm else None
@@ -5588,8 +5609,9 @@ def _row_recent(h, now, sec):
         return False
 
 
-_VCAP_NOTE = ("（「（图：…）」是对方发的图的内容速写——图你看过了，速写就是你看到的："
-              "照着聊就行，别问图里是什么，也别说你看不到图）")
+_VCAP_NOTE = ("（「（图：…）」是内部速写，帮你理解对方发了什么图——不是让你模仿的格式："
+              "直接照内容聊天，别把「（图：…）」这几个字或它的写法带到回复里，"
+              "别问图里是什么，也别说你看不到图）")
 _IMG_ONLY = ("[图片]", "[表情]", "[表情包]")
 
 
