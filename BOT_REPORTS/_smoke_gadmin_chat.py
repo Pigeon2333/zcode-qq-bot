@@ -20,13 +20,34 @@ def chk(name, cond, extra=""):
 
 
 # ---------- ① 开关与教学注入 ----------
-os.environ["QQBOT_DATA_DIR"] = os.path.expanduser("~/.zcode-qq-bot")
-A.load_json_const.cache_clear() if hasattr(A.load_json_const, "cache_clear") else None
-import json as _j
+# 这一项要读一份「开关打开」的群管配置。配置放临时目录，只在这一句读取期间把
+# agent 的 DATA_DIR 指过去——绝不改写真实的 ~/.zcode-qq-bot/group_admin.json。
+# （旧版本脚本直接把它覆盖成空配置：每跑一次回归就清空一次线上群管配置。）
+import hashlib
 import pathlib as _pl
-_pl.Path(os.path.expanduser("~/.zcode-qq-bot/group_admin.json")).write_text(
+import shutil
+import tempfile
+
+_real_data_dir = A.DATA_DIR
+_real_cfg = _pl.Path(_real_data_dir) / "group_admin.json"
+
+
+def _cfg_sig():
+    b = _real_cfg.read_bytes() if _real_cfg.exists() else b""
+    return (len(b), hashlib.sha256(b).hexdigest())
+
+
+_sig0 = _cfg_sig()
+_tmp_data_dir = tempfile.mkdtemp(prefix="qqbot_smoke_gadmin_")
+_pl.Path(_tmp_data_dir, "group_admin.json").write_text(
     '{"chat_enabled": true, "groups": {}}', encoding="utf-8")
-chk("1a 开关读True", A._gadmin_chat_enabled() is True)
+A.DATA_DIR = _tmp_data_dir
+try:
+    chk("1a 开关读True", A._gadmin_chat_enabled() is True)
+finally:
+    A.DATA_DIR = _real_data_dir
+    shutil.rmtree(_tmp_data_dir, ignore_errors=True)
+chk("1a' 真实数据目录的群管配置没有被改写", _cfg_sig() == _sig0, str(_real_cfg))
 
 
 class FakeDaemon:
