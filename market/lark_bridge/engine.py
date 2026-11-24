@@ -197,8 +197,12 @@ def start_ws_bridge(daemon):
                         return
                     for b in (cfg().get("bridges") or []):
                         if b.get("to_qq") and b.get("lark_chat_id") == chat_id:
-                            _DAEMON.send_texts(str(b.get("qq_group")),
-                                               ["[飞书] %s: %s" % (sender, text[:800])])
+                            # _DAEMON 是 agent 侧的 DaemonClient：只有 send(类型, 号,
+                            # 文本列表)；send_texts 是 daemon 服务端的方法名——此前
+                            # 一直调用不存在的方法，AttributeError 被外层吞掉，
+                            # 飞书→QQ 方向从未转发成功
+                            _DAEMON.send("group", str(b.get("qq_group")),
+                                         ["[飞书] %s: %s" % (sender, text[:800])])
                             break
                 except Exception:
                     pass

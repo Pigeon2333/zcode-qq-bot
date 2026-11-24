@@ -543,7 +543,7 @@ function __psTabBar(){return '<div style="display:flex;gap:8px;margin-bottom:10p
  +'<button class="act'+(__PS_TAB==='persona'?'':' ghost')+'" style="margin:0" onclick="__PS_TAB=\'persona\';load()">人设</button>'
  +'<button class="act'+(__PS_TAB==='style'?'':' ghost')+'" style="margin:0" onclick="__PS_TAB=\'style\';load()">风格卡</button>'
  +'<span class="k" style="font-size:12px;align-self:center">（两页功能不变，数据共存放于人设合集）</span></div>'}
-function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 function head(sub){return '<h2>'+TITLES[TAB]+'</h2>'+(sub?'<div class="sub">'+sub+'</div>':'')}
 function goTab(t){const b=document.querySelector('#nav button[data-t="'+t+'"]');if(b)b.click()}
 function skeleton(){$('#view').innerHTML='<h2>'+TITLES[TAB]+'</h2><div class="card" style="color:var(--dim);padding:26px 20px">加载中…</div>'}
@@ -2352,16 +2352,9 @@ async function vSettings(){
    <div id="vision-prob-row" class="${(rv.vision_mode)==='all_prob'?'':'dimmed'}" style="display:flex;gap:8px;align-items:center;margin:10px 0 0 26px">
     <span class="k" style="flex:none">识图后插话概率</span>
     <input type="number" min="0" max="100" step="5" value="${Math.round(((rv.vision_prob===undefined||rv.vision_prob===null)?0.3:rv.vision_prob)*100)}" style="width:64px" onchange="saveKVLoad('/api/reply-config',{vision_prob:Math.max(0,Math.min(100,parseInt(this.value)||0))/100},'识图插话概率已保存')">
-    <span class="k">%（0%=只看不说，100%=见图必聊）</span>
+    <span class="k">%（0%=不主动评论图片，仅当对话明确提到这张图或有人 @她时才看图回应；100%=见图必聊）</span>
    </div>
    <div class="k" style="margin-top:8px">「看后再定」= 看图与插话解耦：每张图都会真的看过（内容理解准确），要不要开口由概率单独控制——在热情与克制之间。前两档也会把带图消息更积极地送到机器人面前；「仅明确要求」最省资源</div>
-   <div style="margin-top:12px;padding-top:10px;border-top:1px dashed var(--line)">
-    <div class="k" style="margin-bottom:6px"><b>纯图/表情包怎么回应</b>（对方只发了张图或表情包、没有任何文字时——活人感复盘 P1）</div>
-    <label style="display:block;margin:5px 0"><input type="radio" name="bip" value="reaction" ${(rv.blank_img_policy||'reaction')==='reaction'?'checked':''} onchange="saveKVLoad('/api/reply-config',{blank_img_policy:this.value},'纯图/表情回应策略已保存')"> <b>回个表情（推荐）</b><span class="k">——从「表情回应」已启用的表情里随机挂一个小黄脸，不发文字（真人刷到表情包大多也就回个表情；最去人机感）</span></label>
-    <label style="display:block;margin:5px 0"><input type="radio" name="bip" value="skip" ${(rv.blank_img_policy)==='skip'?'checked':''} onchange="saveKVLoad('/api/reply-config',{blank_img_policy:this.value},'纯图/表情回应策略已保存')"> <b>不回应</b><span class="k">——纯图/表情完全不搭理（最安静）</span></label>
-    <label style="display:block;margin:5px 0"><input type="radio" name="bip" value="text" ${(rv.blank_img_policy)==='text'?'checked':''} onchange="saveKVLoad('/api/reply-config',{blank_img_policy:this.value},'纯图/表情回应策略已保存')"> <b>照旧文字回复</b><span class="k">——按以前的行为生成文字回应（最热情，也最容易硬接话）</span></label>
-    <div class="k" style="margin-top:4px">仅影响闲聊插话场景；@她、回复她、文字里提到图的消息不受此设置影响（照常认真回应）。选择「回个表情」需在「群消息」页开启表情回应并勾选至少一个表情。</div>
-   </div>
   </div></div>
  <div class="card"><div class="k" style="margin-bottom:6px"><b>闲聊回复长度上限</b>（活人感复盘 P3——消除小作文感）</div>
   <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -3093,7 +3086,7 @@ async function biliScan(){
 let _plTab='mine',_plCat='',_mktCat='';
 function plCatBar(cats,cur,fn){
  return '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px" id="plcats">'+
-  [''].concat(cats).map(c=>'<button class="act '+(c===cur?'':'ghost')+'" style="margin:0;padding:4px 14px;font-size:12.5px" onclick="'+fn+'(\''+esc(c)+'\')">'+(c||'全部')+'</button>').join('')+'</div>';
+  [''].concat(cats).map(c=>'<button class="act '+(c===cur?'':'ghost')+'" style="margin:0;padding:4px 14px;font-size:12.5px" onclick="'+fn+'(\''+esc(c)+'\')">'+esc(c||'全部')+'</button>').join('')+'</div>';
 }
 async function vPlugins(){
  if(_plTab==='market'){await vMarket();return}
@@ -3220,7 +3213,7 @@ async function plPage(name){
   const pct=parseFloat((v&&v.pct)||0)||0;
   if(pct>0)costBadge=plCostBadge(pct);
  }
- $('#view').innerHTML=head('插件 · '+(p.title||name)+'  '+costBadge)+'<div style="margin-top:10px"><button class="act ghost" onclick="goTab(\'plugins\')">← 返回插件列表</button></div><div id="plpage" style="margin-top:12px"></div>';
+ $('#view').innerHTML=head('插件 · '+esc(p.title||name)+'  '+costBadge)+'<div style="margin-top:10px"><button class="act ghost" onclick="goTab(\'plugins\')">← 返回插件列表</button></div><div id="plpage" style="margin-top:12px"></div>';
  // 专属页结构：①插件自带 page（登录等专属界面）②声明式 settings 卡（任何插件都有）
  // 插件页契约（硬规矩）：page 函数必须是同步纯函数——接收预取 data、返回 HTML
  // 字符串；禁止自写 #view（会冲掉宿主注入的「← 返回插件列表」按钮与页面头）。
@@ -4983,7 +4976,8 @@ class UiHandler(BaseHTTPRequestHandler):
             return self._reply(200, proxy_get("127.0.0.1", _daemon_port(), "/status",
                                               read_const(TOKEN_PATH)))
         if u.path == "/api/agent-status":
-            r = proxy_get("127.0.0.1", _agent_port(), "/admin/status")
+            r = proxy_get("127.0.0.1", _agent_port(), "/admin/status",
+                          read_const(TOKEN_PATH))
             return self._reply(200, r if r.get("ok") else {"ok": False})
         if u.path == "/api/power/status":
             _boot_state_load()
@@ -5545,7 +5539,6 @@ class UiHandler(BaseHTTPRequestHandler):
                                      "vision_enabled": data.get("vision_enabled", False),
                                      "vision_mode": str(data.get("vision_mode") or "all")[:8],
                                      "vision_prob": _vp,
-                                     "blank_img_policy": str(data.get("blank_img_policy") or "reaction")[:12],
                                      "chat_max_len": data.get("chat_max_len", 80),
                                      "risk_limit_image_fetch": data.get("risk_limit_image_fetch", True),
                                      "risk_proactive_downscale": data.get("risk_proactive_downscale", False),
@@ -5717,7 +5710,8 @@ class UiHandler(BaseHTTPRequestHandler):
                                      "defaults": _A._DEFAULT_FLOW})
         if u.path == "/api/devctrl-code":
             # 码的唯一有效来源在 agent 进程：UI 只做代理，绝不本地生成。
-            r = proxy_get("127.0.0.1", _agent_port(), "/admin/devctrl-code")
+            r = proxy_get("127.0.0.1", _agent_port(), "/admin/devctrl-code",
+                          read_const(TOKEN_PATH))
             if not r.get("ok"):
                 return self._reply(200, {"ok": False, "code": "", "expires_in": 0,
                                          "error": r.get("error", "agent 未运行")})
@@ -5734,6 +5728,9 @@ class UiHandler(BaseHTTPRequestHandler):
         if u.path == "/api/backend-switch":
             # 切换协议框架：停全部组件（两个协议端都停防残留）→ 改配置 →
             # 自动按新框架启动。用户数据/人设/记忆在 DATA_DIR 与框架无关。
+            # cfg 在本函数后面别的路由分支才赋值——这里必须自己加载（此前漏了，
+            # 三个框架管理接口一调用就 UnboundLocalError）
+            cfg = C.load_app_config()
             pb = str(body.get("backend") or "").strip()
             if pb not in S.PROTOCOL_BACKENDS:
                 return self._reply(400, {"ok": False, "error": "未知框架"})
@@ -5747,6 +5744,7 @@ class UiHandler(BaseHTTPRequestHandler):
             return self._reply(200, {"ok": True, "backend": pb, "notes": notes})
         if u.path == "/api/llonebot-install-path":
             # 从本地 zip 安装（在线下载被卡时的手动路径）
+            cfg = C.load_app_config()
             p = str(body.get("path") or "").strip()
             if not p.lower().endswith(".zip") or not os.path.isfile(p):
                 return self._reply(200, {"ok": False, "error": "zip 文件不存在"})
@@ -5758,7 +5756,13 @@ class UiHandler(BaseHTTPRequestHandler):
             import http.client as _hc
             import urllib.parse as _up
             zdst = pathlib.Path(C.DATA_DIR) / "llob.zip"
+            cfg = C.load_app_config()
             _DL_HOSTS_OK = ("github.com", "gh-proxy.com")
+            # 完整性：钉死官方 release 资产（v8.3.2 的 CLI-win-x64.zip）的大小与
+            # sha256（取自 GitHub API 的 digest）。经第三方代理下载时这是唯一的
+            # 防篡改手段；上游换包需同步更新这两个常量，否则一律放弃安装
+            _LLOB_SIZE = 95713510
+            _LLOB_SHA256 = "3b29f2bdaafbbb1e0e494e42d81da7566aeb16114e9eb42a5d168c59dbcadcb7"
 
             def _dl(start_url):
                 cur = start_url
@@ -5792,6 +5796,13 @@ class UiHandler(BaseHTTPRequestHandler):
                             if not chunk:
                                 break
                             buf.extend(chunk)
+                            if len(buf) > _LLOB_SIZE:
+                                # 超过钉死的官方大小：立即中止，不把任意大的内容读进内存
+                                return False, "文件大小与官方 release 不符（已中止）"
+                        import hashlib as _hl
+                        if len(buf) != _LLOB_SIZE or \
+                                _hl.sha256(bytes(buf)).hexdigest() != _LLOB_SHA256:
+                            return False, "文件与官方 release 的大小或 sha256 不一致（已放弃）"
                         zdst.write_bytes(bytes(buf))
                         return True, ""
                     except Exception as e:
@@ -6266,7 +6277,8 @@ class UiHandler(BaseHTTPRequestHandler):
             return self._reply(200, {"ok": True, "path": str(out)})
         if u.path == "/api/devctrl-code":
             # 刷新 = 让 agent 立刻作废旧码并换新（代理请求）
-            r = proxy_get("127.0.0.1", _agent_port(), "/admin/devctrl-code?refresh=1")
+            r = proxy_get("127.0.0.1", _agent_port(), "/admin/devctrl-code?refresh=1",
+                          read_const(TOKEN_PATH))
             if not r.get("ok"):
                 return self._reply(200, {"ok": False, "code": "", "expires_in": 0,
                                          "error": r.get("error", "agent 未运行")})
@@ -6539,9 +6551,6 @@ class UiHandler(BaseHTTPRequestHandler):
                     data["vision_prob"] = min(1.0, max(0.0, float(body["vision_prob"])))
                 except (TypeError, ValueError):
                     pass
-            if "blank_img_policy" in body:
-                if body["blank_img_policy"] in ("text", "reaction", "skip"):
-                    data["blank_img_policy"] = body["blank_img_policy"]
             if "chat_max_len" in body:
                 try:
                     data["chat_max_len"] = max(0, min(500, int(body["chat_max_len"])))
@@ -7119,8 +7128,12 @@ class UiHandler(BaseHTTPRequestHandler):
             try:
                 import subprocess as _sp
                 _sp.run(["powershell", "-NoProfile", "-Command",
-                         "Start-Process -FilePath '%s' -Verb RunAs -WindowStyle Hidden"
-                         % str(sys.executable).replace("'", "''")],
+                         # 必须把刚写好的脚本路径作为参数带上——此前只启动了
+                         # python.exe 本体，提权后什么也没执行却返回成功
+                         "Start-Process -FilePath '%s' -ArgumentList '%s' "
+                         "-Verb RunAs -WindowStyle Hidden"
+                         % (str(sys.executable).replace("'", "''"),
+                            str(sf).replace("'", "''"))],
                         capture_output=True, timeout=10)
                 return self._reply(200, {"ok": True})
             except Exception as e:
@@ -7683,7 +7696,8 @@ class UiHandler(BaseHTTPRequestHandler):
                 conn = http.client.HTTPConnection("127.0.0.1", _agent_port(), timeout=5)
                 payload = json.dumps({"paused": paused}).encode("utf-8")
                 conn.request("POST", "/admin/pause", body=payload,
-                             headers={"Content-Type": "application/json"})
+                             headers={"Content-Type": "application/json",
+                                      "X-QQBot-Token": read_const(TOKEN_PATH)})
                 conn.getresponse().read()
                 conn.close()
             except OSError:
@@ -7699,7 +7713,8 @@ class UiHandler(BaseHTTPRequestHandler):
                 conn = http.client.HTTPConnection("127.0.0.1", _agent_port(), timeout=5)
                 payload = json.dumps(body).encode("utf-8")
                 conn.request("POST", "/admin/pin-model", body=payload,
-                             headers={"Content-Type": "application/json"})
+                             headers={"Content-Type": "application/json",
+                                      "X-QQBot-Token": read_const(TOKEN_PATH)})
                 r = json.loads(conn.getresponse().read().decode("utf-8"))
                 conn.close()
                 return self._reply(200, r)
@@ -7729,7 +7744,10 @@ class UiHandler(BaseHTTPRequestHandler):
             kind = body.get("_kind") or urllib.parse.parse_qs(u.query).get("kind", [""])[0]
             text = str(body.get("text", ""))[:20000]
             if kind == "persona":
-                write_const(PERSONA_PATH, text)
+                # 单文件人设是早期遗留路径（原代码引用的 PERSONA_PATH 已不存在，
+                # 运行到这里必然 NameError）。人设走人设集合接口保存
+                return self._reply(400, {"ok": False,
+                                         "error": "人设请在「人设与风格」页保存"})
             elif kind == "style":
                 # 0.5.10：风格卡按人设存储（target=人设名或 _global_）
                 import qq_style_store as _SS
@@ -8049,7 +8067,8 @@ class UiHandler(BaseHTTPRequestHandler):
                              json.dumps({"source": str(body.get("source") or "qq"),
                                          "session": str(body.get("session") or ""),
                                          "who": str(body.get("who") or "")}).encode("utf-8"),
-                             {"Content-Type": "application/json"})
+                             {"Content-Type": "application/json",
+                              "X-QQBot-Token": read_const(TOKEN_PATH)})
                 raw = conn.getresponse().read().decode("utf-8", "replace")
                 conn.close()
                 return self._reply(200, json.loads(raw))
@@ -8079,7 +8098,8 @@ class UiHandler(BaseHTTPRequestHandler):
             try:
                 conn = http.client.HTTPConnection("127.0.0.1", _agent_port(), timeout=8)
                 conn.request("POST", "/admin/bili-run", body=b"{}",
-                             headers={"Content-Type": "application/json"})
+                             headers={"Content-Type": "application/json",
+                                      "X-QQBot-Token": read_const(TOKEN_PATH)})
                 r = conn.getresponse().read().decode("utf-8", "replace")
                 conn.close()
                 return self._reply(200, json.loads(r))

@@ -575,6 +575,9 @@ def uninstall(name):
 DEFAULT_MARKET_URL = ("https://github.com/Pigeon2333/zcode-qq-bot/"
                       "releases/download/plugins/market-v30.json")
 _MARKET_MIRRORS = ("https://gh-proxy.com/" + DEFAULT_MARKET_URL,)
+# 插件包下载的兜底：对「插件包地址」加代理前缀（不能复用 _MARKET_MIRRORS——
+# 那是市场清单 URL 的代理，拿来下插件包会把 market-vNN.json 当 zip 装）
+_ZIP_PROXY_PREFIXES = ("https://gh-proxy.com/",)
 
 
 def _http_get(url, timeout=20, _hops=0, progress=None):
@@ -647,7 +650,8 @@ def market_list(url=None, force=False):
                             "title": str(it.get("title") or it["name"]),
                             "description": str(it.get("description") or ""),
                             "zip": str(it["zip"]),
-                            "size": int(it.get("size") or 0)})
+                            "size": int(it.get("size") or 0),
+                            "sha256": str(it.get("sha256") or "").lower()})
             res = {"ok": True, "plugins": out}
             if not url:
                 _MARKET_CACHE["ts"] = time.time()
@@ -671,8 +675,7 @@ def market_install(name, url=None, progress=None):
     if not item:
         return {"ok": False, "error": "市场里没有这个插件"}
     last_err = None
-    for cand in (item["zip"],) + tuple(m for m in _MARKET_MIRRORS
-                                       if m != item["zip"]):
+    for cand in (item["zip"],) + tuple(m + item["zip"] for m in _ZIP_PROXY_PREFIXES):
         fd = None
         try:
             if progress:
@@ -685,6 +688,13 @@ def market_install(name, url=None, progress=None):
                          % (g / 1024.0, ("%.0f" % (t / 1024.0)) if t else "?"))
             data = _http_get(cand, timeout=60,
                              progress=_dl_prog if progress else None)
+            # 完整性：清单条目带 sha256 时强制校验（当前清单尚未带哈希；发布
+            # 流程补上后自动生效）。此前 docstring 写「可选校验」但没有任何校验代码
+            _want = str(item.get("sha256") or "")
+            if _want:
+                import hashlib as _h
+                if _h.sha256(data).hexdigest() != _want:
+                    return {"ok": False, "error": "插件包校验失败：sha256 与市场清单不一致，已放弃安装"}
             if progress:
                 progress("install", 95, "安装中…")
             import os as _os

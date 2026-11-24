@@ -49,7 +49,9 @@ def _block(chat_type, chat_id, sender_id=None, sender_name=None):
         return ""
     mine = _row(sender_id)
     others = []
-    if chat_type == "group" and (_API is None or _API.setting("inject_others", True)):
+    # inject_others 默认关闭：把其他成员的画像带进群聊提示词，会让机器人表现出
+    # 「存着大家的档案」；需要的人自行在设置里打开
+    if chat_type == "group" and (_API is None or _API.setting("inject_others", False)):
         for qq, m in members.items():
             if str(qq) == str(sender_id):
                 continue

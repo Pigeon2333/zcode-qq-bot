@@ -53,12 +53,14 @@ def port_open(port):
         s.close()
 
 
-def http_json(port, method, path, body=None, timeout=6):
+def http_json(port, method, path, body=None, timeout=6, headers=None):
     conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=timeout)
     try:
         payload = json.dumps(body).encode("utf-8") if body is not None else None
-        headers = {"Content-Type": "application/json"} if payload else {}
-        conn.request(method, path, body=payload, headers=headers)
+        hdrs = {"Content-Type": "application/json"} if payload else {}
+        if headers:
+            hdrs.update(headers)
+        conn.request(method, path, body=payload, headers=hdrs)
         return json.loads(conn.getresponse().read().decode("utf-8"))
     finally:
         conn.close()
@@ -630,7 +632,9 @@ def stop_agent(cfg):
     if not port_open(port):
         return "agent 未在运行"
     try:
-        http_json(port, "POST", "/admin/shutdown", {})
+        # agent 管理接口自本版起要求控制令牌；不带会被 401 拒绝
+        http_json(port, "POST", "/admin/shutdown", {},
+                  headers={"X-QQBot-Token": read_token_file("token")})
     except Exception:
         # 半死进程可能返回非 JSON/超时：一律走后面的等待 + 强杀兜底
         pass

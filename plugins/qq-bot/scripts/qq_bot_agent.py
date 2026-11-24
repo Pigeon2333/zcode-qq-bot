@@ -22,6 +22,7 @@ v2 新增：
 """
 
 import argparse
+import hmac
 import http.client
 import json
 import logging
@@ -321,6 +322,11 @@ def _cooldown_sec(detail):
     活动额度用尽（如 StartPlan 今日余额耗尽/过期）=6h（当日不再空探，次日自愈）；
     限额窗口=冷却到提示的重置时刻（上限6h）；其他=默认5min。"""
     d = detail or ""
+    # 内容安全过滤拒绝（平台审核拦下这一条消息的输入或输出）是单条消息的问题，
+    # 不是模型不可用：不冷却。按默认 5 分钟冷却会让主模型对所有群静默降级到
+    # 备用模型（等于换了嗓音），而真正的处置只是换下一个候选重试
+    if "敏感内容" in d or "contentfilter" in d.lower() or "sensitive" in d.lower():
+        return 0
     if "套餐" in d and "失效" in d:
         return 1800
     if "访问量过大" in d or "稍后再试" in d:
@@ -885,15 +891,19 @@ def call_glm_with_fallback(messages, text_ctx="", budget_sec=200):
                         mt = max(mt, 1500)
             status, data = glm_chat(model, messages, key=kv,
                                     extra_body={**th, "max_tokens": mt})
+            if not isinstance(data, dict):
+                data = {"error": {"message": "非对象响应"}}
             if status == 400 and "不支持关闭思考" in str(
                     data.get("error", {}).get("message", "")):
                 # 5.3-flash/4.6v-flash 等「始终思考」模型不接受 disabled：
-                # 自动改用 low 档重试一次（同模型同 Key）
+                # 自动改用 low 档重试一次（同模型同 Key）。th 只含 thinking 一个
+                # 键，这里的重试体直接写明（此前引用了不存在的 extra_body →
+                # NameError，走到这个分支整条消息就丢了）
                 status, data = glm_chat(model, messages, key=kv, extra_body={
-                    **{k: v for k, v in (extra_body or {}).items()
-                       if k != "thinking"},
                     "thinking": {"type": "enabled", "level": "low"},
                     "max_tokens": max(mt, 2048)})
+                if not isinstance(data, dict):
+                    data = {"error": {"message": "非对象响应"}}
         except (OSError, ValueError) as e:
             RT.cooldown(ck)
             tried.append("%s@%s" % (model, kid))
@@ -902,23 +912,30 @@ def call_glm_with_fallback(messages, text_ctx="", budget_sec=200):
             continue
         if status == 200:
             try:
-                _msg = data["choices"][0]["message"] or {}
-                text = _msg.get("content") or ""
-                # 推理系模型（deepseek-v4 等经 opencode 中转）会把正文写成
-                # reasoning_content、content 为空——max_tokens 小时正文被思考
-                # 吃光（实测 64 token 时 content=""）。此时回退取 reasoning，
-                # 并略去"思考"标记避免污染正文。
-                if not str(text).strip():
-                    _rc = str(_msg.get("reasoning_content") or "").strip()
-                    if _rc:
-                        text = _rc
-                        out("AGENT_REASONING_FALLBACK model=%s len=%d"
-                            % (model, len(_rc)))
+                _ch0 = (data.get("choices") or [{}])[0] or {}
+                _msg = _ch0.get("message") or {}
+                text = str(_msg.get("content") or "")
+                _fin = str(_ch0.get("finish_reason") or "")
             except (KeyError, IndexError, TypeError, AttributeError):
                 RT.cooldown(ck)
                 tried.append("%s@%s" % (model, kid))
                 _pin_check_release(ck)
                 continue
+            if not text.strip():
+                # 正文为空：不再回退取 reasoning_content——那是模型的思考过程，
+                # 当聊天正文发出等于把思考发进群。视同本候选失败，短冷却后换
+                # 下一个候选（此前没有任何 finish_reason 检查，空正文被当成
+                # 「模型选择不说话」，或被回退成思考内容）
+                out("AGENT_MODEL_EMPTY model=%s key=%s finish=%s"
+                    % (model, kid, _fin or "-"))
+                RT.cooldown(ck, 15)
+                tried.append("%s@%s" % (model, kid))
+                _pin_check_release(ck)
+                continue
+            if _fin == "length":
+                # 正文被输出预算截断：照常返回，但留痕（尾部标记行可能已丢失）
+                out("AGENT_MODEL_TRUNCATED model=%s key=%s len=%d"
+                    % (model, kid, len(text)))
             RT.set_current(model)
             log_usage(model, data.get("usage") or {}, kid)
             return model, text
@@ -1050,17 +1067,6 @@ def chat_max_len():
         return max(0, min(500, int(cfg.get("chat_max_len", 80))))
     except (TypeError, ValueError):
         return 80
-
-
-def blank_img_policy():
-    """P1·空占位策略（纯图/表情、无任何文字的消息怎么回应）：
-    text=照旧文本回复（旧行为，硬接话人机感来源）；
-    reaction=降级为表情回应（从已启用表情集随机挑一个——真人处理
-    表情包的方式，复盘报告 P1 推荐默认）；
-    skip=不回应（最安静）。带文字的图不受此策略影响。"""
-    cfg = load_json_const(REPLY_CONFIG_PATH, {})
-    v = str(cfg.get("blank_img_policy") or "reaction")
-    return v if v in ("text", "reaction", "skip") else "reaction"
 
 
 # 上下文明确提及"这张图"的表达（all_prob 档跳过概率骰子的依据）：
@@ -2685,7 +2691,8 @@ def build_messages(daemon, msg, ctx_k=32):
         active_name = active_name or ""
     persona_block = persona
     if active_name:
-        persona_block = "【当前人设：%s】\n%s" % (active_name, persona)
+        # 前导两个换行：全局设定正文末尾没有换行，不加会与人设块粘成一行
+        persona_block = "\n\n【当前人设：%s】\n%s" % (active_name, persona)
     if routed and routed != _global_active:
         if route_src == "sender":
             persona_block += ("\n（注意：这是群聊场合，但当前发言人（%s）对你设了专属人设，"
@@ -2765,11 +2772,7 @@ def build_messages(daemon, msg, ctx_k=32):
                                          sender_name=msg.get("sender_name"))
     except Exception:
         pass
-    try:
-        _aware += _member_profile_block(msg["chat_type"], msg["chat_id"],
-                                        msg.get("sender_id"), msg.get("sender_name"))
-    except Exception:
-        pass
+    # （群成员画像已插件化：由上面的 PLUGIN_HOST.inject_all 注入）
     if _aware:
         _aware = "\n" + _aware.strip("\n") + "\n"
     if msg.get("trigger_reason") == "botloop_probe":
@@ -3114,8 +3117,12 @@ def build_messages(daemon, msg, ctx_k=32):
         % (global_block, persona_block, style_block, evolved_block, mem_block,
            skip_block, guard_block, security, draw_rule, sticker_menu(active_name))
     )  # 占位符按序对应；表情回应教学单独拼（开启才教，动态表情集）
-    # 语音能力提示按插件启用状态追加（不得拼进上面的 % 模板——会改变占位符计数）
-    system += _voice_rule()
+    # 语音能力提示按插件启用状态追加（不得拼进上面的 % 模板——会改变占位符计数）。
+    # 规则文本自身不带前导分隔，补两个换行——此前直接接在表情包清单最后一行
+    # 后面，模型把它读成某张表情包说明的一部分
+    _vr = _voice_rule()
+    if _vr:
+        system += "\n\n" + _vr.strip("\n") + "\n"
     # 表情回应教学：开关开才教，id 集合取当前允许的（改勾选即时生效）
     system += _reaction_rule()
     # 自然语言群管教学：开关开 + 本条消息是主人才教（非主人永远不知道
@@ -4875,7 +4882,8 @@ def _img_to_datauri(u, daemon=None):
     （含模型服务端、我们自己 curl，换 UA 无效）一律 400 -5503，此前视觉
     调用累计 171 次「图片输入格式/解析错误」就是模型端拉不到图。
     通道①：daemon /image-file → NapCat get_image（带内部凭证）→ 本地文件；
-    通道②：普通公网图直连下载兜底；都失败回落原 URL。"""
+    通道②：普通公网图直连下载兜底。QQ 图床链接都失败返回 None（调用方按
+    「图片获取失败」降级）；普通公网图都失败才回落原 URL。"""
     u = str(u or "")
     if not u.startswith("http"):
         return u
@@ -4922,7 +4930,42 @@ def _img_to_datauri(u, daemon=None):
         elif data[:4] == b"RIFF" and data[8:12] == b"WEBP":
             mime = "image/webp"
         return "data:%s;base64,%s" % (mime, base64.b64encode(data).decode("ascii"))
+    if "multimedia.nt.qq.com" in u:
+        # QQ 图床链接带 rkey 签名，模型服务端一律拉不到（必报 1210 图片解析
+        # 错误）。本地化失败就如实判失败（None），不再把原始链接发给模型白烧
+        # 一次调用——此前这里是 933 次「图片输入格式/解析错误」的主要来源
+        return None
     return u
+
+
+def _vision_err(status, data):
+    """视觉调用失败的原因描述（响应不是对象时兜底）。"""
+    if isinstance(data, dict):
+        err = data.get("error")
+        if isinstance(err, dict) and err.get("message"):
+            return str(err["message"])
+        return json.dumps(data, ensure_ascii=False)[:120]
+    return "http %s: 非对象响应" % status
+
+
+def _vision_text(status, data):
+    """HTTP 200 且正文非空 → 正文（去首尾空白）；否则 None。空正文（思考占满
+    输出预算）不再被当成「模型看完了但无话可说」。"""
+    if status != 200 or not isinstance(data, dict):
+        return None
+    try:
+        _ch0 = (data.get("choices") or [{}])[0] or {}
+        return str((_ch0.get("message") or {}).get("content") or "").strip() or None
+    except (KeyError, IndexError, TypeError, AttributeError):
+        return None
+
+
+def _vision_truncated(data):
+    """响应是否以 finish_reason=length 结束（输出预算耗尽）。"""
+    try:
+        return str(((data.get("choices") or [{}])[0] or {}).get("finish_reason")) == "length"
+    except (KeyError, IndexError, TypeError, AttributeError):
+        return False
 
 
 def call_vision(messages_text, image_urls, daemon=None):
@@ -4941,31 +4984,60 @@ def call_vision(messages_text, image_urls, daemon=None):
                "\"这个/那个/它/图中\"等指代词，指的就是图片里的主体——不是"
                "聊天历史里的任何东西（历史里在聊食物而图是遮光罩时，\"想买"
                "这个\"指的是遮光罩）。）")
-    content = [{"type": "text", "text": messages_text[1]["content"] + _ground}]
+    _parts = []
     for u in image_urls[:4]:
-        content.append({"type": "image_url", "image_url": {"url": _img_to_datauri(u, daemon)}})
+        _du = _img_to_datauri(u, daemon)
+        if _du:
+            _parts.append({"type": "image_url", "image_url": {"url": _du}})
+    if not _parts:
+        # 一张图都没能本地化：QQ 图床原始链接模型服务端必拉不到，发了也是白烧
+        # 一次调用——直接判失败，由调用方走降级（如实说图没加载出来）
+        raise RuntimeError("视觉调用：图片全部获取失败")
+    content = [{"type": "text", "text": messages_text[1]["content"] + _ground}] + _parts
     vmsgs = [{"role": "system", "content": messages_text[0]["content"]},
              {"role": "user", "content": content}]
 
+    def _try(m, kv, th, mt):
+        """一次视觉尝试：模型不接受关闭思考 → low 档重试；正文为空且被截断
+        （思考占满了输出预算）→ 放大预算重试一次。返回 (status, data)。"""
+        status, data = glm_chat(m, vmsgs, timeout=60, key=kv,
+                                extra_body={**th, "max_tokens": max(mt, 1024)})
+        if status == 400 and "不支持关闭思考" in _vision_err(status, data):
+            status, data = glm_chat(m, vmsgs, timeout=60, key=kv, extra_body={
+                "thinking": {"type": "enabled", "level": "low"},
+                "max_tokens": max(mt, 2048)})
+        if status == 200 and _vision_text(status, data) is None \
+                and _vision_truncated(data):
+            status, data = glm_chat(m, vmsgs, timeout=60, key=kv, extra_body={
+                **th, "max_tokens": 8192})
+        return status, data
+
+    tried = []
     vm = vision_model()
-    if vm:  # 显式覆盖：单模型尝试
+    if vm and vm not in _NO_VISION_MODELS:
+        # 显式指定：先试它；失败不再直接抛异常，落到下面的链式降级
         th, mt = resolve_thinking(vm, messages_text[1]["content"] if isinstance(
             messages_text[1]["content"], str) else "")
-        status, data = glm_chat(vm, vmsgs, timeout=60,
-                                extra_body={**th, "max_tokens": max(mt, 1024)})
-        if status != 200:
-            raise RuntimeError("vision http %d: %s" % (status, json.dumps(data, ensure_ascii=False)[:120]))
-        text = (data.get("choices") or [{}])[0].get("message", {}).get("content") or ""
-        RT.set_current(vm)
-        log_usage(vm, data.get("usage") or {})
-        return vm, text
+        try:
+            status, data = _try(vm, None, th, mt)
+        except (OSError, ValueError) as e:
+            status, data = 0, {"error": {"message": repr(e)[:120]}}
+        _text = _vision_text(status, data)
+        if _text is not None:
+            RT.set_current(vm)
+            log_usage(vm, (data.get("usage") if isinstance(data, dict) else {}) or {})
+            return vm, _text
+        out("AGENT_VISION_FAIL model=%s key=main http=%s cool=0s %s"
+            % (vm, status, _vision_err(status, data)[:80]))
+        tried.append(vm)
 
     # 留空：按候选序尝试（条目可跨 Key；429/失效冷却切换；纯文本模型 400 → 学习跳过不冷却）
-    tried = []
     cands = _chain_candidates()
     if econ_on() and len(cands) > 1:
         cands = cands[1:]
     for kid, kv, m, _ctx, _mo in cands:
+        if vm and m == vm:
+            continue   # 显式指定的模型上面刚试过，不重复
         ck = "%s:%s" % (kid, m)
         if m in _NO_VISION_MODELS:
             tried.append(m + "(纯文本)")
@@ -4976,27 +5048,17 @@ def call_vision(messages_text, image_urls, daemon=None):
             continue
         try:
             th, mt = resolve_thinking(m, "")
-            status, data = glm_chat(m, vmsgs, timeout=60, key=kv,
-                                    extra_body={**th, "max_tokens": max(mt, 1024)})
-            if status == 400 and "不支持关闭思考" in str(
-                    data.get("error", {}).get("message", "")):
-                status, data = glm_chat(m, vmsgs, timeout=60, key=kv, extra_body={
-                    **{k: v for k, v in (extra_body or {}).items() if k != "thinking"},
-                    "thinking": {"type": "enabled", "level": "low"},
-                    "max_tokens": max(mt, 2048)})
+            status, data = _try(m, kv, th, mt)
         except (OSError, ValueError) as e:
             RT.cooldown(ck); tried.append(m)
             out("AGENT_VISION_FAIL model=%s key=%s net=%r" % (m, kid, e))
             continue
-        if status == 200:
-            try:
-                text = data["choices"][0]["message"]["content"] or ""
-            except (KeyError, IndexError, TypeError):
-                RT.cooldown(ck); tried.append(m); continue
+        _text = _vision_text(status, data)
+        if _text is not None:
             RT.set_current(m)
-            log_usage(m, data.get("usage") or {}, kid)
-            return m, text
-        detail = str(data.get("error", {}).get("message", ""))[:80]
+            log_usage(m, (data.get("usage") if isinstance(data, dict) else {}) or {}, kid)
+            return m, _text
+        detail = _vision_err(status, data)[:80]
         # content.type 400 = 该模型不支持图像输入：记入学习集直接跳过，不冷却
         # （冷却会连累它之后的纯文本回复）
         if status == 400 and ("取值范围" in detail or "content" in detail.lower()
@@ -5008,10 +5070,12 @@ def call_vision(messages_text, image_urls, daemon=None):
                 out("AGENT_VISION_FAIL model=%s http=400 %s" % (m, detail))
             tried.append(m)
             continue
-        cool = _cooldown_sec(detail)
+        cool = 15 if status == 200 else _cooldown_sec(detail)
         out("AGENT_VISION_FAIL model=%s key=%s http=%d cool=%ds %s" % (m, kid, status, cool, detail))
-        RT.cooldown(m, cool); tried.append(m)
-    raise RuntimeError("视觉调用：模型链全部不可用: %s" % ",".join(tried) or "链为空")
+        # 冷却键必须与上面的检查键一致（kid:model）——此前写成裸模型名，视觉
+        # 路径的冷却从不生效
+        RT.cooldown(ck, cool); tried.append(m)
+    raise RuntimeError("视觉调用：模型链全部不可用: %s" % (",".join(tried) or "链为空"))
 
 
 def evolve_tick(daemon, msg, persona):
@@ -5256,7 +5320,9 @@ def process(daemon, msg):
         out("AGENT_BOTLOOP_VERDICT msg_id=%s sender=%s is_bot=%s"
             % (msg["id"], msg.get("sender_id"), is_bot))
         return
-    if feature_enabled("task_bridge_enabled") and _is_task_request(msg):
+    # 任务桥仅主人：执行器会运行模型生成的 Python。此前没有主人校验——白名单
+    # 群里任何人发「任务：…」或粘贴长编程题都会进入沙箱执行器，结果发回该群
+    if owner and feature_enabled("task_bridge_enabled") and _is_task_request(msg):
             bridge_task(daemon, msg)
             daemon.ack([msg["id"]])
             RT.count_processed()
@@ -5312,16 +5378,6 @@ def process(daemon, msg):
     _vision_go = vision_enabled() and msg.get("image_urls") and (
         _vmode in ("all", "all_prob")
         or msg.get("trigger_reason") in ("at", "reply_to_bot"))
-    # P1·空占位降级（纯图/表情、无文字）：不复原成真人长篇大论——
-    # reaction=表情回应（已启用集合随机，需开关开着，否则退 skip）；
-    # skip=不回；text=旧行为完整文本回复。带文字消息不受影响。
-    # 仅闲聊类触发（@/回复机器人是明确找她说话，不降级）。
-    _blank_img = (not str(msg.get("text") or "").strip()
-                  and msg.get("face_count", 0) >= 0
-                  and not msg.get("reply_text")
-                  and not msg.get("at_me")
-                  and msg.get("trigger_reason") in ("chat_random", "burst", "peer_talk")
-                  and blank_img_policy() != "text")
     # 裸@反应降级（2026-11-13 用户实测+设计哲学：纯@=戳一戳——没有实质
     # 内容可回应时不该走完整回复链，表情回应才是自然反应）：
     # - B 场景（下面立即处理）：裸@且前后都没有实质内容 → 表情回应；
@@ -5350,26 +5406,17 @@ def process(daemon, msg):
                 % (msg["id"], msg["chat_type"], msg["chat_id"]))
             return
         out("AGENT_BARE_AT_TEXT msg_id=%s (表情回应未启用，退文本链打招呼)" % msg["id"])
-    if _blank_img and _vision_go and reply is None:
-        # 视觉还没跑/不需要跑：纯占位直接按策略处理（识图结果对纯表情包
-        # 本就低信息量，P1 的核心就是"不为用而用"）
-        _pol = blank_img_policy()
+    # 识图概率为 0（识了也必然不说）且这条不属于「对话正在等图的信息」时，不白跑
+    # 视觉调用。此前 all_prob 档每张带图消息都先识图再 100% 丢弃——11 天 4,326 次。
+    # @/回复机器人是对着图说话，仍然照常识图。
+    if _vision_go and _vmode == "all_prob" and vision_prob() <= 0 \
+            and msg.get("trigger_reason") not in ("at", "reply_to_bot") \
+            and not _IMG_REF_RE.search(str(msg.get("text") or "") + " "
+                                       + str(msg.get("reply_text") or "")):
         daemon.ack([msg["id"]])
         RT.count_processed()
-        if _pol == "reaction":
-            _on, _ems = reaction_allowed()
-            if _on and _ems:
-                import random as _r2
-                daemon.set_msg_reaction(msg["message_id"],
-                                        _r2.choice(_ems), True)
-                out("AGENT_BLANK_IMG_REACTION msg_id=%s chat=%s/%s (纯图/表情降级为表情回应)"
-                    % (msg["id"], msg["chat_type"], msg["chat_id"]))
-            else:
-                out("AGENT_BLANK_IMG_SKIP msg_id=%s chat=%s/%s (表情回应未启用，跳过)"
-                    % (msg["id"], msg["chat_type"], msg["chat_id"]))
-        else:
-            out("AGENT_BLANK_IMG_SKIP msg_id=%s chat=%s/%s (纯图/表情不回应)"
-                % (msg["id"], msg["chat_type"], msg["chat_id"]))
+        out("AGENT_VISION_ZERO_SKIP msg_id=%s chat=%s/%s (识图概率为 0，不调用视觉)"
+            % (msg["id"], msg["chat_type"], msg["chat_id"]))
         return
     if _vision_go:
         try:
@@ -5472,13 +5519,17 @@ def process(daemon, msg):
         try:
             _rc_on, _rc_ems = reaction_allowed()
             mid0 = str(msg.get("message_id") or "")
-            if _rc_on and _react_ids[0] in _rc_ems and mid0:
+            # 戳一戳等通知事件的 message_id 是 poke_N 这类非数字标识，挂不了
+            # 表情回应（此前 19 次全部 ValueError）——跳过表情，正文照发
+            if _rc_on and _react_ids[0] in _rc_ems and mid0.isdigit():
                 ok_r, det_r = daemon.set_msg_reaction(mid0, _react_ids[0], True)
                 out("AGENT_REACTION mid=%s emoji=%s ok=%s %s"
                     % (mid0, _react_ids[0], ok_r, det_r[:60]))
             elif not _rc_on or _react_ids[0] not in _rc_ems:
                 out("AGENT_REACTION_SKIP emoji=%s（开关关闭或表情未勾选）"
                     % _react_ids[0])
+            else:
+                out("AGENT_REACTION_SKIP mid=%s（触发源不是消息，无法挂表情）" % mid0[:20])
         except Exception as _re_err:
             out("AGENT_REACTION_FAIL %r" % _re_err)
     # [忘:关键词]：模型自纠错记忆（仅主人路径生效）——先剥再发，绝不外漏
@@ -5759,6 +5810,10 @@ def process(daemon, msg):
 # ---------------------------------------------------------------------------
 
 _ADMIN_DAEMON = {"d": None}  # main() 里注入（handler 是模块级类，拿不到局部 daemon）
+_ADMIN_TOKEN = {"t": ""}     # 管理接口令牌（= daemon 控制令牌；start_admin_server 注入）
+# 管理接口只接受回环 Host：攻击域名解析到 127.0.0.1（DNS 重绑定）后请求会带上
+# 它自己的 Host，借此把"能读响应"的同源访问挡在外面
+_ADMIN_HOST_RE = re.compile(r"(?:127\.0\.0\.1|localhost|\[::1\])(?::\d{1,5})?")
 
 
 class AdminHandler(BaseHTTPRequestHandler):
@@ -5766,6 +5821,25 @@ class AdminHandler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         pass
+
+    def _authed(self):
+        """管理接口鉴权：必须带与 daemon 控制令牌一致的 X-QQBot-Token（令牌
+        缺失或为空一律拒绝）；Host 必须是回环地址；带 Origin 的请求（浏览器
+        发起）一律拒绝。此前全部路由无鉴权——本机任意进程或恶意网页都能读取
+        设备操控授权码、调用插件路由、暂停或关停大脑。"""
+        want = str(_ADMIN_TOKEN.get("t") or "").strip()
+        got = str(self.headers.get("X-QQBot-Token") or "").strip()
+        if not want or not got:
+            return False
+        try:
+            if not hmac.compare_digest(got, want):
+                return False
+        except TypeError:
+            return False
+        if self.headers.get("Origin"):
+            return False
+        return bool(_ADMIN_HOST_RE.fullmatch(
+            str(self.headers.get("Host") or "").strip()))
 
     def _reply(self, code, obj):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -5777,6 +5851,8 @@ class AdminHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         u = urllib.parse.urlsplit(self.path)
+        if not self._authed():
+            return self._reply(401, {"ok": False, "error": "unauthorized"})
         if u.path == "/admin/status":
             snap = RT.snapshot()
             snap["ready"] = any_key_usable()
@@ -5801,6 +5877,8 @@ class AdminHandler(BaseHTTPRequestHandler):
         return self._reply(404, {"ok": False, "error": "not found"})
 
     def do_POST(self):
+        if not self._authed():
+            return self._reply(401, {"ok": False, "error": "unauthorized"})
         if urllib.parse.urlsplit(self.path).path == "/admin/plugin-call":
             n = int(self.headers.get("Content-Length") or 0)
             try:
@@ -5961,6 +6039,7 @@ class AdminServer(ThreadingHTTPServer):
 def start_admin_server(port, daemon=None):
     if daemon is not None:
         _ADMIN_DAEMON["d"] = daemon
+        _ADMIN_TOKEN["t"] = str(getattr(daemon, "token", "") or "")
     srv = AdminServer((DAEMON_HOST, int(port)), AdminHandler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 

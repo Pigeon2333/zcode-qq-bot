@@ -24,6 +24,7 @@
 
 import argparse
 import base64
+import hmac
 import http.server
 import ipaddress
 import json
@@ -138,10 +139,14 @@ def load_reply_config_file():
     # vision_enabled/vision_mode 必须透传：_decide_trigger 的纯图绕过
     # （all_prob 档）读这里——漏透传则绕过条件恒 False，纯图消息永远
     # 只能靠闲聊掷点进 agent（2026-11-11 实测：纯图 reason="" 直接落空）
+    # risk_limit_image_fetch / risk_human_pace 同理：管理台把这两个风控开关写进
+    # reply_config.json，daemon 此前读的是启动参数 cfg（只有三个键）→ 开关永远
+    # 是默认值，用户在设置页关掉限频从不生效
     for k in ("econ_enabled", "econ_manual", "econ_start", "econ_end",
               "econ_days", "econ_workdays_only", "econ_mode_override",
               "wait_gate_enabled", "burst_merge_enabled", "botloop_guard_enabled",
-              "vision_enabled", "vision_mode"):
+              "vision_enabled", "vision_mode",
+              "risk_limit_image_fetch", "risk_human_pace"):
         if k in data:
             cfg[k] = data[k]
     return cfg
@@ -1905,7 +1910,9 @@ class Daemon:
                     return {"ok": True, "path": _hit}
         except OSError:
             pass
-        cfg = self.cfg
+        # 限频开关来自 reply_config.json（管理台风控分区），热加载；缓存命中
+        # 不走这里，零计数零下载
+        cfg = self._reply_config()
         if cfg.get("risk_limit_image_fetch", True):
             now = time.time()
             with self.lock:
@@ -2107,7 +2114,7 @@ class Daemon:
         # （2026-11-11 事故：这里曾写成裸 cfg → NameError → 部署后所有文字发送
         # 全灭且两层日志都不记（send_failed 只记队列线程内异常）。该异常在入队前
         # 抛出，由 HTTP 层把 ok:false 回给 agent，而 agent 不检查返回值——双重静默）
-        risk_pace = self.cfg.get("risk_human_pace", True)
+        risk_pace = self._reply_config().get("risk_human_pace", True)
         reply_to = str(reply_message_id).strip() if reply_message_id else ""
         n = 0
         for i, t in enumerate(texts[:8]):
@@ -2515,8 +2522,14 @@ class Daemon:
                         state.pop("unmuted_date", None)
                         changed = True
                         out("GROUP_ADMIN sched_mute group=%s at=%s" % (gid, m_t))
-                    # 到解禁点（今天还没解过）→ 解
-                    elif cur_min < u_h * 60 + u_m and state.get("unmuted_date") != today:
+                    # 到解禁点 → 解。跨午夜窗口里禁言发生在今天之前：必须是
+                    # 「今天已过解禁时刻」且「上一次禁言还没被解除」。此前条件
+                    # 写成 cur_min < 解禁时刻，一过零点就立刻解禁（23:30 禁、
+                    # 07:30 解的配置实际只禁到 0 点）
+                    elif cur_min >= u_h * 60 + u_m and state.get("unmuted_date") != today \
+                            and state.get("muted_date") and state["muted_date"] < today \
+                            and (not state.get("unmuted_date")
+                                 or state["unmuted_date"] < state["muted_date"]):
                         self._call_action("set_group_whole_ban",
                                           {"group_id": gid_i, "enable": False}, timeout=10)
                         state["unmuted_date"] = today
@@ -2764,8 +2777,16 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _check_token(self):
-        token = self.daemon.ctl_token
-        return not token or self.headers.get("X-QQBot-Token", "") == token
+        """控制接口鉴权：令牌缺失一律拒绝（fail-closed）；有值则必须与
+        X-QQBot-Token 一致。此前是 `not token or ...`——令牌文件缺失时全开。"""
+        token = str(self.daemon.ctl_token or "").strip()
+        got = str(self.headers.get("X-QQBot-Token", "") or "").strip()
+        if not token or not got:
+            return False
+        try:
+            return hmac.compare_digest(got, token)
+        except TypeError:
+            return False
 
     def _body(self):
         n = int(self.headers.get("Content-Length") or 0)
@@ -2874,10 +2895,16 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
                 if not isinstance(groups, dict):
                     return self._reply(400, {"ok": False, "error": "groups 结构非法"})
                 clean = {}
+                # 在现有整份配置上改 groups：对话群管开关（chat_enabled）住在
+                # 同一个文件的根键，此前整表只写 groups，在群管页点一次保存
+                # 就把对话群管静默关掉了
+                old_all = d._group_admin_cfg()
+                if not isinstance(old_all, dict):
+                    old_all = {}
                 for gid, cfg in groups.items():
                     if not str(gid).isdigit() or not isinstance(cfg, dict):
                         continue
-                    old_state = (((d._group_admin_cfg().get("groups") or {})
+                    old_state = (((old_all.get("groups") or {})
                                   .get(str(gid)) or {}).get("_state")) or {}
                     sched = cfg.get("sched_ban") or {}
                     clean[str(gid)] = {
@@ -2895,8 +2922,11 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
                         "kw_mute_min": max(1, min(43200, int(cfg.get("kw_mute_min") or 10))),
                         "_state": old_state,
                     }
-                d._group_admin_save({"groups": clean})
-                return self._reply(200, {"ok": True, "count": len(clean)})
+                new_all = dict(old_all)
+                new_all["groups"] = clean
+                d._group_admin_save(new_all)
+                return self._reply(200, {"ok": True, "count": len(clean),
+                                         "chat_enabled": bool(new_all.get("chat_enabled"))})
             if u.path == "/notice-send":
                 gid = str(body.get("group_id") or "")
                 content = str(body.get("content") or "").strip()
