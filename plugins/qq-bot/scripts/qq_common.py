@@ -24,7 +24,7 @@ DATA_DIR = os.environ.get("QQBOT_DATA_DIR") or os.path.join(
     os.path.expanduser("~"), ".zcode-qq-bot")
 DATA_ROOT = pathlib.Path(DATA_DIR)
 
-APP_VERSION = "0.5.21"         # 发布版本号（更新检查与本页展示用；发版时同步改）
+APP_VERSION = "0.5.22"         # 发布版本号（更新检查与本页展示用；发版时同步改）
 
 # 对话架构 v2 各项的默认值（agent 读、设置页展示，共用这一份；没在
 # reply_config.json 里写过的键就取这里的值）。
