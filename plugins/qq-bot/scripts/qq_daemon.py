@@ -50,9 +50,11 @@ AUDIO_SUBDIRS = ("cache/tts",)  # 允许发送的语音文件（TTS 引擎输出
 AUDIO_EXTS = {".mp3", ".wav", ".silk", ".amr", ".m4a"}
 # 图文合并·历史回捞的续接/指代词：触发的纯文字条自身无图时，命中这些词
 # 说明对话正围着一张最近的图转（图在更早几条里），回看 5 分钟内最近带图
-# 消息并入视觉输入。刻意不含"什么/啥"这类过于泛化的词，防误配。
+# 消息并入视觉输入。刻意不含"什么/啥"这类过于泛化的词，防误配；也刻意
+# 不含"然后/它"——普通连接词/代词绝大多数句子都有，会把 180 秒内任何
+# 人发的图都并进来。
 _IMG_HIST_RE = re.compile(
-    r"继续|重试|再来|接着|然后|下一?[张个步]|这[张个]|那个|它"
+    r"继续|重试|再来|接着|下一?[张个步]|这[张个]|那个"
     r"|图|照片|截图|看看|看下|咋样|怎么样")
 GROUP_WHITELIST_PATH = os.path.realpath(os.path.join(DATA_DIR, "group_whitelist.json"))
 PRIVATE_CONFIG_PATH = os.path.realpath(os.path.join(DATA_DIR, "private_config.json"))
@@ -155,20 +157,25 @@ def load_reply_config_file():
 def load_group_whitelist_file():
     """读取群白名单文件（模块级常量路径，由管理 UI 维护，daemon 只读）。
 
-    返回 {"allow_all": bool, "groups": [...]}；文件不存在或格式不符返回 None。
+    返回 (entry, state, error)：state "ok"=正常读取；"missing"=文件不存在
+    （从没配置过）；"bad"=文件存在但读不出来（非法 JSON/结构不对，error
+    为一句原因）。entry 仅在 "ok" 时非 None，形如
+    {"enabled": bool, "allow_all": bool, "groups": [...]}。
     """
     try:
         with open(GROUP_WHITELIST_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
-    except (OSError, ValueError):
-        return None
+    except FileNotFoundError:
+        return None, "missing", ""
+    except (OSError, ValueError) as e:
+        return None, "bad", "白名单文件读不出来: %s" % e
     if not isinstance(data, dict) or not isinstance(data.get("groups"), list):
-        return None
+        return None, "bad", "白名单文件结构不对（需为含 groups 列表的对象）"
     return {
         "enabled": bool(data.get("enabled", True)),
         "allow_all": bool(data.get("allow_all", False)),
         "groups": [str(g).strip() for g in data["groups"] if str(g).strip()],
-    }
+    }, "ok", ""
 
 
 def file_sig(path):
@@ -406,20 +413,46 @@ class WSClient:
         self.connected = False
 
     def run_forever(self):
-        """阻塞式：连接 -> 收事件 -> 断线自动重连（指数退避，上限 60s）。"""
+        """阻塞式：连接 -> 收事件 -> 断线自动重连（指数退避，上限 60s）。
+        循环体任何一处抛异常都不允许带崩接收线程（L7）：动作超时清理回包表
+        与回包到达撞上时，查询回包表会抛 KeyError——旧实现直接把线程带崩，
+        进程和端口都还在，看起来活着却永远收不到消息。连接层故障仍走
+        外层重连（连接关闭按现有逻辑处理，不记 WS_RX_ERROR）。"""
         backoff = 1
         while not self._stop.is_set():
             try:
                 self.connect()
                 backoff = 1
                 while not self._stop.is_set():
-                    text = self.recv_message()
+                    try:
+                        text = self.recv_message()
+                    except (ConnectionError, OSError, ValueError, ssl.SSLError):
+                        raise    # 连接层故障 → 外层按现有逻辑重连
+                    except Exception as e:
+                        # recv 侧其余异常同样是连接已坏（如 reset() 竞态把
+                        # sock 置 None 后的 AttributeError）：记一条后包装成
+                        # 连接错误交给既有重连路径——线程不退、也不原地空转
+                        out("AGENT_LOG {\"msg\": \"WS_RX_ERROR\", \"detail\": %s}"
+                            % json.dumps(repr(e)[:120]))
+                        raise ConnectionError("recv_broken: %s" % e)
                     try:
                         ev = json.loads(text)
                     except ValueError:
                         out("AGENT_LOG {\"msg\": \"non_json_frame\"}")
                         continue
-                    self.on_event(ev)
+                    except Exception as e:
+                        # 解析侧其余异常（如超深嵌套的 RecursionError）只弃这一帧
+                        out("AGENT_LOG {\"msg\": \"WS_RX_ERROR\", \"detail\": %s}"
+                            % json.dumps(repr(e)[:120]))
+                        continue
+                    try:
+                        self.on_event(ev)
+                    except Exception as e:
+                        # 分发抛任何异常都不允许带崩接收线程（L7）：记日志后
+                        # 继续收下一帧
+                        out("AGENT_LOG {\"msg\": \"WS_RX_ERROR\", \"detail\": %s}"
+                            % json.dumps(repr(e)[:120]))
+                        continue
             except (ConnectionError, OSError, ValueError, ssl.SSLError) as e:
                 self.connected = False
                 self.on_status("disconnected", str(e))
@@ -731,6 +764,10 @@ class Daemon:
         self.login = {"user_id": None, "nickname": ""}
         self._wl_cache = None
         self._wl_sig = object()  # 首次必加载（与 None/任何 sig 不等）
+        self._wl_last_good = None  # 最近一次从文件成功读到的白名单（文件坏了沿用）
+        self._wl_bad_sig = None    # 已打过 WL_FILE_BAD 的坏文件签名（每签名只打一次）
+        self._wl_state = ""        # /status 的 wl_state（首次 _group_whitelist 时填充）
+        self._wl_error = ""        # /status 的 wl_error
         self._rc_cfg = dict(DEFAULT_REPLY_CONFIG)
         self._rc_sig = object()
         self._gm_cache = {}
@@ -772,6 +809,7 @@ class Daemon:
             on_401=self._sync_ws_token,
         )
         self._tok_sync_ts = 0.0  # 401 → 请求管理台同步 token 的节流
+        self._ws_recv_thread = None  # WS 接收线程（start_recv_thread 登记供巡检）
 
     # ---------- WS 分发 ----------
 
@@ -1017,12 +1055,17 @@ class Daemon:
 
     def _ingest_message(self, ev, chat_type, chat_id, chat_name,
                         user_id, sender_name, info):
-        # 群管：关键词撤回/禁言（在任何触发判定之前——被撤的消息不该再被回应）
+        # 群管：关键词撤回/禁言（在任何触发判定之前——被撤的消息不该再被回应）。
+        # 命中撤回关键词：本条到此为止——不触发、不入收件箱、不进内存历史、
+        # 不进观察队列（内容违反群规已被撤，不该留在机器人上下文被事后复述）。
+        # 只命中禁言关键词：撤回不发生，本条照常走完全流程。
         try:
-            self._gadmin_keyword_check(chat_type, chat_id, info,
-                                       ev.get("message_id"))
+            _kw_recalled = bool(self._gadmin_keyword_check(
+                chat_type, chat_id, info, ev.get("message_id")))
         except Exception:
-            pass
+            _kw_recalled = False
+        if _kw_recalled:
+            return
         # 发言人身份必须进 info：AI 互聊节奏检测与「碎片合并」都按发言人统计条数。
         # 此前 info 没有该字段，两处 info.get("sender_id","") 恒为空 → 静默失效。
         info["sender_id"] = user_id
@@ -1103,9 +1146,16 @@ class Daemon:
                     % (chat_type, chat_id, user_id, len(info["image_urls"])))
         _fwd_ck = "%s_%s_%s" % (chat_type, chat_id, user_id)
         _fwd_ts = ev.get("time") or now_ts()
+        # text_img_merge_enabled 开关（reply_config，缺键视为 True）：关时被
+        # 触发的纯文字条不再登记 _fwd_pending 延迟等配图，立即走即时路径入箱；
+        # 随后到的图因 pending 表里没有本条，不会被压触发，按普通图片消息各自
+        # 处理。运行中从开切到关不影响已挂起的条——_fwd_deferred_push 照旧
+        # 走完 2.5s 并图流程（不查开关），不丢不重。
         _fwd_defer = (triggered and not info["image_urls"]
                       and (info["text"] or "").strip()
-                      and not info["has_reply"] and not info["record"])
+                      and not info["has_reply"] and not info["record"]
+                      and self._reply_config().get("text_img_merge_enabled",
+                                                   True))
         if _fwd_defer:
             with self.lock:
                 self._fwd_pending[_fwd_ck] = _fwd_ts
@@ -1219,7 +1269,15 @@ class Daemon:
                     except Exception:
                         pass
                     finally:
-                        self.inbox.append(it)
+                        # 补查耗时期间 agent 可能已确认更高 id（收件箱按
+                        # id>acked_max 拉取）：入箱前按 _fwd_deferred_push 同一
+                        # 规则重编号，否则本条被永久跳过
+                        with self.lock:
+                            if self.acked_max >= it["id"]:
+                                # 新 id 必须越过 acked_max 本身（同 _fwd_deferred_push）
+                                self.seq = max(self.seq, self.acked_max) + 1
+                                it["id"] = self.seq
+                            self.inbox.append(it)
                 threading.Thread(target=_enrich_reply,
                                  args=(item, rt_fetch_id),
                                  daemon=True).start()
@@ -1392,17 +1450,45 @@ class Daemon:
 
     def _group_whitelist(self):
         """群白名单热加载（mtime 秒级失效）：来源 group_whitelist.json（管理 UI 维护），
-        返回 {"allow_all": bool, "groups": [...]}；文件不存在或格式不符时
-        回退启动参数 --groups。本进程只读不写。"""
+        返回生效条目 {"enabled","allow_all","groups"}。本进程只读不写。
+        文件不存在（从没配置过）：回退启动参数 --groups——有值只对这些群生效，
+        没有值 allow_all=True（所有群生效），即新装用户的默认行为。
+        文件存在但读不出来：沿用本进程上一份成功读到的内容；第一份就坏则
+        保守处理（allow_all=False、groups=[]，不在任何群生效）。
+        文件修好后 sig 变化，下一条消息即用新内容。
+        顺带维护 self._wl_state / self._wl_error 供 /status 展示（S20）。"""
         sig = file_sig(GROUP_WHITELIST_PATH)
         if sig != self._wl_sig:
-            entry = load_group_whitelist_file()
-            if entry is None:
-                entry = {"allow_all": False,
-                         "groups": [str(x) for x in self.cfg.get("group_whitelist", [])]}
+            entry, lst, err = load_group_whitelist_file()
+            state, error = "file", ""
+            if lst == "missing":
+                groups = [str(x) for x in self.cfg.get("group_whitelist", [])]
+                entry = {"enabled": True,
+                         "allow_all": not groups,
+                         "groups": groups}
+                state = "default_all" if not groups else "default_groups"
+            elif lst == "bad":
+                error = err
+                if self._wl_last_good is not None:
+                    entry = self._wl_last_good
+                    state = "stale"
+                else:
+                    entry = {"enabled": True, "allow_all": False, "groups": []}
+                    state = "broken"
+                # 每个文件签名只报一次，不随每条消息刷屏
+                if sig != self._wl_bad_sig:
+                    self._wl_bad_sig = sig
+                    out("AGENT_LOG {\"msg\": \"WL_FILE_BAD\", \"detail\": %s}"
+                        % json.dumps(err, ensure_ascii=False))
+            else:
+                self._wl_last_good = entry
+            if not entry.get("enabled", True):
+                state = "disabled"   # 总开关关着：如实上报，wl_error 另说文件健康
             with self.lock:
                 self._wl_cache = entry
                 self._wl_sig = sig
+                self._wl_state = state
+                self._wl_error = error
         return self._wl_cache
 
     def _group_allowed(self, group_id):
@@ -1415,10 +1501,9 @@ class Daemon:
             return False
         if entry.get("allow_all"):
             return True
-        wl = entry.get("groups", [])
-        if wl and g not in wl:
-            return False
-        return True
+        # 名单模式：只有列表里的群放行；列表为空 = 不在任何群生效
+        # （旧实现空列表落到"放行"，管理台"清空即闭嘴"的承诺落空——S20）
+        return g in entry.get("groups", [])
 
     def _private_config(self):
         """私聊配置热加载（mtime 秒级失效，来源 private_config.json，daemon 只读）。"""
@@ -1519,9 +1604,15 @@ class Daemon:
             ts_list = [r.get("ts", 0) for r in list(dq)[-6:]
                        if str(r.get("sender_id")) == str(sender_id)
                        and not r.get("is_bot")]
-        if len(ts_list) < 2:
+        if not ts_list:
             return False
         now = time.time()
+        if len(ts_list) == 1:
+            # 差一修复（2026-11-25）：判定发生在当前消息入史之前——历史里
+            # 只有 1 条同人消息时，正是此人「第 2 条消息到达」的瞬间。只要
+            # 它与上一条间隔 < gap 也算连发（此前要求 ≥2 条，同一个人的
+            # 第 2 条消息永远判定不到，碎片合并对两人对话从未生效）。
+            return now - ts_list[-1] < gap
         # 最后一条距今 < gap 且倒数第二条距今 < gap*3 → 连发中
         return (now - ts_list[-1] < gap) and (now - ts_list[-2] < gap * 3)
 
@@ -2231,6 +2322,9 @@ class Daemon:
     # 实测 [时:23:24]/[21:05]/[回应:63] 三种形态）。反复剥多组前缀；
     # markdown 链接 [文本](url) 例外（] 后紧跟 ( 不剥）。
     _LEAD_BRACKET_RE = re.compile(r"^\s*\[[^\[\]]{1,32}\](?!\()\s*")
+    # 空/纯空白括号（原为 _strip_control_marks 里的内联模式，提为常量供
+    # SEND_MARK_STRIP 日志取"被剥部分"用，剥除行为不变）
+    _EMPTY_BRACKET_RE = re.compile(r"\[\s*\]|【\s*】|（\s*）|\(\s*\)")
     # 句首元指令句剥离（2026-11-15 实测：追聊输出"分析过程不外显，仅直接
     # 给出最终回复。宝宝别打字啦…"——模型把提示词指令综合成元指令当正文
     # 开头）。特征词正常人聊天永远不会说；只剥首个完整句，剥完空则丢弃。
@@ -2254,31 +2348,67 @@ class Daemon:
 
     @classmethod
     def _strip_control_marks(cls, text):
-        """剔除残留控制标记（剥完空了返回 None=跳过该条）。"""
-        t = cls._MARK_LEAK_RE.sub("", str(text or ""))
+        """剔除残留控制标记（剥完空了返回 None=跳过该条）。
+        每条规则实际改动文本时记一行 SEND_MARK_STRIP 日志（只观察剥了什么，
+        不改行为：剥什么、剥多少、剥的顺序与从前完全一致）。"""
+        t0 = str(text or "")
+        t = cls._MARK_LEAK_RE.sub("", t0)
+        if t != t0:
+            _m = cls._MARK_LEAK_RE.search(t0)
+            out("SEND_MARK_STRIP rule=MARK_LEAK before=%d after=%d head=%s"
+                % (len(t0), len(t), (_m.group(0) if _m else "")[:24]))
+        tb = t
         t = cls._PLACEHOLDER_RE.sub("", t)
+        if t != tb:
+            _m = cls._PLACEHOLDER_RE.search(tb)
+            out("SEND_MARK_STRIP rule=PLACEHOLDER before=%d after=%d head=%s"
+                % (len(tb), len(t), (_m.group(0) if _m else "")[:24]))
+        tb = t
         t = cls._META_CMD_RE.sub("", t, count=1)   # 句首元指令句（只剥第一句）
+        if t != tb:
+            _m = cls._META_CMD_RE.search(tb)
+            out("SEND_MARK_STRIP rule=META_CMD before=%d after=%d head=%s"
+                % (len(tb), len(t), (_m.group(0) if _m else "")[:24]))
         # 句首「行动策略」句（模型把思考写进正文；见 _STRATEGY_LEAD_RE 注释）
+        tb = t
+        _sl_head = ""
         for _ in range(2):      # 最多剥两句（偶发连写两条策略）
             _m2 = cls._STRATEGY_LEAD_RE.match(t)
             if not _m2:
                 break
+            if not _sl_head:
+                _sl_head = _m2.group(0)
             t = t[_m2.end():]
+        if t != tb:
+            out("SEND_MARK_STRIP rule=STRATEGY_LEAD before=%d after=%d head=%s"
+                % (len(tb), len(t), _sl_head[:24]))
         # 空/纯空白方括号（模型输出 "[]又戳！" 这类残留）
-        t = re.sub(r"\[\s*\]|【\s*】|（\s*）|\(\s*\)", "", t)
+        tb = t
+        t = cls._EMPTY_BRACKET_RE.sub("", t)
+        if t != tb:
+            _m = cls._EMPTY_BRACKET_RE.search(tb)
+            out("SEND_MARK_STRIP rule=EMPTY_BRACKET before=%d after=%d head=%s"
+                % (len(tb), len(t), (_m.group(0) if _m else "")[:24]))
         # 行首 [] 前缀改为**逐行**剥（2026-11-16 实测：模型两行输出，第一行
         # 行首时间被剥、第二行行首 [10:59] 漏网——此前 ^ 只匹配整条开头，
         # 换行后的行首不在射程。每行连环剥，剥完的空行丢弃）
+        tb = t
+        _lb_head = ""
         cleaned = []
         for ln in t.split("\n"):
             for _ in range(6):      # 单行内连环剥（上限防病态输入）
                 m = cls._LEAD_BRACKET_RE.match(ln)
                 if not m:
                     break
+                if not _lb_head:
+                    _lb_head = m.group(0)
                 ln = ln[m.end():]
             if ln.strip():
                 cleaned.append(ln)
         t = "\n".join(cleaned)
+        if t != tb:
+            out("SEND_MARK_STRIP rule=LEAD_BRACKET before=%d after=%d head=%s"
+                % (len(tb), len(t), _lb_head[:24]))
         t = re.sub(r"[ \t]{2,}", " ", t).strip(" \n，。,.")
         return (t or None)
 
@@ -2368,6 +2498,7 @@ class Daemon:
 
     def status(self):
         last_ok = self.ws_last_ok
+        entry = self._group_whitelist()  # 首次访问触发加载（sig 缓存，之后只是 stat）
         return {
             "running": True,
             "pid": os.getpid(),
@@ -2380,6 +2511,16 @@ class Daemon:
             "login": self.login,
             "inbox_pending": len(self.inbox),
             "stats": self.stats,
+            # 群白名单状态（S20）：file 正常读文件 / default_all 没有配置文件、
+            # 所有群生效 / default_groups 没有配置文件、用启动参数 --groups 的
+            # 群列表 / stale 文件坏了、在用上一份 / broken 文件坏了、没有上一份 /
+            # disabled 总开关关着。wl_error 出问题时给一句原因，正常为空串。
+            "wl_state": self._wl_state,
+            "wl_error": self._wl_error,
+            # 群名单真实生效状态（管理台显示用）：取值即 _group_whitelist 当前
+            # 返回条目里的 groups / allow_all（disabled 总开关关时也如实报条目）
+            "wl_groups": list(entry.get("groups", [])),
+            "wl_allow_all": bool(entry.get("allow_all")),
             "data_dir": DATA_DIR,
         }
 
@@ -2429,16 +2570,51 @@ class Daemon:
             with self.lock:
                 return self._group_names or {}
 
+    def start_recv_thread(self):
+        """拉起 WS 接收线程并登记（main 首拉与巡检兜底重拉共用同一入口）。"""
+        t = threading.Thread(target=self.ws.run_forever, daemon=True, name="ws-recv")
+        with self.lock:
+            self._ws_recv_thread = t
+        t.start()
+        return t
+
+    def _ws_recv_needs_restart(self):
+        """WS 接收线程兜底巡检的判定（可单测）：daemon 没在停止而接收线程
+        已经死了 → 需要重拉。尚未启动过（None）不算——首拉由 main 负责。"""
+        if self.stop_flag.is_set():
+            return False
+        t = self._ws_recv_thread
+        return t is not None and not t.is_alive()
+
+    def _ws_recv_watchdog(self):
+        """巡检兜底（L7）：接收线程意外退出而 daemon 仍在运行 → 重拉。
+        线程带崩后进程和端口都还在，看起来活着却永远收不到消息。"""
+        if not self._ws_recv_needs_restart():
+            return
+        out("AGENT_LOG {\"msg\": \"WS_RX_RESTART\"}")
+        try:
+            self.start_recv_thread()
+        except Exception as e:
+            out("AGENT_LOG {\"msg\": \"WS_RX_RESTART_FAIL\", \"detail\": %s}"
+                % json.dumps(repr(e)[:120]))
+
     def _probe_loop(self):
         """动作通道探活（45s 一次）：get_login_info 探测 NapCat 是否仍响应。
         连续 2 次失败且连接显示在线 = 半死连接 → 硬复位 socket 触发重连。
         复位至少间隔 120s（防止对刚重连好的新连接反复拆线）。
-        兼职跑群管定时禁言检查（限频 60s，跨午夜窗口支持 23:00→08:00）。"""
+        兼职跑群管定时禁言检查（限频 60s，跨午夜窗口支持 23:00→08:00）；
+        顺带每 5s 巡检 WS 接收线程是否意外退出（L7 兜底）。"""
         fails = 0
         last_reset = 0.0
         last_sched = 0.0
         while not self.stop_flag.is_set():
-            time.sleep(45)
+            # 一次性 sleep(45) 拆成 5s 一段：每段先巡检接收线程（_ws_recv_watchdog），
+            # 线程带崩不用等满一个探活周期才被发现
+            for _ in range(9):
+                if self.stop_flag.is_set():
+                    break
+                self._ws_recv_watchdog()
+                time.sleep(5)
             if self.stop_flag.is_set() or not self.ws.connected:
                 fails = 0
                 continue
@@ -2565,7 +2741,9 @@ class Daemon:
 
     def _resolve_member(self, group_id, who):
         """群成员解析：who=QQ号直用；名字→get_group_member_list 按 群名片
-        /昵称 精确→前缀→包含 匹配。返回 (qq, 显示名) 或 (None, 原因)。"""
+        /昵称 精确→前缀→包含 匹配。返回 (qq, 显示名) 或 (None, 原因)。
+        同一档命中多个不同 QQ 视为歧义：返回 (None, 提示语)，调用方据此
+        不执行任何动作、只回一句让主人说全名或直接给 QQ 号。"""
         w = str(who or "").strip()
         if not w:
             return None, "没说是谁"
@@ -2576,7 +2754,11 @@ class Daemon:
                                      {"group_id": int(group_id)}, timeout=12)
         except Exception as e:
             return None, "拉群成员列表失败：%s" % repr(e)[:80]
-        exact, prefix, fuzzy = None, None, None
+        exact, prefix, fuzzy = [], [], []   # 各档命中 (qq, 显示名)，按成员顺序
+        def _tier_add(tier, qq, disp):
+            if qq and all(h[0] != qq for h in tier):
+                tier.append((qq, disp))
+        # 全量扫描（不提前停）：精确命中也可能不止一个人，必须都数进来
         for m in (data if isinstance(data, list) else []):
             card = str(m.get("card") or "").strip()
             nick = str(m.get("nickname") or "").strip()
@@ -2585,17 +2767,20 @@ class Daemon:
                 if not nm:
                     continue
                 if nm == w:
-                    exact = (qq, card or nick)
+                    _tier_add(exact, qq, card or nick)
                     break
-                if nm.startswith(w) and prefix is None:
-                    prefix = (qq, card or nick)
-                if w in nm and fuzzy is None:
-                    fuzzy = (qq, card or nick)
-            if exact:
-                break
-        hit = exact or prefix or fuzzy
-        if hit:
-            return hit
+                if nm.startswith(w):
+                    _tier_add(prefix, qq, card or nick)
+                if w in nm:
+                    _tier_add(fuzzy, qq, card or nick)
+        # 档位优先级不变（精确→前缀→包含）；某档唯一才执行，多个人命中
+        # 同档 = 歧义，绝不挑第一个执行
+        for tier in (exact, prefix, fuzzy):
+            if len(tier) > 1:
+                return None, ("「%s」不止一个人匹配：%s。请说全名或直接给 QQ 号"
+                              % (w[:20], "、".join(h[1] for h in tier[:5])))
+            if tier:
+                return tier[0]
         return None, "群里没找到叫「%s」的人（可让我按QQ号来）" % w[:20]
 
     def _gadmin_human_err(self, e):
@@ -2701,15 +2886,17 @@ class Daemon:
     def _gadmin_keyword_check(self, chat_type, chat_id, info, message_id):
         """关键词撤回/禁言（群管模块；白名单群消息逐条检查）。
         在 ws 收线程上调用——撤回/禁言动作丢后台线程执行（同步 _call_action
-        死锁教训同 _enrich_reply）。机器人自己与触发的命令消息不查。"""
+        死锁教训同 _enrich_reply）。机器人自己与触发的命令消息不查。
+        返回 True=本条命中撤回关键词（消息正被后台撤回），调用方应就此止步
+        不再回应；False=照常处理（含只命中禁言关键词的情况）。"""
         if chat_type != "group" or not message_id:
-            return
+            return False
         if str(info.get("sender_id") or "") == str(self.login.get("user_id") or ""):
-            return
+            return False
         cfg = ((self._group_admin_cfg().get("groups") or {}).get(str(chat_id)) or {})
         text = str(info.get("text") or "")
         if not text:
-            return
+            return False
 
         def _hit(words):
             for w in words or []:
@@ -2721,7 +2908,7 @@ class Daemon:
         recall_kw = _hit(cfg.get("kw_recall")) if cfg.get("kw_recall_on") else None
         mute_kw = _hit(cfg.get("kw_mute_words")) if cfg.get("kw_mute_on") else None
         if not recall_kw and not mute_kw:
-            return
+            return False
         mid = str(message_id)
         gid = int(chat_id)
 
@@ -2748,6 +2935,7 @@ class Daemon:
                     % json.dumps(repr(e)[:100]))
 
         threading.Thread(target=_do, daemon=True).start()
+        return bool(recall_kw)
 
 
 # ---------------------------------------------------------------------------
@@ -3114,7 +3302,7 @@ def main():
     ctl.daemon = d
     out(json.dumps({"daemon_ready": True, "pid": os.getpid(), "ctl_port": args.port,
                     "ws_url": args.ws_url, "data_dir": DATA_DIR}, ensure_ascii=False))
-    threading.Thread(target=d.ws.run_forever, daemon=True).start()
+    d.start_recv_thread()
     threading.Thread(target=d._probe_loop, daemon=True).start()
     try:
         while not d.stop_flag.is_set():

@@ -1,6 +1,6 @@
 {
   "name": "sing_svc",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "title": "AI翻唱（歌声转换）",
   "category": "娱乐",
   "default_enabled": false,

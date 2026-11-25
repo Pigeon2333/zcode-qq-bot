@@ -136,6 +136,83 @@ CVEC_URLS = (
     "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/hubert_base.pt",
 )
 
+# 已核实清单：数字为实算（双源各下载一次，大小与 sha256 一致后录入），
+# 不是官方公布值；官方若更新文件，这里必须重算重录。
+VERIFIED_DOWNLOADS = {
+    "4.1-Stable.zip": {
+        "size": 829048,
+        "sha256": "058c82e7919c14a5426550326970a43b3b7c84761aa97fad220018afbe36353d",
+    },
+    "checkpoint_best_legacy_500.pt": {
+        "size": 189507909,
+        "sha256": "f54b40fd2802423a5643779c4861af1e9ee9c1564dc9d32f54f20b5ffba7db96",
+    },
+}
+
+_VERIFY_MIN_SIZE = 10 * 1024 * 1024   # 清单外文件的最低大小门槛
+_MAGIC_ZIP = b"PK"                     # zip 类文件的文件头
+
+
+def _file_sha256(path):
+    """大文件流式 sha256（1MB 块）。"""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def verify_download(path, name):
+    """下载落盘后的完整性校验（一键部署每个下载点必调）。返回 {ok, error?,
+    hash_checked}。清单内：大小与 sha256 必须全对上，任一不符即删文件并
+    返回写明哪项没过的失败；清单外：校验大小下限 + 文件头（zip 类查 PK），
+    返回里标明未做哈希校验并写日志。"""
+    try:
+        size = os.path.getsize(path)
+    except OSError as e:
+        return {"ok": False, "error": "文件不存在，无法校验：%r" % e}
+    rec = VERIFIED_DOWNLOADS.get(str(name))
+    if rec:
+        want_size = int(rec.get("size") or -1)
+        if size != want_size:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            log("verify_download FAIL %s size=%d want=%d（已删）"
+                % (name, size, want_size))
+            return {"ok": False,
+                    "error": "%s 大小校验失败：实得 %d 字节，应为 %d 字节"
+                             "（下载内容不可信，已删除）" % (name, size, want_size)}
+        if _file_sha256(path) != str(rec.get("sha256") or "").lower():
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            log("verify_download FAIL %s sha256 不符（已删）" % name)
+            return {"ok": False,
+                    "error": "%s 哈希校验失败：SHA256 与已核实清单不符"
+                             "（下载内容不可信，已删除）" % name}
+        return {"ok": True, "hash_checked": True}
+    if size < _VERIFY_MIN_SIZE:
+        return {"ok": False,
+                "error": "%s 只有 %d 字节，低于 %d MB 下限，不像有效文件"
+                         % (name, size, _VERIFY_MIN_SIZE // 1048576)}
+    if str(name).lower().endswith(".zip"):
+        try:
+            with open(path, "rb") as f:
+                head = f.read(2)
+        except OSError as e:
+            return {"ok": False, "error": "读文件头失败：%r" % e}
+        if head != _MAGIC_ZIP:
+            return {"ok": False,
+                    "error": "%s 文件头不是 zip（PK），内容可疑，已拒绝" % name}
+    log("verify_download %s 通过（未做哈希校验：不在已核实清单，仅大小/文件头）"
+        % name)
+    return {"ok": True, "hash_checked": False,
+            "note": "未做哈希校验（该文件不在已核实清单，仅校验大小/文件头）"}
+
+
 _setup = {"phase": "", "pct": 0, "msg": "", "err": "", "t": 0.0}
 
 
@@ -264,11 +341,18 @@ def setup_run(install_root, cfg):
             _setup_tick("src", 2, "下载官方源码（4.1-Stable，约几 MB）…")
             zpath = os.path.join(root, "_svc_src.zip")
             _download_first(SRC_ZIP_URLS, zpath, "源码包")
+            vr = verify_download(zpath, "4.1-Stable.zip")
+            if not vr.get("ok"):
+                raise RuntimeError(vr.get("error") or "源码包完整性校验失败")
             _setup_tick("src", 30, "解压源码…")
+            try:
+                import qq_update as _qu
+            except Exception as e:
+                raise RuntimeError("安全解压模块（qq_update）加载失败：%r" % e)
             with zipfile.ZipFile(zpath) as z:
                 names = z.namelist()
                 top = names[0].split("/")[0]
-                z.extractall(root)
+            _qu._safe_extract(zpath, root)      # 逐成员防 Zip Slip，单文件 200MB 上限
             os.replace(os.path.join(root, top), svc)
             try:
                 os.remove(zpath)
@@ -292,8 +376,11 @@ def setup_run(install_root, cfg):
         # ③ ContentVec 底模
         cvec = os.path.join(svc, "pretrain", "checkpoint_best_legacy_500.pt")
         if not os.path.isfile(cvec):
-            _setup_tick("cvec", 42, "下载 ContentVec 底模（约 360MB，hf-mirror 优先）…")
+            _setup_tick("cvec", 42, "下载 ContentVec 底模（约 181MB，hf-mirror 优先）…")
             _download_first(CVEC_URLS, cvec, "底模")
+            vr = verify_download(cvec, "checkpoint_best_legacy_500.pt")
+            if not vr.get("ok"):
+                raise RuntimeError(vr.get("error") or "底模完整性校验失败")
         _setup_tick("done", 100, "部署完成（%s）" % how)
         return {"ok": True, "dir": svc, "runtime": how}
     except Exception as e:
@@ -359,11 +446,23 @@ def wav_duration(path, cfg):
 
 # ---------------- 引擎进程 ----------------
 
+def _new_token():
+    """引擎会话令牌：每次启动随机生成，只存本进程内存（_proc），不落盘不打日志。"""
+    import secrets
+    return secrets.token_urlsafe(32)
+
+
+def _svc_headers():
+    """引擎请求头：Content-Type + X-SVC-Token 鉴权（令牌只在本进程内存）。"""
+    return {"Content-Type": "application/json",
+            "X-SVC-Token": str(_proc.get("token") or "")}
+
+
 def engine_status(cfg):
     port = int(cfg.get("port") or 6843)
     try:
         c = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
-        c.request("GET", "/status")
+        c.request("GET", "/status", headers=_svc_headers())
         r = c.getresponse()
         d = json.loads(r.read().decode("utf-8"))
         c.close()
@@ -387,14 +486,18 @@ def engine_start(cfg):
     port = int(cfg.get("port") or 6843)
     os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
     logf = open(LOG_PATH, "ab")
+    token = _new_token()
+    env = dict(os.environ)
+    env["SVC_TOKEN"] = token      # 经环境变量传给子进程（不进命令行，进程列表不可见）
     try:
         p = subprocess.Popen(
             [py, os.path.join(PLUGIN_DIR, "svc_server.py"), str(port)],
-            cwd=d, stdout=logf, stderr=logf,
+            cwd=d, stdout=logf, stderr=logf, env=env,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except OSError as e:
         return {"ok": False, "error": "启动失败：%s" % e}
     _proc["p"] = p
+    _proc["token"] = token
     # 端口就绪（torch 首次 import 可到 1-2 分钟）
     for _ in range(60):
         time.sleep(2)
@@ -524,6 +627,17 @@ def model_import(src_dir, name):
             cluster = "cluster.pt"
     except OSError as e:
         return {"ok": False, "error": "复制模型失败：%r" % e}
+    # 完整性台账：用户自己提供的模型文件（torch 反序列化＝加载即执行，本插件
+    # 改不了第三方包），逐文件记 sha256 落盘，供事后核对是否被替换
+    try:
+        files = {}
+        for fn in ["model.pth", "config.json"] + ([cluster] if cluster else []):
+            files[fn] = _file_sha256(os.path.join(dst, fn))
+        _pl.Path(os.path.join(dst, "files.sha256.json")).write_text(
+            json.dumps(files, ensure_ascii=False, indent=1), encoding="utf-8")
+        log("用户自己提供的模型文件，加载即执行（sha256 台账已写入 %s）" % mid)
+    except OSError as e:
+        log("sha256 台账写入失败（不阻止导入）%s：%r" % (mid, e))
     # 说话人名：config 的 speakers 第一个键（多数社区包单说话人）
     spk = ""
     try:
@@ -563,8 +677,7 @@ def _engine_call(cfg, method, path, payload=None, timeout=240):
     c = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
     try:
         body = json.dumps(payload or {}, ensure_ascii=False).encode("utf-8")
-        c.request(method, path, body=body,
-                  headers={"Content-Type": "application/json"})
+        c.request(method, path, body=body, headers=_svc_headers())
         r = c.getresponse()
         return json.loads(r.read().decode("utf-8"))
     finally:

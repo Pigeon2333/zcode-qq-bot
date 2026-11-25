@@ -351,6 +351,8 @@ def main():
             was_up = up
 
     threading.Thread(target=_ui_watchdog, daemon=True).start()
+    # 掉线提醒：和协议框架的连接断了超过 3 分钟，气泡通知或让窗口在任务栏上闪烁
+    threading.Thread(target=_offline_watch, daemon=True).start()
 
     def _show_all_windows():
         for w in webview.windows:
@@ -413,6 +415,71 @@ def main():
 
 
 _tray_started = {"flag": False}
+_tray_ref = {"icon": None}
+
+
+def _alert_user(title, message):
+    """给用户看一条提醒：托盘在就用气泡通知，否则让任务栏上的窗口闪烁（不抢焦点）。
+    两种都不可用（窗口关了、也没托盘）时只写日志。"""
+    print("[%s] ALERT %s：%s" % (time.strftime("%m-%d %H:%M:%S"), title, message), flush=True)
+    icon = _tray_ref["icon"]
+    if icon is not None:
+        try:
+            icon.notify(message, title)
+            return
+        except Exception as e:
+            print("tray notify fail: %r" % e, flush=True)
+    try:
+        import ctypes
+        u32 = ctypes.windll.user32
+        hwnd = u32.FindWindowW(None, APP_NAME)
+        if hwnd and u32.IsWindowVisible(hwnd):
+            def _flash():
+                for _ in range(12):
+                    u32.FlashWindow(hwnd, True)
+                    time.sleep(0.5)
+                u32.FlashWindow(hwnd, False)
+            threading.Thread(target=_flash, daemon=True).start()
+    except Exception as e:
+        print("flash fail: %r" % e, flush=True)
+
+
+def _offline_watch():
+    """掉线提醒：daemon 在跑、但和协议框架的连接断了超过 3 分钟，提醒一次；恢复后再提醒一次。
+    daemon 只会自己每分钟重连，不通知任何人——2026-11-25 账号掉线了 17 个小时没人知道。"""
+    import http.client
+    import json
+    down_since, notified = 0.0, False
+    while True:
+        time.sleep(30)
+        try:
+            cfg = C.load_app_config()
+            port = int(cfg.get("daemon_port") or 39763)
+            tok_path = C.DATA_ROOT / "token"
+            tok = tok_path.read_text(encoding="utf-8").strip() if tok_path.is_file() else ""
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=6)
+            conn.request("GET", "/status", headers={"X-QQBot-Token": tok})
+            resp = conn.getresponse()
+            data = json.loads(resp.read().decode("utf-8"))
+            conn.close()
+            down = resp.status == 200 and isinstance(data, dict) \
+                and data.get("ws_connected") is False
+        except Exception:
+            # daemon 没在跑或答不上来不算「连不上协议框架」：那是「机器人没启动」，状态页另有提示
+            down = False
+        now = time.time()
+        if not down:
+            if notified:
+                _alert_user("机器人已恢复连接", "和协议框架的连接已恢复。")
+            down_since, notified = 0.0, False
+            continue
+        if not down_since:
+            down_since = now
+        elif not notified and now - down_since >= 180:
+            notified = True
+            _alert_user("机器人已掉线",
+                        "和协议框架的连接已断开 %d 分钟，这期间的消息收不到也发不出。"
+                        "打开控制台的状态页处理。" % round((now - down_since) / 60))
 
 
 def _hide_windows_win32():
@@ -469,6 +536,7 @@ def _start_tray():
                 MenuItem("退出并停止机器人",
                          lambda i, it: _tray_exit("exit_all")),
             ))
+        _tray_ref["icon"] = tray    # 掉线提醒用它发气泡通知
         threading.Thread(target=tray.run, daemon=True).start()
         _tray_started["flag"] = True
         # 只有托盘真正创建成功后才隐藏窗口

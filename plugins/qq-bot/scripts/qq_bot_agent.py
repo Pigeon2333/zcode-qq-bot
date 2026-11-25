@@ -905,7 +905,10 @@ def call_glm_with_fallback(messages, text_ctx="", budget_sec=200):
                     "max_tokens": max(mt, 2048)})
                 if not isinstance(data, dict):
                     data = {"error": {"message": "非对象响应"}}
-        except (OSError, ValueError) as e:
+        except (OSError, ValueError, http.client.HTTPException) as e:
+            # HTTPException（IncompleteRead/BadStatusLine/LineTooLong）是服务端
+            # 半途断流/坏响应，和断网同级：照样冷却并换下一候选，不穿出去
+            # （此前它不在这两个异常的家族里，一条消息直接丢进 AGENT_LOOP_ERROR）
             RT.cooldown(ck)
             tried.append("%s@%s" % (model, kid))
             out("AGENT_MODEL_FAIL model=%s key=%s net=%r" % (model, kid, e))
@@ -1753,6 +1756,7 @@ def _download_image(url, dest_path):
 
 
 _NO_VISION_MODELS = set()  # 运行中学习到的纯文本模型（发图必 400，视觉轮询直接跳过）
+_VISION_OK_MODELS = set()  # 带图调用成功过的模型。和上面一样不看名字，只记实际试出来的结果
 
 # OpenCode Go 要求 x-opencode-session（稳定会话 ID，路由+prompt 缓存用）。
 # 进程级固定值——单机器人单实例足够；不含任何用户/会话内容。
@@ -1797,8 +1801,10 @@ def generate_image(prompt):
             url = str(items[0].get("url", "")) if items else ""
             if url:
                 break
-            out("AGENT_DRAW_FAIL key=%.6s… attempt=%d %s" % (
-                key, attempt, str(data.get("error", {}))[:120]))
+            # 日志绝不带密钥内容（此前 key=%.6s 把密钥前 6 位写进了日志）；
+            # 这里拿到的只有密钥值没有别名 id，所以只记 attempt 与错误信息
+            out("AGENT_DRAW_FAIL attempt=%d %s" % (
+                attempt, str(data.get("error", {}))[:120]))
         if url:
             break
     dest = os.path.join(DATA_DIR, "images",
@@ -2167,9 +2173,11 @@ def _vision_describe_file(path):
     vmsgs = [{"role": "system", "content": msgs[0]["content"]}, {"role": "user", "content": content}]
     for kid, kv, model, _ctx, _mo in _chain_candidates():
         try:
-            _th, mt = resolve_thinking(model, "")
+            # 与后台速写一致显式关闭思考：思考模型默认开思考时，200 token 的
+            # 输出预算会被思考占满，content 恒为空（描述永远失败）
             status, data = glm_chat(model, vmsgs, timeout=45, key=kv,
-                                    extra_body={"max_tokens": 200})
+                                    extra_body={"thinking": {"type": "disabled"},
+                                                "max_tokens": 200})
         except (OSError, ValueError):
             continue
         if status == 200:
@@ -3788,6 +3796,7 @@ _STRATEGY_LEAD_RE = re.compile(
 
 def parse_reply(text):
     # 所有 return 必须同形（5 元组）：texts/stickers/memo/draw/sendgrp
+    # memo：[(目标QQ|None, 内容), …] 多条（≤3，超出丢弃并记 MEMO_DROP）；没有则 None
     # 思考块剥离：部分模型（thinking 档）会把 <think>…</think> 混进正文，
     # 原样发出去就是一段自言自语（模型退化成复读的根因之一）
     text = re.sub(r"(?is)<\s*think(?:ing)?\s*>.*?<\s*/\s*think(?:ing)?\s*>", "", text)
@@ -3822,15 +3831,22 @@ def parse_reply(text):
                re.sub(r"\s+", " ", sg.group(2)).strip()[:300]) if sg else None
     text = _SENDGRP_MARK_RE.sub("", text)
     text = _SENDGRP_LEAK_RE.sub("", text)
-    mm = MEMO_ANY_RE.search(text)
-    memo = None
-    if mm:
+    memos = []
+    for mm in MEMO_ANY_RE.finditer(text):
         tgt = (mm.group(1) or "").strip()
         mq = _MEMO_QQ_RE.search(tgt) if tgt else None
         body = mm.group(2).strip()[:100]
         if body:
-            memo = (mq.group(1) if mq else None, body)
+            memos.append((mq.group(1) if mq else None, body))
+    if memos:
+        # 一条回复可以带多条记忆（结构化输出 _json_to_legacy 本来就会写成多行
+        # [记忆@…] 行——旧解析只取第一条，其余的连内容一起被剥掉丢弃）。
+        # 全部收集，最多 3 条，超出的丢弃并留痕；正文里的标记照旧全部剥掉。
+        if len(memos) > 3:
+            out("MEMO_DROP n=%d（一条回复最多记 3 条）" % (len(memos) - 3))
+            memos = memos[:3]
         text = MEMO_ANY_RE.sub("", text)
+    memo = memos or None
     text = _MEMO_LEAK_RE.sub("", text)  # 裸标记（当引用用、不带内容）兜底剥离，绝不泄漏
     sticker_ids = [int(m) for m in STICKER_RE.findall(text)]
     text = STICKER_RE.sub("", text)
@@ -4191,8 +4207,6 @@ def _proactive_compose(daemon, chat_type, chat_id):
         "- 想连发多条用 [[SPLIT]] 分隔（最多2条）；主动消息只发文字，不要输出表情包标记\n"
         "- 上下文若附有「所在地天气」素材：用不用由你自己判断——偶尔自然带一句"
         "很鲜活，但绝对不要每次主动消息都聊天气，更不要像天气预报播报\n"
-        "- 出现值得长期记住的关于某人的信息可单独一行 [记忆@对方QQ号] 内容"
-        "（标记必须带内容，绝不要单独输出空标记；没有要记的就不出现标记）\n"
         "%s\n"
         "## 本次任务（主动发消息）\n"
         "现在是 %s。这不是回复——你要主动在%s开个话头或说句话：结合最近对话、"
@@ -4599,12 +4613,39 @@ def _protected_dirs():
             if x and os.path.isdir(x)]
 
 
+def _norm_win_path(p):
+    r"""保护目录匹配用的统一规范化：去掉设备路径前缀（\\?\、\\.\、\??\；
+    \\?\UNC\ 还原成 \\ 开头的 UNC 写法），取绝对路径并解析真实位置，再统一
+    小写、正斜杠转反斜杠、去掉尾部分隔符。没有这层，\\?\C:\Windows 这类
+    设备路径写法和普通路径长得不一样，前缀匹配不上就会被绕过。"""
+
+    def _unprefix(s):
+        low = s.lower()
+        if low.startswith("\\\\?\\unc\\"):
+            return "\\\\" + s[8:]
+        if low.startswith("\\\\?\\") or low.startswith("\\\\.\\"):
+            return s[4:]
+        if low.startswith("\\??\\"):
+            return s[4:]
+        return s
+
+    s = _unprefix(str(p or "").strip())
+    s = os.path.realpath(os.path.abspath(s))
+    s = _unprefix(s)   # realpath 对不存在的 UNC 目标可能保留前缀，再剥一遍
+    s = s.replace("/", "\\").lower()
+    return s.rstrip("\\")
+
+
 def _is_protected(path):
-    rp = os.path.realpath(str(path))
-    for pd in _protected_dirs():
-        if rp.startswith(pd + os.sep) or rp == pd:
-            return True
-    return False
+    try:
+        rp = _norm_win_path(path)
+        for pd in _protected_dirs():
+            npd = _norm_win_path(pd)
+            if rp == npd or rp.startswith(npd + "\\"):
+                return True
+        return False
+    except Exception:
+        return True   # 规范化失败（如含非法字符）一律按受保护处理
 
 
 _DEVCTRL_DEV_WORDS = ("电脑", "本机", "本地磁盘", "硬盘", "磁盘", "文件管理器", "资源管理器")
@@ -4900,6 +4941,48 @@ def _actions_enabled():
     return bool(C.load_app_config().get("device_ctrl_actions"))
 
 
+# open 动作的文件类型白名单（device_ctrl_open_allow_exe 关闭时生效）：
+# 只放行文档/图片/音视频等被动查看类；快捷方式 .lnk、可执行与脚本类默认一律拒绝
+_OPEN_ALLOW_EXT = tuple((
+    ".txt .md .pdf .doc .docx .xls .xlsx .ppt .pptx .csv .json .log .rtf .odt "
+    ".png .jpg .jpeg .gif .webp .bmp .mp3 .wav .flac .m4a .ogg .mp4 .mkv .mov .avi .epub"
+).split())
+
+
+def _open_allow_exe():
+    """放开 open 的文件类型限制（与 cfg_2fa_on 同一读取写法，默认关）。"""
+    return bool(C.load_app_config().get("device_ctrl_open_allow_exe", False))
+
+
+def _open_guard(kind, payload):
+    r"""open 动作安全闸：返回拒绝文案（None=放行）。
+    网址只认 http/https（先去掉首尾空白和控制字符再判断）；本地目标先过
+    保护目录（\\?\ 等设备路径前缀写法同样拦住），再按类型放行——存在的
+    文件夹、白名单扩展名的文件；开关 device_ctrl_open_allow_exe 为真时
+    放开文件类型限制（保护目录限制不放开）。"""
+    if kind == "url":
+        u = str(payload or "")
+        while u and (u[0].isspace() or ord(u[0]) < 32 or ord(u[0]) == 127):
+            u = u[1:]
+        while u and (u[-1].isspace() or ord(u[-1]) < 32 or ord(u[-1]) == 127):
+            u = u[:-1]
+        if not u.lower().startswith(("http://", "https://")):
+            return "open 拒绝：只打开 http 和 https 网页"
+        return None
+    t = str(payload or "")
+    if _is_protected(t):
+        return "open 拒绝：%s 在保护目录内" % t[:120]
+    if not (os.path.isdir(t) or os.path.isfile(t)):
+        return "open 拒绝：目标不存在 %s" % t[:120]
+    if os.path.isdir(t):
+        return None
+    if _open_allow_exe():
+        return None
+    if os.path.splitext(t)[1].lower() not in _OPEN_ALLOW_EXT:
+        return "open 拒绝：出于安全，不打开这一类文件"
+    return None
+
+
 def _list_start_apps(filter_word=""):
     """扫描开始菜单快捷方式（两个 Program 目录递归 .lnk），按名过滤。"""
     import fnmatch
@@ -5031,6 +5114,10 @@ def _devctrl_step(daemon, reply_to, action, arg):
         kind, payload = _resolve_open_target(arg)
         if not kind:
             return "open 失败：%s" % payload[:300]
+        verdict = _open_guard(kind, payload)
+        if verdict:
+            out("AGENT_DEVCTRL_OPEN_DENY %s %.100s" % (kind, str(payload)[:100]))
+            return verdict
         try:
             if kind == "url":
                 import webbrowser
@@ -5208,6 +5295,18 @@ def _handle_devctrl(daemon, msg):
     if in_window:
         devctrl_agent_loop(daemon, msg, reply_to, flow)
         return True
+    # 二次验证关闭：主人发来的设备操控请求直接授权（不再索码），随后照常
+    # 进入工具循环。入口已限定主人（非主人在最上面就返回 False）。
+    if not cfg_2fa_on() and _devctrl_should_ask(
+            text, str(flow.get("trigger_mode") or "auto"), flow):
+        _DEVCTRL_AUTH["ok_until"] = time.time() + win
+        _DEVCTRL_SESSION.update({"msgs": [], "noticed": False})
+        _say("ok_text", ("连线成功！用你的语气告诉主人：接下来 %d 分钟内直接用自然语言"
+                         "指挥你操作电脑就行（找文件/发文件/看目录/联网查都行）。" % max(1, win // 60),
+                         ""), mins=max(1, win // 60))
+        out("AGENT_DEVCTRL_LINKED window=%ds mode=no2fa" % win)
+        devctrl_agent_loop(daemon, msg, reply_to, flow)
+        return True
     # 触发判定（显式关键词/动作短语零成本快速通道）→ 索码。
     # 其余模糊情形不再预判：主对话模型结合语境输出 [连线] 标记，由 process 侧接手。
     if _devctrl_should_ask(text, str(flow.get("trigger_mode") or "auto"), flow):
@@ -5220,11 +5319,32 @@ def _handle_devctrl(daemon, msg):
 
 def _devctrl_ask_by_mark(daemon, msg):
     """[连线] 标记触发的授权发起（主模型语境判定路径；话术与快速通道一致）。"""
-    _DEVCTRL_ASK["until"] = time.time() + 300   # 索码窗口：同关键词路径
     flow = devctrl_flow()
     owner_nick = _owner_call_name(msg)
     bot_name = _bot_self_name()
     use_custom = bool(flow.get("use_custom_text", True))
+    if not cfg_2fa_on():
+        # 二次验证关闭：主人请求直接授权，不再索码（与关键词快速通道一致）；
+        # 调用点已限定主人。下一条主人消息即进入工具循环。
+        win = int(flow.get("auth_window_sec", 120))
+        _DEVCTRL_AUTH["ok_until"] = time.time() + win
+        _DEVCTRL_SESSION.update({"msgs": [], "noticed": False})
+        if use_custom:
+            daemon.send(msg["chat_type"], msg["chat_id"],
+                        [_render_flow(flow["ok_text"], owner=owner_nick,
+                                      bot=bot_name, mins=max(1, win // 60))])
+        else:
+            daemon.send(msg["chat_type"], msg["chat_id"],
+                        [_persona_say(
+                            "连线成功！用你的语气告诉主人：接下来 %d 分钟内直接用自然语言"
+                            "指挥你操作电脑就行（找文件/发文件/看目录/联网查都行）。"
+                            % max(1, win // 60),
+                            _render_flow(_DEFAULT_FLOW["ok_text"], owner=owner_nick,
+                                         bot=bot_name, mins=max(1, win // 60)),
+                            route=("private", owner_qq()))])
+        out("AGENT_DEVCTRL_LINKED window=%ds mode=no2fa mark=1" % win)
+        return
+    _DEVCTRL_ASK["until"] = time.time() + 300   # 索码窗口：同关键词路径
     if use_custom:
         daemon.send(msg["chat_type"], msg["chat_id"],
                     [_render_flow(flow["ask_text"], owner=owner_nick, bot=bot_name)])
@@ -5324,13 +5444,45 @@ def _memory_forget(daemon, msg, keywords):
         return 0
 
 
+def _sanitize_memo_text(text):
+    """记忆入库前的文本净化：换行→空格、连续空白压成一个、去首尾空白和
+    引号、剥掉 [记忆…] / [记忆@…] 标记本身与其它方括号控制标记（全部复用
+    parse_reply 在用的正则）、截到 100 字。净化后为空由调用方决定不写。"""
+    t = str(text or "").replace("\r", "\n").replace("\n", " ")
+    t = re.sub(r"\s+", " ", t)
+    _edge = " \t\"'“”‘’「」『』«»"
+    t = t.strip(_edge)
+    t = MEMO_ANY_RE.sub("", t)        # [记忆…] / [记忆@…] 标记（连同其后内容）
+    for _leak in (_MEMO_LEAK_RE, STICKER_RE, _STICKER_LEAK_RE, SPLIT_RE,
+                  _WAIT_LEAK_RE, _SKIP_CN_RE, _SKIP_LEAK_RE, _REACT_MARK_RE,
+                  _DRAW_LEAK_RE, _SENDGRP_LEAK_RE):
+        t = _leak.sub("", t)          # 其它方括号控制标记本身剥掉
+    return t.strip(_edge)[:100]
+
+
 def _emit_memo(daemon, msg, memo):
     """路由一条记忆 memo=(target|None, text)：显式 QQ → contact；
-    否则内容命中历史昵称 → 那个人；否则当前会话。永远只写一条。"""
+    否则内容命中历史昵称 → 那个人（仅主人）；否则当前会话。永远只写一条。
+    入库前先净化文本；非主人的记忆不许挂到别人名下。"""
     target, text = memo
-    text = str(text).strip()
+    text = _sanitize_memo_text(text)
+    if not text:
+        return
+    _owner = is_owner(msg)
     if target and re.fullmatch(r"\d{5,12}", str(target)):
-        persist_memo("contact", str(target), text)
+        tgt = str(target)
+        if not _owner and tgt != str(msg.get("sender_id") or ""):
+            out("MEMO_DROP_FOREIGN target=%s sender=%s（非主人的记忆不挂到别人名下）"
+                % (tgt, msg.get("sender_id")))
+            return
+        persist_memo("contact", tgt, text)
+        return
+    if not _owner:
+        # 昵称归属推断只对主人生效；非主人不指定目标就落会话级兜底
+        if msg["chat_type"] == "group":
+            persist_memo("group", msg["chat_id"], text)
+        else:
+            persist_memo("contact", msg["sender_id"], text)
         return
     history = daemon.history(msg["chat_type"], msg["chat_id"], limit=14)
     speaker = str(msg.get("sender_name", "")).strip()
@@ -5479,6 +5631,166 @@ def _vision_candidates(pref):
     return cands + rest
 
 
+# ---------------------------------------------------------------------------
+# 识图可用性（2026-11-25）
+# 「识图模型」留空＝不指定，直接按模型链的顺序找能看图的模型（不设任何厂商的内置默认值）。
+# 模型能不能看图不靠名字猜，只记实际试出来的结果：
+#   _NO_VISION_MODELS          发图报「不支持图片输入」的 400：纯文本模型
+#   _VISION_OK_MODELS          带图调用成功过
+#   _VISION_PROBE["cls"]       后台拿一张 8×8 的小图逐个试出来的结论："vision" / "text" / "error"
+# 链里一个能看图的都没有时，日志和管理台都会提醒：识图相关功能不可用，需要配置识图模型。
+# ---------------------------------------------------------------------------
+_VISION_PROBE = {"cls": {}, "sig": "", "ts": 0.0, "running": False}
+_VISION_REMINDED = {"ts": 0.0}
+_PROBE_MSGS = None
+
+
+def _probe_msgs():
+    """探测用的一张 8×8 纯色 PNG（用标准库现场生成，保证是合法图片）和一句提问。"""
+    global _PROBE_MSGS
+    if _PROBE_MSGS is None:
+        import base64
+        import struct
+        import zlib
+        w = h = 8
+        raw = b"".join(b"\x00" + b"\xff\x00\x00" * w for _ in range(h))
+
+        def _chunk(tag, body):
+            return (struct.pack(">I", len(body)) + tag + body
+                    + struct.pack(">I", zlib.crc32(tag + body) & 0xffffffff))
+        png = (b"\x89PNG\r\n\x1a\n"
+               + _chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+               + _chunk(b"IDAT", zlib.compress(raw)) + _chunk(b"IEND", b""))
+        _PROBE_MSGS = [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(png).decode("ascii")}},
+            {"type": "text", "text": "这张图是什么颜色？只回答颜色。"}]}]
+    return _PROBE_MSGS
+
+
+def vision_wanted():
+    """用户是不是在用识图：看图总开关开着，并且开了后台识图、或看图范围不是「仅明确要求才识」。"""
+    return vision_enabled() and (vision_caption_on() or vision_mode() != "ask")
+
+
+def _vision_pref():
+    """优先用来识图的模型：开了后台识图就是「识图模型」那一格，否则是「视觉模型」；都可能为空。"""
+    return vision_caption_model() if vision_caption_on() else vision_model()
+
+
+def _is_text_only_error(status, data):
+    """这个失败是不是「模型不支持图片输入」。只认说得明确的报错，拿不准不算——
+    「图片解析错误」可能是某一张图的问题，不能据此把模型当成纯文本的。"""
+    if status != 400:
+        return False
+    d = _vision_err(status, data).lower()
+    return any(k in d for k in ("content", "取值范围", "不支持", "unsupported",
+                                "not support", "does not support", "no such", "invalid type"))
+
+
+def vision_status():
+    """识图能不能用、现在用谁、后台速写的成绩——给管理台和日志看。"""
+    pref = _vision_pref()
+    models = []
+    for c in _vision_candidates(pref):
+        if c[2] not in models:
+            models.append(c[2])
+    cls = _VISION_PROBE["cls"]
+    ok = [m for m in models if m in _VISION_OK_MODELS or cls.get(m) == "vision"]
+    text = [m for m in models if m not in ok
+            and (m in _NO_VISION_MODELS or cls.get(m) == "text")]
+    unknown = [m for m in models if m not in ok and m not in text]
+    if not vision_enabled():
+        state = "off"
+    elif ok:
+        state = "ok"
+    elif not models:
+        state = "no_model"
+    elif not unknown:
+        state = "no_vision_model"
+    else:
+        state = "unknown"
+    with _CAP["lock"]:
+        st = _CAP["stat"]
+        stat = {"ok": st["ok"], "fail": st["fail"], "wait_timeout": st["timeout"],
+                "last_model": st["last_model"],
+                "by_model": sorted(st["by_model"].items(), key=lambda x: -x[1])[:4]}
+    return {"enabled": vision_enabled(), "wanted": vision_wanted(),
+            "caption": vision_caption_on(), "state": state,
+            "model": ok[0] if ok else "", "preferred": pref,
+            "vision_models": ok, "text_only_models": text,
+            "untested_models": unknown[:8], "probing": _VISION_PROBE["running"],
+            "stat": stat}
+
+
+def _vision_probe(models):
+    """后台线程：把还没试过的模型用小图逐个试一遍，记下谁能看图。每个模型几十个 token。"""
+    try:
+        cands = _vision_candidates(_vision_pref())
+        res = {"vision": [], "text": [], "error": []}
+        for m in models:
+            hit = next((c for c in cands if c[2] == m), None)
+            if hit is None:
+                continue
+            kid, kv = hit[0], hit[1]
+            # 正在冷却（限流、额度）的模型不去撞：结论留空，过一阵再试
+            if RT.cooldowns.get("%s:%s" % (kid, m), 0) > time.time():
+                continue
+            try:
+                status, data = glm_chat(m, _probe_msgs(), timeout=30, key=kv,
+                                        extra_body={"thinking": {"type": "disabled"},
+                                                    "max_tokens": 16})
+            except Exception:
+                _VISION_PROBE["cls"][m] = "error"
+                res["error"].append(m)
+                continue
+            if _vision_text(status, data) is not None:
+                _VISION_PROBE["cls"][m] = "vision"
+                _VISION_OK_MODELS.add(m)
+                res["vision"].append(m)
+            elif _is_text_only_error(status, data):
+                _VISION_PROBE["cls"][m] = "text"
+                _NO_VISION_MODELS.add(m)
+                res["text"].append(m)
+            else:
+                _VISION_PROBE["cls"][m] = "error"
+                res["error"].append(m)
+            time.sleep(0.5)
+        out("AGENT_VISION_PROBE vision=%s text=%s error=%s" % (
+            ",".join(res["vision"]), ",".join(res["text"]), ",".join(res["error"])))
+    except Exception as e:
+        out("AGENT_VISION_PROBE_FAIL %r" % e)
+    finally:
+        _VISION_PROBE["running"] = False
+        _VISION_PROBE["ts"] = time.time()
+
+
+def _vision_tick():
+    """主循环里定期调用。识图开着、又不知道链里谁能看图时在后台试一遍；
+    确认一个能看图的都没有时，隔一阵提醒一次（日志一行，管理台常驻提示）。"""
+    if not vision_wanted():
+        return
+    st = vision_status()
+    cls = _VISION_PROBE["cls"]
+    sig = "%s|%s" % (st["preferred"], ",".join(st["vision_models"] + st["text_only_models"]
+                                                + st["untested_models"]))
+    # 内层 30 分钟只是把「试过但没试出来的（限流、额度）」放回候选名单；真正动手
+    # 还要过外层这道闸（候选变了，或距上次探测满一小时）——所以限流/额度类实际
+    # 是一小时后才重试（或链变动时），不是半小时
+    todo = [m for m in st["untested_models"]
+            if cls.get(m) != "error" or time.time() - _VISION_PROBE["ts"] > 1800]
+    if todo and not _VISION_PROBE["running"] and (
+            sig != _VISION_PROBE["sig"] or time.time() - _VISION_PROBE["ts"] > 3600):
+        _VISION_PROBE["running"] = True
+        _VISION_PROBE["sig"] = sig
+        threading.Thread(target=_vision_probe, args=(todo,), daemon=True).start()
+    if st["state"] in ("no_model", "no_vision_model") \
+            and time.time() - _VISION_REMINDED["ts"] > 600:
+        _VISION_REMINDED["ts"] = time.time()
+        out("AGENT_VISION_NO_MODEL %s：识图相关功能不可用，需要在设置页配置识图模型"
+            % ("模型链是空的" if not st["vision_models"] + st["text_only_models"] + st["untested_models"]
+               else "模型链里的模型都不能看图（%s）" % ",".join(st["text_only_models"])))
+
+
 def call_vision(messages_text, image_urls, daemon=None):
     """视觉调用：user 内容转 multimodal（图片本地下载转 base64 直传——
     模型端拉 QQ 临时图链常 400，见 _img_to_datauri 注）。
@@ -5533,6 +5845,7 @@ def call_vision(messages_text, image_urls, daemon=None):
         if _text is not None:
             RT.set_current(m)
             log_usage(m, (data.get("usage") if isinstance(data, dict) else {}) or {}, kid)
+            _VISION_OK_MODELS.add(m)
             return m, _text
         detail = _vision_err(status, data)[:80]
         # content.type 400 = 该模型不支持图像输入：记入学习集直接跳过，不冷却
@@ -5583,6 +5896,8 @@ _CAP = {
     "seq": 0, "init": False, "poll": 0.0,
     "day": "", "n": 0, "drop_ts": 0.0,
     "main_busy": False,   # 主线程正在生成回复：后台识图让路，不抢并发额度
+    # 速写的成绩（管理台「识图状态」用）：ok=写出描述 fail=没写出来 timeout=主线程等超时
+    "stat": {"ok": 0, "fail": 0, "timeout": 0, "last_model": "", "by_model": {}},
 }
 
 
@@ -5593,8 +5908,10 @@ def vision_caption_on():
 
 
 def vision_caption_model():
+    """「识图模型」这一格。留空就是空：不指定，按模型链的顺序找能看图的模型。
+    以前留空会被换成某个厂商的型号——不是所有用户都用那一家（2026-11-25 改）。"""
     return str(load_json_const(REPLY_CONFIG_PATH, {}).get("vision_caption_model")
-               or C.ARCH_V2_DEFAULTS["vision_caption_model"]).strip()
+               or C.ARCH_V2_DEFAULTS.get("vision_caption_model") or "").strip()
 
 
 def vision_caption_daily_cap():
@@ -5732,10 +6049,16 @@ def _caption_call(daemon, url):
             # 不改 RT 的「当前模型」：那是给状态页看的回复模型，识图不算
             log_usage(m, (data.get("usage") if isinstance(data, dict) else {}) or {},
                       kid if kv else "main")
+            _VISION_OK_MODELS.add(m)
+            with _CAP["lock"]:
+                st = _CAP["stat"]
+                st["ok"] += 1
+                st["last_model"] = m
+                st["by_model"][m] = st["by_model"].get(m, 0) + 1
             return text
         detail = _vision_err(status, data)[:80]
         if status == 400 and ("取值范围" in detail or "content" in detail.lower()
-                              or "模型不存在" in detail):
+                                or "模型不存在" in detail):
             if "取值范围" in detail or "content" in detail.lower():
                 _NO_VISION_MODELS.add(m)     # 纯文本模型：以后直接跳过
             out("AGENT_VCAP_SKIP model=%s http=400 %s" % (m, detail))
@@ -5746,6 +6069,8 @@ def _caption_call(daemon, url):
         _CAP["cool"][ck] = now + cool
         out("AGENT_VCAP_FAIL model=%s key=%s http=%d cool=%ds %s"
             % (m, kid, status, cool, detail))
+    with _CAP["lock"]:
+        _CAP["stat"]["fail"] += 1
     return None
 
 
@@ -5811,8 +6136,10 @@ def _caption_run(daemon, job):
             _CAP["pending"].discard(job["key"])
             _CAP["by_mid"][job["key"]] = {"texts": texts, "ts": time.time()}
             if len(_CAP["by_mid"]) > 4000:
+                # 只删最旧的那些条目。此前这里写的是 del _CAP["by_mid"]——把整张表删了，
+                # 之后每条带图消息在主线程取速写时都会 KeyError（2026-11-25 发现，未触发过）
                 for k in sorted(_CAP["by_mid"], key=lambda k: _CAP["by_mid"][k]["ts"])[:1000]:
-                    del _CAP["by_mid"]
+                    del _CAP["by_mid"][k]
 
 
 def _caption_loop(daemon):
@@ -6560,7 +6887,14 @@ def process(daemon, msg):
         messages, active_p = build_messages(daemon, msg, ctx_k=32)
         reply = str(call_glm_with_fallback(messages, "")[1] or "").strip()
         if reply and "[SKIP]" not in reply.upper():
-            daemon.send(msg["chat_type"], msg["chat_id"], [reply[:500]])
+            # 和普通回复一样过 parse_reply：剥掉记忆/表情等控制标记再发送
+            #（模型偶尔把 [记忆@…] 混进试探回复，原样外发就是把协议词发进群）
+            _probe_parts = parse_reply(reply)[0]
+            _probe_clean = " ".join(str(x).strip() for x in
+                                    (_probe_parts if isinstance(_probe_parts, list) else [])
+                                    if x and str(x).strip()).strip()
+            if _probe_clean:
+                daemon.send(msg["chat_type"], msg["chat_id"], [_probe_clean[:500]])
         daemon.ack([msg["id"]])
         RT.count_processed()
         out("AGENT_BOTLOOP_PROBE msg_id=%s chat=%s/%s"
@@ -6662,6 +6996,8 @@ def process(daemon, msg):
                 out("AGENT_VCAP_MISS msg_id=%s chat=%s/%s (%s)" % (
                     msg["id"], msg["chat_type"], msg["chat_id"],
                     "图没描述出来" if _c else "4 秒内没等到描述"))
+                with _CAP["lock"]:
+                    _CAP["stat"]["timeout"] += 1
     messages, active_persona = build_messages(daemon, msg, ctx_k=_ctx_k)
     # v2：闲聊触发的「要不要接」判定挪到这里——用的是刚构造好的完整历史
     # （旧闸门只看 10 行×80 字）。判定不接就到此为止，后面的搜索/落盘都不做
@@ -6893,6 +7229,12 @@ def process(daemon, msg):
         reply = _GADMIN_MARK_RE.sub("", reply)
         if not is_owner(msg):
             out("AGENT_GADMIN_DENY msg_id=%s chat=%s/%s（非主人尝试群管标记，已剥离）"
+                % (msg["id"], msg["chat_type"], msg["chat_id"]))
+        elif not _gadmin_chat_enabled():
+            # 提示词教学处已按开关注入；执行侧同样要拦——开关关着时一个动作
+            # 都不执行，如实回一句（模型正文可能已宣告"办好了"，整句替换）
+            reply = "对话群管没有开启"
+            out("AGENT_GADMIN_OFF msg_id=%s chat=%s/%s（开关关闭，标记已剥离不执行）"
                 % (msg["id"], msg["chat_type"], msg["chat_id"]))
         else:
             _g_ok_details = []
@@ -7144,7 +7486,8 @@ def process(daemon, msg):
                     daemon.send_image(msg["chat_type"], msg["chat_id"], path)
                     sent_desc.append("sticker:%d" % sid)
         if memo:
-            _emit_memo(daemon, msg, memo)
+            for _m in memo:  # 一条回复的多条记忆逐条入库（parse_reply 最多给 3 条）
+                _emit_memo(daemon, msg, _m)
     except Exception as e:
         RT.count_error()
         out("AGENT_ERROR msg_id=%s send_failed=%r" % (msg["id"], e))
@@ -7214,6 +7557,11 @@ class AdminHandler(BaseHTTPRequestHandler):
         if u.path == "/admin/status":
             snap = RT.snapshot()
             snap["ready"] = any_key_usable()
+            # 识图能不能用、现在用谁、速写的成绩：管理台「识图状态」用
+            try:
+                snap["vision"] = vision_status()
+            except Exception as _ve:
+                snap["vision"] = {"state": "unknown", "error": repr(_ve)[:80]}
             return self._reply(200, {"ok": True, **snap})
         if u.path == "/admin/devctrl-code":
             # 授权码唯一来源：只有 agent 进程内存里的码才会被 _handle_devctrl 接受。
@@ -7588,7 +7936,9 @@ def _backup_data():
 
 def _logs_autoclean():
     """日志自动清理：logs_autoclean_enabled 开启时，删除日志目录里修改时间
-    早于 logs_keep_days 天的 *.log / *.log.old（只动日志目录，不碰数据文件）。"""
+    早于 logs_keep_days 天的 *.log / *.log.old，以及 logs/context/ 下同样过期
+    的 ctx_*.jsonl（按天一个的上下文流水，此前从不清理、常年累积）。
+    其余文件与 usage_log.jsonl 一律不动。"""
     cfg = C.load_app_config()
     if not cfg.get("logs_autoclean_enabled"):
         return
@@ -7610,6 +7960,15 @@ def _logs_autoclean():
                     removed += 1
             except OSError:
                 pass
+        # 上下文流水：同一个保留期、同一个开关，只删过期的 ctx_*.jsonl
+        if os.path.isdir(_CTX_DIR):
+            for p in pathlib.Path(_CTX_DIR).glob("ctx_*.jsonl"):
+                try:
+                    if p.is_file() and p.stat().st_mtime < cutoff:
+                        p.unlink()
+                        removed += 1
+                except OSError:
+                    pass
         if removed:
             out("AGENT_LOGCLEAN removed=%d keep_days=%d" % (removed, days))
     except OSError:
@@ -7679,19 +8038,25 @@ def main():
     args = ap.parse_args()
 
     daemon = DaemonClient(args.port, ctl_token := read_const(TOKEN_PATH))
+    _admin_up = False  # 管理接口已启动标记：等待分支起过一次后，下面的无条件启动要跳过
     if not any_key_usable():
         # 缺 Key 是「还没配置」而不是「启动失败」：保持管理接口在线并等待热加载，
         # 用户在心智里补好 Key 后无需重启组件（避免控制台误报 agent 启动失败）。
         # 判定用 any_key_usable：链上任一条目有 Key 即可（如只配 DeepSeek 主 Key）。
         out("AGENT_WAIT missing api key — 等待在控制台配置 API Key（进程保持在线）")
         start_admin_server(args.admin_port, daemon)
+        # AdminServer 独占绑定（SO_EXCLUSIVEADDRUSE）：同进程同端口第二次 bind
+        # 必抛 OSError 10048——这里起过了，循环跳出后绝不能再起一次（否则用户
+        # 刚配好 Key、进程却在那一刻带着 traceback 退出）
+        _admin_up = True
         while True:
             time.sleep(3)
             if any_key_usable():
                 out("AGENT_READY api key configured")
                 break
     RT.reload_chain()
-    start_admin_server(args.admin_port, daemon)
+    if not _admin_up:
+        start_admin_server(args.admin_port, daemon)
     PLUGIN_HOST.daemon = daemon   # 插件 api.send()/send_image()/send_voice() 走同一发送队列
     _proactive_state_load()
     try:
@@ -7721,6 +8086,11 @@ def main():
                 _observe_pump(daemon)
             except Exception as _oe:
                 out("AGENT_OBSERVE_PUMP_FAIL %r" % _oe)
+            # 识图开着时：不知道链里谁能看图就在后台试一遍；一个能看图的都没有就提醒
+            try:
+                _vision_tick()
+            except Exception as _ve:
+                out("AGENT_VISION_TICK_FAIL %r" % _ve)
             # 本地语音引擎防冷启动保活（引擎在跑且空闲超 5 分钟才动作，其余零开销）
             try:
                 import qq_tts as _T

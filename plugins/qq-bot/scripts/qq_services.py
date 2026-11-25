@@ -95,6 +95,32 @@ def ensure_ui_token():
     return t
 
 
+def ensure_ws_token(path=None):
+    """确保 OneBot WS 令牌存在且非空，返回令牌（协议端鉴权唯一令牌源）。
+
+    令牌文件（缺省为数据目录 ws_token）不存在或内容为空 → 生成 32 hex
+    （与 ui_token 同格式）原子写入；已有内容 → 原样返回，不改写文件。
+    任何路径下都不返回空串。NapCat 与 LLOneBot 的协议端配置都取这里的值，
+    绝不向协议端写空令牌（空令牌=WS 服务端无鉴权）。path 供离线测试注入。"""
+    import secrets as _secrets
+    p = pathlib.Path(path) if path is not None else C.DATA_ROOT / "ws_token"
+    try:
+        t = p.read_text(encoding="utf-8").strip()
+        if t:
+            return t
+    except OSError:
+        pass
+    t = _secrets.token_hex(16)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_name(p.name + ".qqbot.tmp")
+        tmp.write_text(t, encoding="utf-8")
+        os.replace(str(tmp), str(p))
+    except OSError:
+        return t
+    return t
+
+
 def napcat_config_dir(cfg):
     """QQNT 目录下 NapCat 的 config 目录（不存在返回空串）。"""
     qqnt = C.qqnt_dir_resolved(cfg)
@@ -375,7 +401,7 @@ def ensure_daemon(cfg):
     port = cfg["daemon_port"]
     if port_open(port):
         return "daemon 已在运行"
-    ws_token = read_token_file("ws_token")
+    ws_token = ensure_ws_token()
     ctl_token = read_token_file("token")
     if not ctl_token:
         return "daemon 未启动：缺少控制 token（首次请用控制台初始化）"
@@ -513,9 +539,10 @@ def llonebot_install_zip(cfg, zip_path, on_progress=None):
 
 def ensure_llonebot_config(cfg):
     """确保 LLOneBot 的 config.json 开着 ob11 WS 服务（端口=llonebot_ws_port，
-    本机回环无 token）。配置格式来自源码 src/common/types.ts：
-    Config{ob11:{enable,connect:[{type:'ws',host,port,...}]}, webui:{...}}；
-    未装时预写一份（安装器解压后即生效，配置文件保留不覆盖）。"""
+    token=数据目录 ws_token 令牌，与 NapCat 同源）。配置格式来自源码
+    src/common/types.ts：Config{ob11:{enable,connect:[{type:'ws',host,port,
+    token,...}]}, webui:{...}}（connect 条目自带 token 字段）；未装时预写一份
+    （安装器解压后即生效，配置文件保留不覆盖）。"""
     base = pathlib.Path(llonebot_dir(cfg))
     base.mkdir(parents=True, exist_ok=True)
     cfile = base / "config.json"
@@ -531,11 +558,12 @@ def ensure_llonebot_config(cfg):
     ob11["enable"] = True
     conns = ob11.setdefault("connect", [])
     ws_port = int(cfg.get("llonebot_ws_port") or 3002)
+    ws_token = ensure_ws_token()
     hit = next((c for c in conns
                 if isinstance(c, dict) and c.get("type") == "ws"), None)
     if hit is None:
         conns.append({"type": "ws", "name": "zcode-qq-bot",
-                      "enable": True, "token": "",
+                      "enable": True, "token": ws_token,
                       "host": "127.0.0.1", "port": ws_port,
                       "heartInterval": 30000,
                       "reportSelfMessage": False,
@@ -543,7 +571,7 @@ def ensure_llonebot_config(cfg):
                       "messageFormat": "array", "debug": False})
     else:
         hit.update({"enable": True, "host": "127.0.0.1", "port": ws_port,
-                    "token": ""})
+                    "token": ws_token})
     webui = conf.setdefault("webui", {"enable": True, "host": "127.0.0.1",
                                       "port": 6099})
     pathlib.Path(cfile).write_text(
@@ -562,10 +590,24 @@ def llonebot_webui_url(cfg):
         return "http://127.0.0.1:6099"
 
 
+_LLOB_PROC = None   # 本程序拉起的 LLOneBot Popen（stop 优先直接结束它，CIM 兜底）
+
+# 固定脚本常量：按映像名圈出候选（node/llonebot），输出 PID/命令行/可执行
+# 路径的 JSON。不含任何外部输入（目录指纹在 Python 侧比对），避免注入面；
+# -InputObject @($p) 强制输出数组（单个结果也是数组，解析端不用分叉）。
+_LLOB_PS_QUERY = (
+    "$p = Get-CimInstance Win32_Process -Filter "
+    "'Name=''node.exe'' OR Name=''llonebot.exe''' "
+    "| Select-Object ProcessId,CommandLine,ExecutablePath; "
+    "ConvertTo-Json -Compress -InputObject @($p)"
+)
+
+
 def start_llonebot(cfg, on_progress=None):
     """启动 LLOneBot CLI（后台进程；CWD=安装目录，其 data/与日志都落在
     框架目录内，与机器人数据目录互不干扰）。入口按候选探测：根目录
     启动脚本 → 自带 node + dist/llbot.js → 系统 node。"""
+    global _LLOB_PROC
     if on_progress:
         on_progress("LLOneBot 启动中…")
     ensure_llonebot_config(cfg)
@@ -587,34 +629,124 @@ def start_llonebot(cfg, on_progress=None):
     logf = open(os.path.join(C.logs_dir(), "llonebot.log"), "a",
                 encoding="utf-8", errors="replace")
     try:
-        subprocess.Popen(cands[0], cwd=base, stdout=logf,
-                         stderr=subprocess.STDOUT,
-                         creationflags=subprocess.CREATE_NO_WINDOW)
+        _LLOB_PROC = subprocess.Popen(cands[0], cwd=base, stdout=logf,
+                                      stderr=subprocess.STDOUT,
+                                      creationflags=subprocess.CREATE_NO_WINDOW)
     except Exception as e:
         return False, "LLOneBot 启动失败：%r" % (e,)
     return True, "LLOneBot 已启动（日志 logs/llonebot.log；登录见框架管理页）"
 
 
-def stop_llonebot():
-    """停止 LLOneBot 进程（按目录指纹杀，不误伤其他 node）。"""
-    import subprocess as _sp
+def _llonebot_stop_fail(reason):
+    """停止过程任何一步失败落一行日志（logs/llonebot.log），不再静默。"""
     try:
-        rows = _sp.run(["wmic", "process", "where",
-                        "name='node.exe' or name='llonebot.exe'",
-                        "get", "ProcessId,CommandLine"],
-                       capture_output=True, text=True, timeout=10).stdout or ""
-    except Exception:
-        return
-    for ln in rows.splitlines():
-        ln = ln.strip()
-        if "llonebot" in ln.lower():
-            pid = ln.split()[-1]
-            if pid.isdigit():
-                try:
-                    _sp.run(["taskkill", "/PID", pid, "/F"],
-                            capture_output=True, timeout=10)
-                except Exception:
-                    pass
+        d = C.logs_dir()
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "llonebot.log"), "a",
+                  encoding="utf-8", errors="replace") as f:
+            f.write("[%s] LLONEBOT_STOP_FAIL: %s\n"
+                    % (time.strftime("%Y-%m-%d %H:%M:%S"), reason))
+    except OSError:
+        pass
+
+
+def _llonebot_fingerprint_pids(data, cfg):
+    """从 CIM 查询结果里筛出本框架的 LLOneBot 进程 PID：命令行或可执行
+    路径命中安装目录指纹，或含 llonebot 关键字（沿用旧 wmic 版的识别
+    特征）；不按映像名乱杀。"""
+    base = os.path.normcase(os.path.normpath(llonebot_dir(cfg)))
+    pids = []
+    if isinstance(data, dict):          # 单个结果时兜底包成数组
+        data = [data]
+    for row in data if isinstance(data, list) else []:
+        if not isinstance(row, dict):   # 没筛到时 PS 输出 [null]，跳过
+            continue
+        pid = row.get("ProcessId")
+        if isinstance(pid, int):
+            pass
+        elif isinstance(pid, str) and pid.isdigit():
+            pid = int(pid)
+        else:
+            continue
+        raw = "%s\n%s" % (row.get("CommandLine") or "",
+                          row.get("ExecutablePath") or "")
+        hay = os.path.normcase(raw.replace("/", "\\"))
+        if (base in hay or "llonebot" in hay) and pid not in pids:
+            pids.append(pid)
+    return pids
+
+
+def stop_llonebot(cfg=None):
+    """停止 LLOneBot 进程。优先直接结束本程序拉起的 Popen（taskkill /T /F
+    连子树一起）；没有句柄时用 PowerShell CIM（Win32_Process）按安装目录/
+    命令行特征筛 PID，逐个 taskkill /PID <pid> /T /F——不按映像名乱杀
+    node.exe。不再依赖 wmic（Win11 24H2 起默认不存在）；PowerShell 不可用/
+    超时/没筛到时不杀任何进程。任何一步失败记 LLONEBOT_STOP_FAIL 日志。
+    返回文案（与 stop_agent 等一致，由 power_off 放进 message 展示；失败
+    文案含「失败」，不再静默装作成功）。"""
+    global _LLOB_PROC
+    proc, _LLOB_PROC = _LLOB_PROC, None
+    if cfg is None:
+        cfg = C.load_app_config()
+    if proc is not None and proc.poll() is None:
+        try:
+            r = subprocess.run(
+                ["taskkill", "/PID", str(int(proc.pid)), "/T", "/F"],
+                capture_output=True, timeout=10, shell=False,
+                creationflags=CREATE_NO_WINDOW)
+            if r.returncode == 0:
+                return "LLOneBot 已停止"
+            _llonebot_stop_fail("taskkill /PID %s 返回码 %d"
+                                % (proc.pid, r.returncode))
+        except Exception as e:
+            _llonebot_stop_fail("直接结束拉起进程失败：%r" % (e,))
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             _LLOB_PS_QUERY],
+            capture_output=True, timeout=10, shell=False,
+            creationflags=CREATE_NO_WINDOW)
+        rows = (r.stdout or b"").decode("utf-8", "replace")
+    except FileNotFoundError:
+        _llonebot_stop_fail("PowerShell 不可用，未结束任何进程")
+        return "LLOneBot 停止失败：系统没有可用的 PowerShell，未结束任何进程"
+    except subprocess.TimeoutExpired:
+        _llonebot_stop_fail("PowerShell 查询超时，未结束任何进程")
+        return "LLOneBot 停止失败：进程查询超时，未结束任何进程"
+    except Exception as e:
+        _llonebot_stop_fail("PowerShell 查询异常：%r，未结束任何进程" % (e,))
+        return "LLOneBot 停止失败：进程查询异常，未结束任何进程"
+    try:
+        data = json.loads(rows)
+    except ValueError:
+        _llonebot_stop_fail("PowerShell 输出无法解析（rc=%r）：%r"
+                            % (getattr(r, "returncode", "?"), rows[:200]))
+        return "LLOneBot 停止失败：进程列表解析失败，未结束任何进程"
+    pids = _llonebot_fingerprint_pids(data, cfg)
+    if not pids:
+        _llonebot_stop_fail("进程列表未筛到本框架的 LLOneBot 进程"
+                            "（安装目录=%s）" % llonebot_dir(cfg))
+        return "未发现本框架拉起的 LLOneBot 进程（可能未在运行）"
+    killed = failed = 0
+    for pid in pids:
+        try:
+            rk = subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True, timeout=10, shell=False,
+                creationflags=CREATE_NO_WINDOW)
+            if rk.returncode == 0:
+                killed += 1
+            else:
+                failed += 1
+                _llonebot_stop_fail("taskkill /PID %d 返回码 %d"
+                                    % (pid, rk.returncode))
+        except Exception as e:
+            failed += 1
+            _llonebot_stop_fail("taskkill /PID %d 异常：%r" % (pid, e))
+    if failed:
+        return ("LLOneBot 停止失败：%d/%d 个进程未结束"
+                "（详见 logs/llonebot.log）" % (failed, killed + failed))
+    return "LLOneBot 已停止（%d 个进程）" % killed
 
 
 def ensure_agent(cfg):
@@ -1000,7 +1132,9 @@ def ensure_napcat_config(cfg):
         return False, "缺少 bot_qq 或 QQNT 目录，无法定位 NapCat 配置"
     if os.path.isfile(path):
         theirs = napcat_ws_token_of(path, cfg.get("napcat_ws_port"))
-        if theirs is not None and theirs != read_token_file("ws_token"):
+        # 自愈采纳仅收非空令牌：NapCat 侧 token 为空等于自关鉴权，采纳会把
+        # 唯一令牌源写空；保留本地方即可——daemon 带令牌握手，空鉴权端照样放行。
+        if theirs and theirs != ensure_ws_token():
             try:
                 write_token_file("ws_token", theirs)
                 return True, "NapCat 已更换 token，已自动同步（机器人将自动重连）"
@@ -1011,7 +1145,7 @@ def ensure_napcat_config(cfg):
     config_dir = os.path.realpath(os.path.join(qqnt, "config"))
     if os.path.realpath(os.path.dirname(path)) != config_dir:
         return False, "配置路径异常，拒绝写入"
-    ws_token = read_token_file("ws_token")
+    ws_token = ensure_ws_token()
     config = {
         "network": {"websocketServers": [{
             "name": "qqbot", "enable": True, "host": "127.0.0.1",
@@ -1236,10 +1370,10 @@ def power_off(cfg, include_napcat=True, include_ui=False):
         # 停当前框架的协议端（切框架时两个都停，防残留进程占端口）
         pb = protocol_backend(cfg)
         if pb == "llonebot":
-            notes.append(_note("llonebot", stop_llonebot))
+            notes.append(_note("llonebot", stop_llonebot, cfg))
         else:
             notes.append(_note("napcat", stop_napcat))
-            notes.append(_note("llonebot", stop_llonebot))
+            notes.append(_note("llonebot", stop_llonebot, cfg))
     if include_ui:
         notes.append(_note("ui", stop_ui, cfg))
     return notes

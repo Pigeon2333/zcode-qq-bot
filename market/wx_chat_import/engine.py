@@ -443,11 +443,15 @@ def _dir(source, session):
 
 def store(source, session, path):
     """解析并落隔离库。返回 {ok, session(已清洗), count, range}。"""
+    if source not in SOURCES:
+        raise ValueError("source 非法")
     r = parse_file(path)
     if not r.get("ok"):
         return r
     safe = _safe_name(session)
-    d = pathlib.Path(BASE_DIR) / source / safe
+    d = (pathlib.Path(BASE_DIR) / source / safe).resolve()
+    if not d.is_relative_to(pathlib.Path(BASE_DIR).resolve()):
+        raise ValueError("落盘路径越界")
     d.mkdir(parents=True, exist_ok=True)
     (d / "messages.json").write_text(
         json.dumps(r["messages"], ensure_ascii=False), encoding="utf-8")

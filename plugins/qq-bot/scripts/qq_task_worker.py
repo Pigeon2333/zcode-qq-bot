@@ -170,6 +170,24 @@ def _watch_parent(ppid):
     os._exit(0)
 
 
+def _chain_first_model(default="glm-5.3-flash"):
+    """模型链第一项的模型名。条目两种形态（与 agent._chain_candidates 一致）：
+    "model"（主 Key）或 {"model": …, "key": 备用id}——此前直接取 models[0]，
+    条目是 dict 时会把整个对象当模型名传给 glm_chat。取不出非空模型名
+    （空链/形态不对/读失败）一律回退默认值，不让配置问题挂掉任务执行。"""
+    try:
+        models = A.load_json_const(A.MODEL_CHAIN_PATH, {}).get("models")
+        if isinstance(models, list) and models:
+            e = models[0]
+            e = str(e.get("model", "")).strip() if isinstance(e, dict) \
+                else str(e).strip()
+            if e:
+                return e
+    except Exception:
+        pass
+    return default
+
+
 def main():
     # 输出统一 UTF-8：agent 侧按 UTF-8 解码，中文结果不会变乱码。
     for _stream in (sys.stdout, sys.stderr):
@@ -205,13 +223,7 @@ def main():
     except (AttributeError, OSError, ValueError):
         task = sys.stdin.read(4000).strip()
 
-    model = "glm-5.3-flash"
-    try:
-        chain = A.load_json_const(A.MODEL_CHAIN_PATH, {})
-        if chain.get("models"):
-            model = chain["models"][0]
-    except Exception:
-        pass
+    model = _chain_first_model()
 
     messages = [
         {"role": "system", "content": SYSTEM_TMPL % {"workdir": str(workdir)}},

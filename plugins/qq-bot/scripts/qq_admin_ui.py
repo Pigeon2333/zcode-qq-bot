@@ -14,6 +14,7 @@
 """
 
 import argparse
+import hmac
 import http.client
 import json
 import os
@@ -63,18 +64,76 @@ UI_TOKEN_PATH = os.path.join(DATA_DIR, "ui_token")
 
 def ui_token():
     """管理台访问令牌：首次读取时生成（32 位十六进制）。
-    窗口由 qq_app 携带 ?tk= 打开；浏览器直开需手动解锁（防本机网页 CSRF 打本地接口）。"""
+    窗口由 qq_app 携带 ?tk= 打开；浏览器直开需手动解锁（防本机网页 CSRF 打本地接口）。
+    读取失败（OSError）不重新生成——一次读失败就换令牌会让所有已打开页面全部失效；
+    只有「文件不存在」和「内容损坏（不足 24 位）」才生成并覆盖。"""
     import secrets as _secrets
     try:
         t = pathlib.Path(UI_TOKEN_PATH).read_text(encoding="utf-8").strip()
-        if len(t) >= 24:
-            return t
-    except OSError:
-        pass
+    except FileNotFoundError:
+        t = ""
+    # 其余 OSError（权限/占用等）原样往上抛，绝不覆盖已有令牌
+    if len(t) >= 24:
+        return t
     t = _secrets.token_hex(16)
     pathlib.Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
     pathlib.Path(UI_TOKEN_PATH).write_text(t, encoding="utf-8")
     return t
+
+
+# ---- 管理台安全辅助：密钥不回传页面（GET 打码）+ 请求体上限 ----
+
+def _secret_set(v):
+    """「已配置」判断：原值去掉首尾空白后非空。GET 只回布尔，不回原值。"""
+    return bool(str(v or "").strip())
+
+
+_URL_CRED_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.\-]*://)[^/@]*@")
+
+
+def _mask_url_cred(u):
+    """URL 打码：仅把 ://用户:密码@ 一段换成 //***@，其余原样；无凭据原样返回。"""
+    return _URL_CRED_RE.sub(r"\1***@", str(u or ""), count=1)
+
+
+def _voice_cfg_public(v):
+    """语音配置的对外副本（GET /api/voice/meta、保存后的回包都用它）：
+    三个 Key 只回 <键名>_set 布尔；接口地址打码；其余原样。"""
+    d = dict(v or {})
+    for k in ("zhipu_key", "sf_key", "custom_key"):
+        d[k + "_set"] = _secret_set(d.get(k))
+        d.pop(k, None)
+    d["custom_base"] = _mask_url_cred(d.get("custom_base"))
+    return d
+
+
+def _sticker_pool_ok(pool):
+    """表情包库名（用作子目录名）：禁路径分隔符/Windows 保留字符/控制字符/../
+    首尾点空格与单独的点；汉字、字母、数字、空格、下划线、短横线、emoji 放行。"""
+    p = str(pool or "")
+    if not p or len(p) > 40 or p == "." or p.startswith("_"):
+        return False
+    if any(c in p for c in '/\\:*?"<>|'):
+        return False
+    if any(ord(c) < 32 or 0x7F <= ord(c) <= 0x9F for c in p):
+        return False
+    if ".." in p or p[0] in ". " or p[-1] in ". ":
+        return False
+    return True
+
+
+# 请求体上限：现有合法请求体最大是表情包上传（8MB 图 → base64 约 10.7MB，
+# 外加 JSON 包装），取其上、默认 64MB。超过直接 413。
+_MAX_BODY_BYTES = 64 * 1024 * 1024
+
+
+class _BodyError(Exception):
+    """请求体非法（超大/坏 JSON/非对象）：由 do_POST 捕获转 _reply。"""
+
+    def __init__(self, code, msg):
+        super().__init__(msg)
+        self.code = code
+        self.msg = msg
 
 DEFAULT_UI_PORT = 39765
 DEFAULT_DAEMON_PORT = 39763
@@ -804,8 +863,40 @@ async function vStatus(){
   +'<div class="k" style="margin-top:4px">机器人现在能连上 QQ，但不会说话（agent 会一直在线等待，不会算启动失败）。'
   +'填好后立即生效、无需重启：免费注册 <a href="https://open.bigmodel.cn" target="_blank">open.bigmodel.cn</a> → 创建 API Key → 到「设置 → 模型与消耗 → API Key」粘贴（供应商选「智谱」），或用 DeepSeek Key（供应商选 DeepSeek）；也支持 Kimi/OpenAI 等其他供应商。</div>'
   +'<div style="margin-top:8px"><button class="act" onclick="goSettings(\'model\')">去填 Key</button></div></div>':'';
+ // 掉线提醒：daemon 在跑、但和协议框架的连接断了超过 1 分钟，状态页顶部常驻一条。
+ // 刚启动、重连中的那几十秒不打扰（状态页每 10 秒刷新一次，_wsDownSince 跨刷新保留）
+ const wsDown=!!(d.ok&&ws!==true);
+ if(wsDown){if(!window._wsDownSince)window._wsDownSince=Date.now();}else window._wsDownSince=0;
+ const wsBanner=(wsDown&&Date.now()-window._wsDownSince>60000)?
+  '<div class="card" style="border:1px solid var(--err);display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+  +'<span class="badge b-bad">未连接</span><span class="k">机器人和 '+esc(BE_NAME)+' 的连接已经断了 '
+  +Math.round((Date.now()-window._wsDownSince)/60000)+' 分钟，这期间的消息没有收到，也发不出去。账号掉线的话，到「'+esc(BE_NAME)+' 登录密钥」卡片重新扫码或快速登录</span></div>':'';
+ // 识图不可用提醒：用户开着识图，但模型链里一个能看图的模型都没有（实际试出来的结论，不看名字）
+ const vv=(a&&a.vision)||null;
+ const visionBanner=(vv&&vv.wanted&&(vv.state==='no_vision_model'||vv.state==='no_model'))?
+  '<div class="card" style="border:1px solid var(--err);display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+  +'<span class="badge b-bad">识图不可用</span><span class="k">'
+  +(vv.state==='no_model'?'模型链是空的':'模型链里的模型都不能看图')
+  +'，识图相关功能不可用。需要配置识图模型，或在模型链里加一个能看图的模型</span>'
+  +'<button class="act ghost" style="margin:0" onclick="goSettings(\'style\')">去看图设置</button>'
+  +'<button class="act ghost" style="margin:0" onclick="goSettings(\'model\')">去模型链</button></div>':'';
+ // 群名单文件异常提醒：stale（沿用上一份）/ broken（不在任何群生效）时常驻，
+ // 做法与样式沿用 wsBanner。老版本 daemon 没有该字段时不显示。
+ const wlBanner=(d.wl_state==='stale'||d.wl_state==='broken')?
+  '<div class="card" style="border:1px solid var(--err);display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+  +'<span class="badge b-bad">群名单异常</span><span class="k">'
+  +(d.wl_state==='stale'?'群名单文件读取失败，正在沿用上一份正常的配置':'群名单文件读取失败，且没有可用的旧配置，机器人当前不在任何群生效')
+  +(d.wl_error?('：'+esc(String(d.wl_error).slice(0,200))):'')+'</span></div>':'';
+ // 向导输入保活：本页每 10 秒整页重写 #view，会把没保存的输入清空——
+ // 重写前记下三个输入框的值、焦点与光标位置，重写后回填（2026-11-25）
+ const _wzKeep=['wzbot','wzowner','wzqqnt'].map(function(id){
+  const el=document.getElementById(id);if(!el)return null;
+  let s=-1,e=-1;
+  try{if(el===document.activeElement){s=el.selectionStart;e=el.selectionEnd}}catch(_){}
+  return {id:id,val:String(el.value??''),foc:el===document.activeElement,s:s,e:e};
+ });
  $('#view').innerHTML=head('组件运行状态与机器人开关')+
- `${wizard}${keyWarn}${upBanner}
+ `${wizard}${keyWarn}${upBanner}${wsBanner}${wlBanner}${visionBanner}
  <div class="card"><div class="kv">
   <div><span class="k">消息管道</span> <span class="badge ${d.ok?'b-ok':'b-bad'}">${d.ok?'运行':'停止'}</span></div>
   <div><span class="k">协议框架</span> <span class="badge" style="background:var(--tint);color:var(--dim)">${esc(BE_NAME)}${ws?' · 已连接':' · 断开'}</span></div>
@@ -852,6 +943,10 @@ async function vStatus(){
   <div>收到 ${d.stats?.received??0}</div><div>触发 ${d.stats?.triggered??0}</div>
   <div>已发 ${d.stats?.sent??0}</div><div>限流丢弃 ${d.stats?.dropped_rate??0}</div>
  </div></div>`;
+ for(const w of _wzKeep){if(!w)continue;
+  const el=document.getElementById(w.id);if(!el)continue;
+  if(el.value!==w.val)el.value=w.val;
+  if(w.foc){try{el.focus();if(w.s>=0&&w.e>=0&&el.setSelectionRange)el.setSelectionRange(w.s,w.e)}catch(_){}}}
  $('#headline').textContent=(d.ok&&a&&a.ok)?'运行中':'已停止';
  ncFill(true);
  if(!_ncTokTimer)_ncTokTimer=setInterval(()=>{if(TAB==='status')ncFill()},30000);
@@ -1322,6 +1417,25 @@ async function vGroups(){
  const _ovLine=_ovs.length?`<div class="k" style="margin-top:6px">⚠ 以下群的分群主动设置优先于全局：${
   _ovs.map(([k,v])=>esc(gname(k)||k)+(v.proactive===false?'（主动已停用）':'')).join('、')}。全局调了没反应时先看这里。</div>`:'';
  const on=g.enabled!==false, allOn=!!g.allow_all, m=c.reply_mode||'standard';
+ // daemon 实际生效状态一行说明（wl_state 来自 /status 同一条 proxy 路径；
+ // 空 = daemon 没跑或版本旧，不显示）。wl_groups/wl_allow_all 是 daemon 可选
+ // 容错字段：有就显示真实数量，没有就只说状态。
+ const _wls=String(g.wl_state||''), _wle=String(g.wl_error||'');
+ const _wlG=Array.isArray(g.wl_groups)?g.wl_groups.map(String):null;
+ const _wlAll=(typeof g.wl_allow_all==='boolean')?g.wl_allow_all:null;
+ let wlLine='';
+ if(_wls==='default_all')wlLine='还没有群名单配置，机器人当前在所有群生效';
+ else if(_wls==='default_groups')wlLine='还没有群名单配置，当前只在启动时指定的'+(_wlG?(' '+_wlG.length+' 个'):'')+'群生效';
+ else if(_wls==='stale')wlLine='群名单文件读取失败，正在沿用上一份正常的配置'
+  +((_wlAll!==null||_wlG)?('，当前实际生效：'+(_wlAll===true?'所有群':(_wlG?_wlG.length+' 个群':'白名单群'))):'')
+  +(_wle?('：'+_wle):'');
+ else if(_wls==='broken')wlLine='群名单文件读取失败，且没有可用的旧配置，机器人当前不在任何群生效'+(_wle?('：'+_wle):'');
+ else if(_wls==='disabled')wlLine='群名单总开关已关闭，机器人不在任何群生效';
+ else if(_wls==='file'&&!allOn&&!(g.groups||[]).length)wlLine='名单是空的：机器人不会在任何群生效';
+ const _wlBad=(_wls==='stale'||_wls==='broken'||_wls==='disabled');
+ const wlCardLine=wlLine?'<div class="k" style="margin:0 0 10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+  +'<span class="badge '+(_wlBad?'b-bad':'')+'" style="'+(_wlBad?'':'background:var(--tint);color:var(--dim)')+'">'+(_wlBad?'群名单':'当前生效')+'</span>'
+  +'<span>'+esc(wlLine)+'</span></div>':'';
  const rows=(g.groups||[]).map((x,i)=>{
   const ov=_gmModes[x]||{};
   const cur=ov.paused?'paused':(ov.reply_mode||'');
@@ -1392,6 +1506,7 @@ async function vGroups(){
     ${_REACT_TABLE.map(e=>`<label style="display:flex;gap:5px;align-items:center;padding:5px 10px;border:1.5px solid ${(rv.reaction_emojis||[]).includes(e[0])?'#1a7f37':'var(--line)'};border-radius:8px;background:${(rv.reaction_emojis||[]).includes(e[0])?'#f0faf0':'transparent'};cursor:pointer"><input type="checkbox" value="${e[0]}" ${(rv.reaction_emojis||[]).includes(e[0])?'checked':''} onchange="saveReaction()"> ${e[1]}</label>`).join('')}
    </div></div>
   <div class="card">
+  ${wlCardLine}
   <label class="master" style="margin-bottom:8px"><input type="checkbox" id="allowall" ${allOn?'checked':''} onchange="saveGroups(true)">
    <span><b>响应所有群</b><div class="k" style="margin-top:3px">开启后忽略下方白名单；关闭即恢复白名单，列表保留不丢</div></span></label>
   <div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">白名单群与分群模式<span class="badge" style="background:var(--tint);color:var(--dim)">每行可覆盖全局</span><span>机器人只在列表内群响应；模式下拉=该群回复模式，主动下拉=该群是否参与主动发消息（跟随全局=用上方全局设置，暂停回应=该群一切回应停止（@也不回）但群保留在列表、随时切回；改动即时生效${allOn?'；当前被上面的开关覆盖':''}）</span></div>
@@ -1470,7 +1585,9 @@ async function saveGroups(fromToggle){
  if(!c.length&&(cur.groups||[]).length&&!fromToggle){
   if(!await dlgConfirm({title:'清空白名单',body:'白名单即将清空（现有 '+(cur.groups||[]).length+' 个群），机器人将不再回应任何群消息。确定？',okText:'清空',danger:true}))return}
  const r=await api('/api/groups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:cur.enabled!==false,allow_all:$('#allowall')?$('#allowall').checked:!!cur.allow_all,groups:c})});
- toast(r.ok===false?('保存失败: '+(r.error||'')):((c.length||0)+' 个群已生效'),r.ok!==false);
+ // 文件本来坏着（stale/broken）时：这次保存就是修复动作，daemon 读到新文件即恢复
+ const _wlsNow=String(cur.wl_state||'');
+ toast(r.ok===false?('保存失败: '+(r.error||'')):((_wlsNow==='stale'||_wlsNow==='broken')?((c.length||0)+' 个群已保存，几秒内生效'):((c.length||0)+' 个群已生效')),r.ok!==false);
  if(fromToggle)load()}
 async function delg(i){const c=getGroups();const gid=c[i];c.splice(i,1);
  if(!gid||!await dlgConfirm({title:'删除白名单群',body:'删除群 '+gid+'？机器人将不再响应该群消息'+(_gmModes[gid]?(String.fromCharCode(10)+'注意：该群已配置分群模式覆盖，将一并清除（重新添加后需重配）'):'')+'。',okText:'删除',danger:true}))return;
@@ -2062,6 +2179,8 @@ async function vDevCtrl(){
   <div class="k" style="margin-top:14px;margin-bottom:6px">安全设置</div>
   <label class="master" style="margin-bottom:8px"><input type="checkbox" ${on2fa?'checked':''} onchange="saveKVLoad('/api/app-config',{device_ctrl_2fa:this.checked?1:0},'动态授权码已'+(this.checked?'开启（推荐）':'关闭——极危险'))">
    <span><b>动态授权码（2FA）</b><div class="k" style="margin-top:3px">每次操控需授权码验证，一次用完自动换新；关闭后只需主人 QQ 即可操控——极不推荐</div></span></label>
+  <label class="master" style="margin-bottom:8px"><input type="checkbox" ${c.device_ctrl_open_allow_exe?'checked':''} onchange="saveKVLoad('/api/app-config',{device_ctrl_open_allow_exe:this.checked?1:0},'已'+(this.checked?'开启':'关闭')+'：允许「打开」动作启动程序和脚本')">
+   <span><b>允许『打开』动作启动程序和脚本</b><div class="k" style="margin-top:3px">默认只打开文档、图片、音视频、文件夹和网页。开启后，模型可以让电脑打开任意程序，包括被群消息或网页内容诱导的情况</div></span></label>
   <label class="master"><input type="checkbox" id="devact" ${c.device_ctrl_actions?'checked':''} onchange="toggleDevActions(this.checked)">
    <span><b style="color:var(--err)">动作执行（打开/关闭程序）</b><div class="k" style="margin-top:3px">开启后机器人在授权窗口内可以真的操作电脑：打开程序/文件/网址（如「打开QQ」「打开B站」）、列出已装应用、按名关闭程序（系统关键进程除外）。不开启则只能浏览文件（找/读/发/列目录/联网查）。开启需二次确认</div></span></label>
 
@@ -2266,6 +2385,7 @@ async function vSettings(){
   +stSec('应用行为')+stApp(c);
  $('#view').innerHTML=__stTabBar()+head('机器人设置')+saveHint(_SAVE_HINT)+body;
  if(__ST_TAB==='maint')bkGroupsRender();
+ if(__ST_TAB==='style')visionStatePaint();
  if(__ST_TAB==='general'){
   // 下面三项的控件（NapCat 下载进度、QQ 版本锁、独立运行时）已迁到「框架管理」页，这里保留原来的时序，
   // 元素不在本页时各自直接返回
@@ -2377,16 +2497,50 @@ function stArchV2(rv){return `
   <label class="master" style="margin-top:10px"><input type="checkbox" ${rv.reply_json?'checked':''} onchange="saveKVLoad('/api/reply-config',{reply_json:this.checked?1:0},'结构化输出已'+(this.checked?'开启':'关闭'))">
    <span><b>结构化输出</b><div class="k" style="margin-top:3px">回复策略 v2 下，模型按固定字段输出（说不说、说什么、挂什么表情），不再靠文本标记。需要先开启回复策略 v2</div></span></label>
   <div class="k" style="margin-top:10px">这里的三项是生成回复的做法。说话多不多、长不长由下方「风格与活跃程度」决定；后台识图在「看图」卡片里</div></div>`}
+// 识图状态一行（数据来自 agent 的 /admin/status → /api/agent-status 的 vision 字段）：
+// 能不能用、现在用谁、哪些模型不能看图、后台识图的成绩。留空的识图模型按模型链找，
+// 链里一个能看图的都没有时这里和管理台首页都会提示「识图相关功能不可用」。
+function visionStateHTML(v){
+ if(!v||!v.state)return '<span class="k">识图状态：读不到 agent 的状态</span>';
+ const st=v.stat||{};
+ const top=(st.by_model||[]).map(x=>esc(x[0])+' '+x[1]).join('、');
+ const cap=v.caption?('后台识图：写出描述 '+(st.ok||0)+' 次，没写出来 '+(st.fail||0)+' 次，等待超时 '+(st.wait_timeout||0)+' 次'+(top?('；出描述最多：'+top):'')):'';
+ if(v.state==='off')return '<span class="k">看图总开关关着，识图没有启用</span>';
+ if(v.state==='ok'){
+  const who=v.preferred&&v.preferred!==v.model
+   ?'填的「'+esc(v.preferred)+'」现在用不了，实际在用 '+esc(v.model)
+   :'现在用 '+esc(v.model);
+  return '<span class="badge b-ok">识图可用</span> <span class="k">'+who
+   +((v.vision_models||[]).length>1?'（能看图的：'+v.vision_models.map(esc).join('、')+'）':'')
+   +((v.text_only_models||[]).length?'；不能看图的：'+v.text_only_models.map(esc).join('、'):'')
+   +(cap?'；'+cap:'')+'</span>';}
+ if(v.state==='no_vision_model'||v.state==='no_model'){
+  return '<span class="badge b-bad">识图不可用</span> <span class="k">'
+   +(v.state==='no_model'?'模型链是空的':'模型链里的模型都不能看图'+((v.text_only_models||[]).length?'（'+v.text_only_models.map(esc).join('、')+'）':''))
+   +'，识图相关功能不可用。在上面填一个能看图的识图模型，或到「模型与消耗」把能看图的模型加进模型链</span>';}
+ return '<span class="badge b-warn">识图状态待确认</span> <span class="k">'
+  +(v.probing?'正在确认模型链里哪些模型能看图…'
+   :'还有 '+(v.untested_models||[]).length+' 个模型没试出来（限流或额度用完时会这样）')
+  +(cap?'；'+cap:'')+'</span>';}
+async function visionStatePaint(){
+ try{
+  const el=document.getElementById('vision-state-line');
+  if(!el)return;
+  const a=await api('/api/agent-status');
+  el.innerHTML=visionStateHTML(a&&a.vision);
+ }catch(e){}}
 function stCaption(rv){return `
   <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
-  <label class="master"><input type="checkbox" ${rv.vision_caption?'checked':''} onchange="saveKVLoad('/api/reply-config',{vision_caption:this.checked?1:0},'后台识图已'+(this.checked?'开启':'关闭'))">
+  <label class="master"><input type="checkbox" ${rv.vision_caption?'checked':''} onchange="saveKVLoad('/api/reply-config',{vision_caption:this.checked?1:0},'后台识图已'+(this.checked?'开启':'关闭'));setTimeout(visionStatePaint,800)">
    <span><b>后台识图</b><div class="k" style="margin-top:3px">群里的图片到达后在后台生成一行描述，机器人据此判断接不接话，不再整条跳过带图消息；@机器人或引用图片提问时仍然直接看图。开启后，机器人收到的带图消息都会交给模型服务商识别（受下面的每日上限约束）。需要看图模式开着、范围选前两档，并且开了「对话架构」里的回复策略 v2</div></span></label>
   <div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap">
    <span class="k">识图模型</span>
-   <input value="${esc(String(rv.vision_caption_model||''))}" style="width:200px" placeholder="glm-4.6v-flash" onchange="saveKVLoad('/api/reply-config',{vision_caption_model:this.value.trim()},'识图模型已保存')">
+   <input value="${esc(String(rv.vision_caption_model||''))}" style="width:200px" placeholder="留空＝按模型链" onchange="saveKVLoad('/api/reply-config',{vision_caption_model:this.value.trim()},'识图模型已保存');setTimeout(visionStatePaint,1200)">
    <span class="k">每天最多识</span>
    <input type="number" min="0" max="5000" value="${rv.vision_caption_daily_cap}" style="width:90px" onchange="saveKVLoad('/api/reply-config',{vision_caption_daily_cap:parseInt(this.value)||0},'每日识图上限已保存')">
-   <span class="k">条带图消息（0=不识）</span></div></div>`}
+   <span class="k">条带图消息（0=不识）</span></div>
+  <div class="k" style="margin-top:6px">留空就是不指定：按「模型与消耗」里模型链的顺序，用第一个能看图的模型。哪个模型能看图是实际试出来的，不看名字。模型链里一个能看图的都没有时，识图相关功能不可用，需要在这里填一个。</div>
+  <div id="vision-state-line" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px"><span class="k">识图状态：读取中…</span></div></div>`}
 function stStyle(rv){return `
  <div class="card"><div class="k">这几项决定说话长不长、能不能只挂表情不说话、主动消息和追聊的口味。默认都保持从前的做法，想要新的风格在这里打开</div>
   <label class="master" style="margin-top:6px"><input type="checkbox" ${rv.direct_must_reply!==false?'checked':''} onchange="saveKVLoad('/api/reply-config',{direct_must_reply:this.checked?1:0},'直接@必须回应已'+(this.checked?'开启':'关闭'))">
@@ -2431,7 +2585,9 @@ function stTiming(rv){return `
  <div class="card"><label class="master"><input type="checkbox" ${rv.wait_gate_enabled!==false?'checked':''} onchange="saveKVLoad('/api/reply-config',{wait_gate_enabled:this.checked?1:0},'等说完协议已'+(this.checked?'开启':'关闭'))">
   <span><b>等说完协议（推荐开启）</b><div class="k" style="margin-top:3px">AI 回复前会判断对方这条消息是否是叙述的中间部分（语义没说完、刚开头就断、明显还有下文）。如果判断对方还在说，AI 会先安静等对方说完再回复——避免在别人一句话还没打完时就急着插嘴打断。对完整的问题和闲聊不影响（立刻回复），零额外消耗，仅增加一条判断规则</div></span></label></div>
  <div class="card"><label class="master"><input type="checkbox" ${rv.burst_merge_enabled!==false?'checked':''} onchange="saveKVLoad('/api/reply-config',{burst_merge_enabled:this.checked?1:0},'碎片合并已'+(this.checked?'开启':'关闭'))">
-  <span><b>碎片合并（推荐开启）</b><div class="k" style="margin-top:3px">QQ 聊天习惯一句话一句话地发。开启后，如果有人在 3 秒内连发了 2 条以上消息（正在打字中），机器人的主动插话会暂缓，等此人停下来后再处理——多条碎片合并成一次回复，上下文更完整。被 @ 和被回复的消息不受影响（始终立刻回应），仅影响关键词/闲聊的主动插话时机，零额外消耗</div></span></label></div>
+  <span><b>碎片合并（推荐开启）</b><div class="k" style="margin-top:3px">QQ 聊天习惯一句话一句话地发。开启后，如果有人在 3 秒内连发了 2 条以上消息（正在打字中），机器人的主动插话会暂缓，等此人停下来后再处理——多条碎片合并成一次回复，上下文更完整。被 @ 和被回复的消息不受影响（始终立刻回应），仅影响关键词/闲聊的主动插话时机，零额外消耗</div></span></label>
+  <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--line)"><label class="master"><input type="checkbox" ${rv.text_img_merge_enabled!==false?'checked':''} onchange="saveKVLoad('/api/reply-config',{text_img_merge_enabled:this.checked?1:0},'文字后紧跟的图并入同一条已'+(this.checked?'开启':'关闭'))">
+   <span><b>文字后紧跟的图并入同一条</b><div class="k" style="margin-top:3px">开启时，触发回复的文字消息会先等 2.5 秒，把随后发来的图并进同一条再处理；关闭后文字立即处理，不再等待</div></span></label></div></div>
  <div class="card"><label class="master"><input type="checkbox" ${rv.botloop_guard_enabled!==false?'checked':''} onchange="saveKVLoad('/api/reply-config',{botloop_guard_enabled:this.checked?1:0},'AI 互聊检测已'+(this.checked?'开启':'关闭'))">
   <span><b>AI 互聊检测（推荐开启）</b><div class="k" style="margin-top:3px">群里其他 AI 机器人与本机器人高频互相接话时（对方 2 分钟内连发 ≥4 条、我方 3 分钟内已回 ≥3 条）：机器人会先用符合人设的方式问对方一句「你是不是AI」，再根据回答判断——确认是 AI 则人设口吻告别并暂停搭话一段时间（见下方冷却分钟）；对方否认则当普通朋友继续聊。人类也会问"你是不是AI"，这样最自然。<br><br><b>检测覆盖所有触发方式</b>：AI 常用「引用回复/@机器人」连发来绕过闲聊概率，所以引用回复、@、关键词、闲聊全部参与节奏检测（节奏没到就完全不受影响，正常聊天零变化）。若对方被问后不正面回答、仍持续超高频互引（多轮 6 条/5 条级别），会按不配合处理，冷处理 30 分钟</div></span></label>
   <div style="margin-top:6px;display:flex;gap:8px;align-items:center"><span class="k" style="flex:none">确认 AI 后暂停搭话</span>
@@ -3241,6 +3397,7 @@ async function vPlugins(){
  +('<div class="card" style="border-color:#f0c36d;background:#fffcf0"><div class="k"><b>📢 语音回复功能已内置</b>——0.5.0 起搬到侧边栏「<a href="#" onclick="goTab(\'voice\');return false">语音消息</a>」页（新增免费本地引擎 GPT-SoVITS）。</div>'
  +'<div class="k" style="margin-top:4px">已装过该插件的会在升级时自动停用（配置共用，「语音消息」页里所有设置原样生效），可在下方直接卸载残留文件。</div></div>')+
  '<div style="display:flex;gap:8px;margin-bottom:14px"><button class="act" style="margin:0" onclick="plTab(\'mine\')">我的插件</button><button class="act ghost" style="margin:0" onclick="plTab(\'market\')">🌐 插件市场</button><span style="flex:1"></span><button class="act ghost" style="margin:0" onclick="plInstall()">从 zip 安装…</button></div>'+
+ '<div id="plnote" class="k" style="display:none;margin:-6px 0 12px;color:#b25e09"></div>'+
  (cats.length>1?plCatBar(cats,_plCat,'plCatSel'):'')+
  (totalPct>0?'<div class="card" style="margin-bottom:12px"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b>消耗总览</b>'+plCostBadge(totalPct)+'<span class="k">按启用插件各自声明的估算口径汇总；点开插件卡片可看单项明细与口径说明</span></div></div>':'')+
  (shown.length?'<div style="margin-top:4px">'+rows+'</div>':'<div class="card">该分类暂无插件</div>');
@@ -3290,7 +3447,9 @@ async function vMarket(){
  '<div class="card" style="margin-top:4px"><div class="k">把自己写的插件发上来？开发与上架流程见仓库 <b>PLUGINS.md</b>（github.com/Pigeon2333/zcode-qq-bot）</div></div>';
 }
 function mktCatSel(c){_mktCat=c;load()}
+const _PL_INSTALL_WARN='插件代码会在机器人进程里运行，能读到机器人的配置和密钥。只安装你信任的来源。';
 async function mktInstall(name,updating){
+ if(!await dlgConfirm({title:(updating?'更新':'安装')+'插件「'+name+'」',body:_PL_INSTALL_WARN+(updating?'<br><br><b>这是更新</b>：将用市场版本覆盖本机已装的这一份。':''),okText:'继续安装',danger:true}))return;
  const r=await runTask((updating?'更新':'安装')+'插件 '+name,'/api/plugins/market-install',{name:name});
  if(r.ok===false){toast('失败：'+(r.error||''),false);return}
  toast((r.updated?'已更新':(updating?'已更新':'已安装'))+'「'+(r.title||name)+'」'+(r.updated?'':'（默认停用，可在我的插件里启用）'));
@@ -3301,7 +3460,8 @@ async function plPage(name){
  const p=(r.plugins||[]).find(x=>x.name===name);
  if(!p){toast('插件不存在',false);return}
  // 插件包自带页面脚本：随 zip 分发（版本变化重新注入）——页面改版走插件更新通道
- if(p.page&&p.page_js&&(!window['__pj_'+name]||window['__pj_'+name]!==p.version)){
+ // 停用的插件不注入它的 page.js（服务端 /api/plugins/pagejs 同样只对启用插件回内容）
+ if(p.enabled&&p.page&&p.page_js&&(!window['__pj_'+name]||window['__pj_'+name]!==p.version)){
   const pj=await api('/api/plugins/pagejs?name='+encodeURIComponent(name)).catch(()=>({ok:false}));
   if(pj&&pj.ok&&pj.js){
    // 必须用 <script> 注入：new Function 内的 function 声明是局部作用域，
@@ -3316,7 +3476,8 @@ async function plPage(name){
  }
  let data={};
  if(p.page&&p.page.data){data=await api(p.page.data).catch(()=>({}))}
- const fn=p.page?window[p.page.js]:null;
+ // 停用时不取页面函数：即便脚本早前已注入过（本会话内），也不再执行
+ const fn=(p.enabled&&p.page)?window[p.page.js]:null;
  // 消耗徽标（可选）：详情页头部显示该插件自己的估算
  let costBadge='';
  if(p.enabled&&p.cost_route){
@@ -3325,7 +3486,7 @@ async function plPage(name){
   const pct=parseFloat((v&&v.pct)||0)||0;
   if(pct>0)costBadge=plCostBadge(pct);
  }
- $('#view').innerHTML=head('插件 · '+esc(p.title||name)+'  '+costBadge)+'<div style="margin-top:10px"><button class="act ghost" onclick="goTab(\'plugins\')">← 返回插件列表</button></div><div id="plpage" style="margin-top:12px"></div>';
+ $('#view').innerHTML=head('插件 · '+esc(p.title||name)+'  '+costBadge)+'<div style="margin-top:10px"><button class="act ghost" onclick="goTab(\'plugins\')">← 返回插件列表</button></div>'+(p.enabled?'':'<div class="card" style="border-color:#f0c36d;background:#fffcf0;margin-top:10px">插件已停用：设置可以先改，启用后生效</div>')+'<div id="plpage" style="margin-top:12px"></div>';
  // 专属页结构：①插件自带 page（登录等专属界面）②声明式 settings 卡（任何插件都有）
  // 插件页契约（硬规矩）：page 函数必须是同步纯函数——接收预取 data、返回 HTML
  // 字符串；禁止自写 #view（会冲掉宿主注入的「← 返回插件列表」按钮与页面头）。
@@ -3339,7 +3500,7 @@ async function plPage(name){
    }else if(typeof html==='string'){inner+=html}
    else{inner+='<div class="card">插件页 '+esc(p.page.js)+'() 必须返回 HTML 字符串（不得自写界面容器）</div>'}
  }
- else if(p.page){inner+='<div class="card">插件设置页加载失败：缺少 '+esc(p.page.js)+'()</div>'}
+ else if(p.enabled&&p.page){inner+='<div class="card">插件设置页加载失败：缺少 '+esc(p.page.js)+'()</div>'}
  if(p.settings&&p.settings.length){
   const rowsS=(p.settings||[]).map(s=>{
    const v=p.values&&p.values[s.key]!==undefined?p.values[s.key]:s.default;
@@ -3353,10 +3514,12 @@ async function plPage(name){
  if(typeof fn==='function'&&typeof window[p.page.js+'Init']==='function'){try{window[p.page.js+'Init'](data,p)}catch(e){}}
 }
 async function plInstall(){
+ if(!await dlgConfirm({title:'从 zip 安装插件',body:_PL_INSTALL_WARN+'<br><br>将安装 plugins/incoming 里的 zip 包（同名插件会被更新覆盖）。',okText:'继续安装',danger:true}))return;
  const r=await api('/api/plugins/install',{method:'POST'}).catch(e=>({ok:false,error:'请求失败'}));
  if(r.ok===false){toast(r.error||'安装失败',false);return}
  toast('已安装/更新「'+(r.title||r.name||'')+'」，请在列表中启用');load();
- if(r.warning){const n=document.getElementById('plnote');if(n)n.textContent=r.warning}}
+ // 安装返回的 warning 之前被静默丢弃（页面根本没有 plnote 元素）：toast + 插件页里的 plnote 元素双通道显示
+ if(r.warning){toast(r.warning,false);const n=document.getElementById('plnote');if(n){n.textContent=r.warning;n.style.display='block'}}}
 async function plUninstall(name){
  if(!await dlgConfirm({title:'卸载插件',body:'卸载「'+name+'」？其设置将一并删除（内置插件不可卸载，只能停用）。',okText:'卸载',danger:true}))return;
  const r=await saveKV('/api/plugins/uninstall',{name:name},'插件已卸载');
@@ -3472,6 +3635,16 @@ async function voiceFieldSave(extra,note){
  if(r.config)_VM.config=r.config;
  toast(note||'已保存（即时生效）');
 }
+// 清除语音专属 Key（专属 Key 已不回显，空串=保持原值，清空必须显式提交 <键名>_clear）
+async function voiceKeyClear(key){
+ if(!await dlgConfirm({title:'清除专属 Key',body:'清除后这项改用主密钥（或该语音的默认方式），确定吗？',okText:'清除',danger:true}))return;
+ const extra={};extra[key+'_clear']=1;
+ const r=await api('/api/voice/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voice:Object.assign(voiceCollect(),extra)})}).catch(()=>({ok:false,error:'请求失败'}));
+ if(!r||r.ok===false){toast('清除失败：'+((r&&r.error)||''),false);return}
+ if(r.config)_VM.config=r.config;
+ toast('已清除：这项不再单独保存 Key');
+ voiceProvChange();  // 重渲染供应商区，占位提示回到「未配置」
+}
 function voiceProvChange(){
  voiceBill();
  const c=_VM.config||{};const k=document.getElementById('v-prov').value;
@@ -3481,7 +3654,8 @@ function voiceProvChange(){
  else if(k==='edge'){box.innerHTML='<div class="k" style="margin-bottom:4px">音色（微软公共接口，免费）</div><select id="v-ev" onchange="voiceFieldSave({edge_voice:this.value},\'Edge 音色已保存（即时生效）\')">'+edgeOptsHtml()+'</select>'}
  else if(k==='zhipu'){
   box.innerHTML='<div class="k" style="margin-bottom:4px">智谱 API Key（留空 = 复用模型管理里的智谱 Key）</div>'
-  +'<input id="v-zkey" type="password" value="'+esc(String(c.zhipu_key||''))+'" placeholder="留空自动复用" style="max-width:420px" onchange="voiceFieldSave({zhipu_key:this.value.trim()},\'智谱 Key 已保存（即时生效；留空=复用模型管理的智谱 Key）\')">'
+  +'<input id="v-zkey" type="password" value="" placeholder="'+(c.zhipu_key_set?'已配置，留空保持不变':'未配置')+'" style="max-width:420px" onchange="voiceFieldSave({zhipu_key:this.value.trim()},\'智谱 Key 已保存（即时生效；留空=复用模型管理的智谱 Key）\')">'
+  +'<div style="margin-top:6px"><button class="act ghost" style="margin:0;padding:3px 12px;font-size:12px" onclick="voiceKeyClear(\'zhipu_key\')">清除</button></div>'
   +'<input type="hidden" id="v-zv" value="'+esc(String(c.zhipu_voice||'tongtong'))+'">'
   +'<input type="hidden" id="v-zid" value="'+esc(String(c.zhipu_speaker_id||''))+'">'
   +'<div id="zv-list" style="margin-top:12px"></div>'
@@ -3512,12 +3686,12 @@ function voiceProvChange(){
   +'<button class="act" style="margin:0" onclick="zvCloneSave()">保存到音色列表</button>'
   +'<button class="act ghost danger" style="margin:0" onclick="zvCloneDiscard()">不满意，放弃重来</button></div></div></div>'}
  else if(k==='siliconflow'){box.innerHTML='<div style="display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:10px">'
-  +'<div><div class="k" style="margin-bottom:4px">硅基流动 API Key</div><input id="v-sfk" type="password" value="'+esc(String(c.sf_key||''))+'" onchange="voiceFieldSave({sf_key:this.value.trim()},\'硅基流动 Key 已保存（即时生效）\')"></div>'
+  +'<div><div class="k" style="margin-bottom:4px">硅基流动 API Key</div><input id="v-sfk" type="password" value="" placeholder="'+(c.sf_key_set?'已配置，留空保持不变':'未配置')+'" onchange="voiceFieldSave({sf_key:this.value.trim()},\'硅基流动 Key 已保存（即时生效）\')"><button class="act ghost" style="margin:6px 0 0;padding:3px 12px;font-size:12px" onclick="voiceKeyClear(\'sf_key\')">清除</button></div>'
   +'<div><div class="k" style="margin-bottom:4px">模型</div><select id="v-sfm" onchange="voiceFieldSave({sf_model:this.value},\'模型已保存（即时生效）\')">'+sfMOptsHtml()+'</select></div>'
   +'<div><div class="k" style="margin-bottom:4px">音色</div><select id="v-sfv" onchange="voiceFieldSave({sf_voice:this.value},\'音色已保存（即时生效）\')">'+sfVOptsHtml()+'</select></div></div>'}
  else{box.innerHTML='<div style="display:grid;grid-template-columns:1.6fr 1fr 1fr 1fr;gap:10px">'
   +'<div><div class="k" style="margin-bottom:4px">接口地址（https，含 /v1/）</div><input id="v-cb" value="'+esc(String(c.custom_base||''))+'" placeholder="https://api.openai.com/v1/" onchange="voiceFieldSave({custom_base:this.value.trim()},\'接口地址已保存（即时生效）\')"></div>'
-  +'<div><div class="k" style="margin-bottom:4px">API Key</div><input id="v-ck" type="password" value="'+esc(String(c.custom_key||''))+'" onchange="voiceFieldSave({custom_key:this.value.trim()},\'Key 已保存（即时生效）\')"></div>'
+  +'<div><div class="k" style="margin-bottom:4px">API Key</div><input id="v-ck" type="password" value="" placeholder="'+(c.custom_key_set?'已配置，留空保持不变':'未配置')+'" onchange="voiceFieldSave({custom_key:this.value.trim()},\'Key 已保存（即时生效）\')"><button class="act ghost" style="margin:6px 0 0;padding:3px 12px;font-size:12px" onclick="voiceKeyClear(\'custom_key\')">清除</button></div>'
   +'<div><div class="k" style="margin-bottom:4px">模型</div><input id="v-cm" value="'+esc(String(c.custom_model||'tts-1'))+'" onchange="voiceFieldSave({custom_model:this.value.trim()},\'模型已保存（即时生效）\')"></div>'
   +'<div><div class="k" style="margin-bottom:4px">音色</div><input id="v-cv" value="'+esc(String(c.custom_voice||'alloy'))+'" onchange="voiceFieldSave({custom_voice:this.value.trim()},\'音色已保存（即时生效）\')"></div></div>'}
  // 引擎卡折叠：只在 GPT-SoVITS 供应商下展开
@@ -3601,14 +3775,16 @@ function voiceCollect(){
  v.edge_voice=gv('v-ev','edge_voice','zh-CN-XiaoxiaoNeural');
  v.zhipu_voice=gv('v-zv','zhipu_voice','tongtong');
  v.zhipu_speaker_id=gv('v-zid','zhipu_speaker_id','');
- // Key fallback：表单字段可能还没渲染（首次加载 zhipu 表单区时序问题），
- // 读不到就用已保存的配置值（用户已保存过 Key 的话）
- v.zhipu_key=g('v-zkey')||((_VM.config||{}).zhipu_key||'');
- v.sf_key=g('v-sfk')||((_VM.config||{}).sf_key||'');
+ // 密钥不再回显（GET 只回 *_set 布尔）：输入框为空就交空串，服务端按
+ // 「保持原值」处理——绝不把 *_set 布尔或占位符当密钥发回去
+ v.zhipu_key=g('v-zkey');
+ v.sf_key=g('v-sfk');
  v.sf_model=gv('v-sfm','sf_model','FunAudioLLM/cosyvoice2-0.5B');
  v.sf_voice=gv('v-sfv','sf_voice','anna');
+ // custom_base 回填的是打码串（可能带账号密码的地址）：原样交回，
+ // 服务端认出打码串=没改，保持原值
  v.custom_base=g('v-cb')||((_VM.config||{}).custom_base||'');
- v.custom_key=g('v-ck')||((_VM.config||{}).custom_key||'');
+ v.custom_key=g('v-ck');
  v.custom_model=gv('v-cm','custom_model','tts-1');
  v.custom_voice=gv('v-cv','custom_voice','alloy');
  v.gsv_dir=gv('v-gdir','gsv_dir','');v.gsv_port=gv('v-gport','gsv_port','9880');
@@ -4499,7 +4675,7 @@ async function vStickers(){
 }
 function stickerRows(items,pool){
  return items.map(s=>`<tr>
-  <td><img src="/api/stickers/thumb?pool=${encodeURIComponent(pool)}&id=${s.id}" style="height:44px;max-width:64px;object-fit:contain;border-radius:6px;background:var(--tint)" loading="lazy" onerror="this.style.visibility='hidden'"></td>
+  <td><img src="/api/stickers/thumb?pool=${encodeURIComponent(pool)}&id=${s.id}&tk=${encodeURIComponent(UI_TOKEN)}" style="height:44px;max-width:64px;object-fit:contain;border-radius:6px;background:var(--tint)" loading="lazy" onerror="this.style.visibility='hidden'"></td>
   <td class="mono">${esc(String(s.id))}</td><td>${esc(s.desc||'')}</td><td>${esc((s.tags||[]).join(', '))}</td><td class="mono">用过${s.uses||0}次</td>
   <td><button class="act ghost" style="margin:0" onclick="editSticker(${s.id},'${esc(pool)}')">备注</button>
   <button class="act ghost danger" style="margin:0" onclick="delSticker(${s.id},'${esc(pool)}')">删除</button></td></tr>`).join('');
@@ -4811,7 +4987,9 @@ def _sniff_image_ext(raw):
 
 
 def _assert_public_host(host, port):
-    """字面量 + DNS 解析后逐地址复核公网（防内网/rebinding），通过后返回连接用的 host。"""
+    """字面量 + DNS 解析后逐地址复核公网（防内网/rebinding）。
+    通过后返回 (host, ip)：ip 是校验时解析到的公网地址——连接必须钉住它，
+    不能再按域名建连（按域名连会二次解析，DNS 重绑定可以钻校验与连接之间的空子）。"""
     import ipaddress
     import socket
     h = str(host or "").strip().rstrip(".").lower()
@@ -4821,7 +4999,7 @@ def _assert_public_host(host, port):
         addr = ipaddress.ip_address(h)
         if not addr.is_global:
             raise ValueError("blocked non-global ip: %s" % h)
-        return h
+        return h, str(addr)
     except ValueError as e:
         if "blocked" in str(e):
             raise
@@ -4830,12 +5008,13 @@ def _assert_public_host(host, port):
         ip = info[4][0]
         if not ipaddress.ip_address(ip).is_global:
             raise ValueError("host %s 解析到非公网地址 %s" % (h, ip))
-    return h
+    return h, infos[0][4][0]
 
 
 def _http_get_public(url, timeout, max_bytes=8 * 1024 * 1024):
-    """下载公网 URL：仅 http/https；host 双重校验后用 http.client 直连
-    （不跟随自动重定向，逐跳重新校验；https 走系统证书校验）。"""
+    """下载公网 URL：仅 http/https；host 校验后用校验时拿到的那个 IP 直连
+    （Host 头与 TLS server_hostname 仍用原域名；不跟随自动重定向，
+    逐跳重新校验并重新钉住；https 走系统证书校验；明文 http 允许）。"""
     import ssl
     current = str(url)
     for _ in range(4):
@@ -4843,17 +5022,27 @@ def _http_get_public(url, timeout, max_bytes=8 * 1024 * 1024):
         if p.scheme not in ("http", "https"):
             raise ValueError("bad scheme")
         port = p.port or (443 if p.scheme == "https" else 80)
-        host = _assert_public_host(p.hostname, port)
+        host, ip = _assert_public_host(p.hostname, port)
         path = p.path or "/"
         if p.query:
             path += "?" + p.query
+        # 钉住校验过的 IP 建连：https 先裸连再按原域名包 TLS（证书/SNI 用原域名），
+        # 然后把 socket 交给 http.client（sock 已就位就不会再走 connect 二次解析）
+        raw = socket.create_connection((ip, port), timeout=timeout)
         if p.scheme == "https":
-            conn = http.client.HTTPSConnection(host, port, timeout=timeout,
-                                               context=ssl.create_default_context())
+            sock = ssl.create_default_context().wrap_socket(raw, server_hostname=host)
+            conn = http.client.HTTPSConnection(host, port, timeout=timeout)
+            conn.sock = sock
         else:
             conn = http.client.HTTPConnection(host, port, timeout=timeout)
+            conn.sock = raw
         try:
-            conn.request("GET", path, headers={"User-Agent": "Mozilla/5.0 qq-bot"})
+            # Host 头与 http.client 自拼规则一致：默认端口（80/443）不带端口，
+            # 非默认端口带 host:port（否则按 Host 找不到站点）
+            host_hdr = host if port == (443 if p.scheme == "https" else 80) \
+                else "%s:%d" % (host, port)
+            conn.request("GET", path, headers={"User-Agent": "Mozilla/5.0 qq-bot",
+                                               "Host": host_hdr})
             resp = conn.getresponse()
             if 300 <= resp.status < 400:
                 loc = resp.headers.get("Location")
@@ -5053,9 +5242,10 @@ class UiHandler(BaseHTTPRequestHandler):
     def _authed(self, u, q):
         """API 鉴权：X-UI-Token 头或 ?tk= 与令牌一致。页面本身始终可加载（锁定态）。"""
         want = ui_token().strip()
-        # strip：粘贴的令牌/URL 参数可能带首尾空白（记事本复制常见），容错比对
+        # strip：粘贴的令牌/URL 参数可能带首尾空白（记事本复制常见），容错比对；
+        # 恒时比较（compare_digest）：避免逐字符比对漏出计时侧信道
         got = (self.headers.get("X-UI-Token", "") or str(q.get("tk") or "")).strip()
-        return got == want
+        return hmac.compare_digest(got.encode("utf-8"), want.encode("utf-8"))
 
     def handle_one_request(self):
         # 兜底：任何 handler 异常都返回 JSON 而不是让连接挂断——
@@ -5069,13 +5259,25 @@ class UiHandler(BaseHTTPRequestHandler):
                 pass
 
     def _body(self):
-        n = int(self.headers.get("Content-Length") or 0)
+        """读 JSON 请求体：超上限 413、坏 JSON 400、非对象 400（原来静默当空对象）。
+        由 do_POST 捕获 _BodyError 后统一回给页面。"""
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            n = 0
         if n <= 0:
             return {}
+        if n > _MAX_BODY_BYTES:
+            raise _BodyError(413, "请求体超过上限（%d MB）"
+                             % (_MAX_BODY_BYTES // (1024 * 1024)))
+        raw = self.rfile.read(n)
         try:
-            return json.loads(self.rfile.read(n).decode("utf-8"))
-        except ValueError:
-            return {}
+            obj = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            raise _BodyError(400, "请求体不是合法 JSON")
+        if not isinstance(obj, dict):
+            raise _BodyError(400, "请求体应为 JSON 对象")
+        return obj
 
     def do_GET(self):
         u = urllib.parse.urlsplit(self.path)
@@ -5246,10 +5448,34 @@ class UiHandler(BaseHTTPRequestHandler):
                                      "thinking": cfg.get("thinking", {})})
         if u.path == "/api/groups":
             data = load_json_const(GROUPS_PATH, {})
+            # 生效状态以 daemon 实际在用的为准：/status 的 wl_state 与 ws_connected
+            # 走同一条 proxy 路径。文件不存在时 daemon 回退启动参数（没给=所有群
+            # 生效；给了=只在那几个群），页面不再按空文件硬编 allow_all/groups。
+            # 老版本 daemon 没有 wl_groups/wl_allow_all 字段时不影响本接口。
+            wl_state, wl_error = "", ""
+            wl_groups, wl_allow_all = None, None
+            st = proxy_get("127.0.0.1", _daemon_port(), "/status",
+                           read_const(TOKEN_PATH))
+            if st.get("ok"):
+                wl_state = str(st.get("wl_state") or "")
+                wl_error = str(st.get("wl_error") or "")[:200]
+                if isinstance(st.get("wl_groups"), list):
+                    wl_groups = [str(x) for x in st["wl_groups"]]
+                if isinstance(st.get("wl_allow_all"), bool):
+                    wl_allow_all = st["wl_allow_all"]
+            if not os.path.isfile(GROUPS_PATH):
+                if wl_state == "default_all":
+                    data = {"enabled": True, "allow_all": True, "groups": []}
+                elif wl_state == "default_groups":
+                    data = {"enabled": True,
+                            "allow_all": bool(wl_allow_all) if wl_allow_all is not None else False,
+                            "groups": wl_groups if wl_groups is not None else []}
+                # daemon 没跑或状态未知：维持读文件的默认（等价旧行为）
             return self._reply(200, {"ok": True,
                                      "enabled": bool(data.get("enabled", True)),
                                      "allow_all": bool(data.get("allow_all", False)),
-                                     "groups": data.get("groups", [])})
+                                     "groups": data.get("groups", []),
+                                     "wl_state": wl_state, "wl_error": wl_error})
         if u.path == "/api/private-config":
             data = load_json_const(PRIVATE_CONFIG_PATH, {})
             return self._reply(200, {"ok": True,
@@ -5413,14 +5639,19 @@ class UiHandler(BaseHTTPRequestHandler):
                         continue
             return self._reply(200, {"ok": True, "days": out[:90]})
         if u.path == "/api/plugins/pagejs":
-            # 插件包自带页面脚本（随插件 zip 分发，更新插件即更新页面）
+            # 插件包自带页面脚本（随插件 zip 分发，更新插件即更新页面）；
+            # 停用的插件不回脚本内容（与页面侧不注入同一道闸，双保险）
             import qq_plugins as _qp
             name = str(q.get("name") or "").strip()
             if not _qp._safe_name(name):
                 return self._reply(400, {"ok": False, "error": "插件名非法"})
             host = _qp.PluginHost()
-            for nm, (_mf, pdir, _b) in host.scan().items():
+            for nm, (mf, pdir, _b) in host.scan().items():
                 if nm == name:
+                    mf = mf if isinstance(mf, dict) else {}
+                    if not host.enabled(name, bool(mf.get("default_enabled", False))):
+                        return self._reply(200, {"ok": True, "js": "",
+                                                 "disabled": True})
                     pj = os.path.join(str(pdir), "page.js")
                     if os.path.isfile(pj):
                         try:
@@ -5506,6 +5737,11 @@ class UiHandler(BaseHTTPRequestHandler):
                                      "bot_qq": bot_qq})
         if u.path == "/api/app-config":
             cfg = C.load_app_config()
+            # 密钥不回传页面（状态页每 10 秒拉一次，原值不该进 DOM）：
+            # GitHub 令牌只回「是否已配置」；出站代理可能带账号密码 → 打码
+            raw_token = str(cfg.pop("update_token", "") or "")
+            cfg["update_token_set"] = _secret_set(raw_token)
+            cfg["api_proxy"] = _mask_url_cred(cfg.get("api_proxy"))
             cfg["detected_qqnt"] = C.detect_qqnt_dir()
             cfg["autostart_with_windows"] = S.autostart_enabled()
             cfg["zcode_installed"] = C.zcode_installed()
@@ -5531,6 +5767,7 @@ class UiHandler(BaseHTTPRequestHandler):
             return self._reply(200, t)
         if u.path == "/api/voice/meta":
             # 语音回复元数据：供应商（含计费说明）+ 预设音色表 + 本地引擎状态
+            # config 里的 Key 不回原值（*_set 布尔），接口地址打码（_voice_cfg_public）
             import qq_tts as _T
             import qq_gsv_ft as _F
             return self._reply(200, {
@@ -5541,7 +5778,7 @@ class UiHandler(BaseHTTPRequestHandler):
                 "zhipu_voices": _T.ZHIPU_VOICES,
                 "sf_models": _T.SF_MODELS,
                 "sf_voices": _T.SF_VOICES,
-                "config": _T.voice_cfg(),
+                "config": _voice_cfg_public(_T.voice_cfg()),
                 "gsv": _T.gsv_status(_T.voice_cfg()),
                 "gsv_voices": _T.gsv_voice_list(),
                 "gsv_ft_models": [{"id": str(mid), "name": str(m.get("name") or mid)}
@@ -5731,6 +5968,7 @@ class UiHandler(BaseHTTPRequestHandler):
                                          "hist_budget_chars", C.ARCH_V2_DEFAULTS["hist_budget_chars"]),
                                      "wait_gate_enabled": data.get("wait_gate_enabled", True),
                                      "burst_merge_enabled": data.get("burst_merge_enabled", True),
+                                     "text_img_merge_enabled": data.get("text_img_merge_enabled", True),
                                      "botloop_guard_enabled": data.get("botloop_guard_enabled", True),
                                      "botloop_cooldown_min": data.get("botloop_cooldown_min", 60),
                                      "proactive_private_silent_start": data.get("proactive_private_silent_start", "22:00"),
@@ -5868,7 +6106,10 @@ class UiHandler(BaseHTTPRequestHandler):
         q = {k: v[0] for k, v in urllib.parse.parse_qs(u.query).items()}
         if not self._authed(u, q):
             return self._reply(401, {"ok": False, "error": "unauthorized"})
-        body = self._body()
+        try:
+            body = self._body()
+        except _BodyError as e:
+            return self._reply(e.code, {"ok": False, "error": e.msg})
         # ---- 框架管理（多协议后端）----
         if u.path == "/api/backend-switch":
             # 切换协议框架：停全部组件（两个协议端都停防残留）→ 改配置 →
@@ -6456,19 +6697,63 @@ class UiHandler(BaseHTTPRequestHandler):
             src_dir = root / name
             if not src_dir.is_dir():
                 return self._reply(400, {"ok": False, "error": "备份不存在: %s" % name})
-            restored, missing = [], []
+            restored, missing, overlay = [], [], []
+
+            def _rm_restore_path(p):
+                if p.is_dir() and not p.is_symlink():
+                    shutil.rmtree(str(p), ignore_errors=True)
+                else:
+                    try:
+                        p.unlink()
+                    except OSError:
+                        pass
+
             for rel in C.backup_files_for(cfg):
                 src = src_dir / os.path.basename(rel)
                 dst = pathlib.Path(os.path.join(DATA_DIR, rel))
                 if src.is_dir():
-                    # 目录恢复（gsv_voices/、plugins_data/ 等）：整树覆盖回来
+                    # 目录恢复（gsv_voices/、plugins_data/ 等）：三步换名——
+                    # 先把 src 拷到同级 <dst>.restore.tmp；成功后 dst→.bak、
+                    # tmp→dst，全成才删 bak。任何一步失败都把原目录保持原样
+                    # （旧写法先 rmtree 再 copytree，失败即两边全空——2026-11-25 改）
+                    tmp = dst.with_name(dst.name + ".restore.tmp")
+                    bak = dst.with_name(dst.name + ".restore.bak")
+                    _rm_restore_path(tmp)
                     try:
-                        if dst.is_dir():
-                            shutil.rmtree(str(dst), ignore_errors=True)
-                        shutil.copytree(str(src), str(dst))
+                        shutil.copytree(str(src), str(tmp))
+                    except OSError:
+                        _rm_restore_path(tmp)  # 半截拷贝也清掉
+                        missing.append(rel)
+                        continue
+                    swapped = True
+                    if dst.exists() or dst.is_symlink():
+                        try:
+                            _rm_restore_path(bak)
+                            os.replace(str(dst), str(bak))
+                        except OSError:
+                            swapped = False  # dst 被占用改不了名（Windows 常见）
+                    if swapped:
+                        try:
+                            os.replace(str(tmp), str(dst))
+                        except OSError:
+                            try:
+                                os.replace(str(bak), str(dst))
+                            except OSError:
+                                pass  # 换不回就留着 bak（原数据在里面），不删
+                            _rm_restore_path(tmp)
+                            missing.append(rel)
+                            continue
+                        _rm_restore_path(bak)
                         restored.append(rel)
+                        continue
+                    # dst 改名失败：退回覆盖式复制（不删多余文件），返回里标注 overlay
+                    try:
+                        shutil.copytree(str(src), str(dst), dirs_exist_ok=True)
+                        restored.append(rel)
+                        overlay.append(rel)
                     except OSError:
                         missing.append(rel)
+                    _rm_restore_path(tmp)
                     continue
                 if not src.is_file():
                     continue
@@ -6503,7 +6788,7 @@ class UiHandler(BaseHTTPRequestHandler):
                         continue
                 restored.append(rel)
             return self._reply(200, {"ok": True, "restored": restored,
-                                     "failed": missing,
+                                     "failed": missing, "overlay": overlay,
                                      "count": len(restored)})
         if u.path == "/api/config":
             cfg = load_json_const(MODEL_CHAIN_PATH, {})
@@ -6778,8 +7063,10 @@ class UiHandler(BaseHTTPRequestHandler):
                     except (TypeError, ValueError):
                         return self._reply(400, {"ok": False, "error": "历史窗口应为整数"})
             if "vision_caption_model" in body:
+                # 留空就是空：不指定识图模型，按模型链的顺序找能看图的模型。
+                # 以前留空会被换成某个厂商的型号（2026-11-25 改）
                 _vcm = re.sub(r"[\s\"'{}\\]", "", str(body["vision_caption_model"] or ""))[:60]
-                data["vision_caption_model"] = _vcm or C.ARCH_V2_DEFAULTS["vision_caption_model"]
+                data["vision_caption_model"] = _vcm
             if "vision_caption_daily_cap" in body:
                 try:
                     data["vision_caption_daily_cap"] = max(0, min(
@@ -6790,6 +7077,8 @@ class UiHandler(BaseHTTPRequestHandler):
                 data["wait_gate_enabled"] = bool(body["wait_gate_enabled"])
             if "burst_merge_enabled" in body:
                 data["burst_merge_enabled"] = bool(body["burst_merge_enabled"])
+            if "text_img_merge_enabled" in body:
+                data["text_img_merge_enabled"] = bool(body["text_img_merge_enabled"])
             if "botloop_guard_enabled" in body:
                 data["botloop_guard_enabled"] = bool(body["botloop_guard_enabled"])
             if "botloop_cooldown_min" in body:
@@ -7050,7 +7339,7 @@ class UiHandler(BaseHTTPRequestHandler):
                       "zcode_notify_enabled", "zcode_reports_enabled",
                       "zcode_sticker_enabled", "zcode_watch_enabled",
                       "zcode_cron_enabled", "zcode_context_enabled",
-                      "device_ctrl_actions"):
+                      "device_ctrl_actions", "device_ctrl_open_allow_exe"):
                 if k in cfg_in:
                     cleaned[k] = bool(cfg_in[k])
             if "backup_dir" in cfg_in:
@@ -7066,13 +7355,18 @@ class UiHandler(BaseHTTPRequestHandler):
                     return self._reply(400, {"ok": False, "error": "日志保留天数应为 1-365 整数"})
             if "api_proxy" in cfg_in:
                 px = str(cfg_in["api_proxy"]).strip()[:120]
-                if px:
+                if px and px == _mask_url_cred(
+                        str(C.load_app_config().get("api_proxy") or "")):
+                    pass  # 打码串原样提交 = 用户没改（页面已不回原值），保持原值不写
+                elif px:
                     if "//" not in px:
                         px = "http://" + px
                     up = urllib.parse.urlsplit(px)
                     if up.scheme not in ("http", "https") or not up.hostname:
                         return self._reply(400, {"ok": False, "error": "代理格式应为 host:port 或 http://host:port"})
-                cleaned["api_proxy"] = px
+                    cleaned["api_proxy"] = px
+                else:
+                    cleaned["api_proxy"] = ""  # 留空 = 直连（清空，语义不变）
             for k in ("backup_keep_days", "backup_keep_copies"):
                 if k in cfg_in:
                     try:
@@ -7093,9 +7387,10 @@ class UiHandler(BaseHTTPRequestHandler):
                 cleaned["update_repo"] = rp or C.DEFAULT_UPDATE_REPO
             if "update_token" in cfg_in:
                 tv = str(cfg_in["update_token"]).strip()
-                if len(tv) > 300 or any(c.isspace() for c in tv):
-                    return self._reply(400, {"ok": False, "error": "GitHub Token 格式异常"})
-                cleaned["update_token"] = tv
+                if tv != "***":  # 占位符 = 用户没改（页面已不回原值），保持原值不写
+                    if len(tv) > 300 or any(c.isspace() for c in tv):
+                        return self._reply(400, {"ok": False, "error": "GitHub Token 格式异常"})
+                    cleaned["update_token"] = tv
             if "update_skip_version" in cfg_in:
                 cleaned["update_skip_version"] = str(
                     cfg_in["update_skip_version"]).strip()[:20]
@@ -7144,7 +7439,12 @@ class UiHandler(BaseHTTPRequestHandler):
                     return self._reply(400, {"ok": False, "error": "close_action 非法"})
                 cleaned["close_action"] = cfg_in["close_action"]
             merged = C.save_app_config(cleaned)
-            return self._reply(200, {"ok": True, **merged})
+            # 回包同样不回密钥原值（与 GET 同一套打码规则）
+            pub = dict(merged)
+            pub.pop("update_token", None)
+            pub["update_token_set"] = _secret_set(merged.get("update_token"))
+            pub["api_proxy"] = _mask_url_cred(merged.get("api_proxy"))
+            return self._reply(200, {"ok": True, **pub})
         if u.path == "/api/apikey":
             key = str(body.get("key", "")).strip()
             if not key or len(key) > 200 or any(c.isspace() for c in key):
@@ -7222,11 +7522,9 @@ class UiHandler(BaseHTTPRequestHandler):
             if not getattr(sys, "frozen", False):
                 return self._reply(200, {"ok": False, "error":
                     "源码模式没有可卸载的安装目录：删除仓库目录与 ~/.zcode-qq-bot 即可"})
-            # 先摘掉开机自启（注册表操作在服务端做，比 bat 里删更稳）
-            try:
-                S.set_autostart(False)
-            except Exception:
-                pass
+            # 先写卸载 bat（chcp 65001 + utf-8 无 BOM，写法参照 qq_update.write_installer）：
+            # 旧实现用 ascii 编码，路径含中文直接抛异常，而自启已经先被摘掉——
+            # 现在写成功才动自启；写失败不动自启，返回 500 和原因
             import tempfile
             app_dir = os.path.dirname(os.path.abspath(sys.executable))
             bat = pathlib.Path(tempfile.gettempdir()) / "uninstall-qqbot.bat"
@@ -7241,7 +7539,15 @@ class UiHandler(BaseHTTPRequestHandler):
             if mode == "wipe":
                 lines.append('rmdir /s /q "%s" >nul 2>&1' % C.DATA_DIR)
             lines.append('del /q "%~f0"')
-            bat.write_text("\r\n".join(lines) + "\r\n", encoding="ascii")
+            try:
+                bat.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
+            except OSError as e:
+                return self._reply(500, {"ok": False, "error": "卸载脚本写失败: %s" % e})
+            # bat 落地成功再摘开机自启（注册表操作在服务端做，比 bat 里删更稳）
+            try:
+                S.set_autostart(False)
+            except Exception:
+                pass
             subprocess.Popen(["cmd", "/c", str(bat)], cwd=str(bat.parent),
                              creationflags=0x00000008 | 0x00000200,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -7395,8 +7701,9 @@ class UiHandler(BaseHTTPRequestHandler):
             import base64
             import uuid as _uuid
             pool = str(body.get("pool", "_global")).strip()
-            if pool != "_global" and (pool.startswith("_") or not pool or len(pool) > 40):
-                return self._reply(400, {"ok": False, "error": "库名非法"})
+            if pool != "_global" and not _sticker_pool_ok(pool):
+                return self._reply(400, {"ok": False,
+                                         "error": "库名非法：不能用 / \\ : * ? \" < > | 和 .."})
             filename = str(body.get("filename", "img.jpg"))
             ext = os.path.splitext(filename)[1].lower()
             if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"):
@@ -7443,9 +7750,11 @@ class UiHandler(BaseHTTPRequestHandler):
             return self._reply(200, {"ok": True,
                                      "fav_enabled": settings["fav_enabled"]})
         if u.path == "/api/stickers/sync-qq":
+            # 池名来自请求体（远端只回图片 URL，文件名自生成），与 upload 同一把尺
             pool = str(body.get("pool", "_global")).strip() or "_global"
-            if pool != "_global" and (pool.startswith("_") or len(pool) > 40):
-                return self._reply(400, {"ok": False, "error": "库名非法"})
+            if pool != "_global" and not _sticker_pool_ok(pool):
+                return self._reply(400, {"ok": False,
+                                         "error": "库名非法：不能用 / \\ : * ? \" < > | 和 .."})
             try:
                 count = max(1, min(int(body.get("count", 100)), 300))
             except (TypeError, ValueError):
@@ -7508,6 +7817,23 @@ class UiHandler(BaseHTTPRequestHandler):
             v = body.get("voice")
             if not isinstance(v, dict):
                 return self._reply(400, {"ok": False, "error": "参数非法"})
+            _cur = _T.voice_cfg()
+            # 密钥不回传页面后，表单拿不到原值：空串 / 占位符 "***" / 没带键
+            # 都表示保持原值（不覆盖）；只有显式填了新值才写。
+            # 显式清除走 <键名>_clear=1（如 zhipu_key_clear）：写成空串退回
+            # 「复用主 Key」；清除标志只作用于本次保存，不落盘
+            _keys_in = {}
+            for _k in ("zhipu_key", "sf_key", "custom_key"):
+                if v.get(_k + "_clear"):
+                    _keys_in[_k] = ""
+                    continue
+                _sv = str(v.get(_k) or "")
+                _keys_in[_k] = _sv[:128] if (_sv.strip() and _sv.strip() != "***") \
+                    else str(_cur.get(_k) or "")[:128]
+            _cb_cur = str(_cur.get("custom_base") or "")
+            _cb_in = str(v.get("custom_base") or "")[:200]
+            if _cb_in == _mask_url_cred(_cb_cur):
+                _cb_in = _cb_cur[:200]  # 提交打码串 = 用户没改，保持原值（空串=清空，语义不变）
             clean = {
                 "enabled": bool(v.get("enabled")),
                 "provider": str(v.get("provider") or "edge")[:16],
@@ -7521,12 +7847,12 @@ class UiHandler(BaseHTTPRequestHandler):
                 "edge_voice": str(v.get("edge_voice") or "zh-CN-XiaoxiaoNeural")[:48],
                 "zhipu_voice": str(v.get("zhipu_voice") or "")[:48],
                 "zhipu_speaker_id": str(v.get("zhipu_speaker_id") or "")[:64],
-                "zhipu_key": str(v.get("zhipu_key") or "")[:128],
-                "sf_key": str(v.get("sf_key") or "")[:128],
+                "zhipu_key": _keys_in["zhipu_key"],
+                "sf_key": _keys_in["sf_key"],
                 "sf_model": str(v.get("sf_model") or "FunAudioLLM/cosyvoice2-0.5B")[:64],
                 "sf_voice": str(v.get("sf_voice") or "anna")[:64],
-                "custom_base": str(v.get("custom_base") or "")[:200],
-                "custom_key": str(v.get("custom_key") or "")[:128],
+                "custom_base": _cb_in,
+                "custom_key": _keys_in["custom_key"],
                 "custom_model": str(v.get("custom_model") or "tts-1")[:64],
                 "custom_voice": str(v.get("custom_voice") or "alloy")[:64],
                 # GPT-SoVITS 本地引擎
@@ -7553,7 +7879,6 @@ class UiHandler(BaseHTTPRequestHandler):
             # 表单只采自己页面的字段：POST 未携带的既有键原样保留
             # （gsv_autostart / zhipu_saved_voices 由专用端点维护——曾因整体
             # 替换被「保存设置」抹回 False/空，自启动失效、克隆音色列表清空）
-            _cur = _T.voice_cfg()
             try:
                 clean["gsv_speed"] = min(2.5, max(0.5, float(clean.get("gsv_speed") or _cur.get("gsv_speed") or 1.0)))
             except (TypeError, ValueError):
@@ -7566,7 +7891,8 @@ class UiHandler(BaseHTTPRequestHandler):
             if "zhipu_saved_voices" not in v:
                 clean["zhipu_saved_voices"] = _cur.get("zhipu_saved_voices") or []
             _T.save_voice_cfg(clean)
-            return self._reply(200, {"ok": True, "config": _T.voice_cfg()})
+            return self._reply(200, {"ok": True,
+                                     "config": _voice_cfg_public(_T.voice_cfg())})
         if u.path == "/api/voice/preview":
             # 试听：用当前表单配置合成一句，返回 data URI（<audio> 直接播）
             import base64
@@ -8222,7 +8548,12 @@ class UiHandler(BaseHTTPRequestHandler):
                 session = pathlib.Path(fpath).stem if fpath else ""
             if not session:
                 return self._reply(400, {"ok": False, "error": "缺少会话名"})
-            r = _CI.store(src, session, fpath)
+            try:
+                r = _CI.store(src, session, fpath)
+            except ValueError as e:
+                # store() 对非法来源 / 越出数据目录的落盘路径抛 ValueError，
+                # 不接住就是 500（2026-11-25 补）
+                return self._reply(400, {"ok": False, "error": str(e)[:200]})
             if r.get("ok"):
                 r["sessions"] = _CI.sessions(src)
             return self._reply(200 if r.get("ok") else 400, r)

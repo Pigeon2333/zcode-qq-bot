@@ -11,6 +11,9 @@ r"""svc_server.py —— 由插件拉起、运行在 so-vits-svc 整合包环境
      名或 id；tran 半音数。转换完把整曲 wav 写到 out_path。
 推理逻辑对齐官方 flask_api_full_song.py（切片→逐段 infer→拼接）。
 启动：整合包 runtime\python.exe svc_server.py <port>（cwd=整合包根目录）
+鉴权：插件拉起时经环境变量 SVC_TOKEN 传入一次性令牌（secrets.token_urlsafe(32)），
+缺失即拒绝启动；每个请求（/status、/load、/convert）都必须带请求头
+X-SVC-Token 且与之一致，否则 403。令牌只存在于进程内存，不写文件、不打日志。
 """
 import json
 import os
@@ -37,6 +40,9 @@ if "faiss" not in sys.modules:
 
 _lock = threading.Lock()          # torch 推理不并发：一次一段
 _state = {"svc": None, "model": "", "speakers": {}, "sr": 32000, "err": ""}
+
+# 一次性令牌：由插件进程在拉起本服务时经环境变量传入（不进命令行，进程列表不可见）
+_SVC_TOKEN = os.environ.get("SVC_TOKEN") or ""
 
 
 def _do_load(p):
@@ -132,7 +138,13 @@ class H(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _auth(self):
+        """令牌校验：每个请求都必须带请求头 X-SVC-Token 且与启动时一致。"""
+        return bool(_SVC_TOKEN) and self.headers.get("X-SVC-Token") == _SVC_TOKEN
+
     def do_GET(self):
+        if not self._auth():
+            return self._json(403, {"ok": False, "error": "令牌校验失败"})
         if self.path.startswith("/status"):
             return self._json(200, {"ok": True, "model": _state["model"],
                                     "speakers": list(_state["speakers"].keys()),
@@ -145,6 +157,8 @@ class H(BaseHTTPRequestHandler):
             p = json.loads(self.rfile.read(n).decode("utf-8")) if n else {}
         except Exception:
             return self._json(400, {"ok": False, "error": "bad json"})
+        if not self._auth():
+            return self._json(403, {"ok": False, "error": "令牌校验失败"})
         with _lock:
             if self.path == "/load":
                 return self._json(200, _do_load(p))
@@ -154,6 +168,9 @@ class H(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    if not _SVC_TOKEN:
+        print("[svc] 缺少 SVC_TOKEN 环境变量（鉴权未配置），拒绝启动", flush=True)
+        sys.exit(2)
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 6843
     # 关键：整合包代码（inference/ 等）在 cwd——脚本自身目录在 sys.path[0]，
     # 不把 cwd 插进去 import 不到包（mock 全链测试抓到的第一个坑）

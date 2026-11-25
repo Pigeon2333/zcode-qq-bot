@@ -35,8 +35,31 @@ import qq_common as C
 # 「注入成功核心不启动」，故不用。
 RUNTIME_QQ_VERSION = "9.9.32-51246"
 RUNTIME_QQ_DATE = "260716"
-RUNTIME_QQ_HASH = ""
 RUNTIME_NAPCAT_MIN = "4.18.42"
+
+# 已核实清单：QQ 安装包来自第三方仓库（Rodert/qq-versions），镜像内容无法
+# 信任，必须逐字节核对。数值为 2026-11-25 实际下载（经 gh-proxy 镜像，与
+# GitHub API 资产 digest 一致）算得的精确大小与 sha256。上游换包/换版本
+# 必须同步更新本清单；清单里没有的安装包一律拒绝安装，不留"哈希为空就
+# 跳过校验"的放行分支。
+_QQ_PACKAGE_MANIFEST = {
+    "QQ_9.9.32_260716_x64_01.exe": {
+        "size": 312335528,
+        "sha256": "685c989145381d9bc849948b836270111a8b6b8cebf2068ff158ac9d2324bc44",
+    },
+}
+
+
+def _qq_expect_for(name):
+    """返回某安装包文件的校验期望（清单精确哈希 + PE 文件头）；
+    不在清单里时返回 None——调用方必须拒绝安装并说明原因。"""
+    entry = _QQ_PACKAGE_MANIFEST.get(str(name))
+    if entry is None:
+        return None
+    exp = dict(entry)
+    exp["magic"] = (b"MZ",)
+    exp["label"] = str(name)
+    return exp
 
 _QQ_EXE_NAME = "QQ_9.9.32_260716_x64_01.exe"
 _QQ_SOURCES = (
@@ -137,15 +160,31 @@ def _download(url, dest, state, timeout=90):
         return False
 
 
-def _download_with_fallback(urls, dest, state, label):
+def _download_with_fallback(urls, dest, state, label, expect=None):
+    """逐源下载；expect 非空时每个源下载完立即做完整性校验，
+    不过关就删掉该源的文件、试下一源（镜像内容不可信，这正是校验的意义）。
+    全部源都失败时报最后一次校验/下载的具体原因。"""
+    last_err = ""
     for i, u in enumerate(urls):
         state["stage"] = "%s（源 %d/%d）…" % (label, i + 1, len(urls))
         if _download(u, dest, state):
-            return True
-        err = state.get("error", "")
+            if expect is None:
+                return True
+            import qq_napcat_dl as ND
+            ok_v, msg_v, _dv = ND.verify_download(dest, expect)
+            if ok_v:
+                return True
+            try:
+                pathlib.Path(dest).unlink()
+            except OSError:
+                pass
+            last_err = msg_v
+            state["error"] = msg_v
+            continue
+        last_err = state.get("error", "") or last_err
         if i + 1 < len(urls):
             state["error"] = ""  # 还有源，继续
-    state["error"] = state.get("error") or err or "全部下载源失败"
+    state["error"] = last_err or state.get("error") or "全部下载源失败"
     return False
 
 
@@ -262,18 +301,40 @@ def _run():
                   started=time.time())
     try:
         import qq_services as S
+        import qq_napcat_dl as ND
         ddir = pathlib.Path(C.DATA_DIR) / "downloads"
         ddir.mkdir(parents=True, exist_ok=True)
         rt = pathlib.Path(runtime_dir())
 
         # ① 便携 QQ（已装则跳过——重装运行时用 reset 先清）
         if not (rt / "QQ.exe").is_file():
+            # 完整性：安装包来自第三方仓库，必须与已核实清单逐字节核对；
+            # 清单里没有的文件名直接拒绝安装（中文提示说明原因）
+            exp_qq = _qq_expect_for(_QQ_EXE_NAME)
+            if exp_qq is None:
+                _STATE.update(
+                    running=False,
+                    error="QQ 安装包 %s 不在已核实清单里，拒绝下载安装"
+                          "（请升级应用版本，或手动安装 QQ 后在设置里填写目录）"
+                          % _QQ_EXE_NAME)
+                return
             qq_exe = ddir / _QQ_EXE_NAME
+            if qq_exe.is_file():
+                # 缓存的安装包也要过校验（可能是上次中断留下的半截文件）；
+                # 不过关就删掉重下
+                ok_c, msg_c, _dc = ND.verify_download(str(qq_exe), exp_qq)
+                if not ok_c:
+                    try:
+                        qq_exe.unlink()
+                    except OSError:
+                        pass
+                    _STATE["stage"] = "缓存的安装包校验未过，重新下载…"
             if not qq_exe.is_file():
                 # 进度直接写 _STATE（此前误传局部 st → UI 永远 0%）
                 if not _download_with_fallback(_QQ_SOURCES, str(qq_exe),
                                                _STATE,
-                                               "下载 QQ %s 安装包" % RUNTIME_QQ_VERSION):
+                                               "下载 QQ %s 安装包" % RUNTIME_QQ_VERSION,
+                                               expect=exp_qq):
                     _STATE.update(running=False, error=_STATE.get("error", ""))
                     return
             _STATE.update(stage="解压便携 QQ（无需管理员权限）…", pct=40)
@@ -285,20 +346,43 @@ def _run():
 
         # ② NapCat Shell（复用在线下载器与安装器）
         _STATE.update(stage="下载 NapCat Shell…", pct=65)
-        import qq_napcat_dl as ND
-        ver, url = ND.github_latest()
+        ver, url, info = ND.github_latest_asset()
         if not ver:
             _STATE.update(running=False,
-                          error="查询 NapCat 版本失败：%s" % url)
+                          error="查询 NapCat 版本失败：%s"
+                                % (info if isinstance(info, str) else url))
             return
+        # 完整性：官方 API 给了 digest 就必须对上（镜像内容也用官方值校验）；
+        # 没给 digest 时降级为大小下限+zip 文件头，并在状态里写明未做哈希
+        # 校验。min_size=1MB 是防御性下限（挡住镜像返回的错误页/空文件）。
+        exp_shell = dict(info) if isinstance(info, dict) else {}
+        exp_shell.setdefault("sha256", "")
+        exp_shell.setdefault("size", 0)
+        exp_shell["magic"] = (b"PK\x03\x04",)
+        exp_shell["min_size"] = 1 << 20
+        exp_shell["allow_unsigned"] = True
+        exp_shell["label"] = "NapCat Shell v%s" % ver
         zpath = pathlib.Path(C.DATA_DIR) / "downloads" / \
             ("napcat-shell-%s.zip" % ver)
+        unsigned_note = ""
+        if zpath.is_file():
+            # 缓存的 zip 也要过校验；不过关就删掉重下
+            ok_c, _msg_c, dc = ND.verify_download(str(zpath), exp_shell)
+            if not ok_c:
+                try:
+                    zpath.unlink()
+                except OSError:
+                    pass
+                _STATE["stage"] = "缓存的 NapCat 包校验未过，重新下载…"
+            elif dc.get("reason") == "ok_unsigned":
+                unsigned_note = "（注意：该文件未做哈希校验——官方未提供哈希）"
         if not zpath.is_file():
             st2 = {"error": ""}
-            ok = ND._download_public(url, zpath.name, st2)
+            ok = ND._download_public(url, zpath.name, st2, exp_shell)
             if not ok and str(url).startswith("https://github.com/"):
                 for m in _SHELL_MIRROR_PREFIXES[1:]:
-                    ok = ND._download_public(m + url, zpath.name, st2)
+                    ok = ND._download_public(m + url, zpath.name, st2,
+                                             exp_shell)
                     if ok:
                         break
             if not ok:
@@ -307,7 +391,11 @@ def _run():
                     error="%s——NapCat Shell 下载失败，可稍后重试"
                           % st2.get("error", ""))
                 return
-        _STATE.update(stage="安装 NapCat 进运行时…", pct=88)
+            if st2.get("unsigned"):
+                unsigned_note = "（注意：该文件未做哈希校验——官方未提供哈希）"
+                _STATE["stage"] = ("NapCat Shell v%s 下载完成%s"
+                                   % (ver, unsigned_note))
+        _STATE.update(stage="安装 NapCat 进运行时…" + unsigned_note, pct=88)
         cfg_rt = dict(C.load_app_config())
         cfg_rt["qqnt_dir"] = str(rt)
         ok, msg = S.install_napcat_zip(cfg_rt, str(zpath))

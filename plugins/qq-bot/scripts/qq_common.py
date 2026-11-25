@@ -41,7 +41,8 @@ ARCH_V2_DEFAULTS = {
     "reply_v2": True,                    # 回复策略 v2：统一判定 + 策略层
     "reply_json": True,                  # v2 下主调用用结构化输出（要 reply_v2 开着才生效）
     "vision_caption": False,             # 后台识图：图到达即在后台生成一行描述（要 reply_v2）
-    "vision_caption_model": "glm-4.6v-flash",
+    "vision_caption_model": "",          # 识图模型；留空＝不指定，按模型链的顺序找能看图的模型。
+                                          # 不设内置默认值：不是所有用户都用同一家模型（2026-11-25）
     "vision_caption_daily_cap": 600,     # 每天最多识多少条带图消息（0=不识）
     "direct_must_reply": True,           # 直接@或回复时必须回应（模型沉默时带提示重试一次）
     "len_follow_group": False,           # 向群友的消息长度看齐（关：长度只受「闲聊回复长度上限」约束）
@@ -103,6 +104,7 @@ DEFAULT_CONFIG = {
     "device_ctrl_2fa": True,       # 设备操控动态授权码（每次需验证）
     "device_ctrl_protected_dirs": [],  # 额外保护目录（不可搜索/发送）
     "device_ctrl_actions": False,  # 动作执行（打开/关闭程序等真操作；独立高危开关，默认关）
+    "device_ctrl_open_allow_exe": False,  # 「打开」动作允许启动程序和脚本（默认只开文档/媒体/文件夹/网页）
     "sched_pause_enabled": False,  # 定时暂停（时段内停止一切回复+零消耗）
     "sched_pause_start": "23:00",  # 暂停开始时间
     "sched_pause_end": "07:00",    # 暂停结束时间（支持跨午夜）

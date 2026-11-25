@@ -126,6 +126,20 @@ def server_on(name):
     return bool((mcp_cfg()["servers"].get(name) or {}).get("on"))
 
 
+def mcp_allowed(cfg=None):
+    """总开关闸门（纯函数）：mcp.json 的 enabled 开 + 至少一个服务 on 才 True。
+    cfg 缺省时读 mcp_cfg()。tool_index / call_tool 用它挡总开关；
+    get_client / test_server 不受限（管理台连接测试在总开关关着时也要能用）。"""
+    if cfg is None:
+        cfg = mcp_cfg()
+    if not (cfg or {}).get("enabled"):
+        return False
+    servers = (cfg.get("servers") or {})
+    if not isinstance(servers, dict):
+        return False
+    return any(isinstance(v, dict) and v.get("on") for v in servers.values())
+
+
 def ready():
     """agent 闸门：总开关开 + 至少一个已启用的可传输服务（stdio/http）。"""
     if not mcp_cfg().get("enabled"):
@@ -395,6 +409,8 @@ class McpClient:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             headers = {"Content-Type": "application/json",
                        "Content-Length": str(len(body))}
+            for k, v in (self.spec.get("headers") or {}).items():
+                headers[str(k)] = str(v)
             path = u.path + ("?" + u.query if u.query else "")
             conn.request("POST", path, body=body, headers=headers)
             r = conn.getresponse()
@@ -502,6 +518,8 @@ def reset_client(name):
 # ---------------- 高层入口（agent / UI 共用） ----------------
 
 def call_tool(server, tool, args, timeout=_CALL_TIMEOUT):
+    if not mcp_allowed():
+        raise McpError("MCP 未启用（总开关关闭或没有已启用服务）：%s" % server)
     c = get_client(server)
     if c is None:
         raise McpError("服务器不存在或未启用：%s" % server)
@@ -522,7 +540,10 @@ def doc_cap_cfg():
 def tool_index(limit_per_server=20, doc_cap=None):
     """agent 提示词用工具索引：[(server, tool, desc, 必填参数)]。
     单服务超时/失败就跳过（日志见返回的 errors）。总长度受 doc_cap 约束
-    （默认取用户配置 doc_cap_cfg()；每服务最多列 20 个工具）。"""
+    （默认取用户配置 doc_cap_cfg()；每服务最多列 20 个工具）。
+    总开关关闭/无已启用服务时返回空结果（与「一个服务都没开」同形态）。"""
+    if not mcp_allowed():
+        return [], []
     if doc_cap is None:
         doc_cap = doc_cap_cfg()
     rows, errors, used = [], [], 0

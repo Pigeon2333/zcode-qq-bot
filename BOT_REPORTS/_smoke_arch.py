@@ -13,12 +13,23 @@ import json
 import os
 import pathlib
 import random
+import shutil
 import sys
+import tempfile
 import threading
 import time
 
 sys.path.insert(0, os.path.join("plugins", "qq-bot", "scripts"))
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+# 数据目录隔离（必须在 import 被测模块之前生效）：import qq_bot_agent 时就会打开
+# usage_log.jsonl 句柄、部分用例会落盘——默认把 QQBOT_DATA_DIR 指到一次性临时目录，
+# 绝不读写生产数据 ~/.zcode-qq-bot。外部已显式设置 QQBOT_DATA_DIR 时尊重原值。
+_SMOKE_OWN_DATA_DIR = None
+if not os.environ.get("QQBOT_DATA_DIR"):
+    _SMOKE_OWN_DATA_DIR = tempfile.mkdtemp(prefix="qqbot_smoke_iso_")
+    os.environ["QQBOT_DATA_DIR"] = _SMOKE_OWN_DATA_DIR
+
 import qq_daemon as D  # noqa: E402
 import qq_bot_agent as A  # noqa: E402
 
@@ -1016,7 +1027,11 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
 
     # 提示词内容：自进化风格观察每次都带（不再只给直接回复）；热点清单不再按相关性过滤
     chk("17p 热点相关性过滤已移除（机器人知道的热点和从前一样）", not hasattr(A, "_aware_filter_hot"))
+    # 显式给一个人设桩：数据目录隔离后没有真实激活人设，而自进化注入只对
+    # 「有激活人设」的调用生效（active_name 为空时 evolved_notes 根本不会被调）
     with patched(A, PROMPT_V2_FORCE=True, VCAP_FORCE=False,
+                 load_persona_collection=lambda: ({"active": "冒烟人设", "global": ""}, "冒烟人设"),
+                 persona_for=lambda ct, cid, sid=None: ("冒烟人设", "smoke"),
                  evolved_notes=lambda name: {"enabled": True, "notes": ["观察甲", "观察乙"]}):
         _bystander = A.build_messages(NullDaemon(history=hist), group_msg("哈哈哈", "h20", []))[0][0]["content"]
         _direct = A.build_messages(NullDaemon(history=hist), group_msg("在吗", "h21", [], trig="at"))[0][0]["content"]
@@ -1085,7 +1100,8 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
         r = _ui_call("do_POST", {"vision_caption_model": 'a"b{c}'})
         chk("18d 模型名去掉引号和花括号", _saved().get("vision_caption_model") == "abc", _saved().get("vision_caption_model"))
         r = _ui_call("do_POST", {"vision_caption_model": "   "})
-        chk("18e 模型名留空 → 回到默认", _saved().get("vision_caption_model") == "glm-4.6v-flash")
+        chk("18e 模型名留空 → 存空串（不指定，按模型链找能看图的；不再回落到厂商型号）",
+            _saved().get("vision_caption_model") == "")
         _ui_call("do_POST", {"chat_probability": 0.2, "prompt_v2": False})
         s = _saved()
         chk("18f 保存其它设置时新开关不丢；再点一次能关掉",
@@ -1335,5 +1351,745 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
     chk("20e agent 启动时若处于暂停状态会明说（不会回复任何消息）",
         "AGENT_READY_PAUSED" in read_src("qq_bot_agent.py"))
 
+    # ---------- 21. 识图模型留空＝按模型链（2026-11-25）：默认值 / 可用性探测 / 状态 / 速写统计 / 掉线提醒 ----------
+    # _NO_VISION_MODELS / _VISION_OK_MODELS / _VISION_PROBE / _VISION_REMINDED 都是模块级状态：
+    # 每一小节用 patched 换上临时的、退出恢复原对象，不污染后面的用例（仿照 RT/_ADMIN_TOKEN 的做法）
+    chk("21a 识图模型的内置默认值＝空串（不设任何厂商的内置默认）",
+        A.C.ARCH_V2_DEFAULTS["vision_caption_model"] == "")
+    with patched(A, load_json_const=_cfg_ljc({})):
+        chk("21b 回复配置为空 → 识图模型就是空串（不再换成厂商型号）",
+            A.vision_caption_model() == "")
+    _chain21 = [("main", {"key": "M"}, "m-a", 4, 0),
+                ("k1", {"key": "A"}, "m-b", 8, 0),
+                ("k2", {"key": "B"}, "m-c", 4, 0)]
+    with patched(A, _chain_candidates=lambda: list(_chain21), econ_on=lambda: False):
+        _vc21 = A._vision_candidates("")
+    chk("21c 识图模型留空 → 候选就是模型链本身（不在最前面插「主 Key + 某个型号」）",
+        _vc21 == _chain21, _vc21)
+    chk("21d 400 且报错含 content → 纯文本模型",
+        A._is_text_only_error(400, {"error": {"message": "传入的 content 里混进了不支持的类型，取值范围 …"}}))
+    chk("21d' 400 但报错是「图片输入格式/解析错误」→ 不算（可能是某一张图的问题，不能据此判成纯文本）",
+        not A._is_text_only_error(400, {"error": {"message": "图片输入格式/解析错误"}}))
+    chk("21d'' 429 → 不算", not A._is_text_only_error(429, {"error": {"message": "content…取值范围"}}))
+
+    M1, M2 = "mv-one", "mv-two"
+    _chain221 = [("main", {"key": "M"}, M1, 0, 0), ("k1", {"key": "A"}, M2, 0, 0)]
+    _vis_base = dict(vision_enabled=lambda: True, vision_caption_on=lambda: True,
+                     vision_caption_model=lambda: "", _chain_candidates=lambda: list(_chain221),
+                     econ_on=lambda: False)
+    def _probe0():
+        return {"cls": {}, "sig": "", "ts": 0.0, "running": False}
+
+    with patched(A, **_vis_base, _NO_VISION_MODELS={M1, M2}, _VISION_OK_MODELS=set(),
+                 _VISION_PROBE=_probe0(), _VISION_REMINDED={"ts": 0.0}):
+        _st21 = A.vision_status()
+        chk("21e 链里两个模型都被试出不能看图 → no_vision_model",
+            _st21["state"] == "no_vision_model", _st21["state"])
+    with patched(A, **_vis_base, _NO_VISION_MODELS={M1, M2}, _VISION_OK_MODELS={M2},
+                 _VISION_PROBE=_probe0(), _VISION_REMINDED={"ts": 0.0}):
+        _st21 = A.vision_status()
+        chk("21f 有一个能看图的 → ok，且给出现在用谁",
+            _st21["state"] == "ok" and _st21["model"] == M2, (_st21["state"], _st21["model"]))
+    with patched(A, **_vis_base, _NO_VISION_MODELS=set(), _VISION_OK_MODELS=set(),
+                 _VISION_PROBE=_probe0(), _VISION_REMINDED={"ts": 0.0}):
+        _st21 = A.vision_status()
+        A._VISION_PROBE["cls"][M1] = "vision"
+        _st21b = A.vision_status()
+        chk("21g 什么都不知道 → unknown；后台试出一个能看图 → ok 且用它",
+            _st21["state"] == "unknown" and _st21b["state"] == "ok" and _st21b["model"] == M1,
+            (_st21["state"], _st21b["state"], _st21b["model"]))
+
+    class _RT21(object):
+        cooldowns = {}
+
+    def _glm21(model, messages, timeout=40, extra_body=None, key=None):
+        if model == M1:
+            return 200, {"choices": [{"message": {"content": "红色"}, "finish_reason": "stop"}]}
+        if model == M2:
+            return 400, {"error": {"message": "模型不支持传入 content 中的 image 类型，取值范围 …"}}
+        return 429, {"error": {"message": "该模型当前访问量过大，请您稍后再试"}}
+
+    M3 = "mv-three"
+    with patched(A, glm_chat=_glm21, _vision_pref=lambda: "", RT=_RT21(),
+                 _chain_candidates=lambda: [("main", {"key": "M"}, M1, 0, 0),
+                                            ("k1", {"key": "A"}, M2, 0, 0),
+                                            ("k2", {"key": "B"}, M3, 0, 0)],
+                 econ_on=lambda: False, _NO_VISION_MODELS=set(), _VISION_OK_MODELS=set(),
+                 _VISION_PROBE=_probe0(), _VISION_REMINDED={"ts": 0.0}):
+        LOG.clear()
+        A._vision_probe([M1, M2, M3])
+        chk("21h 后台探测：逐个试出 vision / text / error；试不动的（429）不进纯文本表；"
+            "结束后记日志、运行位复位",
+            A._VISION_PROBE["cls"] == {M1: "vision", M2: "text", M3: "error"}
+            and M2 in A._NO_VISION_MODELS and M3 not in A._NO_VISION_MODELS
+            and M1 in A._VISION_OK_MODELS
+            and any(x.startswith("AGENT_VISION_PROBE ") for x in LOG)
+            and A._VISION_PROBE["running"] is False,
+            (dict(A._VISION_PROBE["cls"]),
+             [x for x in LOG if x.startswith("AGENT_VISION_PROBE")][-1:]))
+    with patched(A, **_vis_base, _NO_VISION_MODELS={M1, M2}, _VISION_OK_MODELS=set(),
+                 _VISION_PROBE=_probe0(), _VISION_REMINDED={"ts": 0.0}):
+        LOG.clear()
+        _w21i = A.vision_wanted()
+        A._vision_tick()
+        _n1 = sum(1 for x in LOG if x.startswith("AGENT_VISION_NO_MODEL"))
+        _st21i = A.vision_status()
+        A._vision_tick()
+        _n2 = sum(1 for x in LOG if x.startswith("AGENT_VISION_NO_MODEL"))
+        chk("21i 用户开着识图、链里没有能看图的：日志提醒一次；10 分钟内不重复提醒",
+            _n1 == 1 and _n2 == 1, (_n1, _n2, _w21i, _st21i["state"],
+                                    dict(A._VISION_REMINDED)))
+
+    reset_cap()
+    with A._CAP["lock"]:
+        _stat0 = dict(A._CAP["stat"])
+        A._CAP["stat"].update({"ok": 0, "fail": 0, "timeout": 0, "last_model": "", "by_model": {}})
+    try:
+        with patched(A, _img_to_datauri=lambda u, daemon=None: "data:image/png;base64,AA",
+                     vision_caption_model=lambda: "", econ_on=lambda: False,
+                     _chain_candidates=lambda: [("main", {"key": "M"}, "m-cap", 0, 0)],
+                     _VISION_OK_MODELS=set(),
+                     _vision_attempt=lambda m, kv, vmsgs, th, mt: (
+                         200, {"choices": [{"message": {"content": "一只橘猫"}}], "usage": {}})):
+            reset_cap()
+            _t21j = A._caption_call(NullDaemon(), U1)
+            with A._CAP["lock"]:
+                _ok21j, _last21j = A._CAP["stat"]["ok"], A._CAP["stat"]["last_model"]
+        chk("21j 速写成功：返回描述，stat.ok 记 1 次、last_model 记下用的模型",
+            _t21j == "一只橘猫" and _ok21j == 1 and _last21j == "m-cap", (_t21j, _ok21j, _last21j))
+        with patched(A, _img_to_datauri=lambda u, daemon=None: "data:image/png;base64,AA",
+                     vision_caption_model=lambda: "", econ_on=lambda: False,
+                     _chain_candidates=lambda: [("main", {"key": "M"}, "m-cap", 0, 0)],
+                     _VISION_OK_MODELS=set(),
+                     _vision_attempt=lambda m, kv, vmsgs, th, mt: (
+                         429, {"error": {"message": "该模型当前访问量过大，请您稍后再试"}})):
+            reset_cap()
+            _t21j2 = A._caption_call(NullDaemon(), U1)
+            with A._CAP["lock"]:
+                _fail21j = A._CAP["stat"]["fail"]
+        chk("21j' 模型都不行：返回 None，stat.fail 记 1 次",
+            _t21j2 is None and _fail21j == 1, (_t21j2, _fail21j))
+    finally:
+        with A._CAP["lock"]:
+            A._CAP["stat"].clear()
+            A._CAP["stat"].update(_stat0)
+
+    # 21k：缓存只裁最旧的一段，不再像旧代码那样把整张表删掉。预填 4000 条（ts 递增），
+    # 跑一次 _caption_run 写入第 4001 条触发裁剪 → 剩 3001 条，最新的和刚写入的都在。
+    reset_cap()
+    with A._CAP["lock"]:
+        _base21k = time.time() - 100000
+        for i in range(4000):
+            A._CAP["by_mid"][("group", "555001", "k%04d" % i)] = {
+                "texts": ["旧%d" % i], "ts": _base21k + i}
+    _job21k = {"key": ("group", "555001", "k-new"), "urls": [U1], "ts": time.time(), "front": False}
+    try:
+        with patched(A, _caption_call=lambda dmn, u: "新的描述", vision_caption_daily_cap=lambda: 600):
+            A._caption_run(NullDaemon(), _job21k)
+        with A._CAP["lock"]:
+            _n21k = len(A._CAP["by_mid"])
+            _oldest21k = A._CAP["by_mid"].get(("group", "555001", "k0000"))
+            _newest21k = A._CAP["by_mid"].get(("group", "555001", "k3999"))
+            _job21k_in = A._CAP["by_mid"].get(_job21k["key"])
+    finally:
+        reset_cap()
+    chk("21k 缓存超限：仍然是一张表、只剩最旧的被裁掉（≤3001 条），最新的和刚写入的都在",
+        _n21k <= 3001 and _oldest21k is None and _newest21k and _job21k_in,
+        (_n21k, bool(_oldest21k), bool(_newest21k), bool(_job21k_in)))
+
+    src_ui21 = read_src("qq_admin_ui.py")
+    chk("21l 设置页：识图模型占位是「留空＝按模型链」，不再出现厂商型号占位",
+        'placeholder="留空＝按模型链"' in src_ui21 and 'placeholder="glm-4.6v-flash"' not in src_ui21)
+    chk("21l' 保存分支：留空就存空串，不再回落到内置默认值",
+        'data["vision_caption_model"] = _vcm' in src_ui21
+        and 'data["vision_caption_model"] = _vcm or C.ARCH_V2_DEFAULTS["vision_caption_model"]' not in src_ui21)
+    chk("21l'' 切到「看图」分页时刷新识图状态行",
+        "if(__ST_TAB==='style')visionStatePaint();" in src_ui21)
+    src_agent21 = read_src("qq_bot_agent.py")
+    chk("21m 管理台状态带上识图状态；主循环里定期跑识图探测/提醒",
+        'snap["vision"] = vision_status()' in src_agent21
+        and "\n                _vision_tick()" in src_agent21,
+        ("\n                _vision_tick()" in src_agent21))
+    src_app21 = read_src("qq_app.py")
+    chk("21m' 主程序：掉线看守、用户提醒、托盘引用、启动看守线程都在",
+        "def _offline_watch" in src_app21 and "def _alert_user" in src_app21
+        and "threading.Thread(target=_offline_watch, daemon=True).start()" in src_app21
+        and '_tray_ref["icon"] = tray' in src_app21)
+
+    # ---------------------------------------------------------------------
+    # 22. 快修九项（2026-11-25）：管理接口只起一次 / HTTPException 降级 /
+    #     画图日志不带密钥 / 多条记忆逐条入库 / 主动消息不教记忆标记 /
+    #     表情包描述关思考 / 任务执行器链首取名 / 上下文流水过期清理
+    # ---------------------------------------------------------------------
+    import http.client as _hc22
+    import socket as _sk22
+    import tempfile as _tf22
+
+    # 22a 无密钥首次启动的二次绑定：独占绑定下同进程同端口第二次 bind 必抛；
+    # main() 走过等待分支后 start_admin_server 全程只生效一次
+    _sk22a = _sk22.socket()
+    _sk22a.bind(("127.0.0.1", 0))
+    _port22a = _sk22a.getsockname()[1]
+    _sk22a.close()
+    _srv22a = A.AdminServer(("127.0.0.1", _port22a), A.AdminHandler)
+    threading.Thread(target=_srv22a.serve_forever, daemon=True).start()
+    time.sleep(0.2)
+    try:
+        A.AdminServer(("127.0.0.1", _port22a), A.AdminHandler)
+        _dup22a = False
+    except OSError:
+        _dup22a = True
+    finally:
+        _srv22a.shutdown()
+        _srv22a.server_close()
+    chk("22a 同进程同端口二次绑定 AdminServer 抛 OSError（独占绑定，二次启动必须跳过）",
+        _dup22a)
+
+    class _TH22(object):
+        def __init__(self, *a, **k):
+            pass
+
+        def start(self):
+            pass
+
+    class _TMod22(object):
+        Thread = _TH22
+
+    class _PH22(object):
+        daemon = None
+
+        def load_all(self):
+            pass
+
+    _starts22 = []
+
+    def _sas22(port, daemon=None):
+        _starts22.append(port)
+
+    _usable22n = {"n": 0}
+
+    def _usable22():
+        _usable22n["n"] += 1
+        return _usable22n["n"] > 1   # 首问：没 Key（走等待分支）；之后：配好了
+
+    def _out22(line):
+        line = str(line)
+        if line.startswith("AGENT_READY chain="):
+            raise _Stop()   # 在主循环开跑前停下（不再往后走）
+        LOG.append(line)
+
+    _argv22 = sys.argv
+    _stopped22 = False
+    try:
+        with patched(sys, argv=["qq_bot_agent.py"]), \
+                patched(A, start_admin_server=_sas22, any_key_usable=_usable22,
+                        DaemonClient=lambda port, token=None: object(),
+                        PLUGIN_HOST=_PH22(), out=_out22, threading=_TMod22):
+            try:
+                A.main()
+            except _Stop:
+                _stopped22 = True
+    finally:
+        sys.argv = _argv22
+    chk("22a' 走过无 Key 等待分支后：main() 里 start_admin_server 只调用一次"
+        "（第二次绑定会 10048，配好 Key 的瞬间再也不会崩）",
+        _stopped22 and len(_starts22) == 1, (_stopped22, _starts22))
+
+    # 22b glm_chat 抛 http.client.HTTPException（IncompleteRead/BadStatusLine）
+    #     → 和断网同级：冷却本候选、换下一个，绝不穿出去
+    def _rt22():
+        class _R(object):
+            pinned = None
+
+            def __init__(self):
+                self.cooldowns = {}
+                self.current_model = None
+
+            def cooldown(self, ck, seconds=None):
+                self.cooldowns[ck] = time.time() + (seconds if seconds is not None else 300)
+
+            def set_current(self, m):
+                self.current_model = m
+        return _R()
+
+    _MA22, _MB22 = "m-drop-a", "m-drop-b"
+
+    def _chain22(raiser):
+        def _glm(model, messages, timeout=40, extra_body=None, key=None):
+            if model == _MA22:
+                raise raiser
+            return 200, {"choices": [{"message": {"content": "换了候选"},
+                                      "finish_reason": "stop"}]}
+        return _glm
+
+    def _fb22(raiser):
+        with patched(A, RT=_rt22(), glm_chat=_chain22(raiser),
+                     _chain_candidates=lambda: [("main", {"key": "K"}, _MA22, 0, 0),
+                                                ("k1", {"key": "K2"}, _MB22, 0, 0)],
+                     econ_on=lambda: False):
+            LOG.clear()
+            return A.call_glm_with_fallback([{"role": "user", "content": "嗨"}])
+
+    _m22b, _t22b = _fb22(_hc22.IncompleteRead(b"abc", 10))
+    chk("22b glm_chat 抛 IncompleteRead → 冷却后走下一候选，不穿出去",
+        _m22b == _MB22 and _t22b == "换了候选"
+        and any("AGENT_MODEL_FAIL" in x and _MA22 in x for x in LOG),
+        (_m22b, _t22b, LOG[:1]))
+    _m22c, _t22c = _fb22(_hc22.BadStatusLine("x"))
+    chk("22b' glm_chat 抛 BadStatusLine → 同样降级换候选",
+        _m22c == _MB22 and _t22c == "换了候选",
+        (_m22c, _t22c))
+
+    # 22c 画图失败日志不带密钥的任何前缀（此前 key=%.6s 把前 6 位写进日志）
+    class _NoConn22(object):
+        # 构造不失败（真实 HTTPSConnection 构造只是建对象）；请求阶段断网
+        def __init__(self, *a, **k):
+            pass
+
+        def request(self, *a, **k):
+            raise OSError("冒烟不出网")
+
+        def close(self):
+            pass
+
+    class _HCClient22(object):
+        HTTPSConnection = _NoConn22
+
+    class _HCMod22(object):
+        client = _HCClient22
+
+    _key22 = "SK-abcdef123456"
+    with patched(A, http=_HCMod22, glm_key=lambda provider="zhipu": _key22,
+                 load_api_keys=lambda: {}):
+        LOG.clear()
+        _img22 = A.generate_image("画一张测试图")
+    _drawfail22 = [x for x in LOG if x.startswith("AGENT_DRAW_FAIL")]
+    chk("22c 画图失败日志不含密钥任何前缀，只记 attempt 与错误信息",
+        _img22 == "" and len(_drawfail22) == 2
+        and all(("SK-abcdef123456"[:i] not in x) and "abcdef" not in x and "key=" not in x
+                for i in (1, 2, 4, 6, 8) for x in _drawfail22),
+        (_img22, _drawfail22[:1]))
+
+    # 22d 一条回复里的多条记忆全部收集（≤3，超出 MEMO_DROP），process() 逐条入库
+    def _memo_parse22(text):
+        LOG.clear()
+        _parts, _st, _memo, _dr, _sg = A.parse_reply(text)
+        return _parts, _memo, [x for x in LOG if x.startswith("MEMO_DROP")]
+
+    _p22, _m22, _drop22 = _memo_parse22(
+        "你好呀[记忆@10086] 喜欢周一早起\n[记忆@10010] 讨厌香菜")
+    chk("22d 两条记忆都收集且正文剥离干净",
+        _m22 == [("10086", "喜欢周一早起"), ("10010", "讨厌香菜")]
+        and not _drop22 and all("记忆" not in p for p in _p22), (_m22, _p22))
+    _p22b, _m22b2, _drop22b = _memo_parse22(
+        "[记忆] 甲喜欢钓鱼\n[记忆@20001] 乙在杭州上班\n[记忆@20002] 丙养猫")
+    chk("22d' 三条全部保留", len(_m22b2) == 3 and not _drop22b, (_m22b2, _drop22b))
+    _p22c, _m22c2, _drop22c = _memo_parse22("[记忆] 一\n[记忆] 二\n[记忆] 三\n[记忆] 四")
+    chk("22d'' 四条只留前 3 条并记一行 MEMO_DROP",
+        len(_m22c2) == 3 and _m22c2[2][1] == "三" and len(_drop22c) == 1,
+        (_m22c2, _drop22c))
+    _p22e, _m22e, _drop22e = _memo_parse22("开头[记忆@30001] 记住这件事\n结尾")
+    chk("22d''' 单条行为与改前一致：一条记忆、正文无标记残留",
+        _m22e == [("30001", "记住这件事")] and not _drop22e
+        and _p22e == ["开头\n结尾"], (_m22e, _p22e))
+
+    def _run_memo22(reply_text, mid):
+        _sent22, _emitted22 = [], []
+        _dm22 = NullDaemon(history=[])
+        _dm22.send = lambda ct, cid, texts, reply_message_id=None: _sent22.append(list(texts))
+
+        with patched(A, PROMPT_V2_FORCE=True, REPLY_V2_FORCE=False, REPLY_JSON_FORCE=False,
+                     REACT_ONLY_FORCE=False,
+                     call_glm_with_fallback=lambda ms, t="", budget_sec=200: ("mx", reply_text),
+                     _emit_memo=lambda daemon, msg, memo: _emitted22.append(tuple(memo)),
+                     vision_enabled=lambda: False, chat_anti_interrupt_enabled=lambda: True,
+                     lean_ctx_on=lambda: True, _cap_chat_allowed=lambda ct, cid: False):
+            reset_cap()
+            LOG.clear()
+            A.process(_dm22, group_msg("今天中午吃什么好", mid, [], trig="at"))
+        return _emitted22, [x for x in LOG if x.startswith("MEMO_DROP")], _sent22
+
+    _em22, _dlog22, _sent22b = _run_memo22(
+        "今天吃了食堂[记忆@40001] 甲喜欢爬山\n[记忆@40002] 乙在减肥", "m22-1")
+    chk("22d'''' process() 把 2 条记忆逐条入库",
+        _em22 == [("40001", "甲喜欢爬山"), ("40002", "乙在减肥")] and _sent22b,
+        (_em22, _sent22b))
+    _em22b, _dlog22b, _s22b2 = _run_memo22(
+        "嗯嗯[记忆] 一\n[记忆] 二\n[记忆] 三\n[记忆] 四", "m22-2")
+    chk("22d''''' 4 条只入库 3 条且 MEMO_DROP 落日志",
+        len(_em22b) == 3 and _em22b[2] == (None, "三") and len(_dlog22b) == 1,
+        (_em22b, _dlog22b))
+    _em22c, _dlog22c, _s22c2 = _run_memo22(
+        "好的呀[记忆@40001] 甲喜欢爬山", "m22-3")
+    chk("22d'''''' 单条入库一次（与改前一致）",
+        _em22c == [("40001", "甲喜欢爬山")] and not _dlog22c, (_em22c, _dlog22c))
+
+    # 22e 主动消息不再教记忆标记（教了也不入库 → 纯属浪费 token 和误写源）；
+    #     主回复提示词的 [记忆@QQ号] 教学原样保留
+    with patched(A, PROMPT_V2_FORCE=True, VCAP_FORCE=False):
+        _pro22 = A._proactive_compose(NullDaemon(history=[]), "group", "555001")[0][0]["content"]
+        _main22 = A.build_messages(NullDaemon(history=hist),
+                                   group_msg("在吗", "h22", [], trig="at"))[0][0]["content"]
+    chk("22e 主动消息提示词不再出现 [记忆@…] 教学；主回复提示词的教学原样保留",
+        "[记忆@" not in _pro22 and "值得长期记住" not in _pro22
+        and "[记忆@QQ号]" in _main22)
+    src22 = read_src("qq_bot_agent.py")
+    chk("22e' 主动消息路径不写记忆：parse 的 memo 丢弃，_emit_memo 仍只有 def + process 一处调用",
+        "texts, stickers, _memo, _draw, _sendgrp = parse_reply(reply)" in src22
+        and "for _m in memo:" in src22 and src22.count("_emit_memo(daemon") == 2,
+        src22.count("_emit_memo(daemon"))
+
+    # 22f 表情包自动描述：与后台速写一致显式关思考，输出上限仍 200
+    _args22f = {}
+
+    def _glm22f(model, messages, timeout=40, extra_body=None, key=None):
+        _args22f["extra"] = dict(extra_body or {})
+        return 200, {"choices": [{"message": {"content": "一只猫点头"}}], "usage": {}}
+
+    _png22 = os.path.join(_tf22.mkdtemp(prefix="qqbot_smoke_g22_"), "st.png")
+    pathlib.Path(_png22).write_bytes(b"\x89PNG smoke")
+    with patched(A, glm_chat=_glm22f,
+                 _chain_candidates=lambda: [("main", {"key": "K"}, "mv-cap", 0, 0)],
+                 _NO_VISION_MODELS=set()):
+        _got22f = A._vision_describe_file(_png22)
+    chk("22f 表情包自动描述显式关闭思考（思考模型下不再恒为空），输出上限仍 200",
+        _got22f == "一只猫点头" and _args22f.get("extra", {}).get("thinking") == {"type": "disabled"}
+        and _args22f.get("extra", {}).get("max_tokens") == 200,
+        (_got22f, _args22f.get("extra")))
+    shutil.rmtree(os.path.dirname(_png22), ignore_errors=True)   # 用完即清
+
+    # 22g 任务执行器取链首模型：dict 条目取 model 字段，str 照旧，取不到回退默认
+    # （经裁决：修复落点在 qq_task_worker.py）
+    import qq_task_worker as W22
+    with patched(A, load_json_const=lambda p, d=None: {"models": [{"model": "glm-4.7-flash",
+                                                                   "key": "k1"}]}):
+        chk("22g 链条是 dict 条目 → 取的是模型名而不是整个对象",
+            W22._chain_first_model() == "glm-4.7-flash", W22._chain_first_model())
+    with patched(A, load_json_const=lambda p, d=None: {"models": ["glm-4.6v-flash",
+                                                                  {"model": "zzz"}]}):
+        chk("22g' 链条是 str 条目 → 与改前一致",
+            W22._chain_first_model() == "glm-4.6v-flash", W22._chain_first_model())
+    with patched(A, load_json_const=lambda p, d=None: {}):
+        chk("22g'' 空链条 → 回退默认 glm-5.3-flash",
+            W22._chain_first_model() == "glm-5.3-flash", W22._chain_first_model())
+    with patched(A, load_json_const=lambda p, d=None: {"models": [{"key": "k1"}]}):
+        chk("22g''' dict 缺 model 字段 → 同样回退默认值",
+            W22._chain_first_model() == "glm-5.3-flash", W22._chain_first_model())
+
+    # 22h 上下文流水 logs/context/ctx_*.jsonl 跟着 logs_keep_days 过期清理；
+    #     开关关了都不删；根目录 *.log 行为不变；非 ctx_*.jsonl 一律不动
+    _logs22 = _tf22.mkdtemp(prefix="qqbot_smoke_logs_")
+    _ctx22 = os.path.join(_logs22, "context")
+    os.makedirs(_ctx22, exist_ok=True)
+    _now22 = time.time()
+    _old22, _new22 = _now22 - 40 * 86400, _now22 - 86400
+
+    def _mk22(name, mtime, sub=""):
+        p = os.path.join(_logs22, sub, name)
+        pathlib.Path(p).write_text("x", encoding="utf-8")
+        os.utime(p, (mtime, mtime))
+        return p
+
+    def _autoclean22(enabled):
+        class _CStub22(object):
+            @staticmethod
+            def load_app_config():
+                return {"logs_autoclean_enabled": enabled, "logs_keep_days": 30}
+
+            @staticmethod
+            def logs_dir():
+                return _logs22
+        with patched(A, C=_CStub22(), _CTX_DIR=_ctx22):
+            LOG.clear()
+            A._logs_autoclean()
+        return [x for x in LOG if x.startswith("AGENT_LOGCLEAN")]
+
+    _old_files22 = [("agent.log", "", _old22), ("x.log.old", "", _old22),
+                    ("keep.log", "", _new22), ("usage_like.txt", "", _old22),
+                    ("ctx_20200101.jsonl", "context", _old22),
+                    ("ctx_20990101.jsonl", "context", _new22),
+                    ("other.jsonl", "context", _old22)]
+    for _n22, _sub22, _t22 in _old_files22:
+        _mk22(_n22, _t22, _sub22)
+    _clean22 = _autoclean22(True)
+    chk("22h 开关开：过期 *.log / *.log.old / ctx_*.jsonl 被删，未过期的和非 ctx 文件都在",
+        not os.path.exists(os.path.join(_logs22, "agent.log"))
+        and not os.path.exists(os.path.join(_logs22, "x.log.old"))
+        and os.path.exists(os.path.join(_logs22, "keep.log"))
+        and os.path.exists(os.path.join(_logs22, "usage_like.txt"))
+        and not os.path.exists(os.path.join(_ctx22, "ctx_20200101.jsonl"))
+        and os.path.exists(os.path.join(_ctx22, "ctx_20990101.jsonl"))
+        and os.path.exists(os.path.join(_ctx22, "other.jsonl"))
+        and any("removed=3" in x for x in _clean22), (_clean22,))
+    for _n22, _sub22, _t22 in _old_files22:
+        _mk22(_n22, _t22, _sub22)
+    _clean22b = _autoclean22(False)
+    chk("22h' 开关关：一个都不删",
+        all(os.path.exists(os.path.join(_logs22, _sub22, _n22))
+            for _n22, _sub22, _t22 in _old_files22) and not _clean22b, (_clean22b,))
+    shutil.rmtree(_logs22, ignore_errors=True)   # 用完即清
+
+    # ---------------------------------------------------------------------
+    # 23. 机器人 agent 安全七项（2026-11-25）：保护目录设备路径前缀 / open
+    #     目标校验 / 二次验证关闭直接授权 / 记忆净化与归属 / 互聊试探剥标记 /
+    #     对话群管执行侧开关
+    # ---------------------------------------------------------------------
+    import webbrowser as _wb23
+    _tmp23 = tempfile.mkdtemp(prefix="qqbot_smoke_g23_")
+    _sub23 = os.path.join(_tmp23, "inner")
+    os.makedirs(_sub23, exist_ok=True)
+    for _ext23 in (".txt", ".png", ".exe", ".bat", ".lnk", ".ps1"):
+        pathlib.Path(os.path.join(_tmp23, "f" + _ext23)).write_bytes(b"x")
+    pathlib.Path(os.path.join(_sub23, "secret.txt")).write_bytes(b"x")
+
+    # 23a 保护目录：\\?\ / \\.\ / \??\ 等设备路径前缀写法不再绕过
+    _sysroot23 = os.environ.get("SystemRoot") or r"C:\Windows"
+    chk("23a-1 _norm_win_path：设备前缀/大小写混写/正斜杠都归到同一形态；\\?\\UNC\\ 还原成 \\\\",
+        A._norm_win_path("\\\\?\\C:\\Windows") == A._norm_win_path(_sysroot23)
+        and A._norm_win_path("\\\\.\\C:\\Windows") == A._norm_win_path(_sysroot23)
+        and A._norm_win_path("\\??\\C:\\Windows") == A._norm_win_path(_sysroot23)
+        and A._norm_win_path("c:/wInDoWs") == A._norm_win_path(_sysroot23)
+        and A._norm_win_path(_sysroot23 + "\\") == A._norm_win_path(_sysroot23)
+        and A._norm_win_path("\\\\?\\UNC\\srv\\share") == "\\\\srv\\share",
+        (A._norm_win_path("\\\\?\\C:\\Windows"),
+         A._norm_win_path("\\\\?\\UNC\\srv\\share")))
+    with patched(A, _protected_dirs=lambda: [_tmp23]):
+        chk("23a-2 保护目录：前缀写法/大小写/正斜杠/下级 → True",
+            A._is_protected("\\\\?\\" + _tmp23)
+            and A._is_protected("\\\\.\\" + _tmp23)
+            and A._is_protected("\\??\\" + _tmp23)
+            and A._is_protected(_tmp23.upper().replace("\\", "/"))
+            and A._is_protected(_sub23),
+            [A._is_protected(p) for p in ("\\\\?\\" + _tmp23, _sub23)])
+        chk("23a-3 只是前缀相同的兄弟目录不是保护目录 → False",
+            not A._is_protected(_tmp23 + "X")
+            and not A._is_protected(_tmp23 + "X\\file.txt"),
+            A._is_protected(_tmp23 + "X"))
+    with patched(A, _protected_dirs=lambda: ["\\\\srv\\share"]):
+        chk("23a-4 UNC 保护目录：\\?\\UNC\\ 目标与 \\\\srv\\share 等价 → True",
+            A._is_protected("\\\\?\\UNC\\srv\\share\\file.txt")
+            and A._is_protected("//srv/share/file.txt"),
+            A._is_protected("\\\\?\\UNC\\srv\\share\\file.txt"))
+    class _Boom23(object):
+        def __bool__(self):
+            return True
+
+        def __str__(self):
+            raise RuntimeError("boom")
+
+    chk("23a-5 规范化抛异常 → 一律按受保护",
+        A._is_protected(_Boom23()) is True)
+
+    # 23b open 动作：网址只认 http/https；本地目标过保护目录+类型白名单
+    def _open23(kind, payload, allow_exe=False, prot=None):
+        calls = {"web": [], "start": []}
+        with patched(A, _actions_enabled=lambda: True,
+                     _resolve_open_target=lambda t: (kind, payload),
+                     _open_allow_exe=lambda: allow_exe,
+                     _protected_dirs=lambda: list(prot or [])), \
+                patched(_wb23, open=lambda u, *a, **k: calls["web"].append(u) or True), \
+                patched(os, startfile=lambda p, *a, **k: calls["start"].append(p)):
+            res = A._devctrl_step(NullDaemon(), ("private", "888001"), "open", "任意")
+        return res, len(calls["web"]), len(calls["start"])
+
+    _r23, _w23, _s23 = _open23("url", "https://example.com/page")
+    chk("23b-1 https 网址放行且只走 webbrowser.open",
+        _w23 == 1 and _s23 == 0 and "成功" in _r23, (_r23, _w23, _s23))
+    _r23, _w23, _s23 = _open23("url", " http://example.com \t")
+    chk("23b-2 http 网址放行（首尾空白剥掉后判断）", _w23 == 1 and _s23 == 0, (_r23, _w23))
+    _bad23 = []
+    for _u23 in ("file:///C:/Windows/notepad.exe", "javascript:alert(1)",
+                 "ms-settings:display", "myapp://open", "\x01javascript:alert(1)"):
+        _r23, _w23, _s23 = _open23("url", _u23)
+        _bad23.append((_w23, _s23, "只打开 http 和 https 网页" in _r23))
+    chk("23b-3 file:/javascript:/ms-settings:/自定义协议/控制字符前缀 → 拒绝且不打开",
+        all(w == 0 and s == 0 and ok for w, s, ok in _bad23), _bad23)
+    _r23, _w23, _s23 = _open23("path", os.path.join(_tmp23, "f.txt"))
+    chk("23b-4 白名单扩展名放行且只走 os.startfile", _w23 == 0 and _s23 == 1 and "成功" in _r23,
+        (_r23, _w23, _s23))
+    _deny23 = []
+    for _ext23 in (".exe", ".bat", ".lnk", ".ps1"):
+        _r23, _w23, _s23 = _open23("path", os.path.join(_tmp23, "f" + _ext23))
+        _deny23.append((_w23, _s23, "出于安全，不打开这一类文件" in _r23))
+    chk("23b-5 .exe/.bat/.lnk/.ps1 默认拒绝且不打开",
+        all(w == 0 and s == 0 and ok for w, s, ok in _deny23), _deny23)
+    _r23, _w23, _s23 = _open23("path", os.path.join(_tmp23, "f.exe"), allow_exe=True)
+    chk("23b-6 device_ctrl_open_allow_exe 开 → .exe 放行",
+        _w23 == 0 and _s23 == 1 and "成功" in _r23, (_r23, _w23, _s23))
+    _r23, _w23, _s23 = _open23("path", os.path.join(_sub23, "secret.txt"), prot=[_tmp23])
+    _r23b, _w23b, _s23b = _open23("path", "\\\\?\\" + os.path.join(_sub23, "secret.txt"),
+                                  prot=[_tmp23], allow_exe=True)
+    chk("23b-7 保护目录下的文件不打开（设备路径前缀写法、开关开也拦）",
+        _w23 == 0 and _s23 == 0 and "在保护目录内" in _r23
+        and _w23b == 0 and _s23b == 0 and "在保护目录内" in _r23b, (_r23, _r23b))
+    _r23, _w23, _s23 = _open23("path", os.path.join(_tmp23, "no_such_dir"))
+    chk("23b-8 不存在的文件夹 → 拒绝且不打开",
+        _w23 == 0 and _s23 == 0 and "不存在" in _r23, (_r23, _w23, _s23))
+    _r23, _w23, _s23 = _open23("path", _sub23)
+    chk("23b-9 存在的文件夹放行（与改前一致）", _w23 == 0 and _s23 == 1 and "成功" in _r23,
+        (_r23, _w23, _s23))
+    chk("23b-10 解析器本身不会把 file: 等当网址（url 只出自 http/https 前缀）",
+        A._resolve_open_target("javascript:alert(1)")[0] != "url"
+        and A._resolve_open_target("file:///C:/x")[0] != "url",
+        (A._resolve_open_target("javascript:alert(1)")[0],))
+
+    # 23c 设备操控二次验证关闭：主人请求直接授权、不再索码
+    def _dev23(text, twofa, sender="888001", ask_open=False):
+        sent, loops = [], []
+        dm = NullDaemon(history=[])
+        dm.send = lambda ct, cid, texts, reply_message_id=None: sent.append(list(texts))
+        A._DEVCTRL_AUTH["ok_until"] = 0.0
+        A._DEVCTRL_ASK["until"] = time.time() + 300 if ask_open else 0.0
+        A._DEVCTRL_CODE.update({"code": "654321", "expires": time.time() + 300})
+        A._DEVCTRL_SESSION.update({"msgs": [], "noticed": False})
+        msg = group_msg(text, "d23", [], trig="at", sender=sender)
+        with patched(A, _device_ctrl_enabled=lambda: True, owner_qq=lambda: "888001",
+                     cfg_2fa_on=lambda: twofa,
+                     devctrl_agent_loop=lambda d, m, r, f: loops.append(str(m.get("text")))):
+            LOG.clear()
+            handled = A._handle_devctrl(dm, msg)
+        return handled, sent, loops, A._DEVCTRL_AUTH["ok_until"]
+
+    _h23, _sent23, _loops23, _ok23 = _dev23("设备操控", False)
+    chk("23c-1 二次验证关：主人请求直接授权（ok_until 已写）、进工具循环、不索码",
+        _h23 and _ok23 > time.time() and _loops23 == ["设备操控"] and _sent23
+        and all("授权码" not in t for ts in _sent23 for t in ts)
+        and any("连线成功" in t for ts in _sent23 for t in ts), (_h23, _sent23, _loops23))
+    _h23, _sent23, _loops23, _ok23 = _dev23("设备操控", False, sender="777002")
+    chk("23c-2 二次验证关：非主人照样不能用（入口限定主人）",
+        not _h23 and not _sent23 and not _loops23 and _ok23 == 0.0,
+        (_h23, _sent23, _loops23))
+    _h23, _sent23, _loops23, _ok23 = _dev23("设备操控", True)
+    chk("23c-3 二次验证开：仍先索授权码（行为与改前一致）",
+        _h23 and _ok23 == 0.0 and not _loops23
+        and any("授权码" in t for ts in _sent23 for t in ts), (_h23, _sent23, _loops23))
+    _h23, _sent23, _loops23, _ok23 = _dev23("654321", True, ask_open=True)
+    chk("23c-4 二次验证开：码正确 → 授权窗口打开（行为与改前一致）",
+        _h23 and _ok23 > time.time() and not _loops23
+        and any("连线成功" in t for ts in _sent23 for t in ts), (_h23, _sent23, _loops23))
+
+    # 23d 记忆入库前的文本净化
+    _memo_seq = [0]
+
+    def _memo23(memo, owner=False, sender="10001", history=None):
+        recs = []
+        _memo_seq[0] += 1
+        dm = NullDaemon(history=history or [])
+        msg = group_msg("好的", "m23", [], sender=sender)
+        with patched(A, MEMORY_STREAM_PATH=os.path.join(_tmp23, "mem_%d.jsonl" % _memo_seq[0]),
+                     _append_memory=lambda rec: recs.append(rec),
+                     is_owner=lambda m: owner):
+            LOG.clear()
+            A._emit_memo(dm, msg, memo)
+        return recs, [x for x in LOG if x.startswith("MEMO_DROP_FOREIGN")]
+
+    _recs23, _ = _memo23((None, "第一行\n第二行  很多   空白"))
+    chk("23d-1 换行转空格、连续空白压成一个",
+        _recs23 and _recs23[0]["text"] == "第一行 第二行 很多 空白", _recs23)
+    _recs23, _ = _memo23((None, "\"带引号\""))
+    chk("23d-2 首尾引号剥掉", _recs23 and _recs23[0]["text"] == "带引号", _recs23)
+    _recs23, _ = _memo23((None, "[记忆@10086] 喜欢猫"))
+    chk("23d-3 记忆标记连同其后内容剥掉，净化后为空 → 不写", _recs23 == [], _recs23)
+    _recs23, _ = _memo23((None, "她养了一只\n 叫咪咪的[STICKER:5]猫"))
+    chk("23d-4 表情等控制标记剥掉，入库的是净化后的文本",
+        _recs23 and _recs23[0]["text"] == "她养了一只 叫咪咪的猫", _recs23)
+    _recs23, _ = _memo23((None, "记" * 150))
+    chk("23d-5 超长截到 100 字（现有上限保留）",
+        _recs23 and _recs23[0]["text"] == "记" * 100, len(_recs23 and _recs23[0]["text"]))
+    _recs23, _ = _memo23((None, "喜欢钓鱼"))
+    chk("23d-6 干净的记忆与改前一致", _recs23 and _recs23[0]["text"] == "喜欢钓鱼", _recs23)
+    chk("23d-7 _sanitize_memo_text：裸记忆标记/剥净后为空 → 空串",
+        A._sanitize_memo_text("[记忆]") == ""
+        and A._sanitize_memo_text("[STICKER:3]开心[WAIT][SPLIT]好[SKIP]") == "开心好"
+        and len(A._sanitize_memo_text("好" * 150)) == 100,
+        (repr(A._sanitize_memo_text("[记忆]")),
+         repr(A._sanitize_memo_text("[STICKER:3]开心[WAIT][SPLIT]好[SKIP]"))))
+
+    # 23e 非主人的记忆不许挂到别人名下
+    _hist23 = [{"sender_name": "小张", "sender_id": "10001"},
+               {"sender_name": "阿强", "sender_id": "20002"}]
+    _recs23, _drops23 = _memo23(("20002", "阿强讨厌香菜"), owner=False, sender="10001")
+    chk("23e-1 非主人指定别人的 QQ → 不存且有 MEMO_DROP_FOREIGN 日志",
+        _recs23 == [] and len(_drops23) == 1, (_recs23, _drops23))
+    _recs23, _drops23 = _memo23(("10001", "我爱吃香菜"), owner=False, sender="10001")
+    chk("23e-2 非主人指定自己 → 照旧存到自己名下",
+        _recs23 and _recs23[0]["scope"] == "contact" and _recs23[0]["id"] == "10001"
+        and not _drops23, (_recs23, _drops23))
+    _recs23, _drops23 = _memo23((None, "阿强讨厌香菜"), owner=False, sender="10001",
+                                history=_hist23)
+    chk("23e-3 非主人未指定目标、正文含别人昵称 → 不做昵称推断，落会话级",
+        _recs23 and _recs23[0]["scope"] == "group" and _recs23[0]["id"] == "555001"
+        and not _drops23, (_recs23, _drops23))
+    _recs23, _drops23 = _memo23(("20002", "阿强讨厌香菜"), owner=True)
+    chk("23e-4 主人指定别人 → 照旧存（行为不变）",
+        _recs23 and _recs23[0]["scope"] == "contact" and _recs23[0]["id"] == "20002"
+        and not _drops23, (_recs23, _drops23))
+    _recs23, _drops23 = _memo23((None, "阿强讨厌香菜"), owner=True, history=_hist23)
+    chk("23e-5 主人未指定、正文有别人昵称 → 照旧归到那人名下（行为不变）",
+        _recs23 and _recs23[0]["scope"] == "contact" and _recs23[0]["id"] == "20002",
+        (_recs23, _drops23))
+
+    # 23f 互聊试探的回复：与普通回复一样过 parse_reply（剥控制标记）再发送
+    _probe_sent = []
+    _dm23p = NullDaemon(history=[])
+    _dm23p.send = lambda ct, cid, texts, reply_message_id=None: _probe_sent.append(list(texts))
+    A.PLUGIN_HOST.daemon = _dm23p
+
+    def _probe_glm23(messages, text_ctx="", budget_sec=200):
+        return "m", "嘿嘿，你是不是机器人呀？[记忆@10086] 对方疑似程序[STICKER:3]"
+
+    with patched(A, build_messages=lambda d, m, ctx_k=32:
+                 ([{"role": "user", "content": "试探"}], "p"),
+                 call_glm_with_fallback=_probe_glm23):
+        LOG.clear()
+        A.process(_dm23p, group_msg("你是AI吧", "p23", [], trig="botloop_probe"))
+    chk("23f 互聊试探回复剥掉记忆/表情标记后才发送（不外漏协议词）",
+        len(_probe_sent) == 1 and _probe_sent[0] == ["嘿嘿，你是不是机器人呀？"]
+        and _dm23p.acked == [7001], (_probe_sent, _dm23p.acked))
+
+    # 23g 对话群管：执行侧检查功能开关（提示词教学处本来就查了）
+    def _gadm23(reply_text, enabled, sender="10001"):
+        sent, execs = [], []
+        dm = NullDaemon(history=[])
+        dm.send = lambda ct, cid, texts, reply_message_id=None: sent.append(list(texts))
+        dm.gadmin_exec = lambda *a, **k: (execs.append(a) or {"ok": True, "detail": "办好了"})
+        A.PLUGIN_HOST.daemon = dm
+        msg = group_msg("帮我把小明禁言5分钟", "g23", [], trig="at", sender=sender)
+        with patched(A, PROMPT_V2_FORCE=True, REPLY_V2_FORCE=False, REPLY_JSON_FORCE=False,
+                     REACT_ONLY_FORCE=False,
+                     call_glm_with_fallback=lambda ms, t="", budget_sec=200: ("mx", reply_text),
+                     vision_enabled=lambda: False, chat_anti_interrupt_enabled=lambda: True,
+                     lean_ctx_on=lambda: True, _cap_chat_allowed=lambda ct, cid: False,
+                     owner_qq=lambda: "10001", _gadmin_chat_enabled=lambda: enabled):
+            reset_cap()
+            LOG.clear()
+            A.process(dm, msg)
+        return sent, execs, [x for x in LOG if x.startswith("AGENT_GADMIN")]
+
+    _reply23 = "好的，马上处理[GADMIN] 禁言|群=555001|人=小明|分钟=5"
+    _sent23, _execs23, _glog23 = _gadm23(_reply23, False)
+    chk("23g-1 对话群管开关关：一个动作不执行，只回「对话群管没有开启」",
+        _execs23 == [] and _sent23 == [["对话群管没有开启"]]
+        and any("AGENT_GADMIN_OFF" in x for x in _glog23), (_sent23, _execs23, _glog23))
+    _sent23, _execs23, _glog23 = _gadm23(_reply23, True)
+    chk("23g-2 开关开：照常执行（行为与改前一致）",
+        len(_execs23) == 1 and _execs23[0][0] == "ban" and _execs23[0][2] == "小明"
+        and any("马上处理" in t for ts in _sent23 for t in ts), (_execs23, _sent23, _glog23))
+    _sent23, _execs23, _glog23 = _gadm23(_reply23, True, sender="99999")
+    chk("23g-3 非主人带群管标记 → 照旧剥离不执行（行为与改前一致）",
+        _execs23 == [] and any("AGENT_GADMIN_DENY" in x for x in _glog23),
+        (_execs23, _glog23))
+
+    shutil.rmtree(_tmp23, ignore_errors=True)   # 用完即清
+
 print("\n%d 项失败" % len(fails) + (": " + "; ".join(fails) if fails else "（全部通过）"))
+
+# 一次性临时数据目录：先关日志句柄（Windows 下打开的文件删不掉），再尽量删掉
+if _SMOKE_OWN_DATA_DIR:
+    try:
+        import logging
+        logging.shutdown()
+        shutil.rmtree(_SMOKE_OWN_DATA_DIR, ignore_errors=True)
+    except Exception:
+        pass
 sys.exit(1 if fails else 0)

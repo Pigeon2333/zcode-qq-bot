@@ -18,6 +18,7 @@ import http.client
 import json
 import os
 import pathlib
+import re
 import sys
 import time
 import uuid
@@ -98,9 +99,88 @@ def _owner():
 
 
 def _inbox_dir():
-    return os.path.join(r"D:\ZCode\workspaces\qq-bot\zcode-tasks") \
-        if os.path.isdir(r"D:\ZCode\workspaces\qq-bot") \
-        else os.path.join(DATA_DIR, "tasks", "zcode-tasks")
+    """ZCode 收件箱目录：环境变量 QQBOT_TASK_INBOX → app_config.json 的
+    task_inbox_dir（可选键）→ DATA_DIR/tasks/zcode-tasks。"""
+    env = str(os.environ.get("QQBOT_TASK_INBOX") or "").strip()
+    if env:
+        return env
+    cfg_dir = str(_load_cfg().get("task_inbox_dir") or "").strip()
+    if cfg_dir:
+        return cfg_dir
+    return os.path.join(DATA_DIR, "tasks", "zcode-tasks")
+
+
+# ---------------- 发送前预检与回执 ----------------
+
+def _daemon_up(timeout=3.0):
+    """发消息类工具的预检：daemon 控制端口能否连通。连不上就不调 /send。"""
+    try:
+        _d, _ag, _u = _ports()
+        conn = http.client.HTTPConnection("127.0.0.1", int(_d), timeout=timeout)
+    except Exception:
+        return False
+    try:
+        conn.request("GET", "/status")
+        conn.getresponse().read()
+        return True
+    except Exception:
+        return False
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _stats_sent():
+    """读 daemon /status 的 stats.sent；拿不到返回 None。"""
+    try:
+        _d, _ag, _u = _ports()
+        d = _req(_d, "GET", "/status")
+        s = (d.get("stats") or {}).get("sent")
+        if isinstance(s, (int, float)) and not isinstance(s, bool):
+            return int(s)
+    except Exception:
+        pass
+    return None
+
+
+# ---------------- 凭据打码 ----------------
+
+_SECRET_KEY_RE = re.compile(r"key|token|secret|password|passwd|auth", re.I)
+# 字符串值里的凭据片段：token=xxxx / "token": "xxxx" / Authorization: Bearer xxxx
+_SECRET_FRAG_RES = [
+    (re.compile(r"(?<![A-Za-z])((?:token|secret|password|passwd|auth|key)"
+                r"[\w-]*\s*=\s*)\S+", re.I), r"\1***"),
+    (re.compile(r'("[^"]*(?:token|secret|password|passwd|auth|key)[^"]*"'
+                r'\s*:\s*)"[^"]*"', re.I), r'\1"***"'),
+    (re.compile(r"(authorization\s*:\s*bearer\s+)\S+", re.I), r"\1***"),
+]
+
+
+def _mask_str(s):
+    for rex, rep in _SECRET_FRAG_RES:
+        s = rex.sub(rep, s)
+    return s
+
+
+def _mask_secrets(obj):
+    """递归打码（纯函数，不改输入）：键名含 key/token/secret/password/passwd/
+    auth（不分大小写）的字符串值 → "***"（空串保持空串）；字符串值里形如
+    token=xxxx、Authorization: Bearer xxxx、"token": "xxxx" 的片段值 → ***。"""
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            if isinstance(v, str) and v:
+                out[k] = "***" if _SECRET_KEY_RE.search(str(k)) else _mask_str(v)
+            else:
+                out[k] = _mask_secrets(v)
+        return out
+    if isinstance(obj, list):
+        return [_mask_secrets(x) for x in obj]
+    if isinstance(obj, str):
+        return _mask_str(obj)
+    return obj
 
 
 # ---------------- 工具实现 ----------------
@@ -122,14 +202,44 @@ def t_qq_logs(a):
     _d, ag, ui = _ports()
     r = _req(ui, "GET", "/api/runlog?src=all")
     lines = (r.get("lines") or [])[-n:]
-    return {"ok": True, "lines": [str(x.get("text", x))[:200] for x in lines]}
+    return {"ok": True,
+            "lines": [_mask_secrets(str(x.get("text", x)))[:200] for x in lines]}
 
 
 def t_qq_send(a):
+    if not _daemon_up():
+        return {"ok": False, "error": "机器人服务没有运行（daemon 控制端口连不上）"}
     _d, _ag, _u = _ports()
+    base = _stats_sent()          # 调用前基线；拿不到 → delivered="unknown"
     r = _req(_d, "POST", "/send", {
         "chat_type": "group" if a.get("chat_type") == "group" else "private",
         "chat_id": str(a.get("chat_id") or ""), "texts": [str(a.get("text") or "")[:2000]]})
+    # 回执增强：ok=true 只代表入队。daemon 返回 queued 后轮询 stats.sent，
+    # 每 0.5s 一次最多 8s，确认真的发出（只新增 delivered / waited_sec 字段）。
+    try:
+        queued_n = int(r.get("queued"))
+    except (TypeError, ValueError, AttributeError):
+        return r                  # 非 dict 响应或没有 queued：原样返回
+    if queued_n < 1:
+        return r
+    t0 = time.time()
+    delivered, waited = "unknown", 0.0
+    if base is not None:
+        target = base + queued_n
+        deadline = time.time() + 8.0
+        delivered = False
+        while True:
+            cur = _stats_sent()
+            if cur is not None and cur >= target:
+                delivered = True
+                break
+            if time.time() >= deadline:
+                break
+            time.sleep(0.5)
+        waited = round(time.time() - t0, 1)
+    if isinstance(r, dict):
+        r["delivered"] = delivered
+        r["waited_sec"] = waited
     return r
 
 
@@ -139,6 +249,8 @@ def t_qq_notify(a):
     owner = _owner()
     if not owner:
         return {"ok": False, "error": "未设置主人 QQ"}
+    if not _daemon_up():
+        return {"ok": False, "error": "机器人服务没有运行（daemon 控制端口连不上）"}
     _d, _ag, _u = _ports()
     return _req(_d, "POST", "/send", {
         "chat_type": "private", "chat_id": owner,
@@ -167,10 +279,11 @@ def t_qq_config_get(a):
     _d, _ag, ui = _ports()
     if a.get("kind") == "app":
         cfg = _load_cfg()
-        return {"ok": True, "config": {k: v for k, v in cfg.items() if "key" not in k.lower()}}
+        return {"ok": True, "config": _mask_secrets(
+            {k: v for k, v in cfg.items() if "key" not in k.lower()})}
     r = _req(ui, "GET", "/api/reply-config")
     r.pop("ok", None)
-    return {"ok": True, "config": r}
+    return {"ok": True, "config": _mask_secrets(r)}
 
 
 def t_qq_config_set(a):
@@ -269,7 +382,7 @@ TOOL_DEFS = [
     {"name": "qq_logs", "description": "看机器人运行日志（最近 n 条，默认40）",
      "inputSchema": {"type": "object", "properties": {
          "n": {"type": "number", "description": "条数 5-200"}}}},
-    {"name": "qq_send", "description": "让机器人发一条 QQ 消息（群或私聊）",
+    {"name": "qq_send", "description": "让机器人发一条 QQ 消息（群或私聊）；ok=true 只表示已入队；delivered=true 才表示已发出",
      "inputSchema": {"type": "object", "required": ["chat_type", "chat_id", "text"],
          "properties": {"chat_type": {"type": "string", "enum": ["group", "private"]},
                         "chat_id": {"type": "string", "description": "群号或QQ号"},
