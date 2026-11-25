@@ -2364,6 +2364,7 @@ async function vSettings(){
  const body=
   __ST_TAB==='model'
   ?stSec('API Key 与代理')+stKeys(c,keysL)
+  +stSec('识图模型（后台识图与看图用）')+stVisionModel(rv)
   +stSec('上下文（每次带多少历史和记忆）')+stLean(rv)+stDyn(rv)+stHist(rv)
   +stSec('省额度')+stEcon(rv)
   :__ST_TAB==='style'
@@ -2385,7 +2386,7 @@ async function vSettings(){
   +stSec('应用行为')+stApp(c);
  $('#view').innerHTML=__stTabBar()+head('机器人设置')+saveHint(_SAVE_HINT)+body;
  if(__ST_TAB==='maint')bkGroupsRender();
- if(__ST_TAB==='style')visionStatePaint();
+ if(__ST_TAB==='style'||__ST_TAB==='model')visionStatePaint();
  if(__ST_TAB==='general'){
   // 下面三项的控件（NapCat 下载进度、QQ 版本锁、独立运行时）已迁到「框架管理」页，这里保留原来的时序，
   // 元素不在本页时各自直接返回
@@ -2502,6 +2503,17 @@ function stDyn(rv){return `
     <span class="k">条（1–14，默认 6）</span></div>
    <div class="k" style="margin-top:8px">这些是实验性开关，关着时和以前完全一样。</div>
   </div></div>`}
+function stVisionModel(rv){return `
+ <div class="card"><div class="k" style="margin-bottom:6px"><b>识图模型</b>（后台识图与看图用的模型）</div>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+   <span class="k">模型</span>
+   <input value="${esc(String(rv.vision_caption_model||''))}" style="width:220px" placeholder="留空＝按模型链" onchange="saveKVLoad('/api/reply-config',{vision_caption_model:this.value.trim()},'识图模型已保存');setTimeout(visionStatePaint,1200)">
+   <span class="k">每天最多识</span>
+   <input type="number" min="0" max="5000" value="${rv.vision_caption_daily_cap}" style="width:90px" onchange="saveKVLoad('/api/reply-config',{vision_caption_daily_cap:Math.max(0,Math.min(5000,parseInt(this.value)||0))},'每日识图上限已保存')">
+   <span class="k">条带图消息（0＝不限制）</span></div>
+  <div class="k" style="margin-top:6px">留空就是不指定：按上面模型链的顺序，用第一个能看图的模型。哪个模型能看图是实际试出来的，不看名字。模型链里一个能看图的都没有时，识图相关功能不可用，需要在这里填一个。</div>
+  <div class="k" style="margin-top:6px">每天上限填 0 表示不限制。想完全关掉识图，到「聊天风格」里关「看图模式」或「后台识图」，不必靠上限来关。</div>
+  <div id="vision-state-line" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px"><span class="k">识图状态：读取中…</span></div></div>`}
 function stArchV2(rv){return `
  <div class="card"><div class="k" style="margin-bottom:8px"><b>对话架构 v2</b>（提示词 / 回复策略 / 结构化输出默认开启，关掉任一项就回到从前的做法。会改变说话风格和活跃程度的选项都是设置，默认保持从前的做法）</div>
   <label class="master"><input type="checkbox" ${rv.prompt_v2?'checked':''} onchange="saveKVLoad('/api/reply-config',{prompt_v2:this.checked?1:0},'提示词 v2 已'+(this.checked?'开启':'关闭'))">
@@ -2531,7 +2543,7 @@ function visionStateHTML(v){
  if(v.state==='no_vision_model'||v.state==='no_model'){
   return '<span class="badge b-bad">识图不可用</span> <span class="k">'
    +(v.state==='no_model'?'模型链是空的':'模型链里的模型都不能看图'+((v.text_only_models||[]).length?'（'+v.text_only_models.map(esc).join('、')+'）':''))
-   +'，识图相关功能不可用。在上面填一个能看图的识图模型，或到「模型与消耗」把能看图的模型加进模型链</span>';}
+   +'，识图相关功能不可用。到「模型与消耗」里填一个能看图的识图模型，或把能看图的模型加进模型链</span>';}
  return '<span class="badge b-warn">识图状态待确认</span> <span class="k">'
   +(v.probing?'正在确认模型链里哪些模型能看图…'
    :'还有 '+(v.untested_models||[]).length+' 个模型没试出来（限流或额度用完时会这样）')
@@ -2546,14 +2558,10 @@ async function visionStatePaint(){
 function stCaption(rv){return `
   <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
   <label class="master"><input type="checkbox" ${rv.vision_caption?'checked':''} onchange="saveKVLoad('/api/reply-config',{vision_caption:this.checked?1:0},'后台识图已'+(this.checked?'开启':'关闭'));setTimeout(visionStatePaint,800)">
-   <span><b>后台识图</b><div class="k" style="margin-top:3px">群里的图片到达后在后台生成一行描述，机器人据此判断接不接话，不再整条跳过带图消息；@机器人或引用图片提问时仍然直接看图。开启后，机器人收到的带图消息都会交给模型服务商识别（受下面的每日上限约束）。需要看图模式开着、范围选前两档，并且开了「对话架构」里的回复策略 v2</div></span></label>
-  <div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap">
-   <span class="k">识图模型</span>
-   <input value="${esc(String(rv.vision_caption_model||''))}" style="width:200px" placeholder="留空＝按模型链" onchange="saveKVLoad('/api/reply-config',{vision_caption_model:this.value.trim()},'识图模型已保存');setTimeout(visionStatePaint,1200)">
-   <span class="k">每天最多识</span>
-   <input type="number" min="0" max="5000" value="${rv.vision_caption_daily_cap}" style="width:90px" onchange="saveKVLoad('/api/reply-config',{vision_caption_daily_cap:parseInt(this.value)||0},'每日识图上限已保存')">
-   <span class="k">条带图消息（0=不识）</span></div>
-  <div class="k" style="margin-top:6px">留空就是不指定：按「模型与消耗」里模型链的顺序，用第一个能看图的模型。哪个模型能看图是实际试出来的，不看名字。模型链里一个能看图的都没有时，识图相关功能不可用，需要在这里填一个。</div>
+   <span><b>后台识图</b><div class="k" style="margin-top:3px">群里的图片到达后在后台生成一行描述，机器人据此判断接不接话，不再整条跳过带图消息；@机器人或引用图片提问时仍然直接看图。开启后，机器人收到的带图消息都会交给模型服务商识别（受「模型与消耗」里的每日上限约束）。需要看图模式开着、范围选前两档，并且开了「对话架构」里的回复策略 v2</div></span></label>
+  <div class="k" style="margin-top:10px">识图用哪个模型、每天最多识多少条，都在
+   <a href="javascript:void(0)" onclick="__stGo('model')" style="color:var(--acc);text-decoration:underline">模型与消耗</a>
+   里设置。</div>
   <div id="vision-state-line" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px"><span class="k">识图状态：读取中…</span></div></div>`}
 function stStyle(rv){return `
  <div class="card"><div class="k">这几项决定说话长不长、能不能只挂表情不说话、主动消息和追聊的口味。默认都保持从前的做法，想要新的风格在这里打开</div>

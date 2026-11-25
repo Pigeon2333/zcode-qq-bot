@@ -1503,8 +1503,8 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
     chk("21l' 保存分支：留空就存空串，不再回落到内置默认值",
         'data["vision_caption_model"] = _vcm' in src_ui21
         and 'data["vision_caption_model"] = _vcm or C.ARCH_V2_DEFAULTS["vision_caption_model"]' not in src_ui21)
-    chk("21l'' 切到「看图」分页时刷新识图状态行",
-        "if(__ST_TAB==='style')visionStatePaint();" in src_ui21)
+    chk("21l'' 切到「看图」或「识图模型」分页时刷新识图状态行",
+        "if(__ST_TAB==='style'||__ST_TAB==='model')visionStatePaint();" in src_ui21)
     src_agent21 = read_src("qq_bot_agent.py")
     chk("21m 管理台状态带上识图状态；主循环里定期跑识图探测/提醒",
         'snap["vision"] = vision_status()' in src_agent21
