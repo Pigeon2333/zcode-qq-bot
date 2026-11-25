@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """每日热点速览插件：定时（可关，默认开）/手动立刻总结当日热点；历史分天存档，
-插件页可查看与删除，支持自动清理 N 天前的旧记录。"""
+插件页可查看与删除，支持自动清理 N 天前的旧记录。注入侧可开关「往日热点
+只留标题」（old_titles_only，默认开）：往日每天只注入事件标题，今天的清单
+保持完整——实测往日要点占注入一半以上，而旧瓜只需要"知道有这回事"。"""
 
 import json
 import os
@@ -10,6 +12,7 @@ DATA_DIR = os.environ.get("QQBOT_DATA_DIR") or os.path.join(
     os.path.expanduser("~"), ".zcode-qq-bot")
 BRIEF_PATH = os.path.join(DATA_DIR, "hot_brief.json")
 HIST_DIR = os.path.join(DATA_DIR, "hot_history")
+_API = None          # register 存下句柄，供 _line 读开关（inject 签名没有 api）
 # 注入截断上限（字符）。400 时 10+ 条的清单尾部整段被切（实测：模型收不到
 # 第 10 条之后的新闻，用户问"总结里明明有"的条目它真没见过）。800 字符
 # ≈ 470 token，覆盖 15+ 条完整清单；≈ 相对典型上下文 +10%
@@ -17,6 +20,8 @@ _MAX = 800
 
 
 def register(api):
+    global _API
+    _API = api
     api.on_tick(api.every(1, lambda d: _auto_check(api)))   # 每分钟检查到点
     api.route("estimate", lambda args: _estimate())
     api.route("refresh_now", lambda args: _refresh(api))
@@ -28,13 +33,16 @@ def register(api):
         api, (args or {}).get("hh"), (args or {}).get("mm")))
     api.route("set_clean_days", lambda args: _set_clean_days(
         api, (args or {}).get("days")))
+    api.route("set_old_titles_only", lambda args: _set_old_titles_only(
+        api, (args or {}).get("enabled")))
     api.route("set_query", lambda args: _set_query(api, (args or {}).get("query")))
     api.route("load_auto", lambda args: {"ok": True,
                                          "auto_enabled": bool(api.load("auto_enabled", True)),
                                          "hh": int(api.load("auto_hh", 3)),
                                          "mm": int(api.load("auto_mm", 0)),
                                          "clean_days": _clean_days(api),
-                                         "query": str(api.load("query", "") or "")})
+                                         "query": str(api.load("query", "") or ""),
+                                         "old_titles_only": _old_titles_only()})
     api.inject_context(_line)
     _clean_history(api)          # 启动即清一次（配合自动清理天数）
     api.log("ready")
@@ -70,6 +78,22 @@ def _set_clean_days(api, days):
     api.store("clean_days", n)
     removed = _clean_history(api)
     return {"ok": True, "clean_days": n, "removed": removed}
+
+
+def _set_old_titles_only(api, enabled):
+    """注入侧开关：往日热点只留标题（今天的清单不受影响）。存取与
+    clean_days 同一私有存储；缺键默认开（_old_titles_only）。"""
+    on = bool(enabled)
+    api.store("old_titles_only", on)
+    return {"ok": True, "old_titles_only": on}
+
+
+def _old_titles_only():
+    """读注入侧开关，缺省开。_line 的注入签名没有 api，走 register 存的 _API
+    （同 member_profiles 插件的做法）；宿主还没 register 时按默认开处理。"""
+    if _API is None:
+        return True
+    return bool(_API.load("old_titles_only", True))
 
 
 def _clean_history(api):
@@ -352,11 +376,31 @@ def _set_auto_time(api, hh, mm):
     return {"ok": True, "hh": hh_i, "mm": mm_i}
 
 
+def _title_of(line):
+    """往日条目取标题：存档条目是提炼时定的「- 事件名：一句话要点」（圆点/无
+    项目符号、回退未提炼的原始词条也出现）。剥掉行首项目符号后，取第一个
+    全角冒号之前的部分；没有冒号或冒号前为空就原样保留整行——不为短而乱切。"""
+    s = str(line).strip()
+    bullet, body = "", s
+    for b in ("-", "•"):
+        if body.startswith(b):
+            bullet = b + " "
+            body = body[len(b):].lstrip()
+            break
+    i = body.find("：")
+    if i <= 0:
+        return s
+    title = body[:i].strip()
+    return (bullet + title) if title else s
+
+
 def _line(chat_type, chat_id):
     """注入今日 + 近 2 天热点（此前只注入当天——隔天热点被新闻源撤下后，
     群友问昨天的瓜机器人一无所知还搜不到（实测黄仁勋外遇事故：
     11-09 热点里有，11-10 群友问时注入的是 11-10 清单=没有）。新闻的
-    讨论窗口普遍 2-3 天，热点记忆跟着讨论窗口走）。"""
+    讨论窗口普遍 2-3 天，热点记忆跟着讨论窗口走）。
+    old_titles_only 开（默认）时往日每天只注入事件标题，标题即全部；
+    关时与 1.4.x 输出逐字一致（400 字截断＋「条目截断」表头）。"""
     parts = []
     # 今天（主清单）
     try:
@@ -368,7 +412,10 @@ def _line(chat_type, chat_id):
                 parts.append("### %s\n- %s" % (d.get("date"), text[:_MAX]))
     except (OSError, ValueError):
         pass
-    # 近 2 天（历史存档，压缩为行首条目——旧瓜只需"知道有这回事"）
+    # 近 2 天（历史存档——旧瓜只需"知道有这回事"；old_titles_only 开时
+    # 每天只留标题，实测往日要点占注入一半以上）
+    old_only = _old_titles_only()
+    n_before_old = len(parts)
     for k in (1, 2):
         try:
             day = time.strftime("%Y-%m-%d", time.localtime(time.time() - k * 86400))
@@ -377,12 +424,19 @@ def _line(chat_type, chat_id):
                 hd = json.load(f)
             text = str(hd.get("text") or "").strip()
             if text:
-                parts.append("### %s（前天以前的旧闻，条目截断）\n- %s"
-                             % (day, text[:_MAX // 2]))
+                if old_only:
+                    text = "\n".join(_title_of(ln) for ln in text.splitlines()
+                                     if ln.strip())
+                parts.append("### %s（前天以前的旧闻，%s）\n- %s"
+                             % (day, "只留标题" if old_only else "条目截断",
+                                text[:_MAX // 2]))
         except (OSError, ValueError):
             continue
     if not parts:
         return ""
-    return ("\n\n## 近几天热点速览（按日分组的新闻/热搜摘要——**包括昨天前天的旧闻**，"
+    head = ("\n\n## 近几天热点速览（按日分组的新闻/热搜摘要——**包括昨天前天的旧闻**，"
             "群友聊到其中任何一条都算真实新闻，别否认说没这回事；细节不确定就说不"
-            "确定，但\"有没有这件事\"以这里为准）\n%s" % "\n".join(parts))
+            "确定，但\"有没有这件事\"以这里为准")
+    if old_only and len(parts) > n_before_old:
+        head += "。往日各天只列了事件标题——标题就是全部已知信息，别自行补充细节"
+    return head + ("）\n%s" % "\n".join(parts))

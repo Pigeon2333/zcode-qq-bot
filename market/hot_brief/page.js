@@ -26,7 +26,9 @@ async function hotBriefPage(d){
  +'<button class="act" style="margin:0" onclick="hbSetQuery()">保存来源</button>'
  +'<span class="k" id="hb-qmsg"></span></div></div>'
  +'<div class="card"><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px"><b>历史记录</b><span class="k">（分天存档，可回看/删除）</span>'
- +'<span style="margin-left:auto;display:flex;gap:6px;align-items:center" class="k">自动清理 <input type="number" id="hb-clean" min="0" max="3650" step="1" style="width:58px" title="每天自动删除 N 天前的旧记录；0=不清理"> 天前的记录（0=不清理）</span></div>'
+ +'<span style="margin-left:auto;display:flex;gap:12px;align-items:center" class="k">'
+ +'<label class="k" title="开启后注入给机器人的往日热点只保留事件标题（今天的速览不受影响），大幅节省上下文；存档仍是完整的"><input type="checkbox" id="hb-oldtitles"> 往日只留标题</label>'
+ +'<span class="k" style="display:flex;gap:6px;align-items:center">自动清理 <input type="number" id="hb-clean" min="0" max="3650" step="1" style="width:58px" title="每天自动删除 N 天前的旧记录；0=不清理"> 天前的记录（0=不清理）</span></span></div>'
  +(rows||'<div class="k">暂无历史记录</div>')+'</div>';
  // 必须在 return 之前调度（写在 return 后是死代码——回显已存配置全靠它）
  setTimeout(async()=>{
@@ -39,6 +41,9 @@ async function hotBriefPage(d){
   const cl=document.getElementById('hb-clean');
   if(cl&&st&&st.ok)cl.value=st.clean_days||0;
   cl&&(cl.onchange=()=>hbSetClean(cl.value));
+  const ot=document.getElementById('hb-oldtitles');
+  if(ot&&st&&st.ok)ot.checked=st.old_titles_only!==false;
+  ot&&(ot.onchange=()=>hbSetOldTitles(ot.checked));
   const q=document.getElementById('hb-query');
   if(q&&st&&st.ok)q.value=st.query||'';
  },0);
@@ -50,6 +55,11 @@ async function hbSetClean(v){
  if(!r.ok){toast('保存失败：'+(r.error||''),false);return}
  toast(r.removed>0?('已保存：自动清理 '+r.clean_days+' 天前记录（本次清了 '+r.removed+' 条旧记录）'):('已保存：自动清理 '+r.clean_days+' 天前记录'));
  plPage('hot_brief');
+}
+async function hbSetOldTitles(on){
+ const r=await api('/api/plugins/call',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:'hot_brief',method:'set_old_titles_only',args:{enabled:on}})}).catch(()=>({ok:false}));
+ if(!r||r.ok===false){toast('保存失败：'+((r&&r.error)||''),false);return}
+ toast(on?'已保存：往日热点只留标题（今天的速览不受影响），下条回复起生效':'已保存：往日热点恢复完整要点，下条回复起生效');
 }
 async function hbRefresh(){
  const m=document.getElementById('hb-msg');m&&(m.textContent='总结中…（搜索+提炼约 10-30 秒）');

@@ -2487,7 +2487,21 @@ function stLean(rv){return `
    <span><b>精简上下文（推荐开启）</b><div class="k" style="margin-top:3px">开启后：旁观消息先经约 0.5k token 的轻量判定决定是否开口（决定开口才用全量提示词生成），回复时按<b>模型链第一个模型自己的上下文大小</b>裁剪历史与记忆（模型 8k→最近 10 条历史+4 条记忆；16k→10 条+5 条；128k 大模型仍按精简档注入）——人设/风格/安全规则始终全量，回复质量不受影响。关闭后：<b>固定按最高档注入</b>（历史 14 条×100 字+记忆 8/6 条，不看模型窗口大小），追求最佳表现，token 消耗大约 +50%~80%</div></span></label></div>`}
 function stDyn(rv){return `
  <div class="card"><label class="master"><input type="checkbox" ${rv.dyn_ctx_enabled!==false?'checked':''} onchange="saveKVLoad('/api/reply-config',{dyn_ctx_enabled:this.checked?1:0},'动态上下文预算已'+(this.checked?'开启':'关闭'))">
-   <span><b>动态上下文预算（推荐开启）</b><div class="k" style="margin-top:3px">注入量感知的双向自适应，两层：<b>升档</b>（精简上下文开启时）——本条回复的注入量大（热点速览/风格参考/成员画像等大块头）自动升到最高档（历史 10→14 条），多带历史帮模型消化大话题；<b>降档守卫</b>（任何档位都生效，含精简关闭的最高档）——固定开销逼近模型窗口时反向减历史（砍到 5 条+记忆 2 条），宁可少带历史也绝不截断注入与对话。普通聊天维持原档不动。<b>关闭本开关</b>＝完全按上面的档位固定注入，不做任何自动调整。运行日志可搜 CTX_ADAPT 看每次决策</div></span></label></div>`}
+   <span><b>动态上下文预算（推荐开启）</b><div class="k" style="margin-top:3px">注入量感知的双向自适应，两层：<b>升档</b>（精简上下文开启时）——本条回复的注入量大（热点速览/风格参考/成员画像等大块头）自动升到最高档（历史 10→14 条），多带历史帮模型消化大话题；<b>降档守卫</b>（任何档位都生效，含精简关闭的最高档）——固定开销逼近模型窗口时反向减历史（砍到 5 条+记忆 2 条），宁可少带历史也绝不截断注入与对话。普通聊天维持原档不动。<b>关闭本开关</b>＝完全按上面的档位固定注入，不做任何自动调整。运行日志可搜 CTX_ADAPT 看每次决策</div></span></label>
+  <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
+   <div class="k" style="font-weight:600">提示词预算（实验）</div>
+   <label class="master" style="margin-top:8px"><input type="checkbox" ${rv.prompt_hard_rules_compact?'checked':''} onchange="saveKVLoad('/api/reply-config',{prompt_hard_rules_compact:this.checked?1:0},'精简硬性规则已'+(this.checked?'开启':'关闭'))">
+    <span><b>精简硬性规则</b><div class="k" style="margin-top:3px">用压缩版替换每条消息都带的那段固定规则，每条约省 900 token。可能影响说话方式。</div></span></label>
+   <label class="master" style="margin-top:10px"><input type="checkbox" ${rv.prompt_dedupe_legacy_tags?'checked':''} onchange="saveKVLoad('/api/reply-config',{prompt_dedupe_legacy_tags:this.checked?1:0},'旧标记教学已'+(this.checked?'开启':'关闭'))">
+    <span><b>不再重复教旧标记的写法</b><div class="k" style="margin-top:3px">新版对话的输出格式已经写明了记忆、等待、安静这些字段，不再重复教旧标记怎么写。每条约省 300–400 token。</div></span></label>
+   <label class="master" style="margin-top:10px"><input type="checkbox" ${rv.gate_v2_lean_history?'checked':''} onchange="saveKVLoad('/api/reply-config',{gate_v2_lean_history:this.checked?1:0},'判断该不该回时只带最近几条历史已'+(this.checked?'开启':'关闭'))">
+    <span><b>判断该不该回时只带最近几条历史</b><div class="k" style="margin-top:3px">那次小调用不再带完整对话历史。用的是便宜模型。</div></span></label>
+   <div class="${rv.gate_v2_lean_history?'':'dimmed'}" style="margin-top:6px;display:flex;gap:8px;align-items:center">
+    <span class="k" style="flex:none">带几条历史</span>
+    <input type="number" min="1" max="14" value="${rv.gate_v2_hist_lines||6}" style="width:76px" ${rv.gate_v2_lean_history?'':'disabled'} onchange="saveKVLoad('/api/reply-config',{gate_v2_hist_lines:Math.max(1,Math.min(14,parseInt(this.value)||6))},'带几条历史已保存')">
+    <span class="k">条（1–14，默认 6）</span></div>
+   <div class="k" style="margin-top:8px">这些是实验性开关，关着时和以前完全一样。</div>
+  </div></div>`}
 function stArchV2(rv){return `
  <div class="card"><div class="k" style="margin-bottom:8px"><b>对话架构 v2</b>（提示词 / 回复策略 / 结构化输出默认开启，关掉任一项就回到从前的做法。会改变说话风格和活跃程度的选项都是设置，默认保持从前的做法）</div>
   <label class="master"><input type="checkbox" ${rv.prompt_v2?'checked':''} onchange="saveKVLoad('/api/reply-config',{prompt_v2:this.checked?1:0},'提示词 v2 已'+(this.checked?'开启':'关闭'))">
@@ -5969,6 +5983,11 @@ class UiHandler(BaseHTTPRequestHandler):
                                      "wait_gate_enabled": data.get("wait_gate_enabled", True),
                                      "burst_merge_enabled": data.get("burst_merge_enabled", True),
                                      "text_img_merge_enabled": data.get("text_img_merge_enabled", True),
+                                     # 提示词预算（实验）：三项缺键按关（＝从前的做法）
+                                     "prompt_hard_rules_compact": data.get("prompt_hard_rules_compact", False),
+                                     "prompt_dedupe_legacy_tags": data.get("prompt_dedupe_legacy_tags", False),
+                                     "gate_v2_lean_history": data.get("gate_v2_lean_history", False),
+                                     "gate_v2_hist_lines": data.get("gate_v2_hist_lines", 6),
                                      "botloop_guard_enabled": data.get("botloop_guard_enabled", True),
                                      "botloop_cooldown_min": data.get("botloop_cooldown_min", 60),
                                      "proactive_private_silent_start": data.get("proactive_private_silent_start", "22:00"),
@@ -7079,6 +7098,18 @@ class UiHandler(BaseHTTPRequestHandler):
                 data["burst_merge_enabled"] = bool(body["burst_merge_enabled"])
             if "text_img_merge_enabled" in body:
                 data["text_img_merge_enabled"] = bool(body["text_img_merge_enabled"])
+            # 提示词预算（实验）：三个布尔；条数夹到 1-14，非整数按 6
+            if "prompt_hard_rules_compact" in body:
+                data["prompt_hard_rules_compact"] = bool(body["prompt_hard_rules_compact"])
+            if "prompt_dedupe_legacy_tags" in body:
+                data["prompt_dedupe_legacy_tags"] = bool(body["prompt_dedupe_legacy_tags"])
+            if "gate_v2_lean_history" in body:
+                data["gate_v2_lean_history"] = bool(body["gate_v2_lean_history"])
+            if "gate_v2_hist_lines" in body:
+                try:
+                    data["gate_v2_hist_lines"] = max(1, min(14, int(body["gate_v2_hist_lines"])))
+                except (TypeError, ValueError):
+                    data["gate_v2_hist_lines"] = 6
             if "botloop_guard_enabled" in body:
                 data["botloop_guard_enabled"] = bool(body["botloop_guard_enabled"])
             if "botloop_cooldown_min" in body:
