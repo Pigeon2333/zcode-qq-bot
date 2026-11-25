@@ -12,6 +12,7 @@ import copy
 import json
 import os
 import pathlib
+import random
 import sys
 import threading
 import time
@@ -488,13 +489,27 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
     chk("10d 判定前已先登记这条消息（供以后的历史行用）",
         A._caption_get("group", "555001", "p1") is not None)
 
+    # 2026-11-25 改：识图概率的骰子挪到等描述之前。此前概率为 0 时每张闲聊图都要先干等
+    # 满 4 秒才发现「不用回」，而主循环是一条一条处理消息的，这几秒会拖慢后面的消息。
     t0 = time.time()
     r = run_process(group_msg("[图片]", "p2", [U1]), vprob=0.0)
-    chk("10e 4 秒内没等到描述 → 退回旧路径：识图概率为 0 时不调模型、直接沉默",
+    chk("10e 识图概率为 0：带图的闲聊消息不等描述、不调模型，直接沉默",
         r["vis"] == [] and r["gates"] == [] and r["acked"] == [7001]
-        and any(x.startswith("AGENT_VCAP_MISS") for x in r["logs"])
-        and any("VISION_ZERO_SKIP" in x for x in r["logs"]), (r["vis"], len(r["gates"])))
-    chk("10f 等待有上限（不超过 5 秒）", time.time() - t0 < 5.5, round(time.time() - t0, 1))
+        and not any("VCAP_MISS" in x for x in r["logs"])
+        and any("识图概率 0% 未中，未等待描述" in x for x in r["logs"]),
+        (r["vis"], len(r["gates"]), r["logs"][-3:]))
+    chk("10f 不等描述：整条消息不到 1 秒处理完（此前要先等满 4 秒）",
+        time.time() - t0 < 1.5, round(time.time() - t0, 1))
+    chk("10f' 没评论的图照样登记后台描述（供以后的对话用）；没人在等，所以不插队",
+        ("group", "555001", "p2") in A._CAP["pending"]
+        and not any(j.get("key") == ("group", "555001", "p2") and j.get("front")
+                    for j in A._CAP["queue"]))
+    t0 = time.time()
+    with patched(random, random=lambda: 0.0):         # 必定掷中
+        r = run_process(group_msg("[图片]", "p2b", [U1]), vprob=0.3)
+    chk("10f'' 掷中了才等描述，等待有上限（不超过 5 秒）",
+        time.time() - t0 < 5.5 and any("VCAP_MISS" in x for x in r["logs"]),
+        round(time.time() - t0, 1))
 
     r = run_process(group_msg("看看这张图", "p3", [U1]))
     chk("10g 没描述但话里明确在问这张图 → 仍同步识图（旧路径保留）",
@@ -516,7 +531,7 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
     chk("10k 不带图的消息 → 不涉及识图，照常判定", r["vis"] == [] and len(r["gates"]) == 1)
     # 设置页的「识图概率」在后台识图下照样管用（和旧路径同一个骰子、同一个例外）
     r = run_process(group_msg("[图片]", "p10", [U1]), preloaded=["一张梗图"], vprob=0.0)
-    chk("10o 后台识图开着 + 识图概率为 0：描述照样拿到，但不评论这张图",
+    chk("10o 后台识图开着 + 识图概率为 0：不评论这张图，也不去取描述",
         r["gates"] == [] and r["mcalls"] == 0 and r["acked"] == [7001]
         and any(x.startswith("AGENT_VISION_PROB_SKIP") for x in r["logs"]), (len(r["gates"]), r["logs"][-2:]))
     r = run_process(group_msg("看看这张图", "p11", [U1]), preloaded=["一张梗图"], vprob=0.0)
@@ -610,17 +625,30 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
             raised = str(e)
     chk("11d 一张图都取不到 → 直接判失败，不调模型", raised == "视觉调用：图片全部获取失败"
         and len(asks) == 1, raised)
-    # 显式模型失败 → 落到链式降级（不再直接抛）
+    # 显式模型失败：主 Key 限流 → 模型链里给同一个模型绑定的 Key → 才是链上下一个模型。
+    # （此前主 Key 一失败就跳过链上同名条目，配置的识图模型等于只认主 Key：2026-11-24
+    #   线上 28 次速写全落到了链上别的模型，配置的识图模型一次没上。）
     asks.clear()
     rt = _RT()
     base11["RT"] = rt
     base11["glm_chat"] = _scripted((429, "该模型当前访问量过大，请您稍后再试", None),
-                                   (200, "链上模型看到", "stop"))
+                                   (200, "用链上绑定的 Key 看到", "stop"))
     base11["_chain_candidates"] = lambda: [("k2", {"key": "k"}, "vm", 8, 0), ("k9", {"key": "z"}, "m9", 8, 0)]
     with patched(A, **base11):
         m, text = A.call_vision([{"content": "S"}, {"content": "U"}], ["http://img/1.jpg"])
-    chk("11e 显式模型限流 → 落到链上下一个模型（链上不再重试它）",
-        m == "m9" and text == "链上模型看到" and len(asks) == 2, (m, text, len(asks)))
+    chk("11e 显式模型主 Key 限流 → 接着用模型链里给它绑定的 Key",
+        m == "vm" and text == "用链上绑定的 Key 看到" and len(asks) == 2, (m, text, len(asks)))
+    asks.clear()
+    _rt11 = _RT()
+    _rt11.cooldowns = {}            # 夹具的冷却表是类级别共享的，这条要从干净状态开始
+    base11["RT"] = _rt11
+    base11["glm_chat"] = _scripted((429, "该模型当前访问量过大，请您稍后再试", None),
+                                   (429, "该模型当前访问量过大，请您稍后再试", None),
+                                   (200, "链上模型看到", "stop"))
+    with patched(A, **base11):
+        m, text = A.call_vision([{"content": "S"}, {"content": "U"}], ["http://img/1.jpg"])
+    chk("11e' 这个模型所有的 Key 都不行 → 才落到链上下一个模型",
+        m == "m9" and text == "链上模型看到" and len(asks) == 3, (m, text, len(asks)))
 
     # ---------- 12. 识图模型选择（不打回复链的冷却） ----------
     cool_log = {}
@@ -1126,26 +1154,30 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
         chk("18n 关掉任一项 → 这一项回到从前，其余照旧",
             A.prompt_v2_on() is False and A.reply_v2_on() is False and A.reply_json_on() is False)
 
-    # ---------- 19. 识图速写不外泄（2026-11-24 实测：整段「（图：…）」发进了群） ----------
+    # ---------- 19. 识图：速写不外泄、识图用谁、对话链归对话链（2026-11-24 事故与次日复审） ----------
+    # 19a–19b：2026-11-24 23:23 实测，整段「（图：…）」速写被当成回复发进了群
     for src_txt, want in [
         ("(图：东方灵梦Q版表情包：黑发大红蝴蝶结女孩半睁红眼啃西瓜，一脸不爽)", []),
         ("（图：一只猫）", []),
         ("哈哈这个好玩(图：柴犬表情包)", ["哈哈这个好玩"]),
-        ("[Attached image/png: image.png]", []),
-        ("笑死 [Attached image/jpeg: photo.jpg] 太逗了", ["笑死  太逗了"]),
+        ("哈哈(图：一只猫(橘色)趴在桌上)这个好玩", ["哈哈这个好玩"]),
+        ("（图：猫）笑死（图：狗（吐舌头（真的很可爱）））了", ["笑死了"]),
+        ("前半（图：没有闭合括号的内容", ["前半（图：没有闭合括号的内容"]),
+        ("正常说话（图里那只猫好胖）", ["正常说话（图里那只猫好胖）"]),
         ("这小拳头举起来是在给自己打气还是在憋着要揍人啊",
          ["这小拳头举起来是在给自己打气还是在憋着要揍人啊"]),
     ]:
         _p19 = A.parse_reply(src_txt)[0]
-        chk("19a 识图速写/附件回显不外泄：%r" % src_txt[:22], _p19 == want, _p19)
+        chk("19a 识图速写不外泄：%r" % src_txt[:20], _p19 == want, _p19)
+    _code19 = "def f():\n    return (图：x) 1\n    pass"
+    chk("19a' 只剥速写和它紧挨着的空白，代码缩进原样保留",
+        A._strip_vcap_leak(_code19) == "def f():\n    return 1\n    pass",
+        repr(A._strip_vcap_leak(_code19)))
     chk("19b 提示词里的速写说明写了「别把这个写法带到回复里」",
         "别把「（图：…）」这几个字或它的写法带到回复里" in A._VCAP_NOTE)
-    # 视觉模型不能被选作文本回复模型（它被这样调用会照抄速写、对纯文字臆造图片）
-    chk("19c 视觉模型识别：4v/4.6v/4.5v/4.1v 都算，文本模型不算",
-        A._looks_vision_model("glm-4v-flash") and A._looks_vision_model("glm-4.6v-flash")
-        and A._looks_vision_model("glm-4.1v-thinking-flash")
-        and not A._looks_vision_model("glm-5.4")
-        and not A._looks_vision_model("deepseek-chat"))
+
+    # 19c：对话链就是对话链。模型链里配了谁来对话就用谁，不按名字另加禁令——
+    # 「设置为识图的是识图的，设置为对话的是对话的」是用户定的原则（2026-11-25）。
     _calls19 = []
     with patched(A, _chain_candidates=lambda: [("k1", {"key": "x"}, "glm-4v-flash", 4, 0),
                                                ("k3", {"key": "y"}, "deepseek-chat", 4, 0)],
@@ -1153,7 +1185,155 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
                      _calls19.append(model) or (200, {"choices": [{"message": {"content": "ok"}}]}))):
         A.call_glm_with_fallback([{"role": "system", "content": "s"},
                                   {"role": "user", "content": "u"}])
-    chk("19d 文本回复跳过视觉模型，只用文本模型", _calls19 == ["deepseek-chat"], _calls19)
+    chk("19c 对话链不按模型名字跳过：链里排第一的是视觉模型也照常用",
+        _calls19 == ["glm-4v-flash"], _calls19)
+    chk("19c' 「按名字判断视觉模型」的函数已经删掉", not hasattr(A, "_looks_vision_model"))
+
+    # 19d：识图用谁。「识图模型」只填模型名，用哪把 Key 靠模型链里给它的绑定。
+    _chain19 = [("main", {"key": "M"}, "zz-flagship", 4, 0),
+                ("k1", {"key": "A"}, "zzv-flash", 8, 0),
+                ("k3", {"key": "C"}, "zz-text", 4, 0)]
+    _names = lambda cs: [(c[0], c[2]) for c in cs]
+    with patched(A, _chain_candidates=lambda: list(_chain19), econ_on=lambda: False):
+        _vc = _names(A._vision_candidates("zzv-flash"))
+        _vc2 = _names(A._vision_candidates(""))
+    chk("19d 识图候选：配置的识图模型先用主 Key、再用链里给它绑定的 Key，然后才是链上其它模型",
+        _vc == [("main", "zzv-flash"), ("k1", "zzv-flash"),
+                ("main", "zz-flagship"), ("k3", "zz-text")], _vc)
+    chk("19d' 没配识图模型 → 只按模型链", _vc2 == [("main", "zz-flagship"), ("k1", "zzv-flash"), ("k3", "zz-text")], _vc2)
+    with patched(A, _chain_candidates=lambda: [("main", {"key": "M"}, "zzv-flash", 4, 0),
+                                               ("k1", {"key": "A"}, "zzv-flash", 4, 0)],
+                 econ_on=lambda: False):
+        _vc3 = _names(A._vision_candidates("zzv-flash"))
+    chk("19d'' 链里已经用主 Key 列了这个模型 → 不重复加一次主 Key",
+        _vc3 == [("main", "zzv-flash"), ("k1", "zzv-flash")], _vc3)
+    with patched(A, _chain_candidates=lambda: list(_chain19), econ_on=lambda: True):
+        _vc4 = _names(A._vision_candidates("zzv-flash"))
+    chk("19d''' 高峰降耗：链上兜底照旧跳过链首，配置的识图模型不受影响",
+        _vc4 == [("main", "zzv-flash"), ("k1", "zzv-flash"), ("k3", "zz-text")], _vc4)
+
+    # 19e：后台速写真的会用上链里绑定的 Key。
+    # 2026-11-24 线上：主 Key 视觉调用 429，链里给识图模型绑了能用的 Key 却被跳过，
+    # 28 次速写全部落到链上别的模型，配置的识图模型一次没上。
+    _tried19 = []
+
+    def _va19(m, kv, vmsgs, th, mt):
+        _tried19.append((m, (kv or {}).get("key")))
+        if m == "zzv-flash" and (kv or {}).get("key") == "A":
+            return 200, {"choices": [{"message": {"content": "一只橘猫"}}], "usage": {}}
+        return 429, {"error": {"message": "套餐已到期"}}
+    reset_cap()
+    with patched(A, _img_to_datauri=lambda u, d: "data:image/png;base64,AAAA",
+                 vision_caption_model=lambda: "zzv-flash",
+                 _chain_candidates=lambda: [("main", {"key": "M"}, "zzv-flash", 4, 0),
+                                            ("k1", {"key": "A"}, "zzv-flash", 4, 0)],
+                 _vision_attempt=_va19, econ_on=lambda: False):
+        _txt19 = A._caption_call(NullDaemon(), U1)
+    chk("19e 后台速写：主 Key 不行时，用模型链里给识图模型绑定的 Key",
+        _txt19 == "一只橘猫" and _tried19 == [("zzv-flash", "M"), ("zzv-flash", "A")], (_txt19, _tried19))
+    # 19f：同步识图（@/回复时）同一个道理
+    _tried19b = []
+
+    def _va19b(m, kv, vmsgs, th, mt):
+        _tried19b.append((m, (kv or {}).get("key")))
+        if (kv or {}).get("key") == "A":
+            return 200, {"choices": [{"message": {"content": "看见了"}}], "usage": {}}
+        return 429, {"error": {"message": "busy"}}
+    with patched(A, _img_to_datauri=lambda u, d: "data:image/png;base64,AAAA",
+                 vision_model=lambda: "zzv-flash",
+                 _chain_candidates=lambda: [("main", {"key": "M"}, "zzv-flash", 4, 0),
+                                            ("k1", {"key": "A"}, "zzv-flash", 4, 0),
+                                            ("k3", {"key": "C"}, "zz-text", 4, 0)],
+                 _vision_attempt=_va19b, resolve_thinking=lambda m, t: ({"thinking": {"type": "disabled"}}, 300),
+                 econ_on=lambda: False), patched(A.RT, cooldowns={}):
+        _mv19, _rv19 = A.call_vision([{"role": "system", "content": "s"},
+                                      {"role": "user", "content": "看看这张图"}], [U1])
+    chk("19f 同步识图：显式配的视觉模型同样能用上链里绑定的 Key",
+        (_mv19, _rv19) == ("zzv-flash", "看见了")
+        and _tried19b == [("zzv-flash", "M"), ("zzv-flash", "A")], (_mv19, _rv19, _tried19b))
+
+    # 19g：结构化输出的解析。2026-11-24 事故的起点是这条单引号输出被判成解析失败、
+    # 多花一次重试，重试落到了更弱的模型上——它本来是个完全正常的回复。
+    ok, o = A._parse_reply_json('{"want": 1, "say": [\'😂\'], "emoji": null, "memory": [], '
+                                '"wait": false, "voice": false, "sticker": null, "actions": []}')
+    chk("19g 单引号写法直接解析，不再触发重试", ok and o["want"] == 1 and o["say"] == ["😂"], (ok, o))
+    ok, o = A._parse_reply_json("{'want': 2, 'say': ['I like it', \"it's fine\"], 'emoji': None, "
+                                "'memory': [], 'wait': False, 'voice': False, 'sticker': None, 'actions': []}")
+    chk("19g' Python 字面量写法也能解析，字符串里的内容原样保留",
+        ok and o["say"] == ["I like it", "it's fine"], (ok, o))
+    ok, o = A._parse_reply_json('{"want": 2, "say": ["this is true and null"], "emoji": null,}')
+    chk("19g'' 结尾多一个逗号也行；字符串里的 true / null 字样不被改写",
+        ok and o["say"] == ["this is true and null"], (ok, o))
+    chk("19g''' 不是对象、缺 say 仍然判失败（不乱解析）",
+        A._parse_reply_json("直接说了一句话")[0] is False and A._parse_reply_json("{'want': 3}")[0] is False)
+
+    # 19h：速写没等到、要走同步识图时，先掷「识图概率」再花那次带人设的调用。
+    # 此前是先识图再掷点：2026-11-24 线上 17 条带图消息里 12 条走到这里，七成的识图调用白花。
+    # 同一天稍后又挪了一次：等描述之前就掷（见 10e），掷中了才等描述、才识图。
+    with patched(random, random=lambda: 0.99):        # 必定没掷中（概率 30%）
+        r = run_process(group_msg("[图片]", "p19a", [U1]), vprob=0.3)
+    chk("19h 识图概率没中 → 不等描述、不调用视觉，直接沉默",
+        r["vis"] == [] and r["sent"] == [] and r["acked"] == [7001]
+        and any("识图概率 30% 未中，未等待描述" in x for x in r["logs"]), (r["vis"], r["sent"], r["logs"]))
+    with patched(random, random=lambda: 0.0):         # 必定掷中
+        r = run_process(group_msg("[图片]", "p19b", [U1]), vprob=0.3)
+    chk("19h' 没等到速写 + 概率掷中 → 才去同步识图", r["vis"] == [1], (r["vis"], r["logs"]))
+    with patched(random, random=lambda: 0.99):
+        r = run_process(group_msg("看看这张图", "p19c", [U1]), vprob=0.3)
+    chk("19h'' 话里明确在问这张图 → 不掷点，照常识图（对话正等着图的信息）",
+        r["vis"] == [1] and not any("概率未中" in x for x in r["logs"]), (r["vis"], r["logs"]))
+    _rolls = []
+    with patched(random, random=lambda: (_rolls.append(1), 0.0)[1]):    # 必定掷中，并数掷了几次
+        r = run_process(group_msg("[图片]", "p19d", [U1]), vprob=0.3)
+    chk("19i 没等到速写、走去同步识图：骰子只有等描述之前那一次，不会掷第二遍",
+        r["vis"] == [1] and len(_rolls) == 1, (r["vis"], len(_rolls)))
+    _rolls = []
+    with patched(random, random=lambda: (_rolls.append(1), 0.0)[1]):
+        r = run_process(group_msg("[图片]", "p19e", [U1]), preloaded=["一张梗图"], vprob=0.3)
+    chk("19j 等到了描述：判定照常跑，骰子同样只有一次",
+        r["vis"] == [] and len(r["gates"]) == 1 and len(_rolls) == 1,
+        (r["vis"], len(r["gates"]), len(_rolls)))
+
+    # ---------- 20. 暂停的来源可追溯（2026-11-24 夜里被暂停了 23 分钟，查不出是谁暂停的） ----------
+    import http.client as _hc20
+    _tok20, _paused20 = dict(A._ADMIN_TOKEN), A.RT.paused
+    A._ADMIN_TOKEN["t"] = "smoke-token-20"
+    _srv20 = A.AdminServer((A.DAEMON_HOST, 0), A.AdminHandler)
+    _port20 = _srv20.server_address[1]
+    threading.Thread(target=_srv20.serve_forever, daemon=True).start()
+
+    def _post20(body):
+        cc = _hc20.HTTPConnection("127.0.0.1", _port20, timeout=5)
+        cc.request("POST", "/admin/pause", json.dumps(body).encode("utf-8"),
+                   {"Content-Type": "application/json", "X-QQBot-Token": "smoke-token-20"})
+        rr = cc.getresponse()
+        raw = rr.read()
+        cc.close()
+        return rr.status, json.loads(raw.decode("utf-8"))
+    try:
+        LOG.clear()
+        _st20, _r20 = _post20({"paused": False, "src": "smoke-test"})
+        _line20 = [x for x in LOG if x.startswith("AGENT_PAUSE")]
+        chk("20a 暂停接口的日志带上来源", _st20 == 200 and _r20.get("ok") is True
+            and _line20 and "src=smoke-test" in _line20[0], (_st20, _r20, _line20))
+        LOG.clear()
+        _post20({"paused": False})
+        _line20 = [x for x in LOG if x.startswith("AGENT_PAUSE")]
+        chk("20b 没报来源的记成 unknown", _line20 and "src=unknown" in _line20[0], _line20)
+    finally:
+        _srv20.shutdown()
+        _srv20.server_close()
+        A._ADMIN_TOKEN.clear()
+        A._ADMIN_TOKEN.update(_tok20)
+        with A.RT.lock:
+            A.RT.paused = _paused20
+    _src_ui20 = read_src("qq_admin_ui.py")
+    chk("20c 状态页按钮自报来源 ui；管理台转发时带上来源，并记一行含对端地址的日志",
+        "src:'ui'" in _src_ui20 and '"src": _src' in _src_ui20
+        and "UI_PAUSE paused=%s src=%s from=%s" in _src_ui20)
+    chk("20d 主人的遥控指令自报来源 remote", '"src": "remote"' in read_src("qq_bot_agent.py"))
+    chk("20e agent 启动时若处于暂停状态会明说（不会回复任何消息）",
+        "AGENT_READY_PAUSED" in read_src("qq_bot_agent.py"))
 
 print("\n%d 项失败" % len(fails) + (": " + "; ".join(fails) if fails else "（全部通过）"))
 sys.exit(1 if fails else 0)

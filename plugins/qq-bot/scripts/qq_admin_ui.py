@@ -947,7 +947,7 @@ async function toggleSchedPause(on){
 async function saveSchedPause(key,val){
  if(!val)return;
  await saveKVLoad('/api/app-config',{[key]:val},'定时暂停时间已更新（即时生效）')}
-async function togglePause(){const a=await api('/api/agent-status');await api('/api/pause',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paused:!a.paused})});toast('已'+(!a.paused?'暂停':'恢复'));load()}
+async function togglePause(){const a=await api('/api/agent-status');await api('/api/pause',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({paused:!a.paused,src:'ui'})});toast('已'+(!a.paused?'暂停':'恢复'));load()}
 let _runlogTimer=null,_runlogSrc='all';
 const _lvlColor={ok:'var(--ok)',err:'var(--err)',warn:'var(--warn)',info:'var(--fg)',dim:'var(--dim)'};
 const _srcName={daemon:'管道',agent:'大脑',boot:'启动',napcat:'NapCat'};
@@ -2217,7 +2217,6 @@ async function vZcode(){
 // ---- 设置页的子分页（做法同人设与风格的 __psTabBar）----
 // 一页一类：只改卡片的摆放位置，控件、配置键、保存方式都不变。
 // vSettings 按当前分页把对应的卡片函数拼起来；每个卡片函数是一段原样搬过来的 HTML。
-var __ST_TAB='general';
 const _ST_TABS=[
  ['general','通用','机器人是谁、运行在哪、哪些功能开着、应用怎么启停'],
  ['model','模型与消耗','用哪家的 Key、每次带多少上下文、高峰时段怎么省'],
@@ -2225,10 +2224,16 @@ const _ST_TABS=[
  ['safe','安全与隐私','防滥用、黑名单、账号风控，以及哪些数据会离开本机'],
  ['maint','自动化与维护','自动复盘、备份、缓存清理、看门狗'],
 ];
+// 记住上次停在哪个分页：刷新页面或从别的页面回来时不用重新找。
+// 存在浏览器本地；存不了（隐私模式等）也不影响使用，只是每次回到「通用」。
+function __stRecall(){try{var t=window.localStorage.getItem('zbk_st_tab');return _ST_TABS.some(x=>x[0]===t)?t:'general'}catch(e){return 'general'}}
+function __stRemember(tab){try{window.localStorage.setItem('zbk_st_tab',tab)}catch(e){}}
+function __stGo(tab){__ST_TAB=tab;__stRemember(tab);load()}
+var __ST_TAB=__stRecall();
 function __stTabBar(){return '<div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center">'
- +_ST_TABS.map(t=>'<button class="act'+(__ST_TAB===t[0]?'':' ghost')+'" style="margin:0" onclick="__ST_TAB=\''+t[0]+'\';load()">'+t[1]+'</button>').join('')
+ +_ST_TABS.map(t=>'<button class="act'+(__ST_TAB===t[0]?'':' ghost')+'" style="margin:0" onclick="__stGo(\''+t[0]+'\')">'+t[1]+'</button>').join('')
  +'<span class="k" style="font-size:12px">'+esc((_ST_TABS.find(x=>x[0]===__ST_TAB)||_ST_TABS[0])[2])+'</span></div>'}
-function goSettings(tab){__ST_TAB=_ST_TABS.some(x=>x[0]===tab)?tab:'general';goTab('settings')}
+function goSettings(tab){__ST_TAB=_ST_TABS.some(x=>x[0]===tab)?tab:'general';__stRemember(__ST_TAB);goTab('settings')}
 function stSec(t){return '<div class="k" style="margin:16px 0 -6px;font-weight:600;letter-spacing:1px">'+t+'</div>'}
 async function vSettings(){
  const [c,rv,kl]=await Promise.all([
@@ -7854,12 +7859,17 @@ class UiHandler(BaseHTTPRequestHandler):
                 return self._reply(200, {"ok": False, "error": str(e)[:200]})
         if u.path == "/api/pause":
             paused = bool(body.get("paused"))
+            # 来源由调用方自报（ui=状态页按钮 / remote=主人遥控指令）。暂停后机器人
+            # 一言不发，查「谁暂停的」全靠这行日志；对端地址用来区分浏览器和 agent 内部调用
+            _src = str(body.get("src") or "unknown")[:20]
+            _peer = "%s:%s" % self.client_address[:2]
+            _svc_out("UI_PAUSE paused=%s src=%s from=%s" % (paused, _src, _peer))
             cfg = load_json_const(MODEL_CHAIN_PATH, {})
             cfg["paused"] = paused
             write_const(MODEL_CHAIN_PATH, json.dumps(cfg, ensure_ascii=False, indent=2))
             try:
                 conn = http.client.HTTPConnection("127.0.0.1", _agent_port(), timeout=5)
-                payload = json.dumps({"paused": paused}).encode("utf-8")
+                payload = json.dumps({"paused": paused, "src": _src}).encode("utf-8")
                 conn.request("POST", "/admin/pause", body=payload,
                              headers={"Content-Type": "application/json",
                                       "X-QQBot-Token": read_const(TOKEN_PATH)})

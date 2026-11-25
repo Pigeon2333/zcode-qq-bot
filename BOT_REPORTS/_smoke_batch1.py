@@ -269,11 +269,24 @@ A._chain_candidates = lambda: [("k1", KV, "ma", 128, 0), ("k2", KV, "mv", 128, 0
                                ("k3", KV, "mb", 128, 0)]
 reset()
 A.vision_model = lambda: "mv"
-seq["mv"] = [(429, {"error": {"message": "已达到 5 小时的使用上限。"}})]
+# 2026-11-25 复审改了语义：指定模型先用主 Key，再用链里给同一个模型绑定的 Key，所有的 Key
+# 都不行才落到链上下一个模型（此前主 Key 一失败就跳过链上同名条目，等于只认主 Key）
+seq["mv"] = [(429, {"error": {"message": "已达到 5 小时的使用上限。"}}),
+             (200, {"choices": [{"message": {"content": "图里是一只猫"}}]})]
+seq["ma"] = [(200, {"choices": [{"message": {"content": "不应该被调到"}}]})]
+m, t = A.call_vision(VM, ["https://x/a.png"])
+chk("7c 指定视觉模型主 Key 失败 → 接着用链里给同一个模型绑定的 Key",
+    (m, t) == ("mv", "图里是一只猫"), (m, t))
+chk("7d 顺序是 主 Key → 链上绑定的 Key，不落到别的模型", [x[0] for x in log] == ["mv", "mv"],
+    [x[0] for x in log])
+
+reset()
+seq["mv"] = [(429, {"error": {"message": "已达到 5 小时的使用上限。"}}),
+             (429, {"error": {"message": "该模型当前访问量过大，请您稍后再试"}})]
 seq["ma"] = [(200, {"choices": [{"message": {"content": "图里是一只猫"}}]})]
 m, t = A.call_vision(VM, ["https://x/a.png"])
-chk("7c 指定视觉模型失败 → 走链式降级（此前直接抛异常）", (m, t) == ("ma", "图里是一只猫"), (m, t))
-chk("7d 链里不重复尝试指定模型", [x[0] for x in log] == ["mv", "ma"], [x[0] for x in log])
+chk("7d' 这个模型所有的 Key 都不行 → 才落到链上下一个模型",
+    (m, t) == ("ma", "图里是一只猫") and [x[0] for x in log] == ["mv", "mv", "ma"], [x[0] for x in log])
 
 reset()
 A.vision_model = lambda: ""

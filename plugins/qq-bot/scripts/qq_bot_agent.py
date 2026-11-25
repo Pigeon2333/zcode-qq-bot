@@ -678,13 +678,6 @@ def load_api_keys():
     return out
 
 
-def _looks_vision_model(model):
-    """是不是视觉模型（名字里的 v 标记：glm-4v / 4.6v / 4.5v / 4.1v…）。
-    只用来阻止它被选作文本回复模型——识图那条路是主动挑它的，不看这个。"""
-    m = str(model).lower()
-    return bool(re.search(r"\d+(?:\.\d+)?v(?:-|$)", m))
-
-
 def _model_default_ctx(model):
     """模型默认上下文档位（千 token）：4.6v 系小窗口，flash/旗舰 128k。"""
     m = str(model).lower()
@@ -873,12 +866,6 @@ def call_glm_with_fallback(messages, text_ctx="", budget_sec=200):
     now = time.time()
     _t0 = now
     for kid, kv, model, _ctx, _mo in cands:
-        # 视觉模型不当文本回复模型：它被这样调用时会照抄提示词里的「（图：…）」
-        # 速写、甚至对着纯文字臆造图片内容（2026-11-24 实测）。识图走
-        # _caption_call / call_vision，那条路会自己挑视觉模型，不依赖这里。
-        if _looks_vision_model(model):
-            tried.append("%s@%s(视觉模型,跳过)" % (model, kid))
-            continue
         if time.time() - _t0 > budget_sec:
             out("AGENT_BUDGET_OUT tried=%s elapsed=%.0fs（服务端不稳，本条放弃）"
                 % ("/".join(tried)[:120], time.time() - _t0))
@@ -1674,7 +1661,7 @@ def owner_command(msg, daemon=None):
     if t == "暂停" or t == "恢复":
         a = _ui_api("/api/agent-status") or {}
         want = (t == "暂停")
-        r = _ui_api("/api/pause", "POST", {"paused": want})
+        r = _ui_api("/api/pause", "POST", {"paused": want, "src": "remote"})
         if r is not None and r.get("ok", True):
             return True, "已%s回复" % t
         return True, "操作失败：管理台未运行"
@@ -3541,9 +3528,45 @@ _REACT_MARK_RE = re.compile(r"\[\s*回应\s*[:：]\s*(\d{1,4})\s*\]")
 _VOICE_MARK_ANY_RE = re.compile(r"\[\s*语音\s*\]")   # 兜底：正文残留剥掉
 # 出站兜底：模型偶尔会把内部的「（图：…）」速写当正文吐出来（2026-11-24 实测：
 # glm-4v-flash 被当作文本模型调用时，把整段速写原样发进了群）。这种括号说明不是人话。
-_VCAP_LEAK_RE = re.compile(r"[(（]\s*图\s*[:：][^)）]{0,200}[)）]")
-# 视觉模型的多模态回显格式（部分实现会把附件占位当成整条回复吐出来）
-_ATTACHED_ECHO_RE = re.compile(r"\[Attached\s+image/[a-z]+:\s*[^\]\n]{0,80}\]", re.I)
+# 只认开头；结尾要数配对括号（见 _strip_vcap_leak），一条正则做不到。
+_VCAP_OPEN_RE = re.compile(r"[(（]\s*图\s*[:：]")
+
+
+def _strip_vcap_leak(text):
+    """去掉混在回复里的「（图：…）」速写。
+
+    速写本身可能带括号（「一只猫(橘色)趴在桌上」），也可能中英文括号混用，所以从
+    开括号起数配对：中英文都算，数到配对的闭括号为止。找不到配对的闭括号说明这
+    不是一段完整的速写，原样保留。只动速写和它紧挨着的空白，别处的字符（包括
+    代码缩进）原样不动。"""
+    out, pos = [], 0
+    while True:
+        m = _VCAP_OPEN_RE.search(text, pos)
+        if not m:
+            break
+        depth, i, n = 1, m.end(), len(text)
+        while i < n and depth > 0:
+            ch = text[i]
+            if ch in "(（":
+                depth += 1
+            elif ch in ")）":
+                depth -= 1
+            i += 1
+        if depth != 0:
+            out.append(text[pos:m.end()])
+            pos = m.end()
+            continue
+        _pre = text[pos:m.start()]
+        _ws = _pre[-1:] in (" ", "\t") or (i < n and text[i] in " \t")
+        out.append(_pre.rstrip(" \t"))
+        pos = i
+        while pos < n and text[pos] in " \t":
+            pos += 1
+        # 速写两边原本有空格的留一个：中文紧挨着写的两侧不留，英文单词之间要留
+        if _ws and "".join(out) and pos < n and text[pos] not in "\n\r，。！？；：、）)」":
+            out.append(" ")
+    out.append(text[pos:])
+    return "".join(out)
 
 
 # ---------------- 上下文注入日志（排查"她怎么想出这话的"） ----------------
@@ -3786,9 +3809,8 @@ def parse_reply(text):
     # 不走主路径的标记剥离，[回应:63] 原样进群）。主路径在 parse 前已剥并
     # 执行表情动作，这里只是兜网；裸标记剥掉不影响正文。
     text = _REACT_MARK_RE.sub("", text)
-    # 「（图：…）」速写 / 多模态附件回显泄漏兜底（2026-11-24：整段速写被发进群）
-    text = _VCAP_LEAK_RE.sub("", text)
-    text = _ATTACHED_ECHO_RE.sub("", text)
+    # 「（图：…）」速写泄漏兜底（2026-11-24：整段速写被发进群）
+    text = _strip_vcap_leak(text)
     # [画: 描述] 标记：模型自主补触发画图（系统没自动识别但主人明显想画时）
     dm = _DRAW_MARK_RE.search(text)
     draw = re.sub(r"\s+", " ", dm.group(1)).strip()[:100] if dm else None
@@ -5431,12 +5453,39 @@ def _vision_attempt(m, kv, vmsgs, th, mt):
     return status, data
 
 
+def _vision_candidates(pref):
+    """识图用的候选 [(kid, key_value, model, ctx, max_out)]，两条识图路（后台速写、
+    同步识图）共用。
+
+    「识图模型」这个设置只填模型名，用哪把 Key 没处写。以前只拿主 Key 试一次，失败就
+    到模型链里找别的模型——模型链里就算给同一个模型绑了能用的 Key 也不会用
+    （2026-11-24 线上：28 次速写全部落到链上别的模型，配置的识图模型一次没上）。
+    现在的顺序：
+      配置的识图模型：主 Key → 模型链里给它绑定的 Key（按链里的先后）
+      → 模型链里的其它模型（高峰降耗开着时照旧跳过链首）
+    这里只决定「识图用谁」，不动模型链：对话链怎么排、谁先谁后是另一回事。"""
+    chain = _chain_candidates()
+    cands, seen = [], set()
+    if pref and pref not in _NO_VISION_MODELS:
+        for c in chain:
+            if c[2] == pref and c[0] not in seen:
+                seen.add(c[0])
+                cands.append(c)
+        if "main" not in seen:
+            cands.insert(0, ("main", None, pref, 0, 0))
+    rest = [c for c in chain if c[2] != pref]
+    if econ_on() and len(rest) > 1:
+        rest = rest[1:]
+    return cands + rest
+
+
 def call_vision(messages_text, image_urls, daemon=None):
     """视觉调用：user 内容转 multimodal（图片本地下载转 base64 直传——
     模型端拉 QQ 临时图链常 400，见 _img_to_datauri 注）。
 
-    模型选择：vision_model 配置了具体模型则只用它；留空则按模型链降级尝试
-    （glm-5.3-flash 等新模型原生支持图像输入）。失败抛异常由调用方降级纯文本。
+    模型选择见 _vision_candidates：「视觉模型」配置了就先用它（主 Key，再到模型链里
+    给它绑定的 Key），然后按模型链降级（glm-5.3-flash 等新模型原生支持图像输入）。
+    失败抛异常由调用方降级纯文本。
     接地指令：小模型对"文字+图"容易只按文字字面回复（用户实测"窜了是我
     肠胃不好"是在调侃图里华莱士低价，它没看图答非所问）——显式要求结合图。
     """
@@ -5462,30 +5511,8 @@ def call_vision(messages_text, image_urls, daemon=None):
 
     tried = []
     vm = vision_model()
-    if vm and vm not in _NO_VISION_MODELS:
-        # 显式指定：先试它；失败不再直接抛异常，落到下面的链式降级
-        th, mt = resolve_thinking(vm, messages_text[1]["content"] if isinstance(
-            messages_text[1]["content"], str) else "")
-        try:
-            status, data = _vision_attempt(vm, None, vmsgs, th, mt)
-        except (OSError, ValueError) as e:
-            status, data = 0, {"error": {"message": repr(e)[:120]}}
-        _text = _vision_text(status, data)
-        if _text is not None:
-            RT.set_current(vm)
-            log_usage(vm, (data.get("usage") if isinstance(data, dict) else {}) or {})
-            return vm, _text
-        out("AGENT_VISION_FAIL model=%s key=main http=%s cool=0s %s"
-            % (vm, status, _vision_err(status, data)[:80]))
-        tried.append(vm)
-
-    # 留空：按候选序尝试（条目可跨 Key；429/失效冷却切换；纯文本模型 400 → 学习跳过不冷却）
-    cands = _chain_candidates()
-    if econ_on() and len(cands) > 1:
-        cands = cands[1:]
-    for kid, kv, m, _ctx, _mo in cands:
-        if vm and m == vm:
-            continue   # 显式指定的模型上面刚试过，不重复
+    _qt = messages_text[1]["content"] if isinstance(messages_text[1]["content"], str) else ""
+    for kid, kv, m, _ctx, _mo in _vision_candidates(vm):
         ck = "%s:%s" % (kid, m)
         if m in _NO_VISION_MODELS:
             tried.append(m + "(纯文本)")
@@ -5495,7 +5522,8 @@ def call_vision(messages_text, image_urls, daemon=None):
             tried.append(m + "(冷却)")
             continue
         try:
-            th, mt = resolve_thinking(m, "")
+            # 显式指定的识图模型沿用旧做法：按消息文字判断要不要开思考；链上兜底的关着
+            th, mt = resolve_thinking(m, _qt if (vm and m == vm) else "")
             status, data = _vision_attempt(m, kv, vmsgs, th, mt)
         except (OSError, ValueError) as e:
             RT.cooldown(ck); tried.append(m)
@@ -5528,10 +5556,11 @@ def call_vision(messages_text, image_urls, daemon=None):
 
 # ---------------------------------------------------------------------------
 # 后台识图（对话架构改造·第 3 步）
-# 图一到达就在后台写一行描述存起来：主模型看的是描述，不用在回复前同步等识图，
-# 「识图概率」骰子也不掷了——图看没看过和要不要接话从此是两件事。
-# 旧路径下带图的闲聊消息：概率为 0 时整条丢弃（11 天 4,326 次），概率不为 0 时
-# 先花一次带完整人设的视觉调用、再决定说不说。
+# 图一到达就在后台写一行描述存起来：主模型看的是描述，不用在回复前同步等识图。
+# 带图的闲聊消息要不要评论，仍由设置页的「识图概率」决定（all_prob 档），而且骰子
+# 在识图之前掷（2026-11-25 改）：没掷中就既不等描述、也不花同步识图的调用，直接
+# 沉默；掷中了才等描述（最多 4 秒），没等到再花一次带完整人设的视觉调用。此前是
+# 先识图再掷点，2026-11-24 线上 17 条带图消息里 12 条走到同步识图，七成的调用白花。
 # ---------------------------------------------------------------------------
 VCAP_FORCE = None
 VCAP_DEFAULT = C.ARCH_V2_DEFAULTS["vision_caption"]
@@ -5673,7 +5702,8 @@ def _caption_enqueue(chat_type, chat_id, mid, urls, front=False, allowed=None):
 
 def _caption_call(daemon, url):
     """识一张图 → 描述原文。拿不到图 / 模型都不行 → None。
-    模型顺序：配置的识图模型（默认免费的 glm-4.6v-flash，走主 Key）→ 回复链。"""
+    模型顺序见 _vision_candidates：配置的识图模型（主 Key，再到模型链里给它绑定的
+    Key）→ 模型链里的其它模型。"""
     try:
         du = _img_to_datauri(url, daemon)
     except Exception:
@@ -5684,11 +5714,7 @@ def _caption_call(daemon, url):
             {"role": "user", "content": [
                 {"type": "text", "text": _CAPTION_PROMPT},
                 {"type": "image_url", "image_url": {"url": du}}]}]
-    pref = vision_caption_model()
-    cands = []
-    if pref and pref not in _NO_VISION_MODELS:
-        cands.append(("main", None, pref, 0, 0))
-    cands += [c for c in _chain_candidates() if c[2] != pref]
+    cands = _vision_candidates(vision_caption_model())
     now = time.time()
     for kid, kv, m, _ctx, _mo in cands:
         ck = "%s:%s" % (kid, m)
@@ -6130,10 +6156,75 @@ def json_rule_text(msg):
     return JSON_RULE_HEAD + want + (JSON_RULE_FIELDS % emoji) + length + JSON_RULE_TAIL
 
 
+_PY_LITERAL_RE = re.compile(r"\b(?:None|True|False)\b")
+
+
+def _loads_model_style(text):
+    """标准解析和控制字符修正都失败后的最后一试：容忍模型按 Python 习惯写的对象——
+    单引号字符串、None/True/False、结尾多一个逗号（2026-11-24 实测：
+    {"want": 1, "say": ['😂'], "emoji": null} 本来是个正常的回复，却因为单引号
+    被判成解析失败、白多一次重试调用，重试还落到了更弱的模型上）。
+    逐字符扫描，只动字符串外面的结构符，字符串里面的内容一个字不碰；整理完仍
+    交给 json.loads，不执行任何代码。仍然失败返回 None。"""
+    out, i, n, q = [], 0, len(text), None
+    while i < n:
+        ch = text[i]
+        if q:
+            if ch == "\\" and i + 1 < n:
+                nxt = text[i + 1]
+                # \\' 只在单引号串里是转义；到了双引号串里撇号不用转义
+                out.append("'" if nxt == "'" else "\\" + nxt)
+                i += 2
+                continue
+            if ch == q:
+                out.append('"')
+                q = None
+                i += 1
+                continue
+            if ch == '"':
+                out.append('\\"')
+            elif ch == "\n":
+                out.append("\\n")
+            elif ch == "\r":
+                pass
+            elif ch == "\t":
+                out.append("\\t")
+            elif ord(ch) < 32:
+                out.append(" ")
+            else:
+                out.append(ch)
+            i += 1
+            continue
+        if ch in "'\"":
+            q = ch
+            out.append('"')
+            i += 1
+            continue
+        m = _PY_LITERAL_RE.match(text, i)
+        if m:
+            out.append({"None": "null", "True": "true", "False": "false"}[m.group(0)])
+            i = m.end()
+            continue
+        if ch == ",":
+            k = i + 1
+            while k < n and text[k] in " \t\r\n":
+                k += 1
+            if k < n and text[k] in "}]":
+                i += 1
+                continue
+        out.append(ch)
+        i += 1
+    try:
+        return json.loads("".join(out))
+    except ValueError:
+        return None
+
+
 def _loads_lenient(text):
     """解析 JSON；失败时把字符串里面的原始换行/制表符按转义处理再试一次
     （模型偶尔会在 say 字段里直接换行，标准解析会整条失败、白多一次重试调用）。
-    只动字符串内部的控制字符，结构原样。仍然失败返回 None。"""
+    只动字符串内部的控制字符，结构原样。还不行再按 Python 字面量的写法整理一次
+    （见 _loads_model_style）。仍然失败返回 None。"""
     try:
         return json.loads(text)
     except ValueError:
@@ -6170,7 +6261,7 @@ def _loads_lenient(text):
     try:
         return json.loads("".join(out))
     except ValueError:
-        return None
+        return _loads_model_style(text)
 
 
 def _parse_reply_json(text):
@@ -6530,11 +6621,31 @@ def process(daemon, msg):
     # 描述进提示词；拿不到才退回旧的同步识图路径。直接对话（@/回复）仍让模型
     # 亲眼看图——对着图提问最吃细节；这里登记只为以后的历史行有速写可用。
     _vcap_mode = reply_v2_on() and vision_caption_on()
+    # 「识图概率」的骰子在这条路上掷过并且掷中了：后面的同步识图不再掷第二遍
+    _vision_dice_passed = False
     if _vcap_mode and msg.get("image_urls"):
         _trig_kind = msg.get("trigger_reason")
+        _wait_cap = (_trig_kind == "chat_random")
+        # 等描述之前先掷「识图概率」：没掷中的话，等到描述也是直接沉默，犯不着让主线程
+        # 干等最多 4 秒——主循环是一条一条处理消息的，这几秒会拖慢排在后面的消息
+        # （2026-11-25 复审发现：识图概率是默认的 0% 时，每张闲聊图都白等一轮）。
+        # 描述仍照常登记到后台补上，供以后的对话用；没人在等，就不插队。
+        # 话里明确提到这张图的不掷点（对话正等着图的信息）。
+        if _wait_cap and _vmode == "all_prob" and not _IMG_REF_RE.search(
+                str(msg.get("text") or "") + " " + str(msg.get("reply_text") or "")):
+            _p = vision_prob()
+            _vision_dice_passed = _p > 0 and __import__("random").random() < _p
+            if not _vision_dice_passed:
+                _caption_enqueue(msg["chat_type"], msg["chat_id"], msg.get("message_id"),
+                                 msg["image_urls"], front=False)
+                daemon.ack([msg["id"]])
+                RT.count_processed()
+                out("AGENT_VISION_PROB_SKIP msg_id=%s chat=%s/%s (后台识图：识图概率 %.0f%% 未中，未等待描述)"
+                    % (msg["id"], msg["chat_type"], msg["chat_id"], _p * 100))
+                return
         _caption_enqueue(msg["chat_type"], msg["chat_id"], msg.get("message_id"),
-                         msg["image_urls"], front=(_trig_kind == "chat_random"))
-        if _trig_kind == "chat_random":
+                         msg["image_urls"], front=_wait_cap)
+        if _wait_cap:
             _t_end = time.time() + 4.0
             _c = None
             while True:
@@ -6546,18 +6657,7 @@ def process(daemon, msg):
                 msg["_vcap"] = "；".join(_c["texts"])
                 out("AGENT_VCAP_HIT msg_id=%s chat=%s/%s" % (
                     msg["id"], msg["chat_type"], msg["chat_id"]))
-                # 设置页的「识图概率」在这条路径上照样管用，和旧路径同一个骰子、
-                # 同一个例外（话里明确提到这张图的直接过）：all_prob 档下，看到图
-                # 之后要不要评论仍然按概率来，概率为 0 就只留描述、不评论
-                if _vmode == "all_prob" and not _IMG_REF_RE.search(
-                        str(msg.get("text") or "") + " " + str(msg.get("reply_text") or "")):
-                    _p = vision_prob()
-                    if _p <= 0 or __import__("random").random() >= _p:
-                        daemon.ack([msg["id"]])
-                        RT.count_processed()
-                        out("AGENT_VISION_PROB_SKIP msg_id=%s chat=%s/%s (后台识图：识图概率 %.0f%% 未中)"
-                            % (msg["id"], msg["chat_type"], msg["chat_id"], _p * 100))
-                        return
+                # 「识图概率」的骰子已经在等描述之前掷过了（见上），这里不再掷
             else:
                 out("AGENT_VCAP_MISS msg_id=%s chat=%s/%s (%s)" % (
                     msg["id"], msg["chat_type"], msg["chat_id"],
@@ -6636,18 +6736,31 @@ def process(daemon, msg):
                 % (msg["id"], msg["chat_type"], msg["chat_id"]))
             return
         out("AGENT_BARE_AT_TEXT msg_id=%s (表情回应未启用，退文本链打招呼)" % msg["id"])
-    # 识图概率为 0（识了也必然不说）且这条不属于「对话正在等图的信息」时，不白跑
-    # 视觉调用。此前 all_prob 档每张带图消息都先识图再 100% 丢弃——11 天 4,326 次。
-    # @/回复机器人是对着图说话，仍然照常识图。
-    if _vision_go and _vmode == "all_prob" and vision_prob() <= 0 \
+    # 要走同步识图（后台速写没等到）时，先掷「识图概率」再花这次调用：没掷中的话
+    # 看不看图都不会说，没必要先花几千 token 带完整人设识一次图（2026-11-24 线上：
+    # 17 条带图消息里 12 条走到这里，每条先识图、其中七成再被骰子丢掉）。后台速写
+    # 稍后仍会补上，供以后的对话用。概率为 0 时连骰子都不用掷。
+    # @/回复机器人、或话里明确在问这张图：对话正等着图的信息，不掷点，照常识图。
+    # 闲聊带图的消息如果已经在等描述之前掷过并且掷中了（_vision_dice_passed），
+    # 这里不再掷第二遍。
+    if _vision_go and _vmode == "all_prob" and not _vision_dice_passed \
             and msg.get("trigger_reason") not in ("at", "reply_to_bot") \
             and not _IMG_REF_RE.search(str(msg.get("text") or "") + " "
                                        + str(msg.get("reply_text") or "")):
-        daemon.ack([msg["id"]])
-        RT.count_processed()
-        out("AGENT_VISION_ZERO_SKIP msg_id=%s chat=%s/%s (识图概率为 0，不调用视觉)"
-            % (msg["id"], msg["chat_type"], msg["chat_id"]))
-        return
+        _p = vision_prob()
+        if _p <= 0:
+            daemon.ack([msg["id"]])
+            RT.count_processed()
+            out("AGENT_VISION_ZERO_SKIP msg_id=%s chat=%s/%s (识图概率为 0，不调用视觉)"
+                % (msg["id"], msg["chat_type"], msg["chat_id"]))
+            return
+        import random as _rnd
+        if _rnd.random() >= _p:
+            daemon.ack([msg["id"]])
+            RT.count_processed()
+            out("AGENT_VISION_PROB_SKIP msg_id=%s chat=%s/%s (all_prob 概率未中 %.0f%%，未调用视觉)"
+                % (msg["id"], msg["chat_type"], msg["chat_id"], _p * 100))
+            return
     if _vision_go:
         try:
             model, reply = call_vision(messages, msg["image_urls"], daemon=daemon)
@@ -6703,14 +6816,7 @@ def process(daemon, msg):
         if _img_referenced:
             out("AGENT_VISION_REF msg_id=%s chat=%s/%s (上下文提及图，跳过概率)"
                 % (msg["id"], msg["chat_type"], msg["chat_id"]))
-        else:
-            import random as _rnd
-            if _rnd.random() >= vision_prob():
-                daemon.ack([msg["id"]])
-                RT.count_processed()
-                out("AGENT_VISION_PROB_SKIP msg_id=%s chat=%s/%s (all_prob 概率未中 %.0f%%)"
-                    % (msg["id"], msg["chat_type"], msg["chat_id"], vision_prob() * 100))
-                return
+        # 概率骰子已经在识图之前掷过了（见上），这里不再掷第二遍
     if reply is None:
         last_err = None
         if reply_v2_on():
@@ -7165,7 +7271,9 @@ class AdminHandler(BaseHTTPRequestHandler):
                 return self._reply(400, {"ok": False, "error": "bad json"})
             with RT.lock:
                 RT.paused = bool(body.get("paused", False))
-            out("AGENT_PAUSE set=%s" % RT.paused)
+            # 来源由调用方自报（ui=状态页按钮 / remote=主人遥控指令），只用来记日志：
+            # 暂停后机器人一言不发，查「谁暂停的」全靠这一行
+            out("AGENT_PAUSE set=%s src=%s" % (RT.paused, str(body.get("src") or "unknown")[:20]))
             return self._reply(200, {"ok": True, "paused": RT.paused})
         if urllib.parse.urlsplit(self.path).path == "/admin/pin-model":
             n = int(self.headers.get("Content-Length") or 0)
@@ -7595,6 +7703,11 @@ def main():
     threading.Thread(target=_daily_review_loop, args=(daemon,), daemon=True).start()
     out("AGENT_READY chain=%s daemon=127.0.0.1:%d admin=127.0.0.1:%d"
         % (",".join(RT.snapshot()["chain"]), args.port, args.admin_port))
+    if RT.paused:
+        # 暂停状态存在 model_chain.json 里，重启后照旧生效。启动时明说一次，
+        # 免得「机器人怎么不说话」查半天（2026-11-24 夜里被暂停了 23 分钟才发现）。
+        out("AGENT_READY_PAUSED 机器人处于暂停状态（model_chain.json 里 paused=true）："
+            "不会回复任何消息，直到在状态页点「恢复回复」或主人发遥控指令「恢复」")
 
     while True:
         try:

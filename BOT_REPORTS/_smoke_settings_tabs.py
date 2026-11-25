@@ -112,8 +112,15 @@ const helpers = input.helpers;
 const fix = input.fix;
 const expectations = input.expectations;
 const view = {innerHTML: ''};
+// 浏览器本地存储的桩：记下写了什么；fail=true 时模拟隐私模式下的「存不了」
+const store = {data: {}, fail: false};
+const fakeLS = {
+  getItem: function (k) { if (store.fail) throw new Error('denied'); return (k in store.data) ? store.data[k] : null; },
+  setItem: function (k, v) { if (store.fail) throw new Error('denied'); store.data[k] = String(v); },
+};
 const sandbox = {
   TAB: 'settings',
+  window: {localStorage: fakeLS},
   document: {getElementById: () => null, querySelector: () => null, querySelectorAll: () => []},
   $: () => view,
   api: p => Promise.resolve(JSON.parse(JSON.stringify(fix[p] || {}))),
@@ -121,7 +128,8 @@ const sandbox = {
 };
 const names = Object.keys(sandbox);
 const mod = new Function(...names, helpers + '\n' + settings + '\nreturn {getTab: () => __ST_TAB, ' +
-  ['vSettings', 'goSettings', 'stIdentity', 'stEnv', 'stKeys', 'stLean', 'stDyn', 'stHist', 'stEcon',
+  ['vSettings', 'goSettings', '__stRecall', '__stRemember', '__stGo', 'stIdentity', 'stEnv', 'stKeys',
+   'stLean', 'stDyn', 'stHist', 'stEcon',
    'stArchV2', 'stStyle', 'stLen', 'stTiming', 'stVision', 'stActivityGuide', 'stAbuse', 'stBlack',
    'stRisk', 'stPrivacy', 'stReview', 'stBackup', 'stCache', 'stWatchdog', 'stWebSearch',
    'stOwnerFeatures', 'stApp', 'stCaption'].map(n => n + ':' + n).join(',') + '};')(...Object.values(sandbox));
@@ -158,6 +166,24 @@ const args = {stIdentity: [c], stEnv: [c], stKeys: [c, keysL], stLean: [rv], stD
   }
   mod.goSettings('no-such-tab');
   out.fallback = mod.getTab();
+  // 分页状态记住：存过就回到上次的分页；存的是不认识的值 / 没存过 / 存储不可用 → 「通用」
+  out.memory = {};
+  store.data['zbk_st_tab'] = 'style';
+  out.memory.stored = mod.__stRecall();
+  store.data['zbk_st_tab'] = 'no-such';
+  out.memory.junk = mod.__stRecall();
+  delete store.data['zbk_st_tab'];
+  out.memory.none = mod.__stRecall();
+  store.fail = true;
+  out.memory.broken = mod.__stRecall();
+  mod.__stRemember('model');            // 存不了也不能抛
+  store.fail = false;
+  mod.__stGo('model');
+  out.memory.go = [mod.getTab(), store.data['zbk_st_tab']];
+  mod.goSettings('safe');
+  out.memory.goSettings = [mod.getTab(), store.data['zbk_st_tab']];
+  mod.goSettings('no-such-tab');
+  out.memory.goJunk = [mod.getTab(), store.data['zbk_st_tab']];
   process.stdout.write(JSON.stringify(out));
 })().catch(e => { process.stdout.write(JSON.stringify({error: String(e && e.stack || e)})); });
 """
@@ -176,8 +202,6 @@ def run_page_checks():
     exp = {"cards": EXPECT_CARDS, "sections": EXPECT_SECTIONS, "keys": SAVE_KEYS}
     work = pathlib.Path(tempfile.mkdtemp(prefix="qqbot_ui_smoke_"))
     try:
-        jf = work / "check.js"
-        jf.write_text(JS, encoding="utf-8")
         jf = work / "check.js"
         jf.write_text(JS, encoding="utf-8")
 
@@ -213,6 +237,14 @@ def run_page_checks():
         chk("每个配置项的保存入口次数符合预期（%d 项）" % len(SAVE_KEYS), not res["missing"],
             res["missing"])
         chk("不认识的分页名退回「通用」", res["fallback"] == "general", res["fallback"])
+        _m = res.get("memory") or {}
+        chk("分页状态记住：存过 → 回到上次的分页；不认识的值 / 没存过 → 通用",
+            _m.get("stored") == "style" and _m.get("junk") == "general" and _m.get("none") == "general",
+            _m)
+        chk("分页状态记住：浏览器不让存（隐私模式）→ 回到通用，且不报错", _m.get("broken") == "general", _m)
+        chk("分页状态记住：点分页条和「去填 Key」都会记下当前分页",
+            _m.get("go") == ["model", "model"] and _m.get("goSettings") == ["safe", "safe"]
+            and _m.get("goJunk") == ["general", "general"], _m)
         # 自检：故意从「风格与活跃程度」卡片去掉一个闭合标签，闭合检查必须能查出来
         # （这个错误 2026-11-24 真出过，语法检查查不出来）
         needle = "决定</div></div></div>`}"
