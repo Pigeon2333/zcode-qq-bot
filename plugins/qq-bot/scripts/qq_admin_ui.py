@@ -5274,11 +5274,20 @@ class UiHandler(BaseHTTPRequestHandler):
         # 否则前端只能显示无信息的「网络错误」，真实原因被埋没
         try:
             super().handle_one_request()
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            pass  # 连接类异常：对方已断，无从回包
         except Exception as e:
             try:
                 self._reply(500, {"ok": False, "error": "%r" % e})
             except Exception:
                 pass
+        else:
+            return
+        # 走到结尾一律关连接：请求没正常走完，连接可能已断或响应写了一半，
+        # 若 close_connection 仍为 False，handle() 会在这条连接上继续读下一个
+        # 请求——死连接上立刻再抛、再吞，线程无限空转（生产旧进程曾积
+        # 160 个这类空转线程后对外停止响应）。
+        self.close_connection = True
 
     def _body(self):
         """读 JSON 请求体：超上限 413、坏 JSON 400、非对象 400（原来静默当空对象）。

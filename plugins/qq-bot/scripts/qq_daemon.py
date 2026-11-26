@@ -2958,6 +2958,13 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
             pass
         except Exception:
             pass
+        else:
+            return
+        # 异常后必须关连接：连接已断（或请求没走完、状态未知），若
+        # close_connection 仍为 False，handle() 会在这条死连接上再次
+        # readline——立刻再抛、再被这里吞掉，线程无限空转（生产旧进程
+        # 曾积 160 个这类空转线程后对外停止响应）。异常一律不回包：连接已经坏了。
+        self.close_connection = True
 
     @property
     def daemon(self):
