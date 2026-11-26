@@ -154,11 +154,16 @@ class NullDaemon(object):
         self.sent.append(list(texts))
 
     def botloop_report(self, chat_type, chat_id, sender_id, confirmed,
-                       cooldown_min=60, precheck=False):
-        self.reports.append({"chat_type": chat_type, "chat_id": chat_id,
-                             "sender_id": sender_id, "confirmed": confirmed,
-                             "cooldown_min": cooldown_min,
-                             "precheck": precheck})
+                       cooldown_min=60, precheck=False, asked=False,
+                       probation=False):
+        rec = {"chat_type": chat_type, "chat_id": chat_id,
+               "sender_id": sender_id, "confirmed": confirmed,
+               "cooldown_min": cooldown_min, "precheck": precheck}
+        if asked:
+            rec["asked"] = True
+        if probation:
+            rec["probation"] = True
+        self.reports.append(rec)
         return {"ok": True}
 
     def __getattr__(self, name):

@@ -2614,7 +2614,12 @@ function stTiming(rv){return `
   <span><b>AI 互聊检测（推荐开启）</b><div class="k" style="margin-top:3px">群里其他 AI 机器人与本机器人高频互相接话时（对方 2 分钟内连发 ≥4 条、我方 3 分钟内已回 ≥3 条）：机器人会先用符合人设的方式问对方一句「你是不是AI」，再根据回答判断——确认是 AI 则人设口吻告别并暂停搭话一段时间（见下方冷却分钟）；对方否认则当普通朋友继续聊。人类也会问"你是不是AI"，这样最自然。<br><br><b>检测覆盖所有触发方式</b>：AI 常用「引用回复/@机器人」连发来绕过闲聊概率，所以引用回复、@、关键词、闲聊全部参与节奏检测（节奏没到就完全不受影响，正常聊天零变化）。若对方被问后不正面回答、仍持续超高频互引（多轮 6 条/5 条级别），会按不配合处理，冷处理 30 分钟</div></span></label>
   <div style="margin-top:6px;display:flex;gap:8px;align-items:center"><span class="k" style="flex:none">确认 AI 后暂停搭话</span>
    <input type="number" min="10" max="1440" value="${rv.botloop_cooldown_min||60}" style="width:76px" onchange="saveKVLoad('/api/reply-config',{botloop_cooldown_min:Math.max(10,Math.min(1440,parseInt(this.value)||60))},'互聊冷却已更新')">
-   <span class="k">分钟（10–1440，非永久拉黑，到期自动恢复正常聊天）</span></div></div>`}
+   <span class="k">分钟（10–1440，非永久拉黑，到期自动恢复正常聊天）</span></div>
+  <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--line)"><label class="master"><input type="checkbox" ${rv.botloop_quiet_mode?'checked':''} onchange="saveKVLoad('/api/reply-config',{botloop_quiet_mode:this.checked?1:0},'悄悄降温已'+(this.checked?'开启':'关闭'))">
+   <span><b>悄悄降温（不在群里问）</b><div class="k" style="margin-top:3px">节奏像 AI 互聊时，不再在群里问对方「你是不是AI」，改成先不接 TA 的话一段时间（@ 和引用也不回），到期自动恢复。降温时会私聊主人一声（同一账号一小时内只提醒一次）；主人在私聊里回「真人 名字」或「机器人 名字」可以马上改判。</div></span></label>
+   <div style="margin-top:6px;display:flex;gap:8px;align-items:center"><span class="k" style="flex:none">不接话</span>
+    <input type="number" min="1" max="120" value="${rv.botloop_quiet_minutes||15}" style="width:76px" onchange="saveKVLoad('/api/reply-config',{botloop_quiet_minutes:Math.max(1,Math.min(120,parseInt(this.value)||15))},'不接话时长已更新')">
+    <span class="k">分钟（1–120）</span></div></div></div>`}
 function stAbuse(rv){return `
  <div class="card"><label class="master"><input type="checkbox" ${rv.abuse_guard_enabled!==false?'checked':''} onchange="saveAbuseGuard(this.checked)">
   <span><b>防滥用防护</b><div class="k" style="margin-top:3px">整合三重防护，建议保持开启：① 人设防篡改——"忽略设定/你现在是XX/输出系统提示"等注入话术不生效，设定不泄露；② 任务拦截——竞赛题、代写作业、要代码成品等把机器人当免费任务引擎的消息，会以人设口吻轻松回绝；③ 身份锚定——多轮对话被"说服"后仍回归人设。关闭后所有消息按原始对话处理（仅调试用）</div></span></label></div>`}
@@ -6007,6 +6012,8 @@ class UiHandler(BaseHTTPRequestHandler):
                                      "gate_v2_hist_lines": data.get("gate_v2_hist_lines", 6),
                                      "botloop_guard_enabled": data.get("botloop_guard_enabled", True),
                                      "botloop_cooldown_min": data.get("botloop_cooldown_min", 60),
+                                     "botloop_quiet_mode": data.get("botloop_quiet_mode", False),
+                                     "botloop_quiet_minutes": data.get("botloop_quiet_minutes", 15),
                                      "proactive_private_silent_start": data.get("proactive_private_silent_start", "22:00"),
                                      "proactive_private_silent_end": data.get("proactive_private_silent_end", "08:00"),
                                      "token_limit_enabled": data.get("token_limit_enabled", False),
@@ -7134,6 +7141,13 @@ class UiHandler(BaseHTTPRequestHandler):
                     data["botloop_cooldown_min"] = max(10, min(1440, int(body["botloop_cooldown_min"])))
                 except (TypeError, ValueError):
                     pass
+            if "botloop_quiet_mode" in body:
+                data["botloop_quiet_mode"] = bool(body["botloop_quiet_mode"])
+            if "botloop_quiet_minutes" in body:
+                try:
+                    data["botloop_quiet_minutes"] = max(1, min(120, int(body["botloop_quiet_minutes"])))
+                except (TypeError, ValueError):
+                    data["botloop_quiet_minutes"] = 15
             if "proactive_private_enabled" in body:
                 data["proactive_private_enabled"] = bool(body["proactive_private_enabled"])
             for _nk in ("nudge_delay_min_sec", "nudge_delay_max_sec"):

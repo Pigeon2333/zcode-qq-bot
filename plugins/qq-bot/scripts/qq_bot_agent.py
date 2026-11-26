@@ -606,13 +606,24 @@ class DaemonClient:
             "content": str(content or ""), "on": bool(on)}, timeout=25)
 
     def botloop_report(self, chat_type, chat_id, sender_id, confirmed,
-                       cooldown_min=60, precheck=False):
+                       cooldown_min=60, precheck=False, quiet=False,
+                       quiet_min=15, asked=False, probation=False):
         """AI 判定回执：daemon 据此冷却该发送者或恢复正常聊天。
-        precheck=True 表示这是发问前预判跳过（弱证据），daemon 不落盘长期记忆。"""
-        return self._request("POST", "/botloop", {
-            "chat_type": chat_type, "chat_id": chat_id,
-            "sender_id": sender_id, "confirmed": bool(confirmed),
-            "cooldown_min": cooldown_min, "precheck": bool(precheck)})
+        precheck=True 表示这是发问前预判跳过（弱证据），daemon 不落盘长期记忆。
+        quiet=True：悄悄降温——只在请求里多带 quiet/quiet_min 两个字段。
+        asked=True / probation=True：试探已发出 / verify 判"像真人"的缓期落盘，
+        各只在请求里多带一个同名字段。"""
+        body = {"chat_type": chat_type, "chat_id": chat_id,
+                "sender_id": sender_id, "confirmed": bool(confirmed),
+                "cooldown_min": cooldown_min, "precheck": bool(precheck)}
+        if quiet:
+            body["quiet"] = True
+            body["quiet_min"] = quiet_min
+        if asked:
+            body["asked"] = True
+        if probation:
+            body["probation"] = True
+        return self._request("POST", "/botloop", body)
 
     def ack(self, ids):
         return self._request("POST", "/ack", {"ids": ids})
@@ -5035,6 +5046,95 @@ def _botloop_precheck(lines):
         return False
 
 
+# ---------------- AI 互聊「悄悄降温」：待改判表与主人通知 ----------------
+# 全部内存态（重启即清，daemon 侧 quiet 相态同样是内存态，两边一起消失）。
+
+_BOTLOOP_QUIET_PENDING = {}    # 键：归一化名字 / sender_id 字符串 → 待改判条目
+_BOTLOOP_QUIET_NOTIFY_TS = {}  # 键：sender_id → 上次私聊主人的时间戳（1 小时限频）
+_BOTLOOP_QUIET_VERDICT_RE = re.compile(
+    r"^\s*(真人|机器人)\s*[:：]?\s*(\S.{0,39}?)\s*$")
+
+
+def _botloop_quiet_cfg():
+    """读 reply_config 里的悄悄降温开关与分钟数（钳 1–120，缺/坏值按 15）。"""
+    cfg = load_json_const(REPLY_CONFIG_PATH, {})
+    on = bool(cfg.get("botloop_quiet_mode", False))
+    try:
+        mins = int(cfg.get("botloop_quiet_minutes", 15))
+    except (TypeError, ValueError):
+        mins = 15
+    return on, max(1, min(120, mins))
+
+
+def _botloop_quiet_name_of(msg):
+    """降温对象的名字：群名片/昵称，没有就退回 QQ 号字符串。"""
+    return str(msg.get("sender_name") or "").strip() \
+        or str(msg.get("sender_id") or "")
+
+
+def _botloop_pending_touch(now=None):
+    """查/写待改判表前顺手清掉超过 24 小时的条目。"""
+    now = time.time() if now is None else now
+    for k in [k for k, v in _BOTLOOP_QUIET_PENDING.items()
+              if now - v.get("ts", 0) > 86400]:
+        _BOTLOOP_QUIET_PENDING.pop(k, None)
+
+
+def _botloop_quiet_register(msg, quiet_min):
+    """每次进入降温都登记待改判条目（不管主人通知有没有发出去）。"""
+    now = time.time()
+    _botloop_pending_touch(now)
+    entry = {"chat_type": msg.get("chat_type"), "chat_id": msg.get("chat_id"),
+             "sender_id": msg.get("sender_id"),
+             "name": _botloop_quiet_name_of(msg), "ts": now,
+             "quiet_min": quiet_min}
+    key = re.sub(r"\s+", "", str(entry["name"])).casefold()
+    sid = str(msg.get("sender_id") or "")
+    if key:
+        _BOTLOOP_QUIET_PENDING[key] = entry
+    if sid:
+        _BOTLOOP_QUIET_PENDING[sid] = entry
+
+
+def _botloop_quiet_find(token):
+    """按归一化名字或 sender_id 字符串查待改判条目；查不到返回 None。"""
+    now = time.time()
+    _botloop_pending_touch(now)
+    t = str(token or "").strip()
+    if not t:
+        return None
+    ent = _BOTLOOP_QUIET_PENDING.get(re.sub(r"\s+", "", t).casefold())
+    return ent if ent is not None else _BOTLOOP_QUIET_PENDING.get(t)
+
+
+def _botloop_quiet_notice(daemon, msg, quiet_min):
+    """降温后私聊主人一声（两条消息）。1 小时内同一账号只发一条。
+    返回 "yes" | "no-rate" | "no-owner"。"""
+    sid = str(msg.get("sender_id") or "")
+    oq = owner_qq()
+    if not oq:
+        return "no-owner"
+    now = time.time()
+    if now - _BOTLOOP_QUIET_NOTIFY_TS.get(sid, 0) < 3600:
+        return "no-rate"    # 限频跳过时不更新时间戳
+    _BOTLOOP_QUIET_NOTIFY_TS[sid] = now
+    name = _botloop_quiet_name_of(msg)
+    place = str(msg.get("chat_id") or "")
+    try:
+        names = daemon.group_names()
+        place = str(names.get(place) or place)   # 带缓存的群名映射，一次调用
+    except Exception:
+        pass
+    try:
+        daemon.send("private", oq, [
+            "「%s」里「%s」的说话节奏像机器人，我先不接 TA 的话了，约 %d 分钟后自动恢复。"
+            % (place, name, quiet_min),
+            "认错了就回我「真人 %s」，确认是机器人就回我「机器人 %s」。" % (name, name)])
+    except Exception as e:
+        out("AGENT_BOTLOOP_QUIET_NOTICE_FAIL %r" % e)
+    return "yes"
+
+
 def _devctrl_should_ask(text, mode, flow):
     """是否需要发起授权（协议一）。mode: auto | keyword。
 
@@ -7142,6 +7242,39 @@ def process(daemon, msg):
             RT.count_processed()
             out("AGENT_QUIET owner chat=%s/%s" % (msg["chat_type"], msg["chat_id"]))
             return
+    # 悄悄降温的主人改判：仅私聊+主人+开关开；表里查不到一律不拦截
+    # （不能吞掉主人正常聊天），且不经过任何模型调用
+    if owner and msg["chat_type"] == "private" and _botloop_quiet_cfg()[0]:
+        _bv = _BOTLOOP_QUIET_VERDICT_RE.match(str(msg.get("text") or ""))
+        if _bv:
+            _bent = _botloop_quiet_find(_bv.group(2))
+            if _bent:
+                _bbot = _bv.group(1) == "机器人"
+                _vok = True
+                try:
+                    _bv_cool = load_json_const(REPLY_CONFIG_PATH, {}).get(
+                        "botloop_cooldown_min", 60)
+                    daemon.botloop_report(_bent.get("chat_type"),
+                                          _bent.get("chat_id"),
+                                          _bent.get("sender_id"), _bbot,
+                                          _bv_cool, precheck=False)
+                except Exception as e:
+                    _vok = False    # 条目保留在待改判表里，主人稍后再回一次就行
+                    out("AGENT_BOTLOOP_REPORT_FAIL %r" % e)
+                _vreply = ("没改成，稍后再回我一次。" if not _vok else
+                           ("好，「%s」按机器人处理，这段时间不再搭话。" if _bbot
+                            else "好，把「%s」当真人，这就恢复搭话。")
+                           % str(_bent.get("name") or ""))
+                try:
+                    daemon.send("private", msg["chat_id"], [_vreply])
+                except Exception as e:
+                    out("AGENT_BOTLOOP_OWNER_VERDICT_SEND_FAIL %r" % e)
+                daemon.ack([msg["id"]])
+                RT.count_processed()
+                out("AGENT_BOTLOOP_OWNER_VERDICT sender=%s kind=%s%s"
+                    % (_bent.get("sender_id"), "bot" if _bbot else "human",
+                       "" if _vok else " ok=False"))
+                return
     # 限额：到达上限停止一切响应（对所有人生效，防挤占同套餐其他业务）；
     # 唯一例外是主人私聊遥控指令——管理通道本身不耗 token，且是解除限额的入口
     hold, used, cap, hours = token_limit_state()
@@ -7262,8 +7395,32 @@ def process(daemon, msg):
             out("AGENT_BOTLOOP_PRECHECK_PASS msg_id=%s sender=%s base=%s"
                 % (msg["id"], _pre_sid, _base))
             return process(daemon, msg)
+        # 悄悄降温（开关开）：预判像机器人后不发试探——让 daemon 静默一段时间
+        # 并私聊主人一声；不构造 messages、不为试探调模型、不往群里发任何东西
+        _q_on, _q_mins = _botloop_quiet_cfg()
+        if _q_on:
+            try:
+                _q_cool = load_json_const(REPLY_CONFIG_PATH, {}).get(
+                    "botloop_cooldown_min", 60)
+                daemon.botloop_report(msg["chat_type"], msg["chat_id"],
+                                      msg.get("sender_id"), False, _q_cool,
+                                      quiet=True, quiet_min=_q_mins)
+            except Exception as e:
+                out("AGENT_BOTLOOP_REPORT_FAIL %r" % e)
+            _botloop_quiet_register(msg, _q_mins)
+            _q_notice = _botloop_quiet_notice(daemon, msg, _q_mins)
+            daemon.ack([msg["id"]])
+            RT.count_processed()
+            out("AGENT_BOTLOOP_QUIET msg_id=%s chat=%s/%s sender=%s "
+                "quiet_min=%d notice=%s"
+                % (msg["id"], msg["chat_type"], msg["chat_id"],
+                   msg.get("sender_id"), _q_mins, _q_notice))
+            return
         messages, active_p = build_messages(daemon, msg, ctx_k=32)
-        reply = str(call_glm_with_fallback(messages, "")[1] or "").strip()
+        try:
+            reply = str(call_glm_with_fallback(messages, "")[1] or "").strip()
+        except Exception:
+            reply = ""    # 生成失败＝没发出试探，下面走 NOSND
         _probe_text = ""
         if reply and "[SKIP]" not in reply.upper():
             # 和普通回复一样过 parse_reply：剥掉记忆/表情等控制标记再发送
@@ -7275,6 +7432,22 @@ def process(daemon, msg):
             if _probe_clean:
                 daemon.send(msg["chat_type"], msg["chat_id"], [_probe_clean[:500]])
                 _probe_text = _probe_clean[:80]
+        # 试探真的发出去了才标 asked：daemon 从此刻起才把对方的消息当「回答」；
+        # 没发出（空回复/含 [SKIP]/生成失败）→ 弱证据 cleared 1 小时不落盘
+        try:
+            _mins = load_json_const(REPLY_CONFIG_PATH, {}).get(
+                "botloop_cooldown_min", 60)
+            if _probe_text:
+                daemon.botloop_report(msg["chat_type"], msg["chat_id"],
+                                      msg.get("sender_id"), False, _mins,
+                                      asked=True)
+            else:
+                daemon.botloop_report(msg["chat_type"], msg["chat_id"],
+                                      msg.get("sender_id"), False, _mins,
+                                      precheck=True)
+                out("AGENT_BOTLOOP_PROBE_NOSND msg_id=%s" % msg["id"])
+        except Exception as e:
+            out("AGENT_BOTLOOP_REPORT_FAIL %r" % e)
         daemon.ack([msg["id"]])
         RT.count_processed()
         _probe_log = ("AGENT_BOTLOOP_PROBE msg_id=%s chat=%s/%s"
@@ -7296,13 +7469,14 @@ def process(daemon, msg):
         try:
             _mins = load_json_const(REPLY_CONFIG_PATH, {}).get("botloop_cooldown_min", 60)
             daemon.botloop_report(msg["chat_type"], msg["chat_id"],
-                                  msg.get("sender_id"), is_bot, _mins)
+                                  msg.get("sender_id"), is_bot, _mins,
+                                  probation=(not is_bot))
         except Exception as e:
             out("AGENT_BOTLOOP_REPORT_FAIL %r" % e)
         daemon.ack([msg["id"]])
         RT.count_processed()
-        out("AGENT_BOTLOOP_VERDICT msg_id=%s sender=%s is_bot=%s"
-            % (msg["id"], msg.get("sender_id"), is_bot))
+        out("AGENT_BOTLOOP_VERDICT msg_id=%s sender=%s is_bot=%s probation=%s"
+            % (msg["id"], msg.get("sender_id"), is_bot, not is_bot))
         return
     # 任务桥仅主人：执行器会运行模型生成的 Python。此前没有主人校验——白名单
     # 群里任何人发「任务：…」或粘贴长编程题都会进入沙箱执行器，结果发回该群

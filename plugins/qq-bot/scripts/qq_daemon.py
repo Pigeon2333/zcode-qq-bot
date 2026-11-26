@@ -1795,9 +1795,13 @@ class Daemon:
     def _botloop_gate(self, chat_type, chat_id, sender_id, sender_name=""):
         """互聊检测状态机（所有群触发路径共用门，含 @ / 引用回复）：
         None=不拦截；返回 (True,"botloop_probe")=让 agent 发人设化试探；
-        (True,"botloop_verify")=对方已回答，交给 agent 判定；
-        (False,"botloop")=已确认 AI 冷却中，静默。
-        cleared 相=问过一次但不是 AI（或没正面回答），1 小时内不再试探、正常聊。
+        (True,"botloop_verify")=试探已发出（asked）后对方的第一条消息，交给
+        agent 判定（判定期间后续消息静默）；
+        (False,"botloop")=静默：confirmed 冷却中 / probe 命中但 agent 还没发问
+        （300 秒内，等预判与试探生成）/ 发问后判定进行中。
+        cleared 相=问过一次但不是 AI（或没正面回答），1 小时内不再试探、正常聊；
+        带 human_pending 的 cleared 要等这 1 小时平安到期才落盘 human（期间
+        又撞升级线则按不配合转 confirmed、不落 human）。
         状态仅存内存（重启即清，重新试探一轮即可）。"""
         if not self._reply_config().get("botloop_guard_enabled", True):
             return None
@@ -1813,8 +1817,28 @@ class Daemon:
                 if now < st.get("until", 0):
                     return False, "botloop"
                 del self._botloop[bkey]          # 冷却结束，恢复正常
+            elif ph == "quiet":
+                # 悄悄降温：与 confirmed 同样的完全静默；到期直接删状态
+                # （不转 cleared），后半段的正常逻辑照走
+                if now < st.get("until", 0):
+                    return False, "botloop"
+                del self._botloop[bkey]
             elif ph == "probe":
-                if now - st.get("ts", 0) <= 600:  # 10 分钟内等对方回答
+                if not st.get("asked"):
+                    # 命中后 agent 还要做模型预判、生成试探（开关开还要私聊
+                    # 主人），这几秒里对方再说话不是「回答」——先静默等结果
+                    if now - st.get("ts", 0) <= 300:
+                        return False, "botloop"
+                    # 300 秒还没发问＝agent 一直没发（生成失败等），不问了
+                    self._botloop[bkey] = {"phase": "cleared", "ts": now}
+                    out("AGENT_LOG {\"msg\": \"botloop_probe_nosend\", "
+                        "\"chat\": %s, \"sender\": %s}"
+                        % (json.dumps(str(chat_id)), json.dumps(str(sender_id))))
+                    return None
+                if now - st.get("asked", 0) <= 600:  # 发问后 10 分钟内等回答
+                    if st.get("verifying"):
+                        return False, "botloop"   # 上一条还在判定，先静默
+                    st["verifying"] = True   # 只把发问后第一条消息送去判定
                     return True, "botloop_verify"
                 # 试探无回应：不是高频互聊，1 小时内不再问，正常聊
                 self._botloop[bkey] = {"phase": "cleared", "ts": now}
@@ -1838,6 +1862,13 @@ class Daemon:
                                    json.dumps(str(sender_id))))
                             return False, "botloop"
                     return None                  # 刚问过，正常放行
+                if st.get("human_pending"):
+                    # 「否认是 AI」的一方观察期满（这 1 小时没再撞升级线），
+                    # 现在才落盘 human 30 天；期间升级成 confirmed 的走不到这
+                    self._verdict_save(sender_id, "human")
+                    out("AGENT_LOG {\"msg\": \"botloop_verdict_human\", "
+                        "\"chat\": %s, \"sender\": %s}"
+                        % (json.dumps(str(chat_id)), json.dumps(str(sender_id))))
                 del self._botloop[bkey]
         if self._botloop_hit(chat_type, chat_id, sender_id, sender_name):
             # 7 天内 verify 判成 AI 的长期记忆：跳过试探，直接进 confirmed 冷却
@@ -1861,15 +1892,42 @@ class Daemon:
         return None
 
     def botloop_report(self, chat_type, chat_id, sender_id,
-                       confirmed, cooldown_min=60, precheck=False):
+                       confirmed, cooldown_min=60, precheck=False,
+                       quiet=False, quiet_min=15,
+                       asked=False, probation=False):
         """agent 判定回执：confirmed=True → 该发送者进入冷却（非永久）并落盘
         bot 判定（7 天内再命中直接冷却，不再试探）；
         False → 记为"问过但不是 AI"，1 小时内不再试探、正常聊天
         （不能直接清状态：高频还在，清了会立刻再次命中、反复问"你是不是AI"），
         并落盘 human 判定（30 天内不再试探）；precheck=True 是发问前预判
-        跳过的弱证据，只进 cleared 1 小时，不落盘。"""
+        跳过的弱证据，只进 cleared 1 小时，不落盘。
+        asked=True：试探真的发出去了——只给 probe 相补记 asked 时间戳
+        （相不是 probe 就是空操作），不改相、不落盘；此后对方的下一条消息
+        闸门才当「回答」放行判定。
+        probation=True：verify 判"像真人"的缓期落盘——只进 cleared 1 小时并带
+        human_pending，这 1 小时里没再撞升级线，闸门到期时才落盘 human。
+        quiet=True：「悄悄降温」——不落任何判定，直接静默 quiet_min 分钟
+        （钳 1–120），到期后闸门删状态恢复正常。"""
         bkey = "%s|%s|%s" % (chat_type, chat_id, sender_id)
+        if quiet:
+            try:
+                mins = int(quiet_min) if quiet_min is not None else 15
+            except (TypeError, ValueError):
+                mins = 15
+            mins = max(1, min(120, mins))
+            with self.lock:
+                self._botloop[bkey] = {"phase": "quiet",
+                                       "until": time.time() + mins * 60}
+            out("AGENT_LOG {\"msg\": \"botloop_quiet\", \"chat\": %s, "
+                "\"sender\": %s, \"quiet_min\": %d}"
+                % (json.dumps(str(chat_id)), json.dumps(str(sender_id)), mins))
+            return {"ok": True}
         with self.lock:
+            if asked:
+                st = self._botloop.get(bkey)
+                if st and st.get("phase") == "probe":
+                    st["asked"] = time.time()
+                return {"ok": True}
             if confirmed:
                 try:
                     mins = max(10, min(1440, int(cooldown_min or 60)))
@@ -1878,10 +1936,13 @@ class Daemon:
                 self._botloop[bkey] = {"phase": "confirmed",
                                        "until": time.time() + mins * 60}
             else:
-                self._botloop[bkey] = {"phase": "cleared", "ts": time.time()}
+                _new = {"phase": "cleared", "ts": time.time()}
+                if probation:
+                    _new["human_pending"] = True
+                self._botloop[bkey] = _new
         if confirmed:
             self._verdict_save(sender_id, "bot")
-        elif not precheck:
+        elif not precheck and not probation:
             self._verdict_save(sender_id, "human")
         out("AGENT_LOG {\"msg\": \"botloop_report\", \"sender\": %s, \"confirmed\": %s}"
             % (json.dumps(str(sender_id)), json.dumps(bool(confirmed))))
@@ -3360,14 +3421,21 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
                 return self._reply(200, {"ok": ok, "detail": detail})
             if u.path == "/botloop":
                 # agent 判定回执：确认 AI → 冷却+落盘 bot；否认 → 落盘 human；
-                # precheck=True → 发问前预判跳过（弱证据，只清 1 小时不落盘）
+                # precheck=True → 发问前预判跳过（弱证据，只清 1 小时不落盘）；
+                # quiet=True → 悄悄降温（静默 quiet_min 分钟，不落盘）；
+                # asked=True → 试探已发出，给 probe 相补记时间戳；
+                # probation=True → verify 判"像真人"，cleared 1 小时缓期落盘
                 return self._reply(200, d.botloop_report(
                     body.get("chat_type") or "group",
                     str(body.get("chat_id") or ""),
                     str(body.get("sender_id") or ""),
                     bool(body.get("confirmed")),
                     body.get("cooldown_min"),
-                    bool(body.get("precheck"))))
+                    bool(body.get("precheck")),
+                    bool(body.get("quiet")),
+                    body.get("quiet_min"),
+                    bool(body.get("asked")),
+                    bool(body.get("probation"))))
             if u.path == "/send":
                 res = d.send_texts(body["chat_type"], body["chat_id"], body["texts"],
                                    reply_message_id=body.get("reply_message_id"))
