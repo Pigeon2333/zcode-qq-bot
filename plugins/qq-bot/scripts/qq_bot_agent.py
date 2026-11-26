@@ -606,12 +606,13 @@ class DaemonClient:
             "content": str(content or ""), "on": bool(on)}, timeout=25)
 
     def botloop_report(self, chat_type, chat_id, sender_id, confirmed,
-                       cooldown_min=60):
-        """AI 判定回执：daemon 据此冷却该发送者或恢复正常聊天。"""
+                       cooldown_min=60, precheck=False):
+        """AI 判定回执：daemon 据此冷却该发送者或恢复正常聊天。
+        precheck=True 表示这是发问前预判跳过（弱证据），daemon 不落盘长期记忆。"""
         return self._request("POST", "/botloop", {
             "chat_type": chat_type, "chat_id": chat_id,
             "sender_id": sender_id, "confirmed": bool(confirmed),
-            "cooldown_min": cooldown_min})
+            "cooldown_min": cooldown_min, "precheck": bool(precheck)})
 
     def ack(self, ids):
         return self._request("POST", "/ack", {"ids": ids})
@@ -4976,6 +4977,17 @@ def _devctrl_keyword_hit(text, flow):
                for k in flow.get("keywords") or [])
 
 
+def _botloop_bool_flag(v):
+    """从严解析模型输出的 is_bot：只有布尔 True 或不分大小写的字符串 "true"
+    算机器人；false、"false"、null、缺字段、其它任何值都算不是。
+    （判成机器人会告别+落盘 7 天冷却，方向宁可放过。）"""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str) and v.strip().lower() == "true":
+        return True
+    return False
+
+
 def _botloop_judge(text):
     """小模型判定：被问'是不是AI'后对方的回答是否承认/显形为 AI。
     返回 True=确认 AI；判定失败一律 False（宁可当人类继续聊）。"""
@@ -4991,9 +5003,35 @@ def _botloop_judge(text):
         m = _re.search(r"\{[^{}]*\}", str(raw or ""), _re.S)
         if not m:
             return False
-        return bool(json.loads(m.group(0)).get("is_bot"))
+        return _botloop_bool_flag(json.loads(m.group(0)).get("is_bot"))
     except Exception as e:
         out("AGENT_BOTLOOP_JUDGE_ERR %r" % e)
+        return False
+
+
+def _botloop_precheck(lines):
+    """发试探之前的小模型预判：对方最近的话像不像 AI 生成。
+    返回 True=像机器人（继续试探）；False=像真人或判定失败（都不试探，
+    真人 16/17 的误伤率不能靠试探话术去验）。写法照 _botloop_judge：
+    小模型、一行 JSON {"is_bot": true|false}，异常/解析不了按真人处理。"""
+    import re as _re
+    prompt = ("下面是同一个账号在群里最近说的话，按时间先后排列。"
+              "判断这些话像不像 AI/机器人/程序生成的：客服腔、模板化的自我介绍、"
+              "反复说自己是模型或助手、机械重复同一句。"
+              "真人打字快、话短、有错别字、口语、玩梗、开玩笑说自己是机器人，"
+              "都算真人。拿不准按真人。"
+              "只输出一行 JSON：{\"is_bot\": true} 或 {\"is_bot\": false}"
+              + chr(10) +
+              chr(10).join(str(x) for x in (lines or [])))
+    try:
+        _m, raw = call_glm_with_fallback([{"role": "user", "content": prompt}])
+        m = _re.search(r"\{[^{}]*\}", str(raw or ""), _re.S)
+        if not m:
+            out("AGENT_BOTLOOP_PRECHECK_FAIL %r" % "输出里没有 JSON")
+            return False
+        return _botloop_bool_flag(json.loads(m.group(0)).get("is_bot"))
+    except Exception as e:
+        out("AGENT_BOTLOOP_PRECHECK_FAIL %r" % e)
         return False
 
 
@@ -7186,8 +7224,47 @@ def process(daemon, msg):
         # AI 互聊 v2：daemon 状态机送来的试探/判定轮
     _tr = msg.get("trigger_reason")
     if _tr == "botloop_probe":
+        # 发问前先让模型看一眼对方最近的话：日志可追溯的 17 次试探 16 次是真人，
+        # 预判像真人/拿不准就不发试探（弱证据只清 1 小时，不落盘长期记忆）。
+        _pre_sid = str(msg.get("sender_id") or "")
+        try:
+            _pre_hist = daemon.history(msg["chat_type"], msg["chat_id"],
+                                       limit=30) or []
+        except Exception:
+            _pre_hist = []
+        _pre_rows = [r for r in _pre_hist
+                     if str(r.get("sender_id") or "") == _pre_sid
+                     and not r.get("is_bot") and str(r.get("text") or "").strip()]
+        _pre_rows.sort(key=lambda r: r.get("ts") or 0)
+        _pre_is_bot = _botloop_precheck(
+            [str(r.get("text") or "").strip()[:120] for r in _pre_rows[-12:]])
+        out("AGENT_BOTLOOP_PRECHECK sender=%s is_bot=%s%s"
+            % (_pre_sid, _pre_is_bot, "" if _pre_is_bot else "（不试探）"))
+        if not _pre_is_bot:
+            try:
+                _pre_mins = load_json_const(REPLY_CONFIG_PATH, {}).get(
+                    "botloop_cooldown_min", 60)
+                daemon.botloop_report(msg["chat_type"], msg["chat_id"],
+                                      msg.get("sender_id"), False, _pre_mins,
+                                      precheck=True)
+            except Exception as e:
+                out("AGENT_BOTLOOP_REPORT_FAIL %r" % e)
+            # 预判像真人：daemon 记了本来触发（base_trigger）的，还原后走正常
+            # 处理（@/引用机器人不能石沉大海）；没记的就是本来就不会触发的
+            # 旁观消息——到此为止，不替用户决定机器人多说话（触发与否完全
+            # 听 daemon 的，不看 at_me/has_reply 兜底）。
+            _base = str(msg.get("base_trigger") or "")
+            if not _base:
+                daemon.ack([msg["id"]])
+                RT.count_processed()
+                return
+            msg["trigger_reason"] = _base
+            out("AGENT_BOTLOOP_PRECHECK_PASS msg_id=%s sender=%s base=%s"
+                % (msg["id"], _pre_sid, _base))
+            return process(daemon, msg)
         messages, active_p = build_messages(daemon, msg, ctx_k=32)
         reply = str(call_glm_with_fallback(messages, "")[1] or "").strip()
+        _probe_text = ""
         if reply and "[SKIP]" not in reply.upper():
             # 和普通回复一样过 parse_reply：剥掉记忆/表情等控制标记再发送
             #（模型偶尔把 [记忆@…] 混进试探回复，原样外发就是把协议词发进群）
@@ -7197,10 +7274,14 @@ def process(daemon, msg):
                                     if x and str(x).strip()).strip()
             if _probe_clean:
                 daemon.send(msg["chat_type"], msg["chat_id"], [_probe_clean[:500]])
+                _probe_text = _probe_clean[:80]
         daemon.ack([msg["id"]])
         RT.count_processed()
-        out("AGENT_BOTLOOP_PROBE msg_id=%s chat=%s/%s"
-            % (msg["id"], msg["chat_type"], msg["chat_id"]))
+        _probe_log = ("AGENT_BOTLOOP_PROBE msg_id=%s chat=%s/%s"
+                      % (msg["id"], msg["chat_type"], msg["chat_id"]))
+        if _probe_text:
+            _probe_log += " probe=%s" % json.dumps(_probe_text, ensure_ascii=False)
+        out(_probe_log)
         return
     if _tr == "botloop_verify":
         their = str(msg.get("text") or "").strip()

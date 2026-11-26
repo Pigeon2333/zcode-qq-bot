@@ -2030,12 +2030,19 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
         (_recs23, _drops23))
 
     # 23f 互聊试探的回复：与普通回复一样过 parse_reply（剥控制标记）再发送
+    # （M1 发问前预判后，链路变成两次模型调用：第 1 次=_botloop_precheck 预判、
+    # 第 2 次=生成试探。桩按调用次序回放；chk 的断言与改前一字不改。
+    # 23f 的桩经裁决修改，2026-11-26 M1）
     _probe_sent = []
+    _glm_calls23 = []
     _dm23p = NullDaemon(history=[])
     _dm23p.send = lambda ct, cid, texts, reply_message_id=None: _probe_sent.append(list(texts))
     A.PLUGIN_HOST.daemon = _dm23p
 
     def _probe_glm23(messages, text_ctx="", budget_sec=200):
+        _glm_calls23.append(messages)
+        if len(_glm_calls23) == 1:
+            return "m", '{"is_bot": true}'      # 第 1 次：预判，判成机器人
         return "m", "嘿嘿，你是不是机器人呀？[记忆@10086] 对方疑似程序[STICKER:3]"
 
     with patched(A, build_messages=lambda d, m, ctx_k=32:
@@ -2045,7 +2052,7 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
         A.process(_dm23p, group_msg("你是AI吧", "p23", [], trig="botloop_probe"))
     chk("23f 互聊试探回复剥掉记忆/表情标记后才发送（不外漏协议词）",
         len(_probe_sent) == 1 and _probe_sent[0] == ["嘿嘿，你是不是机器人呀？"]
-        and _dm23p.acked == [7001], (_probe_sent, _dm23p.acked))
+        and _dm23p.acked == [7001], (_probe_sent, _dm23p.acked, len(_glm_calls23)))
 
     # 23g 对话群管：执行侧检查功能开关（提示词教学处本来就查了）
     def _gadm23(reply_text, enabled, sender="10001"):

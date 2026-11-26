@@ -98,6 +98,11 @@ REPLY_CONFIG_PATH = os.path.realpath(os.path.join(DATA_DIR, "reply_config.json")
 # kw_recall_on, kw_recall[], kw_mute_on, kw_mute_words[], kw_mute_min, _state{}}}}
 GROUP_ADMIN_PATH = os.path.realpath(os.path.join(DATA_DIR, "group_admin.json"))
 GROUP_MODES_PATH = os.path.realpath(os.path.join(DATA_DIR, "group_reply_modes.json"))
+# AI 互聊判定落盘（agent verify 结论的长期记忆）：{qq: {"kind": "human"|"bot", "ts": unix秒}}
+# human 有效期 30 天、bot 7 天（见 BOTLOOP_VERDICT_TTL）；预判跳过是弱证据，不落盘。
+BOTLOOP_VERDICTS_PATH = os.path.realpath(
+    os.path.join(DATA_DIR, "botloop_verdicts.json"))
+BOTLOOP_VERDICT_TTL = {"human": 30 * 86400, "bot": 7 * 86400}
 
 _print_lock = threading.Lock()
 
@@ -792,6 +797,11 @@ class Daemon:
         self.stats = {"received": 0, "triggered": 0, "sent": 0, "dropped_rate": 0}
         self.quiet_until = 0.0  # 安静模式截止时间戳（0=关闭；@/回复不受影响）
         self._botloop = {}      # AI 互聊状态机：chat|id|sender → {phase, ts/until}
+        self._verdicts = {}     # AI 互聊判定落盘缓存：qq → {"kind", "ts"}（botloop_verdicts.json）
+        self._verdicts_sig = -1         # 落盘文件签名（mtime+size）；-1=未读过（含「无文件」也要走一次）
+        self._verdicts_refresh()        # 启动时读一次；之后每次评估前按签名热加载
+        self._owner_sig = -1            # 主人 QQ（app_config.owner_qq）热加载签名；-1=未读过
+        self._owner_qq_val = ""
         self._peer_talk = {}    # 群友对话中标记：chat_id → 最后一次群友间@/引用的时间
         self._out_dedup = {}    # 出站去重："chat_key\norm_text" → ts（防任何机制重发同文）
         self.ws_last_ok = time.time()  # 动作通道最近一次成功响应
@@ -1215,6 +1225,10 @@ class Daemon:
                 "record_url": info.get("record_url", ""),
                 "forward_lines": info.get("forward_lines") or [],
             }
+            if info.get("base_trigger"):
+                # 被互聊闸门覆盖成 botloop_probe 前的本来触发原因（M1 返工 1）：
+                # agent 发问前预判放行后按它走正常处理；没被覆盖的消息不带这个键。
+                item["base_trigger"] = info["base_trigger"]
             if rt_fetch_id:
                 # 后台线程补查被引原文（get_msg）→ 补进 item 再入收件箱；
                 # 本地 NapCat 毫秒级，agent 轮询周期（1-2s）内几乎总能赶上。
@@ -1650,6 +1664,93 @@ class Daemon:
         r"(?i)(?<![a-z0-9])(ai|a\.i|bot|gpt|deepseek|claude|gemini|glm|kimi|qwen"
         r"|通义|千问|文心|豆包|智谱|moonshot|llm|大模型|人工智能|机器人|assistant)(?![a-z0-9])")
 
+    # ---------- AI 互聊·判定落盘（botloop_verdicts.json） ----------
+
+    def _verdicts_refresh(self):
+        """按文件签名热加载判定表：签名没变直接返回（stat 很便宜）；
+        文件不存在或解析失败 → 当空表（记一行日志，不影响消息处理）。"""
+        sig = file_sig(BOTLOOP_VERDICTS_PATH)
+        if sig == self._verdicts_sig:
+            return
+        self._verdicts_sig = sig
+        data = None
+        try:
+            with open(BOTLOOP_VERDICTS_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            data = None
+        if not isinstance(data, dict):
+            if sig is not None:
+                out("BOTLOOP_VERDICT_LOAD_EMPTY sig=%r（当空表）" % (sig,))
+            data = {}
+        table = {}
+        for k, v in (data or {}).items():
+            try:
+                if isinstance(v, dict) and v.get("kind") in BOTLOOP_VERDICT_TTL:
+                    table[str(k)] = {"kind": str(v.get("kind")),
+                                     "ts": float(v.get("ts") or 0)}
+            except (TypeError, ValueError):
+                continue        # 单条坏了丢单条，不让整表加载炸进消息处理
+        with self.lock:
+            self._verdicts = table
+
+    def _verdict_of(self, sender_id):
+        """发送者当前生效的判定（"human"/"bot"），过期/无记录返回 None。"""
+        self._verdicts_refresh()
+        with self.lock:
+            v = self._verdicts.get(str(sender_id or ""))
+        if not v:
+            return None
+        ttl = BOTLOOP_VERDICT_TTL.get(v.get("kind"), 0)
+        if ttl and time.time() - float(v.get("ts") or 0) <= ttl:
+            return v.get("kind")
+        return None
+
+    def _verdict_save(self, sender_id, kind):
+        """写入一条判定（读-改-写整表，tmp+os.replace 原子替换）。
+        失败只记 BOTLOOP_VERDICT_SAVE_FAIL，绝不把异常抛进消息处理。"""
+        try:
+            self._verdicts_refresh()
+            with self.lock:
+                table = dict(self._verdicts)
+            table[str(sender_id or "")] = {"kind": str(kind), "ts": time.time()}
+            text = json.dumps(table, ensure_ascii=False, indent=2)
+            import pathlib
+            p = pathlib.Path(BOTLOOP_VERDICTS_PATH)
+            tmp = p.with_name(p.name + ".tmp")
+            tmp.write_text(text, encoding="utf-8")
+            last = None
+            for attempt in range(6):
+                try:
+                    os.replace(str(tmp), str(p))
+                    break
+                except PermissionError as e:
+                    last = e
+                    time.sleep(0.08 * (attempt + 1))
+            else:
+                # 兜底：就地覆盖（同 qq_common.save_app_config 的做法）；再失败才记日志
+                p.write_text(text, encoding="utf-8")
+            self._verdicts_sig = file_sig(BOTLOOP_VERDICTS_PATH)
+            with self.lock:
+                self._verdicts = table
+        except Exception as e:
+            out("BOTLOOP_VERDICT_SAVE_FAIL %r" % e)
+
+    def _is_owner_qq(self, sender_id):
+        """发送者是否主人（app_config.owner_qq，与 agent 侧 owner_qq() 同源）。
+        热加载按文件签名失效（同 _reply_config 的做法，每条消息只 stat 一次）。"""
+        import qq_common as _C
+        sig = file_sig(str(_C.APP_CONFIG_PATH))
+        if sig != self._owner_sig:
+            try:
+                self._owner_qq_val = str(
+                    load_app_config().get("owner_qq") or "").strip()
+            except Exception:
+                self._owner_qq_val = ""
+            self._owner_sig = sig
+        oq = self._owner_qq_val
+        return bool(oq) and str(sender_id or "") == oq
+
     def _botloop_hit(self, chat_type, chat_id, sender_id,
                      sender_name="", min_partner=7, min_mine=4):
         """AI 互聊检测（多信号，用户实测两次放宽：回复快的真人会被误判——
@@ -1663,6 +1764,10 @@ class Daemon:
         cleared 后的「不配合」升级门槛更高（10/6），避免真人被问一次就被静默。"""
         cfg = self._reply_config()
         if not cfg.get("botloop_guard_enabled", True):
+            return False
+        # 主人永不试探；30 天内 verify 判成真人的也不试探（长期记忆）——
+        # 两者都在计数之前短路：不命中、也不计数。
+        if self._is_owner_qq(sender_id) or self._verdict_of(sender_id) == "human":
             return False
         key = "%s_%s" % (chat_type, chat_id)
         now = now_ts()
@@ -1695,6 +1800,9 @@ class Daemon:
         cleared 相=问过一次但不是 AI（或没正面回答），1 小时内不再试探、正常聊。
         状态仅存内存（重启即清，重新试探一轮即可）。"""
         if not self._reply_config().get("botloop_guard_enabled", True):
+            return None
+        # 主人永不试探：任何相态（probe/verify/confirmed/cleared）都不进
+        if self._is_owner_qq(sender_id):
             return None
         bkey = "%s|%s|%s" % (chat_type, chat_id, sender_id)
         now = time.time()
@@ -1732,6 +1840,20 @@ class Daemon:
                     return None                  # 刚问过，正常放行
                 del self._botloop[bkey]
         if self._botloop_hit(chat_type, chat_id, sender_id, sender_name):
+            # 7 天内 verify 判成 AI 的长期记忆：跳过试探，直接进 confirmed 冷却
+            # （冷却时长与 botloop_report 同源：botloop_cooldown_min，钳在 10~1440）
+            if self._verdict_of(sender_id) == "bot":
+                try:
+                    mins = max(10, min(1440, int(self._reply_config().get(
+                        "botloop_cooldown_min", 60) or 60)))
+                except (TypeError, ValueError):
+                    mins = 60
+                self._botloop[bkey] = {"phase": "confirmed",
+                                       "until": now + mins * 60}
+                out("AGENT_LOG {\"msg\": \"botloop_verdict_bot\", \"chat\": %s, "
+                    "\"sender\": %s, \"cooldown_min\": %d}"
+                    % (json.dumps(str(chat_id)), json.dumps(str(sender_id)), mins))
+                return False, "botloop"
             self._botloop[bkey] = {"phase": "probe", "ts": now}
             out("AGENT_LOG {\"msg\": \"botloop_probe\", \"chat\": %s, \"sender\": %s}"
                 % (json.dumps(str(chat_id)), json.dumps(str(sender_id))))
@@ -1739,10 +1861,13 @@ class Daemon:
         return None
 
     def botloop_report(self, chat_type, chat_id, sender_id,
-                       confirmed, cooldown_min=60):
-        """agent 判定回执：confirmed=True → 该发送者进入冷却（非永久）；
+                       confirmed, cooldown_min=60, precheck=False):
+        """agent 判定回执：confirmed=True → 该发送者进入冷却（非永久）并落盘
+        bot 判定（7 天内再命中直接冷却，不再试探）；
         False → 记为"问过但不是 AI"，1 小时内不再试探、正常聊天
-        （不能直接清状态：高频还在，清了会立刻再次命中、反复问"你是不是AI"）。"""
+        （不能直接清状态：高频还在，清了会立刻再次命中、反复问"你是不是AI"），
+        并落盘 human 判定（30 天内不再试探）；precheck=True 是发问前预判
+        跳过的弱证据，只进 cleared 1 小时，不落盘。"""
         bkey = "%s|%s|%s" % (chat_type, chat_id, sender_id)
         with self.lock:
             if confirmed:
@@ -1754,6 +1879,10 @@ class Daemon:
                                        "until": time.time() + mins * 60}
             else:
                 self._botloop[bkey] = {"phase": "cleared", "ts": time.time()}
+        if confirmed:
+            self._verdict_save(sender_id, "bot")
+        elif not precheck:
+            self._verdict_save(sender_id, "human")
         out("AGENT_LOG {\"msg\": \"botloop_report\", \"sender\": %s, \"confirmed\": %s}"
             % (json.dumps(str(sender_id)), json.dumps(bool(confirmed))))
         return {"ok": True}
@@ -1784,7 +1913,21 @@ class Daemon:
         gate = self._botloop_gate(chat_type, chat_id, info.get("sender_id", ""),
                                   info.get("sender_name", ""))
         if gate:
+            # 命中闸门时照常算一遍「没有这道闸门时本来的触发」（M1 返工 1）：
+            # agent 发问前预判放行（precheck=False）时按它走正常处理路径，
+            # @/引用机器人的消息不能石沉大海。只在覆盖成 botloop_probe 且
+            # 本来就会触发时记入 info["base_trigger"]。
+            _base_t, _base_r = self._decide_trigger_normal(chat_type, info,
+                                                           chat_id, cfg)
+            if gate[1] == "botloop_probe" and _base_t:
+                info["base_trigger"] = _base_r
             return gate
+        return self._decide_trigger_normal(chat_type, info, chat_id, cfg)
+
+    def _decide_trigger_normal(self, chat_type, info, chat_id="", cfg=None):
+        """闸门之后的常规触发判定（原 _decide_trigger 的后半段，行为不变）。"""
+        if cfg is None:
+            cfg = self._reply_config_for(chat_type, chat_id)
         if info["at_me"] and self.cfg.get("mention_trigger", True):
             return True, "at"
         if info["has_reply"] and self.cfg.get("reply_to_bot_trigger", True):
@@ -3216,13 +3359,15 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
                 ok, detail = d.set_typing(uid, bool(body.get("on", True)))
                 return self._reply(200, {"ok": ok, "detail": detail})
             if u.path == "/botloop":
-                # agent 判定回执：确认 AI → 冷却；否认 → 清除试探
+                # agent 判定回执：确认 AI → 冷却+落盘 bot；否认 → 落盘 human；
+                # precheck=True → 发问前预判跳过（弱证据，只清 1 小时不落盘）
                 return self._reply(200, d.botloop_report(
                     body.get("chat_type") or "group",
                     str(body.get("chat_id") or ""),
                     str(body.get("sender_id") or ""),
                     bool(body.get("confirmed")),
-                    body.get("cooldown_min")))
+                    body.get("cooldown_min"),
+                    bool(body.get("precheck"))))
             if u.path == "/send":
                 res = d.send_texts(body["chat_type"], body["chat_id"], body["texts"],
                                    reply_message_id=body.get("reply_message_id"))
