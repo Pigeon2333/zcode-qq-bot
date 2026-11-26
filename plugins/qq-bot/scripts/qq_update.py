@@ -509,7 +509,9 @@ def write_installer(staged_dir, zip_path, app_dir=None,
         # 否则 cmd 读不到下一条，退出码恒为 1（实测）
         '(goto) 2>nul & del /q "%~f0" >nul 2>&1 & exit /b 0',
     ]
-    bat.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
+    # newline="\n" 关闭文本模式的换行翻译：lines 拼好后已是 \r\n，Windows 默认
+    # 文本模式会把其中的 \n 再翻一遍成 \r\n，落盘成 \r\r\n
+    bat.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8", newline="\n")
     return bat
 
 
