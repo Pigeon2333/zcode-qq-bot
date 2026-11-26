@@ -2509,7 +2509,7 @@ function stVisionModel(rv){return `
    <span class="k">模型</span>
    <input value="${esc(String(rv.vision_caption_model||''))}" style="width:220px" placeholder="留空＝按模型链" onchange="saveKVLoad('/api/reply-config',{vision_caption_model:this.value.trim()},'识图模型已保存');setTimeout(visionStatePaint,1200)">
    <span class="k">每天最多识</span>
-   <input type="number" min="0" max="5000" value="${rv.vision_caption_daily_cap}" style="width:90px" onchange="saveKVLoad('/api/reply-config',{vision_caption_daily_cap:Math.max(0,Math.min(5000,parseInt(this.value)||0))},'每日识图上限已保存')">
+   <input type="number" min="0" max="5000" value="${(rv.vision_caption_daily_cap===undefined||rv.vision_caption_daily_cap===null)?600:rv.vision_caption_daily_cap}" style="width:90px" onchange="saveKVLoad('/api/reply-config',{vision_caption_daily_cap:Math.max(0,Math.min(5000,parseInt(this.value)||0))},'每日识图上限已保存')">
    <span class="k">条带图消息（0＝不限制）</span></div>
   <div class="k" style="margin-top:6px">留空就是不指定：按上面模型链的顺序，用第一个能看图的模型。哪个模型能看图是实际试出来的，不看名字。模型链里一个能看图的都没有时，识图相关功能不可用，需要在这里填一个。</div>
   <div class="k" style="margin-top:6px">每天上限填 0 表示不限制。想完全关掉识图，到「聊天风格」里关「看图模式」或「后台识图」，不必靠上限来关。</div>
