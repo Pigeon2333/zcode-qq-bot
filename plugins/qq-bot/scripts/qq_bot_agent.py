@@ -5860,7 +5860,7 @@ def _vision_candidates(pref):
 # 模型能不能看图不靠名字猜，只记实际试出来的结果：
 #   _NO_VISION_MODELS          发图报「不支持图片输入」的 400：纯文本模型
 #   _VISION_OK_MODELS          带图调用成功过
-#   _VISION_PROBE["cls"]       后台拿一张 8×8 的小图逐个试出来的结论："vision" / "text" / "error"
+#   _VISION_PROBE["cls"]       后台拿一张 128×128 的纯红小图逐个试出来的结论："vision" / "text" / "error"
 # 链里一个能看图的都没有时，日志和管理台都会提醒：识图相关功能不可用，需要配置识图模型。
 # ---------------------------------------------------------------------------
 _VISION_PROBE = {"cls": {}, "sig": "", "ts": 0.0, "running": False}
@@ -5869,13 +5869,13 @@ _PROBE_MSGS = None
 
 
 def _probe_msgs():
-    """探测用的一张 8×8 纯色 PNG（用标准库现场生成，保证是合法图片）和一句提问。"""
+    """探测用的一张 128×128 纯红 PNG（用标准库现场生成，保证是合法图片）和一句提问。"""
     global _PROBE_MSGS
     if _PROBE_MSGS is None:
         import base64
         import struct
         import zlib
-        w = h = 8
+        w = h = 128
         raw = b"".join(b"\x00" + b"\xff\x00\x00" * w for _ in range(h))
 
         def _chunk(tag, body):
@@ -5886,7 +5886,7 @@ def _probe_msgs():
                + _chunk(b"IDAT", zlib.compress(raw)) + _chunk(b"IEND", b""))
         _PROBE_MSGS = [{"role": "user", "content": [
             {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(png).decode("ascii")}},
-            {"type": "text", "text": "这张图是什么颜色？只回答颜色。"}]}]
+            {"type": "text", "text": "这张图主要是什么颜色？只回答颜色的名字，不要解释。"}]}]
     return _PROBE_MSGS
 
 
@@ -5946,7 +5946,32 @@ def vision_status():
 
 
 def _vision_probe(models):
-    """后台线程：把还没试过的模型用小图逐个试一遍，记下谁能看图。每个模型几十个 token。"""
+    """后台线程：把还没试过的模型用一张纯红小图逐个试一遍，记下谁能看图。每个模型几十个 token。
+
+    为什么「答不出红色就按纯文本模型处理」：探测图是一张纯色图、提问明说只要颜色名，
+    真能看图的模型照着图就能答「红」；纯文本模型不拒绝图片输入、照样回话，但答非所问
+    （答别的颜色、答不知道）——只要没答出红色，就当它没真的看到图，记进
+    _NO_VISION_MODELS。真实识图路径（call_vision / _caption_call）查到这个表会直接
+    跳过它，不再把真图和额度浪费在纯文本模型身上。"""
+    def _diag(status, data):
+        # 出错模型的诊断尾巴：响应里带 choices → (状态码,结束原因)（finish_reason=length
+        # 缩写成 len；正文空但 reasoning_content 非空＝思考占满了输出预算，原因后加 +think）；
+        # 响应里没有 choices（HTTP 错误体、非对象响应）→ 只记 (状态码)；网络异常没响应 → (exc)
+        try:
+            ch0 = (data.get("choices") or [None])[0]
+        except (AttributeError, IndexError, TypeError, KeyError):
+            ch0 = None
+        if not isinstance(ch0, dict):
+            return "(%s)" % status
+        fr = str(ch0.get("finish_reason") or "-")
+        if fr == "length":
+            fr = "len"
+        msg = ch0.get("message")
+        msg = msg if isinstance(msg, dict) else {}
+        think = (not str(msg.get("content") or "").strip()
+                 and bool(str(msg.get("reasoning_content") or "").strip()))
+        return "(%s,%s%s)" % (status, fr, "+think" if think else "")
+
     try:
         cands = _vision_candidates(_vision_pref())
         res = {"vision": [], "text": [], "error": []}
@@ -5961,22 +5986,29 @@ def _vision_probe(models):
             try:
                 status, data = glm_chat(m, _probe_msgs(), timeout=30, key=kv,
                                         extra_body={"thinking": {"type": "disabled"},
-                                                    "max_tokens": 16})
+                                                    "max_tokens": 64})
             except Exception:
                 _VISION_PROBE["cls"][m] = "error"
-                res["error"].append(m)
+                res["error"].append("%s(exc)" % m)
                 continue
-            if _vision_text(status, data) is not None:
-                _VISION_PROBE["cls"][m] = "vision"
-                _VISION_OK_MODELS.add(m)
-                res["vision"].append(m)
-            elif _is_text_only_error(status, data):
+            text = _vision_text(status, data)
+            if status == 200 and text is not None:
+                # 真能看图的唯一标准：答出红色。答不出＝没真的看到图，按纯文本模型处理
+                if "红" in text or "red" in text.lower():
+                    _VISION_PROBE["cls"][m] = "vision"
+                    _VISION_OK_MODELS.add(m)
+                    res["vision"].append(m)
+                else:
+                    _VISION_PROBE["cls"][m] = "text"
+                    _NO_VISION_MODELS.add(m)
+                    res["text"].append(m)
+            elif status != 200 and _is_text_only_error(status, data):
                 _VISION_PROBE["cls"][m] = "text"
                 _NO_VISION_MODELS.add(m)
                 res["text"].append(m)
             else:
                 _VISION_PROBE["cls"][m] = "error"
-                res["error"].append(m)
+                res["error"].append(m + _diag(status, data))
             time.sleep(0.5)
         out("AGENT_VISION_PROBE vision=%s text=%s error=%s" % (
             ",".join(res["vision"]), ",".join(res["text"]), ",".join(res["error"])))
