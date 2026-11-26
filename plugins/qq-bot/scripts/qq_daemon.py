@@ -112,6 +112,11 @@ DEFAULT_REPLY_CONFIG = {
     "chat_probability": 0.15,        # chat 模式：每条群消息的回复概率 0~1
     "chat_interesting": True,        # chat 模式：agent 按人设做感兴趣判定
     "chat_min_interval_sec": 45,     # chat 模式：两次主动搭话最小间隔
+    # 悄悄降温与反复撞线（WP-02）：闸门要读的四个键（缺文件/坏值都落默认）
+    "botloop_quiet_mode": False,     # 悄悄降温开关（默认关＝从前行为）
+    "botloop_quiet_minutes": 15,     # 降温时长（钳 1–120）
+    "botloop_repeat_hits": 3,        # 反复撞线轮数上限（钳 2–10）
+    "botloop_repeat_window_min": 30, # 撞线时间窗（分钟，钳 5–120）
 }
 
 
@@ -152,10 +157,21 @@ def load_reply_config_file():
     for k in ("econ_enabled", "econ_manual", "econ_start", "econ_end",
               "econ_days", "econ_workdays_only", "econ_mode_override",
               "wait_gate_enabled", "burst_merge_enabled", "botloop_guard_enabled",
+              "botloop_quiet_mode",
               "vision_enabled", "vision_mode",
               "risk_limit_image_fetch", "risk_human_pace"):
         if k in data:
             cfg[k] = data[k]
+    # 悄悄降温与反复撞线（WP-02）：daemon 闸门要读的四个键，坏值按默认
+    for _bk, _lo, _hi in (("botloop_quiet_minutes", 1, 120),
+                          ("botloop_repeat_hits", 2, 10),
+                          ("botloop_repeat_window_min", 5, 120)):
+        _dv = {"botloop_quiet_minutes": 15, "botloop_repeat_hits": 3,
+               "botloop_repeat_window_min": 30}[_bk]
+        try:
+            cfg[_bk] = max(_lo, min(_hi, int(data.get(_bk, _dv))))
+        except (TypeError, ValueError):
+            cfg[_bk] = _dv
     return cfg
 
 
@@ -797,6 +813,8 @@ class Daemon:
         self.stats = {"received": 0, "triggered": 0, "sent": 0, "dropped_rate": 0}
         self.quiet_until = 0.0  # 安静模式截止时间戳（0=关闭；@/回复不受影响）
         self._botloop = {}      # AI 互聊状态机：chat|id|sender → {phase, ts/until}
+        self._botloop_rounds = {}   # 反复撞线计数（WP-02）：chat|id|sender →
+        #   {"times": [每轮上升沿的时间戳], "prev": 上次 hit 布尔}；仅内存态
         self._verdicts = {}     # AI 互聊判定落盘缓存：qq → {"kind", "ts"}（botloop_verdicts.json）
         self._verdicts_sig = -1         # 落盘文件签名（mtime+size）；-1=未读过（含「无文件」也要走一次）
         self._verdicts_refresh()        # 启动时读一次；之后每次评估前按签名热加载
@@ -1229,6 +1247,10 @@ class Daemon:
                 # 被互聊闸门覆盖成 botloop_probe 前的本来触发原因（M1 返工 1）：
                 # agent 发问前预判放行后按它走正常处理；没被覆盖的消息不带这个键。
                 item["base_trigger"] = info["base_trigger"]
+            if info.get("botloop_quiet_src"):
+                # 「反复撞线 / 不配合升级」走悄悄降温+通知时的来源标记（WP-02）：
+                # agent 在 AGENT_BOTLOOP_QUIET 日志里记 source=repeat|uncooperative
+                item["botloop_quiet_src"] = info["botloop_quiet_src"]
             if rt_fetch_id:
                 # 后台线程补查被引原文（get_msg）→ 补进 item 再入收件箱；
                 # 本地 NapCat 毫秒级，agent 轮询周期（1-2s）内几乎总能赶上。
@@ -1792,16 +1814,20 @@ class Daemon:
                     return True
         return False
 
-    def _botloop_gate(self, chat_type, chat_id, sender_id, sender_name=""):
+    def _botloop_gate(self, chat_type, chat_id, sender_id, sender_name="",
+                      info=None):
         """互聊检测状态机（所有群触发路径共用门，含 @ / 引用回复）：
         None=不拦截；返回 (True,"botloop_probe")=让 agent 发人设化试探；
         (True,"botloop_verify")=试探已发出（asked）后对方的第一条消息，交给
         agent 判定（判定期间后续消息静默）；
-        (False,"botloop")=静默：confirmed 冷却中 / probe 命中但 agent 还没发问
-        （300 秒内，等预判与试探生成）/ 发问后判定进行中。
+        (False,"botloop")=静默：confirmed 冷却中 / quiet 降温中 / probe 命中
+        但 agent 还没发问（300 秒内，等预判与试探生成）/ 发问后判定进行中；
+        (True,"botloop_quiet")=反复撞线或不配合升级触发「悄悄降温+通知」
+        （WP-02，只在 botloop_quiet_mode 打开时出现；来源记进
+        info["botloop_quiet_src"]=repeat|uncooperative）。
         cleared 相=问过一次但不是 AI（或没正面回答），1 小时内不再试探、正常聊；
         带 human_pending 的 cleared 要等这 1 小时平安到期才落盘 human（期间
-        又撞升级线则按不配合转 confirmed、不落 human）。
+        又撞升级线则按不配合处理、不落 human）。
         状态仅存内存（重启即清，重新试探一轮即可）。"""
         if not self._reply_config().get("botloop_guard_enabled", True):
             return None
@@ -1811,6 +1837,37 @@ class Daemon:
         bkey = "%s|%s|%s" % (chat_type, chat_id, sender_id)
         now = time.time()
         st = self._botloop.get(bkey)
+        # 反复撞线硬信号（WP-02）：只在悄悄降温开关打开时计数（开关关时不多算，
+        # 走原路径）。hit_now 在此算一次，函数末尾直接复用（同一批历史，结果
+        # 一致）；「一轮撞线」＝hit 从 False 变 True 的上升沿，连续为 True 只算
+        # 一轮；每个发送者只留时间窗内的轮次
+        _quiet_on = bool(self._reply_config().get("botloop_quiet_mode", False))
+        hit_now = False
+        if _quiet_on:
+            hit_now = self._botloop_hit(chat_type, chat_id, sender_id, sender_name)
+            _rc = self._botloop_rounds.get(bkey)
+            if _rc is None:
+                _rc = {"times": [], "prev": False}
+                self._botloop_rounds[bkey] = _rc
+            _win = self._botloop_repeat_window_v() * 60
+            _rc["times"] = [t for t in _rc["times"] if t >= now - _win]
+            if hit_now and not _rc["prev"]:
+                _rc["times"].append(now)
+            _rc["prev"] = bool(hit_now)
+            if len(_rc["times"]) >= self._botloop_repeat_hits_v() \
+                    and (st or {}).get("phase") not in ("quiet", "confirmed"):
+                _nrounds = len(_rc["times"])
+                if info is not None:
+                    info["botloop_quiet_src"] = "repeat"
+                self.botloop_report(chat_type, chat_id, sender_id, False,
+                                    quiet=True,
+                                    quiet_min=self._botloop_quiet_minutes_v())
+                _rc["times"] = []    # 触发后清零，quiet 结束重新计
+                out("AGENT_LOG {\"msg\": \"botloop_repeat\", \"chat\": %s, "
+                    "\"sender\": %s, \"rounds\": %d, \"window_min\": %d}"
+                    % (json.dumps(str(chat_id)), json.dumps(str(sender_id)),
+                       _nrounds, self._botloop_repeat_window_v()))
+                return True, "botloop_quiet"
         if st:
             ph = st.get("phase")
             if ph == "confirmed":
@@ -1854,6 +1911,15 @@ class Daemon:
                         st["last_hit"] = now
                         st["hits"] = int(st.get("hits", 0)) + 1
                         if st["hits"] >= 2:
+                            if _quiet_on:
+                                # 悄悄降温开关打开（WP-02）：不配合也走「降温+通知」，
+                                # 不再进 confirmed；开关关时照旧 confirmed 30 分钟
+                                if info is not None:
+                                    info["botloop_quiet_src"] = "uncooperative"
+                                self.botloop_report(chat_type, chat_id, sender_id,
+                                                    False, quiet=True,
+                                                    quiet_min=self._botloop_quiet_minutes_v())
+                                return True, "botloop_quiet"
                             self._botloop[bkey] = {"phase": "confirmed",
                                                    "until": now + 1800}
                             out("AGENT_LOG {\"msg\": \"botloop_uncooperative\", "
@@ -1870,7 +1936,12 @@ class Daemon:
                         "\"chat\": %s, \"sender\": %s}"
                         % (json.dumps(str(chat_id)), json.dumps(str(sender_id))))
                 del self._botloop[bkey]
-        if self._botloop_hit(chat_type, chat_id, sender_id, sender_name):
+        # 开关打开时复用开头算好的 hit_now（同一批历史，结果一致）；这里补查
+        # 一次判定文件：cleared 到期刚落盘 human 的情形 hit_now 是落盘前算的，
+        # 不能把刚标过的真人再送进试探（_botloop_hit 末尾现算时自带这道闸）
+        if ((hit_now if _quiet_on
+             else self._botloop_hit(chat_type, chat_id, sender_id, sender_name))
+                and self._verdict_of(sender_id) != "human"):
             # 7 天内 verify 判成 AI 的长期记忆：跳过试探，直接进 confirmed 冷却
             # （冷却时长与 botloop_report 同源：botloop_cooldown_min，钳在 10~1440）
             if self._verdict_of(sender_id) == "bot":
@@ -1955,6 +2026,30 @@ class Daemon:
         except (TypeError, ValueError):
             return 90
 
+    def _botloop_quiet_minutes_v(self):
+        """悄悄降温时长（分钟），钳 1–120，默认 15（WP-02 反复撞线触发用）。"""
+        try:
+            return max(1, min(120, int(self._reply_config().get(
+                "botloop_quiet_minutes", 15))))
+        except (TypeError, ValueError):
+            return 15
+
+    def _botloop_repeat_hits_v(self):
+        """反复撞线轮数上限，钳 2–10，默认 3（WP-02）。"""
+        try:
+            return max(2, min(10, int(self._reply_config().get(
+                "botloop_repeat_hits", 3))))
+        except (TypeError, ValueError):
+            return 3
+
+    def _botloop_repeat_window_v(self):
+        """反复撞线时间窗（分钟），钳 5–120，默认 30（WP-02）。"""
+        try:
+            return max(5, min(120, int(self._reply_config().get(
+                "botloop_repeat_window_min", 30))))
+        except (TypeError, ValueError):
+            return 30
+
     def _mark_peer_talk(self, chat_type, chat_id):
         """记录「群友正在互相对话」：该会话 90 秒内的裸消息不做闲聊插话。
         状态仅存内存。"""
@@ -1972,7 +2067,7 @@ class Daemon:
         # 绕过闲聊概率，只挂在 chat_random 上时形同虚设（实测两个 AI 互引聊了 5 分钟）。
         # 节奏未命中时返回 None，对正常聊天零影响。
         gate = self._botloop_gate(chat_type, chat_id, info.get("sender_id", ""),
-                                  info.get("sender_name", ""))
+                                  info.get("sender_name", ""), info=info)
         if gate:
             # 命中闸门时照常算一遍「没有这道闸门时本来的触发」（M1 返工 1）：
             # agent 发问前预判放行（precheck=False）时按它走正常处理路径，

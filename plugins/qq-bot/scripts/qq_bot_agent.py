@@ -5135,6 +5135,115 @@ def _botloop_quiet_notice(daemon, msg, quiet_min):
     return "yes"
 
 
+def _mask_tail(v):
+    """日志打码：只留尾部两个字符（名字/QQ 号都不整段外泄）。"""
+    s = str(v or "").strip()
+    if not s:
+        return "?"
+    return "**" + s[-2:] if len(s) > 2 else "*" * len(s)
+
+
+def _botloop_quiet_candidates():
+    """待改判表里当前的条目（同一登记在名字/QQ 两个键下共享一个条目，
+    按身份去重），供自然语言改判的预筛与提示词用。"""
+    _botloop_pending_touch(time.time())
+    uniq = []
+    for v in _BOTLOOP_QUIET_PENDING.values():
+        if not any(x is v for x in uniq):
+            uniq.append(v)
+    return uniq
+
+
+def _botloop_verdict_intent_on():
+    """自然语言改判开关（reply_config.botloop_verdict_intent，默认关＝
+    只认「真人/机器人 名字」的精确写法）。"""
+    return bool(load_json_const(REPLY_CONFIG_PATH, {}).get(
+        "botloop_verdict_intent", False))
+
+
+def _intent_botloop_verdict(text, cands):
+    """互聊改判的自然语言识别（WP-01 试点）。返回 (kind, target) 或 None；
+    kind 是 "bot" 或 "human"，target 是命中的待改判条目。两段式：
+    ① 确定性预筛（零 token）：消息去空白、casefold 后包含某个候选的名字或
+       QQ 号 → 取该候选；或含「刚刚那个/刚才那个/上面那个」这类指代且最近
+       30 分钟内恰好有一条登记 → 取那一条；都不满足直接返回 None，不调模型。
+    ② 小模型判定（写法照 _botloop_precheck）：只输出一行 JSON。置信度低于
+       0.7、解析不出 JSON、verdict 为 null、target 和预筛候选对不上、任何
+       异常 → 一律返回 None，落回普通聊天（绝不误拦主人的正常消息）。"""
+    t = re.sub(r"\s+", "", str(text or "")).casefold()
+    if not t:
+        return None
+    pick = None
+    by_deixis = False
+    for ent in (cands or []):
+        name_n = re.sub(r"\s+", "", str(ent.get("name") or "")).casefold()
+        sid_n = str(ent.get("sender_id") or "").strip()
+        if (name_n and name_n in t) or (sid_n and sid_n in t):
+            pick = ent
+            break
+    if pick is None:
+        if any(w in t for w in ("刚刚那个", "刚才那个", "上面那个")):
+            now = time.time()
+            recent = []
+            for ent in (cands or []):
+                try:
+                    if now - float(ent.get("ts") or 0) <= 1800:
+                        recent.append(ent)
+                except (TypeError, ValueError):
+                    continue
+            if len(recent) == 1:
+                pick = recent[0]
+                by_deixis = True
+    if pick is None:
+        return None
+    names = "、".join(str(c.get("name") or c.get("sender_id") or "?")
+                      for c in (cands or [])) or "（无）"
+    prompt = ("主人在私聊里对机器人说了一句话。此前机器人悄悄冷处理了某些群友"
+              "（说话节奏像机器人，先不接 TA 的话），主人这句话可能是在改判其中"
+              "某个账号——更正「是机器人 / 是真人」的结论。候选账号："
+              + names + "\n"
+              "判断这句话是不是在给某个账号下「是真人 / 是机器人」的结论。"
+              "注意：「不对」「你搞错了」是在否定上一句，结论以名字后面说的为准。\n"
+              "例子：「对XXX是机器人」→bot；「不对，XXX是真人，你搞错了」→human；"
+              "「我刚才说错了，XXX是机器人」→bot；「XXX其实是真人」→human；"
+              "「刚刚那个是真人」→human，target 填对应的名字；"
+              "「XXX挺有意思的」→null（这不是改判）。\n"
+              "只输出一行 JSON："
+              "{\"verdict\":\"bot\"|\"human\"|null,"
+              "\"target\":\"名字或null\",\"confidence\":0到1之间的小数}")
+    try:
+        _m, raw = call_glm_with_fallback([{"role": "user", "content": prompt}])
+        m = re.search(r"\{[^{}]*\}", str(raw or ""), re.S)
+        if not m:
+            return None
+        d = json.loads(m.group(0))
+        verdict = str(d.get("verdict") or "").strip().lower()
+        if verdict not in ("bot", "human"):
+            return None
+        try:
+            conf = float(d.get("confidence"))
+        except (TypeError, ValueError):
+            return None
+        if conf < 0.7:
+            return None
+        tgt_n = re.sub(r"\s+", "", str(d.get("target") or "")).casefold()
+        name_n = re.sub(r"\s+", "", str(pick.get("name") or "")).casefold()
+        sid_n = str(pick.get("sender_id") or "").strip()
+        # 预筛已经按名字/QQ 号在原文里定位到 pick；模型没指明别的名字
+        # （target 为空）就认预筛这一条，指代和点名一视同仁，不因漏填而丢掉改判
+        tgt_ok = ((name_n and tgt_n == name_n)
+                  or (sid_n and tgt_n == sid_n)
+                  or not tgt_n)
+        if not tgt_ok:
+            return None
+    except Exception as e:
+        out("AGENT_BOTLOOP_INTENT_FAIL %r" % e)
+        return None
+    out("AGENT_BOTLOOP_INTENT kind=%s target=%s conf=%.2f"
+        % (verdict, _mask_tail(sid_n or name_n), conf))
+    return (verdict, pick)
+
+
 def _devctrl_should_ask(text, mode, flow):
     """是否需要发起授权（协议一）。mode: auto | keyword。
 
@@ -7243,38 +7352,52 @@ def process(daemon, msg):
             out("AGENT_QUIET owner chat=%s/%s" % (msg["chat_type"], msg["chat_id"]))
             return
     # 悄悄降温的主人改判：仅私聊+主人+开关开；表里查不到一律不拦截
-    # （不能吞掉主人正常聊天），且不经过任何模型调用
+    # （不能吞掉主人正常聊天）。先走精确写法（零 token，行为不变）；查不到
+    # 且「日常说话改判」开着再走自然语言识别（WP-01 试点），命中后与精确
+    # 写法完全复用同一条回报/回复/日志/ack 收尾路径
     if owner and msg["chat_type"] == "private" and _botloop_quiet_cfg()[0]:
         _bv = _BOTLOOP_QUIET_VERDICT_RE.match(str(msg.get("text") or ""))
+        _bent = None
+        _bbot = False
+        _via = ""
         if _bv:
             _bent = _botloop_quiet_find(_bv.group(2))
             if _bent:
                 _bbot = _bv.group(1) == "机器人"
-                _vok = True
-                try:
-                    _bv_cool = load_json_const(REPLY_CONFIG_PATH, {}).get(
-                        "botloop_cooldown_min", 60)
-                    daemon.botloop_report(_bent.get("chat_type"),
-                                          _bent.get("chat_id"),
-                                          _bent.get("sender_id"), _bbot,
-                                          _bv_cool, precheck=False)
-                except Exception as e:
-                    _vok = False    # 条目保留在待改判表里，主人稍后再回一次就行
-                    out("AGENT_BOTLOOP_REPORT_FAIL %r" % e)
-                _vreply = ("没改成，稍后再回我一次。" if not _vok else
-                           ("好，「%s」按机器人处理，这段时间不再搭话。" if _bbot
-                            else "好，把「%s」当真人，这就恢复搭话。")
-                           % str(_bent.get("name") or ""))
-                try:
-                    daemon.send("private", msg["chat_id"], [_vreply])
-                except Exception as e:
-                    out("AGENT_BOTLOOP_OWNER_VERDICT_SEND_FAIL %r" % e)
-                daemon.ack([msg["id"]])
-                RT.count_processed()
-                out("AGENT_BOTLOOP_OWNER_VERDICT sender=%s kind=%s%s"
-                    % (_bent.get("sender_id"), "bot" if _bbot else "human",
-                       "" if _vok else " ok=False"))
-                return
+                _via = "exact"
+        if _bent is None and _botloop_verdict_intent_on():
+            _iv = _intent_botloop_verdict(str(msg.get("text") or ""),
+                                          _botloop_quiet_candidates())
+            if _iv:
+                _bbot = _iv[0] == "bot"
+                _bent = _iv[1]
+                _via = "intent"
+        if _bent is not None:
+            _vok = True
+            try:
+                _bv_cool = load_json_const(REPLY_CONFIG_PATH, {}).get(
+                    "botloop_cooldown_min", 60)
+                daemon.botloop_report(_bent.get("chat_type"),
+                                      _bent.get("chat_id"),
+                                      _bent.get("sender_id"), _bbot,
+                                      _bv_cool, precheck=False)
+            except Exception as e:
+                _vok = False    # 条目保留在待改判表里，主人稍后再回一次就行
+                out("AGENT_BOTLOOP_REPORT_FAIL %r" % e)
+            _vreply = ("没改成，稍后再回我一次。" if not _vok else
+                       ("好，「%s」按机器人处理，这段时间不再搭话。" if _bbot
+                        else "好，把「%s」当真人，这就恢复搭话。")
+                       % str(_bent.get("name") or ""))
+            try:
+                daemon.send("private", msg["chat_id"], [_vreply])
+            except Exception as e:
+                out("AGENT_BOTLOOP_OWNER_VERDICT_SEND_FAIL %r" % e)
+            daemon.ack([msg["id"]])
+            RT.count_processed()
+            out("AGENT_BOTLOOP_OWNER_VERDICT sender=%s kind=%s%s via=%s"
+                % (_bent.get("sender_id"), "bot" if _bbot else "human",
+                   "" if _vok else " ok=False", _via))
+            return
     # 限额：到达上限停止一切响应（对所有人生效，防挤占同套餐其他业务）；
     # 唯一例外是主人私聊遥控指令——管理通道本身不耗 token，且是解除限额的入口
     hold, used, cap, hours = token_limit_state()
@@ -7356,6 +7479,20 @@ def process(daemon, msg):
             out("AGENT_FORWARD_IMPORT_FAIL %r" % _fie)
         # AI 互聊 v2：daemon 状态机送来的试探/判定轮
     _tr = msg.get("trigger_reason")
+    # 悄悄降温的「反复撞线 / 不配合升级」通知项（WP-02）：不调模型、不往群里
+    # 发任何东西——登记待改判、私聊主人一声（复用现有限频），这条消息到此为止
+    if _tr == "botloop_quiet":
+        _qq_mins = _botloop_quiet_cfg()[1]
+        _botloop_quiet_register(msg, _qq_mins)
+        _q_notice = _botloop_quiet_notice(daemon, msg, _qq_mins)
+        daemon.ack([msg["id"]])
+        RT.count_processed()
+        out("AGENT_BOTLOOP_QUIET msg_id=%s chat=%s/%s sender=%s "
+            "quiet_min=%d notice=%s source=%s"
+            % (msg["id"], msg["chat_type"], msg["chat_id"],
+               msg.get("sender_id"), _qq_mins, _q_notice,
+               str(msg.get("botloop_quiet_src") or "repeat")))
+        return
     if _tr == "botloop_probe":
         # 发问前先让模型看一眼对方最近的话：日志可追溯的 17 次试探 16 次是真人，
         # 预判像真人/拿不准就不发试探（弱证据只清 1 小时，不落盘长期记忆）。

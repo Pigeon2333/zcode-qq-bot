@@ -656,8 +656,8 @@ chk("Q7a 改判真人：report 参数取自待改判条目（confirmed=False pre
 chk("Q7b 回了固定文案（不调模型）",
     dm7a.sent == [("private", "10086", ["好，把「小张」当真人，这就恢复搭话。"])]
     and _calls7a == [], (dm7a.sent, len(_calls7a)))
-chk("Q7c 日志 AGENT_BOTLOOP_OWNER_VERDICT sender=777 kind=human",
-    any(l == "AGENT_BOTLOOP_OWNER_VERDICT sender=777 kind=human"
+chk("Q7c 日志 AGENT_BOTLOOP_OWNER_VERDICT sender=777 kind=human via=exact",
+    any(l == "AGENT_BOTLOOP_OWNER_VERDICT sender=777 kind=human via=exact"
         for l in alog_of("AGENT_BOTLOOP_OWNER_VERDICT")),
     alog_of("AGENT_BOTLOOP_OWNER_VERDICT"))
 chk("Q7d 改判后条目保留在待改判表（先「机器人」后还能改回「真人」）",
@@ -680,7 +680,7 @@ chk("Q7f 改判机器人：confirmed=True、固定文案",
                        ["好，「小张」按机器人处理，这段时间不再搭话。"])],
     (dm7b.reports, dm7b.sent))
 chk("Q7g kind=bot 日志、模型零调用",
-    any(l == "AGENT_BOTLOOP_OWNER_VERDICT sender=777 kind=bot"
+    any(l == "AGENT_BOTLOOP_OWNER_VERDICT sender=777 kind=bot via=exact"
         for l in alog_of("AGENT_BOTLOOP_OWNER_VERDICT"))
     and _calls7b == [], (alog_of("AGENT_BOTLOOP_OWNER_VERDICT"), _calls7b))
 
@@ -739,9 +739,9 @@ with patched(A, call_glm_with_fallback=glm_script(["嗯"], _calls7p), **_NP):
 chk("Q7l 回报抛异常：回「没改成，稍后再回我一次。」、零模型调用",
     dm7p.sent == [("private", "10086", ["没改成，稍后再回我一次。"])]
     and _calls7p == [], (dm7p.sent, _calls7p))
-chk("Q7m 条目保留、OWNER_VERDICT 日志带 ok=False、有 REPORT_FAIL",
+chk("Q7m 条目保留、OWNER_VERDICT 日志带 ok=False via=exact、有 REPORT_FAIL",
     A._botloop_quiet_find("小张") is not None
-    and any(l == "AGENT_BOTLOOP_OWNER_VERDICT sender=777 kind=human ok=False"
+    and any(l == "AGENT_BOTLOOP_OWNER_VERDICT sender=777 kind=human ok=False via=exact"
             for l in alog_of("AGENT_BOTLOOP_OWNER_VERDICT"))
     and len(alog_of("AGENT_BOTLOOP_REPORT_FAIL")) >= 1,
     (alog_of("AGENT_BOTLOOP_OWNER_VERDICT"), alog_of("AGENT_BOTLOOP_REPORT_FAIL")))

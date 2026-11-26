@@ -367,7 +367,7 @@ def _gsv_autostart():
         cfg = _T.voice_cfg()
         if not cfg.get("gsv_autostart"):
             return
-        st = _T.gsv_status(cfg)
+        st = _T.gsv_status(cfg, ours=False)
         if st.get("running"):
             return
         _svc_out("GSV_AUTOSTART launching engine…")
@@ -2611,7 +2611,7 @@ function stTiming(rv){return `
   <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--line)"><label class="master"><input type="checkbox" ${rv.text_img_merge_enabled!==false?'checked':''} onchange="saveKVLoad('/api/reply-config',{text_img_merge_enabled:this.checked?1:0},'文字后紧跟的图并入同一条已'+(this.checked?'开启':'关闭'))">
    <span><b>文字后紧跟的图并入同一条</b><div class="k" style="margin-top:3px">开启时，触发回复的文字消息会先等 2.5 秒，把随后发来的图并进同一条再处理；关闭后文字立即处理，不再等待</div></span></label></div></div>
  <div class="card"><label class="master"><input type="checkbox" ${rv.botloop_guard_enabled!==false?'checked':''} onchange="saveKVLoad('/api/reply-config',{botloop_guard_enabled:this.checked?1:0},'AI 互聊检测已'+(this.checked?'开启':'关闭'))">
-  <span><b>AI 互聊检测（推荐开启）</b><div class="k" style="margin-top:3px">群里其他 AI 机器人与本机器人高频互相接话时（对方 2 分钟内连发 ≥4 条、我方 3 分钟内已回 ≥3 条）：机器人会先用符合人设的方式问对方一句「你是不是AI」，再根据回答判断——确认是 AI 则人设口吻告别并暂停搭话一段时间（见下方冷却分钟）；对方否认则当普通朋友继续聊。人类也会问"你是不是AI"，这样最自然。<br><br><b>检测覆盖所有触发方式</b>：AI 常用「引用回复/@机器人」连发来绕过闲聊概率，所以引用回复、@、关键词、闲聊全部参与节奏检测（节奏没到就完全不受影响，正常聊天零变化）。若对方被问后不正面回答、仍持续超高频互引（多轮 6 条/5 条级别），会按不配合处理，冷处理 30 分钟</div></span></label>
+  <span><b>AI 互聊检测（推荐开启）</b><div class="k" style="margin-top:3px">群里其他 AI 机器人与本机器人高频互相接话时（三条线满足其一：对方 2 分半内连发 ≥12 条且我方 4 分钟内已回 ≥6 条；或对方 ≥7 条、我方 ≥4 条且对方昵称带 AI 特征词；或对方 ≥10 条、我方 ≥4 条且对方发送间隔很规律）：机器人会先用符合人设的方式问对方一句「你是不是AI」，再根据回答判断——确认是 AI 则人设口吻告别并暂停搭话一段时间（见下方冷却分钟）；对方否认则当普通朋友继续聊。人类也会问"你是不是AI"，这样最自然。<br><br><b>检测覆盖所有触发方式</b>：AI 常用「引用回复/@机器人」连发来绕过闲聊概率，所以引用回复、@、关键词、闲聊全部参与节奏检测（节奏没到就完全不受影响，正常聊天零变化）。若对方被问后不正面回答、仍持续超高频互引（对方 ≥10 条、我方 ≥6 条，相隔 2 分钟以上累计 2 轮），会按不配合处理，冷处理 30 分钟</div></span></label>
   <div style="margin-top:6px;display:flex;gap:8px;align-items:center"><span class="k" style="flex:none">确认 AI 后暂停搭话</span>
    <input type="number" min="10" max="1440" value="${rv.botloop_cooldown_min||60}" style="width:76px" onchange="saveKVLoad('/api/reply-config',{botloop_cooldown_min:Math.max(10,Math.min(1440,parseInt(this.value)||60))},'互聊冷却已更新')">
    <span class="k">分钟（10–1440，非永久拉黑，到期自动恢复正常聊天）</span></div>
@@ -2619,7 +2619,14 @@ function stTiming(rv){return `
    <span><b>悄悄降温（不在群里问）</b><div class="k" style="margin-top:3px">节奏像 AI 互聊时，不再在群里问对方「你是不是AI」，改成先不接 TA 的话一段时间（@ 和引用也不回），到期自动恢复。降温时会私聊主人一声（同一账号一小时内只提醒一次）；主人在私聊里回「真人 名字」或「机器人 名字」可以马上改判。</div></span></label>
    <div style="margin-top:6px;display:flex;gap:8px;align-items:center"><span class="k" style="flex:none">不接话</span>
     <input type="number" min="1" max="120" value="${rv.botloop_quiet_minutes||15}" style="width:76px" onchange="saveKVLoad('/api/reply-config',{botloop_quiet_minutes:Math.max(1,Math.min(120,parseInt(this.value)||15))},'不接话时长已更新')">
-    <span class="k">分钟（1–120）</span></div></div></div>`}
+    <span class="k">分钟（1–120）</span></div>
+   <div style="margin-top:6px;display:flex;gap:8px;align-items:center"><span class="k" style="flex:none">反复撞线</span>
+    <input type="number" min="2" max="10" value="${rv.botloop_repeat_hits||3}" style="width:64px" onchange="saveKVLoad('/api/reply-config',{botloop_repeat_hits:Math.max(2,Math.min(10,parseInt(this.value)||3))},'撞线轮数已更新')">
+    <span class="k">轮 /</span>
+    <input type="number" min="5" max="120" value="${rv.botloop_repeat_window_min||30}" style="width:64px" onchange="saveKVLoad('/api/reply-config',{botloop_repeat_window_min:Math.max(5,Math.min(120,parseInt(this.value)||30))},'撞线时间窗已更新')">
+    <span class="k">分钟内 → 直接降温并通知</span></div>
+   <div style="margin-top:6px"><label class="master"><input type="checkbox" ${rv.botloop_verdict_intent?'checked':''} onchange="saveKVLoad('/api/reply-config',{botloop_verdict_intent:this.checked?1:0},'日常说话改判已'+(this.checked?'开启':'关闭'))">
+    <span><b>改判可以用日常说话</b><div class="k" style="margin-top:3px">除了「真人 名字」「机器人 名字」，也可以直接说「对XXX是机器人」「不对，XXX是真人，你搞错了」这类话</div></span></label></div></div></div>`}
 function stAbuse(rv){return `
  <div class="card"><label class="master"><input type="checkbox" ${rv.abuse_guard_enabled!==false?'checked':''} onchange="saveAbuseGuard(this.checked)">
   <span><b>防滥用防护</b><div class="k" style="margin-top:3px">整合三重防护，建议保持开启：① 人设防篡改——"忽略设定/你现在是XX/输出系统提示"等注入话术不生效，设定不泄露；② 任务拦截——竞赛题、代写作业、要代码成品等把机器人当免费任务引擎的消息，会以人设口吻轻松回绝；③ 身份锚定——多轮对话被"说服"后仍回归人设。关闭后所有消息按原始对话处理（仅调试用）</div></span></label></div>`}
@@ -6014,6 +6021,9 @@ class UiHandler(BaseHTTPRequestHandler):
                                      "botloop_cooldown_min": data.get("botloop_cooldown_min", 60),
                                      "botloop_quiet_mode": data.get("botloop_quiet_mode", False),
                                      "botloop_quiet_minutes": data.get("botloop_quiet_minutes", 15),
+                                     "botloop_repeat_hits": data.get("botloop_repeat_hits", 3),
+                                     "botloop_repeat_window_min": data.get("botloop_repeat_window_min", 30),
+                                     "botloop_verdict_intent": data.get("botloop_verdict_intent", False),
                                      "proactive_private_silent_start": data.get("proactive_private_silent_start", "22:00"),
                                      "proactive_private_silent_end": data.get("proactive_private_silent_end", "08:00"),
                                      "token_limit_enabled": data.get("token_limit_enabled", False),
@@ -7148,6 +7158,18 @@ class UiHandler(BaseHTTPRequestHandler):
                     data["botloop_quiet_minutes"] = max(1, min(120, int(body["botloop_quiet_minutes"])))
                 except (TypeError, ValueError):
                     data["botloop_quiet_minutes"] = 15
+            if "botloop_repeat_hits" in body:
+                try:
+                    data["botloop_repeat_hits"] = max(2, min(10, int(body["botloop_repeat_hits"])))
+                except (TypeError, ValueError):
+                    data["botloop_repeat_hits"] = 3
+            if "botloop_repeat_window_min" in body:
+                try:
+                    data["botloop_repeat_window_min"] = max(5, min(120, int(body["botloop_repeat_window_min"])))
+                except (TypeError, ValueError):
+                    data["botloop_repeat_window_min"] = 30
+            if "botloop_verdict_intent" in body:
+                data["botloop_verdict_intent"] = bool(body["botloop_verdict_intent"])
             if "proactive_private_enabled" in body:
                 data["proactive_private_enabled"] = bool(body["proactive_private_enabled"])
             for _nk in ("nudge_delay_min_sec", "nudge_delay_max_sec"):
