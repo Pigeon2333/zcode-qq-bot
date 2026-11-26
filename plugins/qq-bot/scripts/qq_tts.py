@@ -33,9 +33,75 @@ _GSV_PORT = 9880
 _GSV_KEEPALIVE = {"last": 0.0}   # 上次保活合成时刻（防冷启动：引擎空闲后
                                  # 批处理/CUDA 缓存被系统回收，首条回退 4-5s；
                                  # 稳态 1.3-1.5s。间隔实测取 5 分钟）
-_GSV_PROC = {"p": None}      # runtime/python.exe 子进程句柄（仅本进程内有效）
+_GSV_PROC = {"p": None}      # runtime/python.exe 子进程句柄（辅助参考；归属与
+                             # 停止按引擎端口占用判定，见 _gsv_port_listener）
 _GSV_VOICES_DIR = os.path.join(C.DATA_DIR, "gsv_voices")
 _GSV_VOICES_JSON = os.path.join(C.DATA_DIR, "gsv_voices.json")
+
+
+def _gsv_port(cfg=None):
+    """引擎端口：配置 gsv_port 优先（_gsv_request 同规则），默认 9880。"""
+    try:
+        return int((cfg or {}).get("gsv_port") or _GSV_PORT)
+    except (TypeError, ValueError):
+        return _GSV_PORT
+
+
+_GSV_OURS_CACHE = {}   # port -> (取值时刻, pid, 可执行文件路径)。
+                       # gsv_status 的占用者查询缓存：3 秒内复用，避免管理台
+                       # 语音页轮询每次都起两个 PowerShell；端口空了就清。
+
+
+def _gsv_port_open(port, timeout=0.3):
+    """引擎端口 TCP 探测：连得上 127.0.0.1:port 就算在跑（不要求 HTTP 已能
+    应答），不起任何子进程。"""
+    try:
+        import socket
+        s = socket.create_connection(("127.0.0.1", int(port)), timeout=timeout)
+        s.close()
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _gsv_path_in_dir(path, d):
+    """可执行文件路径是否落在目录 d 内（大小写不敏感，兼容正反斜杠）。"""
+    path = str(path or "").strip()
+    d = str(d or "").strip()
+    if not path or not d:
+        return False
+    p = os.path.normcase(os.path.normpath(path))
+    r = os.path.normcase(os.path.normpath(d))
+    return p == r or p.startswith(r + os.sep)
+
+
+def _gsv_port_listener(port):
+    """谁占着引擎端口：返回 (pid, 该进程的可执行文件路径)。
+    没有监听或任何一步失败都返回 (0, "")，绝不抛异常。
+    PID 复用 qq_services.pids_on_port（Get-NetTCPConnection 优先、netstat
+    兜底）；路径用 Get-Process（不走 WMI、不用 wmic）。归属判定与停止都
+    以它为准——自动启动与手动启动抢端口、应用内更新后的孤儿引擎，句柄
+    （_GSV_PROC，仅本进程内有效）都管不到，端口占用者才是事实。"""
+    pid = 0
+    try:
+        import qq_services as _S
+        pids = _S.pids_on_port(int(port))
+        pid = int(pids[0]) if pids else 0
+    except Exception:
+        return 0, ""
+    if pid <= 0:
+        return 0, ""
+    try:
+        import subprocess
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             "(Get-Process -Id %d -ErrorAction SilentlyContinue).Path" % pid],
+            capture_output=True, text=True, errors="replace", timeout=12,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        path = (r.stdout or "").strip()
+    except Exception:
+        return pid, ""
+    return pid, (path if path else "")
 
 
 def gsv_env_check():
@@ -157,34 +223,46 @@ def gsv_dir(cfg=None):
     return d   # 配置了但不存在 → 原样返回（状态页会提示路径无效）
 
 
-def gsv_status(cfg=None):
-    """引擎状态：包是否存在 / 服务是否在跑（探测 9880）/ 由谁启动。"""
+def gsv_status(cfg=None, ours=True):
+    """引擎状态：包是否存在 / 服务是否在跑 / 归属。
+
+    running：TCP 探测引擎端口（连得上即在跑），零子进程。
+    ours：只有 running 为真才算，占用者查询带 3 秒缓存（_GSV_OURS_CACHE，
+    按端口记 pid 与可执行文件路径）；ours=False 时不算归属、不查占用者
+    （保活等只要 running 的调用方用，零子进程）。running 变假时缓存作废。
+    归属按端口占用判定，不再只看本进程句柄——自动启动与手动启动抢端口、
+    应用内更新后的孤儿引擎，都据此正确判定并可停止。"""
     d = gsv_dir(cfg)
     py = os.path.join(d, "runtime", "python.exe") if d else ""
     api = os.path.join(d, "api_v2.py") if d else ""
-    running = False
-    try:
-        import http.client
-        c = http.client.HTTPConnection("127.0.0.1", _GSV_PORT, timeout=2)
-        c.request("GET", "/")
-        r = c.getresponse()
-        r.read()
-        c.close()
-        running = True     # 404 也算在跑（FastAPI 根路径无路由）
-    except Exception:
-        running = False
+    port = _gsv_port(cfg)
+    running = _gsv_port_open(port)
+    is_ours = False
+    if running and ours:
+        now = time.time()
+        cached = _GSV_OURS_CACHE.get(port)
+        if cached and now - cached[0] < 3.0:
+            pid, ppath = cached[1], cached[2]
+        else:
+            pid, ppath = _gsv_port_listener(port)
+            _GSV_OURS_CACHE[port] = (now, pid, ppath)
+        is_ours = _gsv_path_in_dir(
+            ppath, os.path.join(d, "runtime") if d else "")
+    elif not running:
+        _GSV_OURS_CACHE.pop(port, None)   # 端口空了，缓存的占用者作废
     return {
         "dir": d,
         "dir_ok": bool(d) and os.path.isdir(d) and os.path.isfile(py) and os.path.isfile(api),
         "running": running,
-        "ours": bool(_GSV_PROC["p"] and _GSV_PROC["p"].poll() is None),
-        "port": _GSV_PORT,
+        "ours": bool(is_ours),
+        "port": port,
     }
 
 
 def gsv_start(cfg=None):
-    """启动本地引擎（api_v2.py，CUDA）。已在跑则直接返回。"""
-    st = gsv_status(cfg)
+    """启动本地引擎（api_v2.py，CUDA）。引擎端口已被占（不管是谁占的）
+    就不重复启动；本进程句柄只作辅助记录，归属判定见 gsv_status。"""
+    st = gsv_status(cfg, ours=False)   # 开头只要 running，不查占用者
     if st["running"]:
         return {"ok": True, "already": True, **st}
     if not st["dir_ok"]:
@@ -192,10 +270,11 @@ def gsv_start(cfg=None):
                                       "请先在语音页按引导下载并解压到 E:\\GPTSoVITS", **st}
     import subprocess
     d = st["dir"]
+    port = _gsv_port(cfg)
     logf = open(os.path.join(C.DATA_DIR, "logs", "gsv_engine.log"), "ab")
     p = subprocess.Popen(
         [os.path.join(d, "runtime", "python.exe"), "api_v2.py",
-         "-a", "127.0.0.1", "-p", str(_GSV_PORT),
+         "-a", "127.0.0.1", "-p", str(port),
          "-c", os.path.join("GPT_SoVITS", "configs", "tts_infer.yaml")],
         cwd=d, stdout=logf, stderr=logf,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -206,7 +285,7 @@ def gsv_start(cfg=None):
     for _ in range(60):
         time.sleep(2)
         try:
-            c = http.client.HTTPConnection("127.0.0.1", _GSV_PORT, timeout=2)
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
             c.request("GET", "/")
             r = c.getresponse()
             r.read()
@@ -218,15 +297,42 @@ def gsv_start(cfg=None):
     return {"ok": False, "error": "启动超时（模型加载慢，稍后重试或直接用）", **gsv_status(cfg)}
 
 
-def gsv_stop():
-    """停止本应用启动的引擎（外部启动的不动）。"""
-    p = _GSV_PROC.get("p")
-    if p and p.poll() is None:
-        p.terminate()
-        _GSV_PROC["p"] = None
-        return {"ok": True, "stopped": True}
-    return {"ok": True, "stopped": False,
-            "note": "没有由本应用启动的引擎（外部启动的进程不受管理）"}
+def gsv_stop(cfg=None):
+    """停止引擎：归属按「谁占着引擎端口」判定（不再只看本进程句柄——
+    自动/手动启动抢端口、应用内更新后的孤儿引擎都能正确停止）。
+    占用进程的可执行文件在本应用的引擎目录（gsv 目录下的 runtime）内
+    才结束：按 PID，不按映像名（仿 qq_services.stop_llonebot 的
+    taskkill /PID 做法）；目录外的进程一律不动。"""
+    cfg = cfg or C.load_app_config()
+    port = _gsv_port(cfg)
+    pid, ppath = _gsv_port_listener(port)
+    d = gsv_dir(cfg)
+    runtime = os.path.join(d, "runtime") if d else ""
+    if pid <= 0 or not ppath or not _gsv_path_in_dir(ppath, runtime):
+        return {"ok": True, "stopped": False,
+                "note": "没有由本应用启动的引擎（外部启动的进程不受管理）"}
+    import subprocess
+    try:
+        r = subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                           capture_output=True, timeout=10, shell=False,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        ok = (r.returncode == 0)
+    except Exception:
+        ok = False
+    if not ok:
+        return {"ok": False, "stopped": False,
+                "error": "结束引擎进程（PID %d）失败" % pid}
+    _GSV_OURS_CACHE.pop(port, None)
+    # 等端口真正释放，最多 10 秒（直接查占用者，不走 gsv_status 的缓存）
+    deadline = time.time() + 10.0
+    while time.time() < deadline:
+        pid2, _path2 = _gsv_port_listener(port)
+        if pid2 <= 0:
+            _GSV_PROC["p"] = None
+            return {"ok": True, "stopped": True}
+        time.sleep(0.25)
+    return {"ok": False, "stopped": False,
+            "error": "引擎进程已结束，但端口 %d 仍被占用" % port}
 
 
 def _gsv_request(text, ref, ptext, plang, cfg):
@@ -326,7 +432,7 @@ def gsv_keepalive_tick(cfg):
         now = time.time()
         if now - float(_GSV_KEEPALIVE.get("last") or 0) < 300:
             return
-        if not gsv_status(cfg).get("running"):
+        if not gsv_status(cfg, ours=False).get("running"):
             _GSV_KEEPALIVE["last"] = now     # 没在跑就不折腾（自启动逻辑管它）
             return
         _GSV_KEEPALIVE["warming"] = True

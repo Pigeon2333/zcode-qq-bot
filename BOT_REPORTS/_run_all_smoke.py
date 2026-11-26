@@ -99,6 +99,8 @@ def main():
         print("\n⚠ 数据目录里的配置文件在冒烟期间被改动（%d 个）：" % len(changed))
         for k in changed:
             print("   ", k, "(新增)" if k not in before else "(被删除)" if k not in after else "(内容变化)")
+        print("可能是线上机器人自己在写（例如群成员画像、风格学习、各组件日志）。核对方法：看该文件的修改时间是否和线上日志里某一行是同一秒。")
+        print("确认是线上进程写的，可以把本次结果按『测试全过』处理，并在汇报里写明是哪一个文件。")
         return 2
     print("配置文件核对：%d 个文件跑前跑后一致" % len(before))
     return 1 if bad else 0

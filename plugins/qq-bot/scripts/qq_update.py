@@ -385,7 +385,8 @@ def stage(zip_path):
 
 
 PROC_NAME_DEFAULT = "ZCodeQQBot.exe"
-# 会被拼进 taskkill/tasklist/start 的进程名只允许这一类字符，防止引号/百分号注入
+# 会被拼进 PowerShell Get-Process / start 的进程名只允许这一类字符，防止
+# 引号/百分号注入（单引号也排除——去掉 .exe 的映像名要放进 PS 的单引号字面量）
 _PROC_SAFE = re.compile(r"[A-Za-z0-9._-]{1,120}\Z")
 
 
@@ -402,11 +403,15 @@ def write_installer(staged_dir, zip_path, app_dir=None,
 
     批处理固定步骤（纯 ASCII，只用 Windows 自带工具；robocopy 的 errorlevel
     语义：0＝两边无差异，1-7＝有待办/差异，>=8＝真失败，/L 与真拷贝同码）：
-      1 抢互斥锁 updates/apply.lock（owner.pid 记持有者 PID；旧锁的进程已不在
-        则清锁重抢一次）
+      1 抢互斥锁 updates/apply.lock（owner.pid 记持有者 PID；持有者是否还
+        在用 Get-Process -Id 判断——不走 WMI，只认 PowerShell 退出码 0；
+        其它任何值（还在运行/PowerShell 起不来/报错）一律按锁忙处理，
+        绝不清别人的锁；确实不在才清锁重抢一次）
       2 robocopy /MIR 把当前程序目录备份到 <app>.prev，并用 /L 清单核对，
         备份不完整 → 释放锁、保留更新包、exit 3
-      3 taskkill + tasklist 确认旧进程退出（最多等 20 秒），仍有残留 →
+      3 Get-Process（不走 WMI）结束旧进程并确认退出：只有 PowerShell 明确
+        退出码 0 才算已退出，非 0（还在运行/PowerShell 起不来/任何错误）
+        一律按还在运行继续等（每轮约 2 秒，最多 20 轮），等满仍有残留 →
         释放锁、不拷贝、不删包、exit 4
       4 robocopy /MIR 把暂存目录覆盖到程序目录
       5 /L 清单核对拷贝完整性
@@ -417,6 +422,9 @@ def write_installer(staged_dir, zip_path, app_dir=None,
       8 三条结束路径（成功/回滚/中止）都释放锁
     """
     proc = _proc(proc_name)
+    # PowerShell Get-Process -Name 要不带 .exe 的映像名；单引号已被 _PROC_SAFE 排除，
+    # 可以安全放进下面的 PS 单引号字面量
+    proc_base = proc[:-4] if proc.lower().endswith(".exe") else proc
     udir = _updates_dir()
     app = pathlib.Path(app_dir).resolve() if app_dir else _app_dir()
     staged = pathlib.Path(staged_dir).resolve()
@@ -436,6 +444,7 @@ def write_installer(staged_dir, zip_path, app_dir=None,
         'set "ZIP=%s"' % zpath,
         'set "LOG=%s"' % logf,
         'set "PROC=%s"' % proc,
+        'set "PROCBASE=%s"' % proc_base,
         "rem ---- step 1: acquire exclusive update lock ----",
         'mkdir "%LOCK%" 2>nul',
         "if not errorlevel 1 goto lock_ok",
@@ -443,8 +452,14 @@ def write_installer(staged_dir, zip_path, app_dir=None,
         "for /f %%p in ('type \"%LOCK%\\owner.pid\" 2^>nul') do set \"OLDPID=%%p\"",
         "echo %OLDPID%| findstr /r \"^[0-9][0-9]*$\" >nul",
         "if errorlevel 1 goto lock_busy",
-        "tasklist /FI \"PID eq %OLDPID%\" 2>nul | findstr /C:\"%OLDPID%\" >nul",
-        "if not errorlevel 1 goto lock_busy",
+        "rem holder alive check via Get-Process (no WMI): only exit code 0",
+        "rem proves the holder is gone; 1 = still running, any other code",
+        "rem (powershell unavailable / error) = treat as lock busy, never",
+        "rem break someone else's live update lock",
+        "powershell -NoProfile -Command \"if (Get-Process -Id %OLDPID% -ErrorAction SilentlyContinue) { exit 1 } else { exit 0 }\" >nul 2>&1",
+        "if \"%ERRORLEVEL%\"==\"0\" goto lock_stale",
+        "goto lock_busy",
+        ":lock_stale",
         "rem stale lock (crashed previous run): break it and retry once",
         'rmdir /s /q "%LOCK%" >nul 2>&1',
         'mkdir "%LOCK%" 2>nul',
@@ -460,12 +475,19 @@ def write_installer(staged_dir, zip_path, app_dir=None,
         'robocopy "%APP%" "%PREV%" /MIR /R:2 /W:2 >> "%LOG%" 2>&1',
         'robocopy "%APP%" "%PREV%" /MIR /L /NJH /NJS /NP /NFL /NDL /NS /NC >> "%LOG%" 2>&1',
         "if errorlevel 1 goto backup_fail",
-        "rem ---- step 3: make sure old process exited (max 20s) ----",
-        'taskkill /IM "%PROC%" /F >nul 2>&1',
+        "rem ---- step 3: make sure old process exited (max 20 tries, ~2s each) ----",
+        "rem taskkill/tasklist go through the system process-query service (WMI),",
+        "rem which can hang or fail under heavy load; when tasklist itself fails,",
+        "rem its output has no process name and the old script misread that as",
+        "rem \"exited\" and copied over a running install. Get-Process does not use",
+        "rem WMI. Only exit code 0 from powershell counts as exited; any nonzero",
+        "rem code (still running / powershell unavailable / any error) means keep",
+        "rem waiting, and 20 full tries lead to proc_blocked (exit 4, no copy).",
+        "powershell -NoProfile -Command \"Get-Process -Name '%PROCBASE%' -ErrorAction SilentlyContinue | Stop-Process -Force\" >nul 2>&1",
         "set /a TRIES=0",
         ":wait_proc",
-        "tasklist /FI \"IMAGENAME eq %PROC%\" 2>nul | findstr /I /C:\"%PROC%\" >nul",
-        "if errorlevel 1 goto proc_gone",
+        "powershell -NoProfile -Command \"if (Get-Process -Name '%PROCBASE%' -ErrorAction SilentlyContinue) { exit 1 } else { exit 0 }\" >nul 2>&1",
+        'if "%ERRORLEVEL%"=="0" goto proc_gone',
         "set /a TRIES+=1",
         "if %TRIES% GEQ 20 goto proc_blocked",
         "ping -n 2 127.0.0.1 >nul",

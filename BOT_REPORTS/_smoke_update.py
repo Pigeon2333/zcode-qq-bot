@@ -154,7 +154,7 @@ try:
     ordered = ('mkdir "%LOCK%"',
                'robocopy "%APP%" "%PREV%" /MIR /R:2',
                'robocopy "%APP%" "%PREV%" /MIR /L',
-               'taskkill /IM "%PROC%"',
+               'Stop-Process -Force',
                'robocopy "%STAGED%" "%APP%" /MIR /R:2',
                'robocopy "%STAGED%" "%APP%" /MIR /L',
                'robocopy "%PREV%" "%APP%" /MIR /R:2',
@@ -193,8 +193,9 @@ try:
         "ping -n 2 127.0.0.1 >nul" in text and "GEQ 20" in text)
     chk("S1k start 行恰两处（回滚后启旧版 + 成功后启新版）",
         text.count('start "" ') == 2, text.count('start "" '))
-    chk("S1l 默认进程名保持 ZCodeQQBot.exe（写入 PROC，taskkill 引用 %PROC%）",
-        'set "PROC=ZCodeQQBot.exe"' in text and 'taskkill /IM "%PROC%"' in text)
+    chk("S1l 默认进程名保持 ZCodeQQBot.exe（写入 PROC，start 引用 %PROC%）",
+        'set "PROC=ZCodeQQBot.exe"' in text
+        and 'start "" "%APP%\\%PROC%"' in text)
     bat2 = U.write_installer(staged1, zip1, app_dir=app1, proc_name=PROC)
     t2 = bat2.read_text(encoding="utf-8-sig")
     chk("S1m proc_name 参数生效", 'set "PROC=%s"' % PROC in t2)
@@ -211,6 +212,27 @@ try:
     chk("S1p status() 返回结构不变",
         set(U.status().keys()) == {"phase", "pct", "msg", "version", "zip",
                                    "error", "ts"})
+    chk("S1q 第 3 步改用 Get-Process 结束+确认，不再对 %PROC% 用 taskkill/tasklist",
+        'Get-Process -Name \'%PROCBASE%\' -ErrorAction SilentlyContinue'
+        ' | Stop-Process -Force' in text
+        and 'taskkill /IM "%PROC%"' not in text
+        and 'IMAGENAME eq %PROC%' not in text)
+    chk("S1r 只有 PowerShell 退出码 0 才算已退出（其余按还在运行继续等）",
+        'if (Get-Process -Name \'%PROCBASE%\' -ErrorAction SilentlyContinue)'
+        ' { exit 1 } else { exit 0 }' in text
+        and 'if "%ERRORLEVEL%"=="0" goto proc_gone' in text)
+    chk("S1t 抢锁：持有者判断用 Get-Process -Id（不走 WMI），只有退出码 0 才清旧锁",
+        'if (Get-Process -Id %OLDPID% -ErrorAction SilentlyContinue)'
+        ' { exit 1 } else { exit 0 }' in text
+        and 'if "%ERRORLEVEL%"=="0" goto lock_stale' in text
+        and 'tasklist /FI "PID eq %OLDPID%"' not in text
+        and 'if not errorlevel 1 goto lock_busy' not in text)
+    bat3 = U.write_installer(staged1, zip1, app_dir=app1,
+                             proc_name="ZCodeQQBot.exe")
+    t3 = bat3.read_text(encoding="utf-8-sig")
+    chk("S1s PROCBASE=去掉 .exe 的进程名（默认与 proc_name 两种）",
+        'set "PROCBASE=ZCodeQQBot"' in t3
+        and 'set "PROCBASE=NoSuchProc_9Q"' in t2)
 
     # ---------- S2 暂存完整：真跑，退出码 0 ----------
     w = world("s2", [("a.txt", "new-a"), ("sub/b.txt", "new-b"),
