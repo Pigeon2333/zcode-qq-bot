@@ -210,6 +210,12 @@ class _FakeDaemon(http.server.BaseHTTPRequestHandler):
             self._reply({"ok": False, "error": "no such path"})
 
     def do_POST(self):
+        # 先把请求体读完再回包：请求头和请求体分两个包到达时，不读就关连接会让
+        # 接收缓冲区留着未读数据，Windows 关闭时发 RST，客户端读响应就变成
+        # 10053（机器越慢越容易复现）
+        _n = int(self.headers.get("Content-Length") or 0)
+        if _n > 0:
+            self.rfile.read(_n)
         if self.path == "/send":
             if _FakeDaemon.state["inc"]:
                 _FakeDaemon.state["sent"] += 1
