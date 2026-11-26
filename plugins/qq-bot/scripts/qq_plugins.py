@@ -573,7 +573,7 @@ def uninstall(name):
 # 市场清单文件名带版本：release 资产 CDN 缓存≈永久，clobber 同名文件更新后
 # 用户拿到的仍是旧字节——清单内容有变必须换新文件名（market-v3、v4…）
 DEFAULT_MARKET_URL = ("https://github.com/Pigeon2333/zcode-qq-bot/"
-                      "releases/download/plugins/market-v32.json")
+                      "releases/download/plugins/market-v33.json")
 _MARKET_MIRRORS = ("https://gh-proxy.com/" + DEFAULT_MARKET_URL,)
 # 插件包下载的兜底：对「插件包地址」加代理前缀（不能复用 _MARKET_MIRRORS——
 # 那是市场清单 URL 的代理，拿来下插件包会把 market-vNN.json 当 zip 装）
