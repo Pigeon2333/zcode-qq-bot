@@ -2557,7 +2557,7 @@ function stToolLoop(rv){return `
  <div class="card"><div class="k" style="margin-bottom:8px"><b>工具循环（实验性）</b></div>
   <div class="k">打开后，主人让机器人做事时，它可以按工具清单真的去执行，再把结果告诉你；做不了会直说。默认关闭。</div>
   <label class="master" style="margin-top:8px"><input type="checkbox" ${rv.tool_loop_enabled?'checked':''} onchange="saveKVLoad('/api/reply-config',{tool_loop_enabled:this.checked?1:0},'工具循环已'+(this.checked?'开启':'关闭'))">
-   <span><b>启用工具循环</b><div class="k" style="margin-top:3px">只对主人的消息生效。目前内置：联网搜索、给消息挂表情回应，后面按批次增加。每次执行在运行日志里留一行 AGENT_TOOL_LOOP（只记工具名和成败）</div></span></label>
+   <span><b>启用工具循环</b><div class="k" style="margin-top:3px">只对主人的消息生效。目前内置：联网搜索、给消息挂表情回应、把话发到指定的群、画图、定时任务、设备操控的八个动作（设备操控开关开着才出现）、已启用的 MCP 服务里的外部工具（MCP 总开关开着才出现）</div></span></label>
   <label class="master" style="margin-top:10px"><input type="checkbox" ${rv.tool_confirm_write?'checked':''} onchange="saveKVLoad('/api/reply-config',{tool_confirm_write:this.checked?1:0},'复述确认已'+(this.checked?'开启':'关闭'))">
    <span><b>发消息这类动作先复述、等确认再执行</b><div class="k" style="margin-top:3px">开启后，动手类的动作（如挂表情）会先把要做什么复述一遍，回复「确认」后执行；回别的或超过两分钟没回就当作不做</div></span></label>
   <label class="master" style="margin-top:10px"><input type="checkbox" ${rv.owner_intent_enabled?'checked':''} onchange="saveKVLoad('/api/reply-config',{owner_intent_enabled:this.checked?1:0},'听懂自然语言指令已'+(this.checked?'开启':'关闭'))">

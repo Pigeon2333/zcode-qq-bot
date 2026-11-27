@@ -1555,6 +1555,7 @@ OWNER_HELP = (
     "状态 | 用量 | 人设列表 | 切换人设 <名>\n"
     "群列表 | 加群 <群号> | 移除群 <群号>\n"
     "开启/关闭 看图|联网搜索|防滥用\n"
+    "定时 HH:MM 要做的事（每天到点执行，结果私聊发你）| 定时列表 | 删定时 编号\n"
     "安静 [分钟]（默认10：群里不再主动说话，@和回复我仍会答）| 继续\n"
     "暂停 | 恢复（完全停回复，运维用）| 日志 [条数]\n"
     "转交ZCode <任务>（把任务投递到电脑上 ZCode 的收件箱，打开 ZCode 即可接手）\n"
@@ -1706,7 +1707,9 @@ def owner_command(msg, daemon=None):
     if not t or len(t) > 400:
         return False, ""
     if _re.fullmatch(r"(帮助|指令|help|菜单)", t, _re.I):
-        return True, OWNER_HELP
+        # 开着自然语言指令识别时提一句「平常说法也行」；关着与从前逐字一致
+        return True, (OWNER_HELP + "\n（这些用平常说话的说法也行）"
+                      if _owner_intent_on() else OWNER_HELP)
     # 转交任务到 ZCode 收件箱
     hz = _re.match(r"^转交\s*[Zz][Cc]ode\s*[:：]?\s*(.{4,2000})$", t, _re.S)
     if hz:
@@ -1738,7 +1741,7 @@ def owner_command(msg, daemon=None):
         tasks = [x for x in _cron_tasks() if isinstance(x, dict) and int(x.get("id", 0)) != nid]
         _cron_save(tasks)
         return True, "已删除定时 #%d" % nid
-    m = _re.match(r"^安静\s*(\d{1,3})?\s*分钟?$", t)
+    m = _re.match(r"^安静\s*(\d{1,3})?\s*(?:分钟?)?$", t)
     if m and daemon is not None:
         minutes = min(int(m.group(1) or 10), 720)
         daemon.set_quiet(minutes)
@@ -1835,6 +1838,8 @@ def owner_command(msg, daemon=None):
 
 
 def _tail_log_lines(name, n):
+    if not isinstance(n, int) or n <= 0:
+        n = 12    # 「日志 0」按默认条数取：[-0:] 等于取整个文件（Z-21）
     try:
         with open(os.path.join(C.logs_dir(), name), "r",
                   encoding="utf-8", errors="replace") as f:
