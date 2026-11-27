@@ -6403,6 +6403,10 @@ class UiHandler(BaseHTTPRequestHandler):
                                      "botloop_repeat_hits": data.get("botloop_repeat_hits", 3),
                                      "botloop_repeat_window_min": data.get("botloop_repeat_window_min", 30),
                                      "botloop_verdict_intent": data.get("botloop_verdict_intent", False),
+                                     # 统一工具循环（WP-07 A2a）：键先登记（默认关），
+                                     # 设置页控件下一批加
+                                     "tool_loop_enabled": data.get("tool_loop_enabled", False),
+                                     "tool_confirm_write": data.get("tool_confirm_write", False),
                                      "proactive_private_silent_start": data.get("proactive_private_silent_start", "22:00"),
                                      "proactive_private_silent_end": data.get("proactive_private_silent_end", "08:00"),
                                      "token_limit_enabled": data.get("token_limit_enabled", False),
@@ -7614,6 +7618,11 @@ class UiHandler(BaseHTTPRequestHandler):
                     data["botloop_repeat_window_min"] = 30
             if "botloop_verdict_intent" in body:
                 data["botloop_verdict_intent"] = bool(body["botloop_verdict_intent"])
+            # 统一工具循环（WP-07 A2a）：逐键白名单登记（默认关；界面控件下一批加）
+            if "tool_loop_enabled" in body:
+                data["tool_loop_enabled"] = bool(body["tool_loop_enabled"])
+            if "tool_confirm_write" in body:
+                data["tool_confirm_write"] = bool(body["tool_confirm_write"])
             if "proactive_private_enabled" in body:
                 data["proactive_private_enabled"] = bool(body["proactive_private_enabled"])
             for _nk in ("nudge_delay_min_sec", "nudge_delay_max_sec"):

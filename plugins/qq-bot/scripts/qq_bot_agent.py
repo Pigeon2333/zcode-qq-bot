@@ -42,6 +42,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import qq_common as C
 import qq_scheduler
+import qq_tools
 
 CREATE_NO_WINDOW = 0x08000000  # Windows 子进程不弹黑窗
 
@@ -3744,7 +3745,12 @@ def _build_messages_impl(daemon, msg, ctx_k=32, v2=False):
     # v2：带话 / 画图 / 设备操控三段只对主人有意义（合计约 1600 字），普通群友
     # 的消息不再注入——非主人既用不上，也不必知道这些能力的存在
     _owner_msg = is_owner(msg)
-    if (not v2) or (_owner_msg and msg["chat_type"] == "private"):
+    # 工具循环开启且是主人：带话/画图两段旧标记教学换成工具清单（WP-07 A2a）；
+    # 开关关或非主人走原代码一字不改。设备操控段不在替换范围内，照旧注入。
+    _tool_teach = _tool_loop_on() and _owner_msg
+    if _tool_teach:
+        draw_rule += _tool_doc_block()
+    if (not _tool_teach) and ((not v2) or (_owner_msg and msg["chat_type"] == "private")):
         draw_rule += (
             "- 你可以出现在多个群里（私聊场景里附有「你在这些群」清单）。"
         "主人在私聊里让你带话/传话/发通知/帮我问问群里（\"去群里说一声…\""
@@ -3763,7 +3769,7 @@ def _build_messages_impl(daemon, msg, ctx_k=32, v2=False):
         "  · 绝不要说自己\"只能待在一个群/活动范围只有这里\"——你看得到群清单，"
         "只是平时只在收到消息的聊天里说话；也不要把这说成\"指令/命令\"，"
         "更不要教主人什么格式，自然说话就行\n")
-    if feature_enabled("draw_enabled") and ((not v2) or _owner_msg):
+    if (not _tool_teach) and feature_enabled("draw_enabled") and ((not v2) or _owner_msg):
         draw_rule += (
             "- 你具备AI生图能力，但它只对主人开放：主人各种说法的画图请求"
             "（「画：描述」「帮我画一张…」「帮deepseek画个头像」等自然语言）大多会被系统"
@@ -7043,6 +7049,39 @@ def gate_v2_lean_history_on():
     return _cfg_flag("gate_v2_lean_history", False, None)
 
 
+# ---------------------------------------------------------------------------
+# 统一工具循环（WP-07 A2a 接线）：开关与主人教学段。本单不执行任何工具——
+# 只把开关读进来、把主人消息的带话/画图两段旧标记教学换成工具清单、把正文里
+# 的 [TOOL] 行在发送前剥掉；循环本体与内置工具归 A2b 及之后批次。
+# ---------------------------------------------------------------------------
+
+_TOOL_USAGE_NOTE = ("需要做上面这些事时，把调用写进 actions，一行一个："
+                    "[TOOL] 名字 {json参数}；做不了的就直说做不到，不要说已经做了。")
+
+
+def _tool_loop_on():
+    """工具循环总开关（reply_config.tool_loop_enabled，管理台维护；默认关）。
+    读不到、坏值一律 False＝与从前逐字一致。这个开关会改变发给模型的提示词，
+    所以比别的开关严：只有布尔值 true 才算开（字符串、数字都不认）。"""
+    cfg = load_json_const(REPLY_CONFIG_PATH, {})
+    return isinstance(cfg, dict) and cfg.get("tool_loop_enabled") is True
+
+
+def _tool_confirm_write_on():
+    """工具 write 类动作先复述确认的开关（reply_config.tool_confirm_write；
+    默认关）。A2a 只登记与读取，A2b 的工具循环才消费它。同样只认布尔值 true。"""
+    cfg = load_json_const(REPLY_CONFIG_PATH, {})
+    return isinstance(cfg, dict) and cfg.get("tool_confirm_write") is True
+
+
+def _tool_doc_block():
+    """主人消息的工具教学段：工具清单（qq_tools 登记表按主人权限取全量；
+    尚未登记任何工具时清单为空，只有说明行）＋固定用法说明。
+    只替代「带话」「画图」两段旧标记教学，设备操控段不在此列。"""
+    doc = qq_tools.list_doc(qq_tools.tools_for({"is_owner": True, "is_gadmin": False}))
+    return "- 你能用的工具（仅主人；工具会真实执行）：%s\n  %s\n" % (doc, _TOOL_USAGE_NOTE)
+
+
 def gate_v2_hist_lines():
     """判定调用瘦身时带的历史条数（默认 6，越界夹到 1–14）。"""
     try:
@@ -7217,7 +7256,11 @@ def json_rule_text(msg):
                   % cap)
     else:
         length = "长度：不设上限，按人设和场合决定。\n"
-    return JSON_RULE_HEAD + want + (JSON_RULE_FIELDS % emoji) + length + JSON_RULE_TAIL
+    # 工具循环开启且是主人：补一句工具调用写法（独立字符串拼接，不动 % 模板）
+    tool_note = ""
+    if _tool_loop_on() and is_owner(msg):
+        tool_note = "\n需要用工具时把 `[TOOL] 名字 {json参数}` 行放进 actions。"
+    return JSON_RULE_HEAD + want + (JSON_RULE_FIELDS % emoji) + length + JSON_RULE_TAIL + tool_note
 
 
 _PY_LITERAL_RE = re.compile(r"\b(?:None|True|False)\b")
@@ -8073,6 +8116,15 @@ def process(daemon, msg):
         out("AGENT_ERROR msg_id=%s llm_failed=%r" % (msg["id"], last_err))
         daemon.ack([msg["id"]])
         return
+    # 出站清洗：正文里的 [TOOL] 行一律剥掉（不看工具循环开关——模型稀奇古怪
+    # 输出了也不许漏进聊天）。A2b 将在同一个衔接点收走调用进工具循环；
+    # 本单清洗之后没有工具行可收，结构化输出的 actions[] 条目原样保留不执行。
+    try:
+        _tool_calls, _tool_rest = qq_tools.parse_calls(reply)
+        if _tool_calls:
+            reply = _tool_rest
+    except Exception as _tool_err:
+        out("AGENT_TOOL_STRIP_ERR %r" % _tool_err)
     # 模型自发安静：[QUIET] / [QUIET:15] —— 真实触发安静模式（@/回复不受影响）
     qm = re.search(r"\[QUIET(?::(\d{1,3}))?\]", reply)
     if qm:
