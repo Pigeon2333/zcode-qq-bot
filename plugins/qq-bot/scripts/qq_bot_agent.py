@@ -3754,7 +3754,9 @@ def _build_messages_impl(daemon, msg, ctx_k=32, v2=False):
     # 的消息不再注入——非主人既用不上，也不必知道这些能力的存在
     _owner_msg = is_owner(msg)
     # 工具循环开启且是主人：带话/画图两段旧标记教学换成工具清单（WP-07 A2a）；
-    # 开关关或非主人走原代码一字不改。设备操控段不在替换范围内，照旧注入。
+    # 开关关或非主人走原代码一字不改。设备操控段自 B2a 起也并入替换：工具循环
+    # 开且是主人且设备操控开着时，「已开启版」教学不再注入（pc_* 工具在工具
+    # 清单里代替）；「未开启版」照旧；非主人照旧不教。
     _tool_teach = _tool_loop_on() and _owner_msg
     if _tool_teach:
         draw_rule += _tool_doc_block()
@@ -3791,6 +3793,8 @@ def _build_messages_impl(daemon, msg, ctx_k=32, v2=False):
             "群员要求画画时，以人设口吻说明画图只对主人开放（群员消息里不要输出画图标记）\n")
     if v2 and not _owner_msg:
         pass   # 设备操控只对主人开放：非主人的消息不教
+    elif _tool_teach and _device_ctrl_enabled():
+        pass   # B2a：工具循环开+主人+设备操控开着 → 已开启版教学不注入，由工具清单（pc_*）代替
     elif not _device_ctrl_enabled():
         draw_rule += (
             "- 你具备「设备操控」能力（帮主人操作电脑找/读/发文件），但当前未开启："
@@ -5975,6 +5979,12 @@ def _handle_devctrl(daemon, msg):
     """设备操控入口：宽松授权码验证 + ZCode 式工具循环（人设保持）。"""
     if not _device_ctrl_enabled() or not is_owner(msg):
         return False
+    if _tool_loop_on():
+        # B2a 收窄：工具循环开着时只保留「索码窗口内收到 6 位授权码 → 比对 →
+        # 打开窗口 → 发固定话术」这一条路（见 _handle_devctrl_link_only）；
+        # 关键词快速通道与授权窗口内转旧循环都不再触发——设备动作改由主模型
+        # 经 pc_* 工具做。工具循环关着时走下面的原路径，与从前逐字一致。
+        return _handle_devctrl_link_only(daemon, msg)
     text = str(msg.get("text") or "").strip()
     import re as _re
     flow = devctrl_flow()
@@ -7173,10 +7183,14 @@ def _tool_confirm_write_on():
 
 
 def _tool_doc_block():
-    """主人消息的工具教学段：工具清单（qq_tools 登记表按主人权限取全量；
+    """主人消息的工具教学段：工具清单（qq_tools 登记表按主人权限取全量、
+    再按 _tool_available 过滤——B2a 起 pc_* 只在设备操控开关开着时列出；
     尚未登记任何工具时清单为空，只有说明行）＋固定用法说明。
-    只替代「带话」「画图」两段旧标记教学，设备操控段不在此列。"""
-    doc = qq_tools.list_doc(qq_tools.tools_for({"is_owner": True, "is_gadmin": False}))
+    替代「带话」「画图」两段旧标记教学；B2a 起设备操控的「已开启版」教学
+    也由这里的 pc_* 行代替。"""
+    doc = qq_tools.list_doc([
+        s for s in qq_tools.tools_for({"is_owner": True, "is_gadmin": False})
+        if _tool_available(s.get("name"))])
     return "- 你能用的工具（仅主人；工具会真实执行）：%s\n  %s\n" % (doc, _TOOL_USAGE_NOTE)
 
 
@@ -7280,7 +7294,11 @@ def _tool_loop_run(daemon, msg, messages, first_reply, resume=None,
     confirm_write 照原样传——resume 模式下工具循环自己不再重复要确认；
     danger 的授权判断不变（复述确认不是授权）。"""
     ctx = {"is_owner": True, "is_gadmin": False, "daemon": daemon, "msg": msg}
-    opts = {"auth_ok": False, "confirm_write": _tool_confirm_write_on()}
+    # B2a：auth_ok 从写死的 False 换成回调 _devctrl_auth_ok——授权码开关关着
+    # （不需要码）或授权窗口开着（主人刚比对过码）时 danger 工具放行；
+    # 索码预检与授权后续跑在 B2b 接。specs 同样过 _tool_available（pc_* 只在
+    # 设备操控开关开着时进循环）。
+    opts = {"auth_ok": _devctrl_auth_ok, "confirm_write": _tool_confirm_write_on()}
 
     def _call_model(history):
         # 基础 messages（build_messages 的产物，不含 JSON 输出格式段）+ 循环
@@ -7299,7 +7317,10 @@ def _tool_loop_run(daemon, msg, messages, first_reply, resume=None,
         _m, _t = call_glm_with_fallback(msgs, "", route="reply")
         return _t
 
-    res = qq_tools.tool_loop(_call_model, qq_tools.tools_for(ctx), first_reply,
+    res = qq_tools.tool_loop(_call_model,
+                             [s for s in qq_tools.tools_for(ctx)
+                              if _tool_available(s.get("name"))],
+                             first_reply,
                              ctx, opts, resume=resume, resume_done=resume_done)
     out("AGENT_TOOL_LOOP msg_id=%s stop=%s rounds=%s actions=%s" % (
         msg["id"], res.get("stop"), res.get("rounds"),
@@ -8645,8 +8666,11 @@ def process(daemon, msg):
                          args=(daemon, msg, sendgrp[0], sendgrp[1]),
                          daemon=True).start()
     # [连线]：模型语境判定要操控电脑 → 发起授权（已在授权窗口内则忽略，别重复索码）
+    # B2a：工具循环开着时不再触发索码（设备动作由主模型经 pc_* 工具做）；
+    # 标记本身照旧在上面被剥离，不漏进聊天。
     if dev_ask and _device_ctrl_enabled() and is_owner(msg) \
-            and not (_DEVCTRL_AUTH["ok_until"] > time.time()):
+            and not (_DEVCTRL_AUTH["ok_until"] > time.time()) \
+            and not _tool_loop_on():
         _devctrl_ask_by_mark(daemon, msg)
     # 硬频控：同会话 3 分钟内已发过表情则丢弃本次（防高频）
     now_t = time.time()
@@ -9086,6 +9110,76 @@ def _owner_auth_code_on():
     if isinstance(v, bool):
         return v
     return bool(cfg.get("device_ctrl_2fa", True))
+
+
+def _tool_available(name):
+    """工具清单与工具循环共用的可用性过滤（B2a）：pc_* 前缀（设备操控八个
+    工具）只在设备操控开关打开时可用；其它工具一律可用。开关关着时 pc_* 不
+    进清单也不进循环，模型就算凭空写出 pc_* 也只会在 run 的同一道开关上得到
+    「电脑操控没有开启」。"""
+    if str(name or "").startswith("pc_"):
+        return _device_ctrl_enabled()
+    return True
+
+
+def _devctrl_auth_ok():
+    """工具循环 danger 工具（pc_open/pc_close）的授权状态（B2a）：授权码
+    开关关着（根本不需要码），或授权窗口开着（主人刚比对过 6 位授权码）→
+    已授权。索码预检与授权后续跑在 B2b 接。"""
+    return (not cfg_2fa_on()) or (_DEVCTRL_AUTH["ok_until"] > time.time())
+
+
+def _handle_devctrl_link_only(daemon, msg):
+    """_handle_devctrl 的工具循环收窄版（B2a）：只认「索码窗口内收到 6 位
+    授权码 → 比对 → 打开窗口 → 发固定话术」这一条路，其余一律 return False
+    （关键词不再索码、授权窗口内不再转旧循环——设备动作由主模型经 pc_* 工具
+    做）。比对、话术、窗口逻辑与旧函数的授权码分支一致。"""
+    import re as _re
+    text = str(msg.get("text") or "").strip()
+    if _DEVCTRL_AUTH["ok_until"] > time.time():
+        return False   # 授权窗口内：不再转旧循环，主模型 + pc_* 工具直接接手
+    if _DEVCTRL_ASK["until"] <= time.time():
+        return False   # 没有活动的索码窗口：关键词快速通道不再触发索码
+    m_code = _re.search(r"(?<!\d)(\d{6})(?!\d)", text)
+    if not (m_code and cfg_2fa_on()):
+        return False
+    flow = devctrl_flow()
+    owner_nick = _owner_call_name(msg)
+    bot_name = _bot_self_name()
+    win = int(flow.get("auth_window_sec", 120))
+    use_custom = bool(flow.get("use_custom_text", True))
+
+    def _say(tmpl_key, fallback, **kw):
+        """流程话术：自定义开启→模板渲染；关闭→模型按人设即兴（与旧函数一致）。"""
+        if use_custom:
+            daemon.send(msg["chat_type"], msg["chat_id"],
+                        [_render_flow(flow[tmpl_key], owner=owner_nick,
+                                      bot=bot_name, **kw)])
+        else:
+            daemon.send(msg["chat_type"], msg["chat_id"],
+                        [_persona_say(fallback[0], _render_flow(
+                            _DEFAULT_FLOW[tmpl_key], owner=owner_nick,
+                            bot=bot_name, **kw),
+                            route=("private", owner_qq()))])
+
+    code = m_code.group(1)
+    if not _DEVCTRL_CODE["code"] or time.time() > _DEVCTRL_CODE["expires"]:
+        _say("expired_text", ("用你的话告诉主人：授权码过期了，让他去电脑控制台"
+                              "「设备操控」页看当前的新码再发来。", ""))
+        return True
+    if code != _DEVCTRL_CODE["code"]:
+        _say("fail_text", ("用你的话告诉主人授权码不对，让他重新输一次（就刚才那句话里的数字不对）。", ""))
+        return True
+    _DEVCTRL_CODE["code"] = C.gen_auth_code()
+    _DEVCTRL_CODE["expires"] = time.time() + 300
+    _DEVCTRL_AUTH["ok_until"] = time.time() + win
+    _DEVCTRL_SESSION.update({"msgs": [], "noticed": False})
+    _say("ok_text", ("连线成功！用你的语气告诉主人：接下来 %d 分钟内直接用自然语言"
+                     "指挥你操作电脑就行（找文件/发文件/看目录/联网查都行），顺便"
+                     "随口带一句刚才那句授权码说得挺顺。" % max(1, win // 60),
+                     ), mins=max(1, win // 60))
+    out("AGENT_DEVCTRL_LINKED window=%ds" % win)
+    return True
 
 
 def start_admin_server(port, daemon=None):
@@ -9829,15 +9923,18 @@ def main():
     # 内置工具登记（幂等，见 qq_tools_builtin.register_builtin）：工具的执行
     # 函数在这里接上——web_search 用本模块的统一搜索入口；发到群/画图/定时
     # 三个有对外副作用的分别走 _sendgrp_tool_send（含歧义拒发）/ _draw_tool /
-    # _cron_add_tool / _cron_list_tool，全是既有逻辑的薄包装。登记放 main 里
-    # 而不是 import 时做，测试 import 本模块不会往登记表塞东西。
+    # _cron_add_tool / _cron_list_tool，全是既有逻辑的薄包装；B2a 的八个设备
+    # 工具（pc_*）走 _devctrl_step（四道防护都在它内部）+ _device_ctrl_enabled。
+    # 登记放 main 里而不是 import 时做，测试 import 本模块不会往登记表塞东西。
     try:
         qq_tools_builtin.register_builtin(
             search_web,
             send_group_fn=_sendgrp_tool_send,
             draw_fn=_draw_tool,
             cron_add_fn=_cron_add_tool,
-            cron_list_fn=_cron_list_tool)
+            cron_list_fn=_cron_list_tool,
+            devctrl_step_fn=_devctrl_step,
+            devctrl_enabled_fn=_device_ctrl_enabled)
     except Exception as e:
         out("AGENT_TOOLS_REG_FAIL %r" % e)
     threading.Thread(target=_caption_loop, args=(daemon,), daemon=True).start()

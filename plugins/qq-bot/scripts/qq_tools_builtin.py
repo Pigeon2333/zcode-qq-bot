@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """qq_tools_builtin.py — 内置工具登记处（A2a：web_search、react；
-A2b：send_group、draw、cron_add、cron_list）
+A2b：send_group、draw、cron_add、cron_list；
+B2a：pc_find/pc_read/pc_list/pc_search/pc_apps/pc_send/pc_open/pc_close）
 
 每个工具是一层薄包装：调用既有函数（统一搜索入口 search_web、daemon 的
-set_msg_reaction、发群的解析+校验+发送、画图执行、定时的存入/读取），
-不重新实现任何既有防护。执行函数由调用方传入（register_builtin 的各个
-*_fn 参数），所以本模块不 import qq_bot_agent；import 无副作用——真正
-登记只在调用方启动时（qq_bot_agent.main）做，可重复调用，已登记的名字
+set_msg_reaction、发群的解析+校验+发送、画图执行、定时的存入/读取、
+qq_bot_agent._devctrl_step 的八个设备动作），不重新实现任何既有防护——
+设备操控的保护目录/敏感文件/open 白名单/系统进程黑名单四道防护全部在
+_devctrl_step 内部，pc_* 只许调它。执行函数由调用方传入（register_builtin
+的各个 *_fn 参数），所以本模块不 import qq_bot_agent；import 无副作用——
+真正登记只在调用方启动时（qq_bot_agent.main）做，可重复调用，已登记的名字
 跳过（qq_tools.register 同名会抛 ValueError）。没传对应执行函数的工具
 不登记。
 
@@ -24,10 +27,12 @@ def _clip(text, limit):
 
 
 def register_builtin(search_web_fn, send_group_fn=None, draw_fn=None,
-                     cron_add_fn=None, cron_list_fn=None):
+                     cron_add_fn=None, cron_list_fn=None,
+                     devctrl_step_fn=None, devctrl_enabled_fn=None):
     """把内置工具登记进 qq_tools。幂等：已登记的名字原样跳过，不抛异常、
     也不覆盖已登记的同名工具。四个带对外副作用的工具（发到群/画图/定时）
-    只登记调用方传了对应执行函数的那些，没传的不登记。"""
+    与八个设备工具（B2a 的 pc_*，两个 devctrl 函数都传了才登记）只登记
+    调用方传了对应执行函数的那些，没传的不登记。"""
     if qq_tools.get_tool("web_search") is None:
         qq_tools.register({
             "name": "web_search",
@@ -97,6 +102,11 @@ def register_builtin(search_web_fn, send_group_fn=None, draw_fn=None,
             "returns": "定时任务清单文字",
             "run": _cron_list_run(cron_list_fn),
         })
+    if (devctrl_step_fn is not None and devctrl_enabled_fn is not None
+            and qq_tools.get_tool("pc_find") is None):
+        for _spec in _devctrl_specs(devctrl_step_fn, devctrl_enabled_fn):
+            if qq_tools.get_tool(_spec["name"]) is None:
+                qq_tools.register(_spec)
 
 
 def _web_search_run(search_web_fn):
@@ -226,3 +236,114 @@ def _cron_list_run(cron_list_fn):
             return qq_tools.make_result(False, "定时列表是空的")
         return qq_tools.make_result(True, text)
     return run
+
+
+# ---- B2a：设备操控八个动作（pc_*）----
+# 全部只调 _devctrl_step（qq_bot_agent）：保护目录、敏感文件、open 白名单、
+# 系统进程黑名单四道防护都在它内部，这里不重新实现任何防护、也不改它。
+
+# _devctrl_step 返回文本里「失败」的固定开头（从 qq_bot_agent._devctrl_step
+# 八个动作各自的返回文案归纳）：保护目录/敏感文件/动作执行未开启等的拒绝、
+# read/send/list/open/close 的失败、发送失败、close 只发得出请求的部分成功、
+# 不支持的动作。其余文案（找到 0 条、搜索无结果、「当前没有在运行」这类
+# 已经是目标状态的结果）都算完成。
+_DEVCTRL_FAIL_PREFIXES = (
+    "read 拒绝", "read 失败",
+    "send 拒绝", "send 失败", "send 发送失败",
+    "list 拒绝", "list 失败",
+    "open 拒绝", "open 失败",
+    "close 拒绝", "close 失败", "close 部分成功",
+    "不支持的动作",
+)
+
+
+def _devctrl_ok(text):
+    """_devctrl_step 结果文本的成败判定：以上面归纳的失败开头为准，命中即
+    未做成；其余一律算完成。"""
+    return not str(text or "").startswith(_DEVCTRL_FAIL_PREFIXES)
+
+
+def _devctrl_run(step_fn, enabled_fn, action, arg_of):
+    """八个设备工具共用的薄包装体。第一行先查设备操控开关（关着时任何路径
+    都执行不了设备动作）；然后只调 _devctrl_step。reply_to 按现有构造方式取
+    主人 QQ：工具闸 scope=owner 保证走到这里的 msg 一定是主人的消息
+    （is_owner 的判定就是 sender_id == owner_qq()，二者一致），所以取
+    msg["sender_id"]，send 动作由此把文件发到主人私聊。_devctrl_step 的返回
+    文本不抛异常，成败按 _devctrl_ok 归纳。"""
+    def run(daemon, msg, args):
+        if not enabled_fn():
+            return qq_tools.make_result(
+                False, "电脑操控没有开启（管理台 → 设备操控 里打开）")
+        reply_to = ("private", str((msg or {}).get("sender_id") or ""))
+        text = step_fn(daemon, reply_to, action, arg_of(args))
+        return qq_tools.make_result(_devctrl_ok(text), text)
+    return run
+
+
+def _devctrl_specs(step_fn, enabled_fn):
+    """八个设备工具的说明书（B2a 定稿表）：scope 全部 owner；pc_open/pc_close
+    是 danger 级，由工具循环的授权闸管（B2b 接索码预检）。"""
+    return (
+        {"name": "pc_find",
+         "desc": "在这台电脑上按文件名找文件，拿回匹配的完整路径",
+         "params": [{"name": "query", "type": "str", "required": True,
+                     "desc": "文件名关键词"}],
+         "risk": "read", "scope": "owner",
+         "returns": "在这台电脑上按名字找文件的结果",
+         "run": _devctrl_run(step_fn, enabled_fn, "find",
+                             lambda a: a["query"])},
+        {"name": "pc_read",
+         "desc": "读这台电脑上某个文件的开头部分；受保护的目录和敏感文件读不了",
+         "params": [{"name": "path", "type": "str", "required": True,
+                     "desc": "文件的完整路径"}],
+         "risk": "read", "scope": "owner",
+         "returns": "文件的前 2000 字",
+         "run": _devctrl_run(step_fn, enabled_fn, "read",
+                             lambda a: a["path"])},
+        {"name": "pc_list",
+         "desc": "看这台电脑上某个文件夹里有什么（不给路径就看主目录）",
+         "params": [{"name": "path", "type": "str", "required": False,
+                     "desc": "文件夹路径，不填就看主目录"}],
+         "risk": "read", "scope": "owner",
+         "returns": "某个目录下的内容",
+         "run": _devctrl_run(step_fn, enabled_fn, "list",
+                             lambda a: a.get("path", ""))},
+        {"name": "pc_search",
+         "desc": "在这台电脑上联网搜索，拿回最新的公开资料",
+         "params": [{"name": "query", "type": "str", "required": True,
+                     "desc": "要搜的关键词"}],
+         "risk": "read", "scope": "owner",
+         "returns": "联网搜索的结果",
+         "run": _devctrl_run(step_fn, enabled_fn, "searchweb",
+                             lambda a: a["query"])},
+        {"name": "pc_apps",
+         "desc": "列出这台电脑上装了哪些程序（开始菜单里能看到的）",
+         "params": [],
+         "risk": "read", "scope": "owner",
+         "returns": "这台电脑上常用的程序",
+         "run": _devctrl_run(step_fn, enabled_fn, "apps", lambda a: "")},
+        {"name": "pc_send",
+         "desc": "把这台电脑上的一个文件发给主人（私聊收货）",
+         "params": [{"name": "path", "type": "str", "required": True,
+                     "desc": "文件的完整路径"}],
+         "risk": "write", "scope": "owner",
+         "returns": "把这个文件发到主人的私聊",
+         "run": _devctrl_run(step_fn, enabled_fn, "send",
+                             lambda a: a["path"])},
+        {"name": "pc_open",
+         "desc": "在这台电脑上打开一个文件、程序或网页",
+         "params": [{"name": "target", "type": "str", "required": True,
+                     "desc": "程序名、文件路径或网址"}],
+         "risk": "danger", "scope": "owner",
+         "returns": "打开一个文件、程序或网址",
+         "run": _devctrl_run(step_fn, enabled_fn, "open",
+                             lambda a: a["target"])},
+        {"name": "pc_close",
+         "desc": "结束这台电脑上正在运行的一个程序（系统关键进程关不了）",
+         "params": [{"name": "name", "type": "str", "required": True,
+                     "desc": "程序名（可带 .exe）"}],
+         "risk": "danger", "scope": "owner",
+         "returns": "结束一个程序",
+         "run": _devctrl_run(step_fn, enabled_fn, "close",
+                             lambda a: a["name"])},
+    )

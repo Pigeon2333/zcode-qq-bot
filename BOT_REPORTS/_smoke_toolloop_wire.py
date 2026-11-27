@@ -4,7 +4,8 @@
 对应派单验收 W1–W8：
   W1 开关关：system 无 [TOOL]/固定说明，带话与画图教学仍在；json_rule_text 不含 [TOOL]。
   W2 开关开+主人：system 有 [TOOL] 与固定说明，带话/画图两段不在；
-     设备操控段与开关关时逐字相同（同一条主人消息分别构建，按段比对）。
+     设备操控已开启版教学照旧注入（B2a 改：开关开+主人+设备操控开时不再注入，
+     由工具清单 pc_* 代替——见 W2e2/W2f）。
   W3 开关开+非主人（群聊普通成员、私聊非主人）：system/user 与开关关时逐字一致。
   W4 开关关（_tool_loop_on 钉死 False）零变化下限：主人消息与群聊消息的 system
      无 [TOOL]、无固定说明（与旧代码的逐字节比对由主会话基准比对工具做）。
@@ -42,6 +43,7 @@ import qq_daemon as D  # noqa: E402
 import qq_bot_agent as A  # noqa: E402
 import qq_admin_ui as U  # noqa: E402
 import qq_tools as T  # noqa: E402
+import qq_tools_builtin as TB  # noqa: E402
 
 fails = []
 n_pass = 0
@@ -188,7 +190,15 @@ for v2 in (False, True):
         jr = A.json_rule_text(owner_priv())
     chk("W1e v%d 开关关：json_rule_text 无 [TOOL]" % v2, TOOL_MARK not in jr, jr[-120:])
 
-# ============ W2 开关开 + 主人：教学替换、设备操控段逐字不变 ============
+# ============ W2 开关开 + 主人：教学替换；设备操控已开启版由 pc_* 代替（B2a） ============
+
+# B2a 起工具清单里要有 pc_* 行（照 _smoke_toolloop_tools 的打桩写法登记八个
+# 设备工具：_devctrl_step 打桩、零真实设备动作）；可不可用由 _tool_available
+# 按 _device_ctrl_enabled 运行时过滤，与登记时的桩无关。
+TB.register_builtin(
+    lambda q: ("x 测试条目（example.com）", "bing"),
+    devctrl_step_fn=lambda d, r, a, g: "find「%s」→ 0 条：无匹配" % g,
+    devctrl_enabled_fn=lambda: True)
 
 set_tool_loop(True)
 for v2 in (False, True):
@@ -202,11 +212,18 @@ for v2 in (False, True):
     chk("W2b v%d 开关开+主人：有固定说明" % v2, FIX_NOTE in s_on)
     chk("W2c v%d 开关开+主人：带话教学已换掉" % v2, DAIHUA_MARK not in s_on)
     chk("W2d v%d 开关开+主人：画图教学已换掉" % v2, DRAW_MARK not in s_on)
+    # B2a 改前 W2e/W2f 钉的是「设备操控段与开关关时逐字相同」；B2a 起开关开
+    # +主人+设备操控开时已开启版教学不再注入（由工具清单 pc_* 代替），断言
+    # 改成：关侧照旧注入、开侧不再注入且有 pc_* 行。
     _seg_off = s_off[s_off.index(DEVCTRL_MARK):]
-    _seg_on = s_on[s_on.index(DEVCTRL_MARK):]
-    chk("W2e v%d 设备操控段逐字相同（按段比对）" % v2, _seg_off == _seg_on,
-        (repr(_seg_off[:60]), repr(_seg_on[:60])))
-    chk("W2f v%d 设备操控段本身有内容" % v2, len(_seg_on) > 50 and "## 可用表情包" in _seg_on)
+    chk("W2e v%d 开关关侧：已开启版设备操控教学照旧在" % v2,
+        "「设备操控」功能已开启" in _seg_off, repr(_seg_off[:60]))
+    chk("W2e2 v%d 开关开+主人+设备操控开：已开启版教学不再注入" % v2,
+        DEVCTRL_MARK not in s_on and "「设备操控」功能已开启" not in s_on, "")
+    chk("W2f v%d 开关开+主人：工具清单里有 pc_*（代替已开启版教学）" % v2,
+        "pc_read(path)" in s_on and "pc_open(target)" in s_on
+        and "pc_find(query)" in s_on, s_on[:300])
+    chk("W2f2 v%d 表情包段仍在" % v2, "## 可用表情包" in s_on)
 
 # ============ W3 开关开 + 非主人：逐字一致 ============
 

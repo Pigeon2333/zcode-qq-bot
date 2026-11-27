@@ -371,8 +371,15 @@ chk("S9b README_EN.md 设备操控段提到同一开关",
 
 # ----------------------------------------------------------- 不变量 I4：调用点与函数体
 calls = re.findall(r"cfg_2fa_on\(\)", SRC_AGENT)
-chk("I4a cfg_2fa_on() 恰好 5 处带括号出现（1 处 def + 4 处调用，一个不多一个不少）",
-    len(calls) == 5, len(calls))
+# B2a 前恰好 5 处（1 处 def + 4 处调用）；B2a 起新增 2 处：工具循环的授权
+# 回调 _devctrl_auth_ok（danger 工具的授权状态改由它统一判断），和收窄版
+# 设备操控入口 _handle_devctrl_link_only 的授权码分支（只认索码窗口内的码）。
+chk("I4a cfg_2fa_on() 恰好 7 处带括号出现（1 处 def + 6 处调用，一个不多一个不少）",
+    len(calls) == 7, len(calls))
+chk("I4a2 新增的 2 处调用：_devctrl_auth_ok 与 _handle_devctrl_link_only 各一处",
+    "return (not cfg_2fa_on()) or (_DEVCTRL_AUTH[\"ok_until\"] > time.time())"
+    in SRC_AGENT
+    and "if not (m_code and cfg_2fa_on()):" in SRC_AGENT, "")
 chk("I4b 4 处调用点逐字未动",
     "if m_code and cfg_2fa_on():" in SRC_AGENT
     and "if not cfg_2fa_on() and _devctrl_should_ask(" in SRC_AGENT
