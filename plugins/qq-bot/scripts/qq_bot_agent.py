@@ -9087,7 +9087,18 @@ class _AckBarrier(object):
             if seg_max is None:
                 return
             try:
-                self._daemon.ack([seg_max])
+                # 坑：放行可能发生在工作线程的 process() 内部（process 提前
+                # 发确认触发），那一刻本线程的截流标记 _ACK_TLS.barrier 还挂
+                # 着——直接调 ack 会被 DaemonClient 截流回 mark_done，按
+                # 「已放行过」直接返回，daemon 永远收不到确认，下轮重拉重处
+                # 理、重复回复（2026-11-27 事故）。真发前摘标记，发完（含异
+                # 常）在 finally 恢复原值。
+                _prev_barrier = getattr(_ACK_TLS, "barrier", None)
+                _ACK_TLS.barrier = None
+                try:
+                    self._daemon.ack([seg_max])
+                finally:
+                    _ACK_TLS.barrier = _prev_barrier
             except Exception as e:
                 # 发送失败：这段编号已完成是真，屏障不再持有；daemon 侧未
                 # ack，重启后会重投（或被更高编号的放行盖上——语义仍正确）
@@ -9103,9 +9114,13 @@ def _ack_barrier_for(daemon):
     if _ACK_BARRIER is None:
         def _release(mid):
             # 编号真正交给 daemon 后才移出在处理集合：在此之前再拉到它也不
-            # 重复派发（任务完成了、确认还在屏障里等前面的编号）
+            # 重复派发（任务完成了、确认还在屏障里等前面的编号）。同时记进
+            # 防重复回复保险表（_DONE_RECENT）：放行发送若失败，daemon 未
+            # ack、下轮重拉到这条时 TTL 内不再重派（防重复回复）
+            s = str(mid)
             with _INFLIGHT_LOCK:
-                _INFLIGHT.discard(str(mid))
+                _INFLIGHT.discard(s)
+                _DONE_RECENT[s] = time.monotonic()
         _ACK_BARRIER = _AckBarrier(daemon, on_release=_release)
     return _ACK_BARRIER
 
@@ -9129,6 +9144,36 @@ def _sched_drain_if_any():
 _INFLIGHT = set()          # 已派发、还没处理完的消息 id（防重复派发，见下）
 _INFLIGHT_LOCK = threading.Lock()
 
+_DONE_RECENT = {}          # 并行路径防重复回复保险：确认已放行的消息 id 字符串
+                           # → 放行时刻（time.monotonic()）。放行发送失败时
+                           # daemon 没收到确认，下轮会把同一条拉回来——TTL 内
+                           # 靠这张表不再重派（默认路径不走这张表）
+_DONE_RECENT_TTL = 300.0   # 记忆时长（秒）：期间重拉到的已放行消息直接跳过
+_DONE_SKIP_LOGGED = set()  # 已打过 AGENT_SCHED_SKIP_DONE 的 id（每条消息最多
+                           # 一行，防刷屏；过期项随查表清掉）
+
+
+def _done_recent_hit(mid):
+    """并行派发前查防重复回复保险：返回 True 表示 mid 在 TTL 内确认已放行
+    过，本轮跳过派发。每次查表顺手清掉过期项；跳过且没打过日志时打一行
+    AGENT_SCHED_SKIP_DONE（每条消息最多一次）。"""
+    now = time.monotonic()
+    hit = False
+    first = False
+    with _INFLIGHT_LOCK:
+        expired = [k for k, t in _DONE_RECENT.items()
+                   if now - t >= _DONE_RECENT_TTL]
+        for k in expired:
+            _DONE_RECENT.pop(k, None)
+            _DONE_SKIP_LOGGED.discard(k)
+        if mid in _DONE_RECENT:
+            hit = True
+            first = mid not in _DONE_SKIP_LOGGED
+            _DONE_SKIP_LOGGED.add(mid)
+    if hit and first:
+        out("AGENT_SCHED_SKIP_DONE msg_id=%s" % mid)
+    return hit
+
 
 def _dispatch_messages(daemon, items):
     """派发一批收件消息。ack 语义不变：process 内部自己 ack，收件线程不提前
@@ -9137,7 +9182,9 @@ def _dispatch_messages(daemon, items):
     并行模式下 daemon 的收件箱按「id > acked_max」返回未 ack 消息——一条还在
     处理（未 ack）的消息下轮会被再拉回来。收件线程靠 _INFLIGHT 跳过还在处理
     中的 id（等同旧单线程「本轮拉到的处理完才拉下一轮」的效果）；处理返回后
-    移出，若确实没 ack，下一轮会像从前一样重新处理。"""
+    移出，若确实没 ack，下一轮会像从前一样重新处理。并行模式下另有防重复
+    回复保险（_DONE_RECENT）：确认已放行过的 id 在 TTL 内不重派（放行发送
+    失败时 daemon 没收到确认、同一条会被重拉回来）。默认路径不走这张表。"""
     if agent_workers() <= 1:
         # 默认路径（与从前逐字一致）：同步逐条 process，一条处理完才下一条
         if items:
@@ -9162,6 +9209,13 @@ def _dispatch_messages(daemon, items):
             if mid in _INFLIGHT:
                 continue          # 还在处理中：不重复派发
             _INFLIGHT.add(mid)
+        if _done_recent_hit(mid):
+            # 确认已在 TTL 内放行过（放行发送失败 daemon 没收到时会被重拉
+            # 回来）：不重派，防重复回复。摘掉刚登记的在处理集合，TTL 过后
+            # 再拉到才能正常重投；日志在 _done_recent_hit 里每条消息只打一次
+            with _INFLIGHT_LOCK:
+                _INFLIGHT.discard(mid)
+            continue
         barrier.register(mid)     # 按序确认：登记「已派出、未完成」
         key = "%s:%s" % (msg.get("chat_type"), msg.get("chat_id"))
         fn = lambda m=msg: _process_scheduled(daemon, m)
