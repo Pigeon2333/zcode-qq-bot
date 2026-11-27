@@ -1329,12 +1329,12 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
     try:
         LOG.clear()
         _st20, _r20 = _post20({"paused": False, "src": "smoke-test"})
-        _line20 = [x for x in LOG if x.startswith("AGENT_PAUSE")]
+        _line20 = [x for x in LOG if x.startswith("AGENT_PAUSE ")]
         chk("20a 暂停接口的日志带上来源", _st20 == 200 and _r20.get("ok") is True
             and _line20 and "src=smoke-test" in _line20[0], (_st20, _r20, _line20))
         LOG.clear()
         _post20({"paused": False})
-        _line20 = [x for x in LOG if x.startswith("AGENT_PAUSE")]
+        _line20 = [x for x in LOG if x.startswith("AGENT_PAUSE ")]
         chk("20b 没报来源的记成 unknown", _line20 and "src=unknown" in _line20[0], _line20)
     finally:
         _srv20.shutdown()

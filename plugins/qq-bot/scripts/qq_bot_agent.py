@@ -1716,13 +1716,14 @@ def owner_command(msg, daemon=None):
         hh, mm = mc.group(1).split(":")
         if int(hh) > 23 or int(mm) > 59:
             return True, "时间格式：HH:MM（00:00–23:59）"
+        hm = _cron_hm_norm(mc.group(1))   # 存补零的，_cron_tick 才比得中
         tasks = [x for x in _cron_tasks() if isinstance(x, dict)]
         nid = max([int(x.get("id", 0)) for x in tasks] or [0]) + 1
-        tasks.append({"id": nid, "time": mc.group(1), "text": mc.group(2).strip(),
+        tasks.append({"id": nid, "time": hm, "text": mc.group(2).strip(),
                       "chat_type": "private", "chat_id": str(msg.get("sender_id") or owner_qq())})
         _cron_save(tasks)
         return True, "已设定时 #%d：每天 %s 执行「%s…」，结果完成后自动私聊发你。发「定时列表」查看" % (
-            nid, mc.group(1), mc.group(2)[:30])
+            nid, hm, mc.group(2)[:30])
     if t == "定时列表":
         tasks = [x for x in _cron_tasks() if isinstance(x, dict)]
         if not tasks:
@@ -2041,6 +2042,12 @@ def _draw_execute(daemon, msg, prompt):
             out("AGENT_DRAW_ERR %r" % e)
 
     threading.Thread(target=_run, daemon=True).start()
+
+
+def _draw_tool(daemon, msg, prompt):
+    """工具 draw 的执行体：与 [画] 同一个 _draw_execute（打招呼 + 后台
+    生成 + 发图，异步），成功与否由它自己发消息告知。"""
+    return _draw_execute(daemon, msg, prompt)
 
 
 def _handle_draw(daemon, msg):
@@ -3702,12 +3709,12 @@ def _build_messages_impl(daemon, msg, ctx_k=32, v2=False):
                    if str(msg.get("sender_id") or "") else "")
             content = ("【当前场景：私聊（一对一对话，仅对方可见）】\n"
                        "【最近对话】（旧→新）\n%s%s\n%s\n\n"
-                       "【你在这些群（群号（群名））：%s】\n\n【现在】%s对你说：%s%s"
+                       "【你在这些群（群名(群号)）：%s】\n\n【现在】%s对你说：%s%s"
                        % (hist_block, _lg, hist_note, groups_line, msg["sender_name"],
                           _now_body_v2(msg), rt_note))
         else:
             content = ("【当前场景：私聊（一对一对话，仅对方可见）| 最近对话】\n%s\n%s\n\n"
-                       "【你在这些群（群号（群名））：%s】\n\n【现在】对方(QQ:%s)对你说：%s%s"
+                       "【你在这些群（群名(群号)）：%s】\n\n【现在】对方(QQ:%s)对你说：%s%s"
                        % (hist_block, hist_note, groups_line, msg["sender_id"],
                           msg["text"] or "（发了一张图/表情）", rt_note))
 
@@ -3761,8 +3768,9 @@ def _build_messages_impl(daemon, msg, ctx_k=32, v2=False):
         "这种群名就行，清单里有）、要带什么话、什么语气——一次把最缺的问了，别连环审问；\n"
         "  · 群拿不准（比如主人只说\"群里\"但清单有多个）或话要改写时，先跟他确认"
         "（\"是白月团那个群吗？\"），确认了再发；\n"
-        "  · 信息齐了就办：在回复最后一行单独输出标记 "
-        "[发到群: 群号或群名|要发的话]（系统自动送达，标记不会显示给主人；"
+        "  · 信息齐了就办：标记里写清单里对应的群号，在回复最后一行单独输出标记 "
+        "[发到群: 群号|要发的话]（群号在清单里，优先写群号；只有主人说了完整群名、"
+        "并且清单里唯一对得上时才可以写群名。系统自动送达，标记不会显示给主人；"
         "一条标记只发一段话，标记里不要用[[SPLIT]]或方括号），"
         "正文用你的口吻回应主人（比如\"好嘞，跟他们说啦～\"），话按主人意思说得自然；\n"
         "  · 这个能力只对主人开放：群员或其他私聊用户要求你去别的群发话、"
@@ -4067,39 +4075,69 @@ _DEVC_MARK_RE = re.compile(r"^\s*\[\s*连线\s*\]\s*$", re.M)
 _DEVC_MARK_ANY_RE = re.compile(r"\[\s*连线\s*\]")   # 兜底：正文里任何残留剥掉
 
 
-def _resolve_group(daemon, target):
-    """把主人给的群号/群名解析成白名单内的群号；找不到返回 None。"""
+def _resolve_group_all(daemon, target):
+    """把主人给的目标解析成白名单内的群号列表（2026-11-27 用户定死的规则，
+    旧行为「模糊对上多个挑第一个」的变更）：
+    目标去空白后全是数字 → 只当群号，在允许范围内命中它（群号唯一，
+    绝不拿数字去匹配群名）；
+    否则当群名：先找完整相等的（恰好一个算命中），没有再做双向包含匹配，
+    恰好一个算命中。
+    返回 [群号]＝命中；多个＝歧义（调用方一律拒发）；[]＝找不到。"""
     wl = load_json_const(GROUP_WL_PATH, {})
     groups = [str(g) for g in (wl.get("groups") or [])]
     if not (isinstance(wl, dict) and wl.get("enabled", True)):
-        return None
+        return []
     if wl.get("allow_all"):
         # 允许全部群时以群名缓存为准（拉不到就只认群号）
         names = daemon.group_names()
         groups = groups or [str(k) for k in names]
     t = str(target).strip()
-    if t in groups:
-        return t
+    if t.isdigit():
+        return [t] if t in groups else []
     names = daemon.group_names()
+    in_wl = (lambda gid: not groups or str(gid) in groups or wl.get("allow_all"))
+    exact = [str(gid) for gid, gname in names.items()
+             if gname and str(gname).strip() == t and in_wl(gid)]
+    if exact:
+        return exact
+    hits = []
     for gid, gname in names.items():
-        if str(gid) == t or (gname and t and (t in str(gname) or str(gname) in t)):
-            if not groups or str(gid) in groups or wl.get("allow_all"):
-                return str(gid)
-    return None
+        if gname and t and (t in str(gname) or str(gname) in t):
+            if in_wl(gid):
+                hits.append(str(gid))
+    return hits
 
 
-def _sendgrp_execute(daemon, msg, target, text):
-    """执行 [发到群: 目标|内容]：仅主人；目标须在群白名单内。"""
+def _sendgrp_resolve_and_send(daemon, msg, target, text, notify=True):
+    """「解析目标群 + 校验 + 发送」共用路径（[发到群] 标记与工具 send_group
+    都走这里）：仅主人；目标须在群白名单内。返回 (ok, 给调用方的说明,
+    群号或None)。
+    解析按 _resolve_group_all 的规则（群号唯一优先；群名先完整相等再包含；
+    对上多个一律拒发——旧标记路径与工具路径同一条规则，不再挑第一个），
+    拒发提示列出全部 群名(群号) 让主人报群号。
+    notify=False（工具路径）时不在当前会话直接发提示——说明已作为工具结果
+    回喂给模型、由模型转述，直接再发一句主人会收到两条；旧标记路径没有
+    模型在后面转述，照旧直接提示。日志（out）两种路径都照打。"""
     if not is_owner(msg):
         out("AGENT_SENDGRP_DENY not-owner")
-        return
-    gid = _resolve_group(daemon, target)
+        return False, "只有主人能让我往群里发话", None
+    hits = _resolve_group_all(daemon, target)
+    gid = hits[0] if len(hits) == 1 else None
+    if len(hits) > 1:
+        names = daemon.group_names()
+        pairs = ["%s(%s)" % (str(names.get(g) or "群名未知"), g) for g in hits]
+        out("AGENT_SENDGRP_AMBIG %.40s -> %d 个" % (target, len(hits)))
+        tip = "叫这个名字的群有多个：%s，请告诉我群号" % "、".join(pairs)
+        if notify:
+            daemon.send(msg["chat_type"], msg["chat_id"], [tip])
+        return False, tip, None
     if not gid:
         out("AGENT_SENDGRP_BAD_TARGET %.40s" % target)
-        daemon.send(msg["chat_type"], msg["chat_id"],
-                    ["没找到这个群（或它不在我的群白名单里）——"
-                     "发「群列表」看看我目前在哪些群，确认群号或群名再让我发～"])
-        return
+        bad = ("没找到这个群（或它不在我的群白名单里）——"
+               "发「群列表」看看我目前在哪些群，确认群号或群名再让我发～")
+        if notify:
+            daemon.send(msg["chat_type"], msg["chat_id"], [bad])
+        return False, bad, None
     # 标记内容是单段；换行最多拆成两条短句发送（更像真人）
     parts = [p.strip() for p in str(text).split("\n") if p.strip()][:2] \
         or [str(text).strip()]
@@ -4110,14 +4148,28 @@ def _sendgrp_execute(daemon, msg, target, text):
         res = {}
     if res.get("ok"):
         out("AGENT_SENDGRP_OK -> group/%s (%d 段)" % (gid, len(parts)))
-    else:
-        daemon.send(msg["chat_type"], msg["chat_id"],
-                    ["发到群里失败：%s" % str(res.get("error") or "未知错误")[:80]])
-        out("AGENT_SENDGRP_FAIL group/%s %s" % (gid, str(res.get("error"))[:120]))
+        return True, "已发到群 %s（%d 段）" % (gid, len(parts)), gid
+    fail = "发到群里失败：%s" % str(res.get("error") or "未知错误")[:80]
+    if notify:
+        daemon.send(msg["chat_type"], msg["chat_id"], [fail])
+    out("AGENT_SENDGRP_FAIL group/%s %s" % (gid, str(res.get("error"))[:120]))
+    return False, fail, gid
+
+
+def _sendgrp_execute(daemon, msg, target, text):
+    """执行 [发到群: 目标|内容]：仅主人；目标须在群白名单内。"""
+    _sendgrp_resolve_and_send(daemon, msg, target, text)
+
+
+def _sendgrp_tool_send(daemon, msg, target, text):
+    """工具 send_group 的执行体：与 [发到群] 同一条解析+校验+发送路径；
+    不在当前会话直接发提示（notify=False，说明走工具结果回喂给模型）。"""
+    return _sendgrp_resolve_and_send(daemon, msg, target, text, notify=False)
 
 
 def _owner_groups_line(daemon):
-    """主提示词用：白名单群清单（群号+群名）。拉群名失败就只给群号。"""
+    """主提示词用：白名单群清单，每项「群名(群号)」——发到群按群号匹配后，
+    清单把群号放在括号里方便模型照抄。拉群名失败就只给群号。"""
     wl = load_json_const(GROUP_WL_PATH, {})
     if not (isinstance(wl, dict) and wl.get("enabled", True)):
         return "（群回应总开关已关）"
@@ -4127,7 +4179,7 @@ def _owner_groups_line(daemon):
     if not groups:
         return "（群白名单为空）"
     names = daemon.group_names() if hasattr(daemon, "group_names") else {}
-    items = ["%s（%s）" % (g, names.get(g) or "群名未知") for g in groups[:12]]
+    items = ["%s(%s)" % (names.get(g) or "群名未知", g) for g in groups[:12]]
     more = "" if len(groups) <= 12 else " 等 %d 个群" % len(groups)
     return "、".join(items) + more
 
@@ -4909,6 +4961,46 @@ def _cron_save(tasks):
     write_const(CRON_TASKS_PATH, json.dumps({"tasks": tasks}, ensure_ascii=False, indent=2))
 
 
+_CRON_HM_RE = re.compile(r"(\d{1,2}):(\d{2})")
+
+
+def _cron_hm_norm(s):
+    """「8:30」→「08:30」（_cron_tick 按零 padded 的 now_hm 比较，不补零的
+    任务永远不触发）；不是 H:MM 形状（含 None 等脏值）就原样返回，不抛异常。"""
+    if isinstance(s, str):
+        m = _CRON_HM_RE.fullmatch(s.strip())
+        if m:
+            return "%02d:%02d" % (int(m.group(1)), int(m.group(2)))
+    return s
+
+
+def _cron_add_tool(time_hm, content):
+    """工具 cron_add 的存入体：与 owner_command「定时 HH:MM …」同一条
+    _cron_tasks/_cron_save 路径（时间格式校验在工具 run 里做，见
+    qq_tools_builtin）。工具只有主人能用，任务到点结果照旧私聊发主人。
+    返回给模型看的一句话。"""
+    time_hm = _cron_hm_norm(time_hm)
+    tasks = [x for x in _cron_tasks() if isinstance(x, dict)]
+    nid = max([int(x.get("id", 0)) for x in tasks] or [0]) + 1
+    tasks.append({"id": nid, "time": time_hm, "text": str(content).strip(),
+                  "chat_type": "private", "chat_id": str(owner_qq() or "")})
+    _cron_save(tasks)
+    return "已设定时 #%d：每天 %s 执行「%s…」，到点结果私聊发主人" % (
+        nid, time_hm, str(content)[:30])
+
+
+def _cron_list_tool():
+    """工具 cron_list 的读取体：与 owner_command「定时列表」同一条
+    _cron_tasks 读取路径，整理成给模型看的一段文字。"""
+    tasks = [x for x in _cron_tasks() if isinstance(x, dict)]
+    if not tasks:
+        return "暂无定时代码任务。添加：定时 HH:MM 任务描述"
+    lines = ["#%s  每天 %s  %s" % (x.get("id"), x.get("time"),
+                                  str(x.get("text", ""))[:30])
+             for x in tasks]
+    return "定时代码任务：\n" + "\n".join(lines) + "\n删除：删定时 <编号>"
+
+
 def _cron_tick(daemon):
     """主循环每分钟检查一次：到点的定时代码任务触发沙箱执行器，结果发回指定会话。"""
     if not feature_enabled("remote_control_enabled"):
@@ -4921,7 +5013,8 @@ def _cron_tick(daemon):
     for t in _cron_tasks():
         if not isinstance(t, dict):
             continue
-        if t.get("time") != now_hm:
+        # 时间过一遍补零再比：老数据里存过「8:30」，直接比 now_hm（08:30）永远不等
+        if _cron_hm_norm(t.get("time")) != now_hm:
             continue
         if t.get("_last_day") == today:
             continue
@@ -8656,8 +8749,9 @@ class AdminHandler(BaseHTTPRequestHandler):
                 body = json.loads(self.rfile.read(n).decode("utf-8")) if n else {}
             except ValueError:
                 return self._reply(400, {"ok": False, "error": "bad json"})
+            want_paused = bool(body.get("paused", False))
             with RT.lock:
-                RT.paused = bool(body.get("paused", False))
+                RT.paused = want_paused
             # 来源由调用方自报（ui=状态页按钮 / remote=主人遥控指令），只用来记日志：
             # 暂停后机器人一言不发，查「谁暂停的」全靠这一行
             out("AGENT_PAUSE set=%s src=%s" % (RT.paused, str(body.get("src") or "unknown")[:20]))
@@ -8781,6 +8875,57 @@ class AdminServer(ThreadingHTTPServer):
             self.socket.setsockopt(socket.SOL_SOCKET,
                                    socket.SO_EXCLUSIVEADDRUSE, 1)
         super().server_bind()
+
+
+def _pause_skip_backlog_on():
+    """pause_skip_backlog（reply_config，管理台维护）：恢复后不回暂停期间的
+    消息。用户定：默认开——缺键、null、其它类型一律 True，只有布尔 False
+    才算关（读不到配置文件也按默认开）。"""
+    v = _reply_cfg().get("pause_skip_backlog")
+    if isinstance(v, bool):
+        return v
+    return True
+
+
+def _pause_backlog_skip(daemon):
+    """清掉暂停期间已触发的消息（pause_skip_backlog，2026-11-27 用户定，
+    默认开）。由收件循环在「暂停 → 恢复」的那一刻调用（_PAUSED_SEEN 翻正
+    之后、拉取之前，收件循环自己的线程里）；不要从管理接口线程调用——
+    「是否暂停」的真正来源是配置文件，收件循环自己就会发现恢复，两边会
+    抢跑，且主人用聊天指令恢复时该指令正在处理中（_DISPATCH_BUSY>0），
+    清理会每次被当成「有在途」跳过。
+    开关关着 → 什么都不做；并行模式下还有暂停前的在途任务（_INFLIGHT
+    非空）→ 不清理，只记一行日志说明跳过（_DISPATCH_BUSY 的判断保留作
+    防御，在本调用位置恒为 0）；否则循环拉收件箱、按本批最大编号 ack
+    （水位语义，不超过它的全部弹出），最后打 AGENT_PAUSE_BACKLOG_SKIP
+    n=<条数>。任何一步出错只记 AGENT_PAUSE_BACKLOG_ERR、不外抛——收件
+    循环必须照常跑下去。
+    （本函数与 _pause_skip_backlog_on 放在 AdminHandler 类之后：静态调用点
+    归类按「类前最后一个顶层 def」归属类体内的调用，别把这两个挪到类
+    前面去。）"""
+    try:
+        if not _pause_skip_backlog_on():
+            return
+        with _INFLIGHT_LOCK:
+            inflight = len(_INFLIGHT)
+        if _DISPATCH_BUSY[0] > 0 or inflight > 0:
+            out("AGENT_PAUSE_BACKLOG_KEEP busy=%d inflight=%d 有在途任务，"
+                "不清理暂停期间的消息" % (_DISPATCH_BUSY[0], inflight))
+            return
+        n = 0
+        while True:
+            items = daemon.inbox_triggered() if daemon is not None else []
+            if not items:
+                break
+            ids = [it.get("id") for it in items
+                   if isinstance(it, dict) and it.get("id") is not None]
+            if not ids:
+                break
+            daemon.ack([max(ids)])
+            n += len(items)
+        out("AGENT_PAUSE_BACKLOG_SKIP n=%d" % n)
+    except Exception as e:
+        out("AGENT_PAUSE_BACKLOG_ERR %r" % e)
 
 
 def start_admin_server(port, daemon=None):
@@ -9394,15 +9539,32 @@ def _queues_snapshot():
             "sessions": sessions[:50]}
 
 
+_PAUSED_SEEN = [False]   # 上一轮收件循环是否处于暂停（手动或定时都算）；
+                         # 恢复那一刻清积压用。列表只为让测试能就地复位。
+
+
 def _inbox_loop(daemon, idle_sleep):
-    """收件线程（驻主线程）：reload → 暂停判定 → 拉收件箱 → 派发。
-    暂停/定时暂停时不拉不堆（内存里不积消息），30 秒查一次；每轮 idle_sleep。"""
+    """收件线程（驻主线程）：reload → 暂停判定 → [恢复那一刻清积压] →
+    拉收件箱 → 派发。暂停/定时暂停时不拉不堆（内存里不积消息），30 秒查
+    一次；每轮 idle_sleep。
+    「恢复后不回暂停期间的消息」（pause_skip_backlog，默认开）由本循环自己
+    在暂停 → 恢复的那一刻做（_PAUSED_SEEN 置位过、本轮已不暂停 → 先清后拉）：
+    不能放管理接口线程——「是否暂停」的真正来源是配置文件，界面写完文件后
+    收件循环可能先发现恢复并开始处理积压，两边抢跑；主人用聊天指令「恢复」
+    时那条指令本身就是正在处理的消息（_DISPATCH_BUSY>0），清理会被当成
+    「有在途」每次跳过。手动暂停和定时暂停都算：夜里定时暂停积下的消息也
+    不该早上各回一遍。"""
     while True:
         try:
             RT.reload_chain()
-            if RT.snapshot()["paused"] or _in_sched_pause():
+            _paused_now = RT.snapshot()["paused"]
+            if _paused_now or _in_sched_pause():
+                _PAUSED_SEEN[0] = True
                 time.sleep(30)   # 暂停中：30s 查一次，零 LLM 零 token
                 continue
+            if _PAUSED_SEEN[0]:
+                _PAUSED_SEEN[0] = False
+                _pause_backlog_skip(daemon)   # 在拉取之前、在收件循环自己的线程里做
             items = daemon.inbox_triggered()
             _dispatch_messages(daemon, items)
         except Exception as e:
@@ -9505,10 +9667,17 @@ def main():
     except Exception as e:
         out("PLUGIN_INIT_FAIL %r" % e)
     # 内置工具登记（幂等，见 qq_tools_builtin.register_builtin）：工具的执行
-    # 函数在这里接上——web_search 用本模块的统一搜索入口。登记放 main 里而
-    # 不是 import 时做，测试 import 本模块不会往登记表塞东西。
+    # 函数在这里接上——web_search 用本模块的统一搜索入口；发到群/画图/定时
+    # 三个有对外副作用的分别走 _sendgrp_tool_send（含歧义拒发）/ _draw_tool /
+    # _cron_add_tool / _cron_list_tool，全是既有逻辑的薄包装。登记放 main 里
+    # 而不是 import 时做，测试 import 本模块不会往登记表塞东西。
     try:
-        qq_tools_builtin.register_builtin(search_web)
+        qq_tools_builtin.register_builtin(
+            search_web,
+            send_group_fn=_sendgrp_tool_send,
+            draw_fn=_draw_tool,
+            cron_add_fn=_cron_add_tool,
+            cron_list_fn=_cron_list_tool)
     except Exception as e:
         out("AGENT_TOOLS_REG_FAIL %r" % e)
     threading.Thread(target=_caption_loop, args=(daemon,), daemon=True).start()

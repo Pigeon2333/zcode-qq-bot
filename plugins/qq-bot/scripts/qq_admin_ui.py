@@ -798,7 +798,7 @@ function manageBootTimer(b){
  }else if(_bootTimer){clearInterval(_bootTimer);_bootTimer=null}
 }
 async function vStatus(){
- const [d,a,b,c,wd,vi,qc]=await Promise.all([
+ const [d,a,b,c,wd,vi,qc,rv]=await Promise.all([
   api('/api/daemon-status').catch(()=>({ok:false})),
   api('/api/agent-status').catch(()=>({ok:false})),
   pwApi('/api/power/status',{}).catch(()=>({})),
@@ -806,6 +806,7 @@ async function vStatus(){
   api('/api/watchdog').catch(()=>({enabled:false})),
   api('/api/app-info').catch(()=>({})),
   api('/api/qq-compat').catch(()=>({level:'ok'})),
+  api('/api/reply-config').catch(()=>({})),
  ]);
  manageBootTimer(b);
  const ws=d.ws_connected, login=d.login||{};
@@ -926,8 +927,9 @@ async function vStatus(){
   <div><span class="k">出错</span> ${a.errors??'-'}</div>
   <div><span class="k">暂停</span> ${a.paused?'是':'否'}</div>
  </div>
- <div style="margin-top:12px"><button class="act ghost" onclick="togglePause()">${a.paused?'恢复回复':'暂停回复'}</button>
- <button class="act ghost" onclick="load()">刷新</button></div>
+ <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button class="act ghost" onclick="togglePause()">${a.paused?'恢复回复':'暂停回复'}</button>
+ <button class="act ghost" onclick="load()">刷新</button>
+ <label style="display:inline-flex;align-items:center;gap:6px"><input type="checkbox" ${rv.pause_skip_backlog!==false?'checked':''} onchange="saveKVLoad('/api/reply-config',{pause_skip_backlog:this.checked?1:0},'「恢复后不回暂停期间的消息」已'+(this.checked?'开启':'关闭'))"> <b>恢复后不回暂停期间的消息</b></label></div>
  <div class="k" style="margin-top:8px">手动暂停 = 立即停止一切回复与主动行为，零 token 消耗（不是安静模式那种只停主动插话、@仍回——是彻底停止；恢复后不补发暂停期间的消息）</div>
  <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--line)">
   <label style="display:inline-flex;align-items:center;gap:6px"><input type="checkbox" ${c.sched_pause_enabled?'checked':''} onchange="toggleSchedPause(this.checked)"> <b>定时暂停</b></label>
@@ -6415,6 +6417,8 @@ class UiHandler(BaseHTTPRequestHandler):
                                      # 设置页控件下一批加
                                      "tool_loop_enabled": data.get("tool_loop_enabled", False),
                                      "tool_confirm_write": data.get("tool_confirm_write", False),
+                                     # 恢复后不回暂停期间的消息（2026-11-27 用户定：默认开）
+                                     "pause_skip_backlog": data.get("pause_skip_backlog", True),
                                      "proactive_private_silent_start": data.get("proactive_private_silent_start", "22:00"),
                                      "proactive_private_silent_end": data.get("proactive_private_silent_end", "08:00"),
                                      "token_limit_enabled": data.get("token_limit_enabled", False),
@@ -7631,6 +7635,9 @@ class UiHandler(BaseHTTPRequestHandler):
                 data["tool_loop_enabled"] = bool(body["tool_loop_enabled"])
             if "tool_confirm_write" in body:
                 data["tool_confirm_write"] = bool(body["tool_confirm_write"])
+            # 恢复后不回暂停期间的消息（2026-11-27 用户定：默认开）
+            if "pause_skip_backlog" in body:
+                data["pause_skip_backlog"] = bool(body["pause_skip_backlog"])
             if "proactive_private_enabled" in body:
                 data["proactive_private_enabled"] = bool(body["proactive_private_enabled"])
             for _nk in ("nudge_delay_min_sec", "nudge_delay_max_sec"):
