@@ -937,6 +937,7 @@ async function vStatus(){
   <div class="k" style="margin-top:4px">时段内机器人完全停止一切活动（零消耗，同手动暂停），时段结束自动恢复。支持跨午夜（如 23:00–07:00）。恢复后不补发暂停期间消息。与安静模式/分群暂停/仅私聊模式不同：这是全局一刀切。</div>
  </div></div>
  ${(qc.level==='danger')?'<div class="card" style="border:2px solid var(--err)"><div class="k" style="display:flex;gap:8px;align-items:flex-start;color:var(--err)"><b>⚠ QQ 与 NapCat 不兼容</b></div><div class="k" style="margin-top:6px">'+esc(qc.message||'')+'</div><div style="display:flex;gap:8px;margin-top:10px"><button class="act" onclick="napcatOnline()">一键重装 NapCat（自动适配新 QQ）…</button><button class="act ghost" onclick="goTab(\'settings\')">去锁定 QQ 版本</button></div></div>':''}
+ <div class="card" id="qcard"><div class="k" style="font-weight:600">处理队列</div><div class="k" style="margin-top:4px">读取中…</div></div>
  ${(qc.level==='warn')?'<div class="card" style="border:1px solid var(--warn)"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b>QQ 自动更新未屏蔽</b><span style="flex:1"></span><button class="act ghost" style="margin:0" onclick="goTab(\'settings\')">去开启「锁定 QQ 版本」</button></div><div class="k" style="margin-top:4px">QQ 一旦自动升级，NapCat 可能失效、机器人起不来。建议开启锁定（可随时关）。</div></div>':''}
  ${wdCard}
  <div class="card"><div class="k">收发统计</div><div class="kv" style="margin-top:8px">
@@ -950,6 +951,28 @@ async function vStatus(){
  $('#headline').textContent=(d.ok&&a&&a.ok)?'运行中':'已停止';
  ncFill(true);
  if(!_ncTokTimer)_ncTokTimer=setInterval(()=>{if(TAB==='status')ncFill()},30000);
+ if(!_queueTimer)_queueTimer=setInterval(()=>{if(TAB==='status')queuePaint()},3000);
+ queuePaint();
+}
+let _queueTimer=null;
+async function queuePaint(){
+ const el=document.getElementById('qcard');if(!el)return;
+ const q=await api('/api/agent-queues').catch(()=>null);
+ if(!document.getElementById('qcard'))return;
+ if(!q||q.ok===false){el.innerHTML='<div class="k" style="font-weight:600">处理队列</div><div class="k" style="margin-top:4px">暂时读不到（agent 未运行时会一直这样）</div>';return}
+ const rows=(q.sessions||[]).map(s=>{
+  const st=s.running?'<span class="badge b-ok">处理中</span>'
+   :(s.queued>0?'<span class="badge" style="background:var(--tint);color:var(--dim)">排队 '+esc(String(s.queued))+'</span>'
+   :'<span class="k">空闲</span>');
+  return '<div class="k" style="margin-top:4px">'+esc(String(s.chat||'?'))+'：'+st
+   +(s.waited>0?'，最早一条已等 '+s.waited+'s':'')
+   +(s.last_dur>0?'，上次耗时 '+s.last_dur+'s':'')+'</div>';
+ }).join('');
+ el.innerHTML='<div class="k" style="font-weight:600">处理队列 '
+  +'<span class="badge" style="background:var(--tint);color:var(--dim)">并发 '+esc(String(q.workers??'-'))+(Number(q.workers)===1?'（逐个处理）':'')+'</span> '
+  +'<span class="badge" style="background:var(--tint);color:var(--dim)">正在处理 '+esc(String(q.busy??0))+'</span></div>'
+  +'<div class="k" style="margin-top:4px">不同会话的消息并行处理，同一个会话内仍按先后顺序；主人的私聊有独立通道，不占并发名额。</div>'
+  +(rows||'<div class="k" style="margin-top:4px">当前没有会话在排队或处理</div>');
 }
 let _ncTok='';
 let _ncTokTimer=null;
@@ -2366,6 +2389,7 @@ async function vSettings(){
   ?stSec('API Key 与代理')+stKeys(c,keysL)
   +stSec('识图模型（后台识图与看图用）')+stVisionModel(rv)
   +stSec('上下文（每次带多少历史和记忆）')+stLean(rv)+stDyn(rv)+stHist(rv)
+  +stSec('同时处理')+stWorkers(c)
   +stSec('省额度')+stEcon(rv)
   :__ST_TAB==='style'
   ?stSec('活跃程度')+stActivityGuide(c,rv)
@@ -2588,6 +2612,12 @@ function stHist(rv){return `
    <input type="number" min="10" max="120" value="${rv.hist_lines}" style="width:80px" onchange="saveKVLoad('/api/reply-config',{hist_lines:parseInt(this.value)||50},'历史行数已保存')"><span class="k">行聊天记录，合计</span>
    <input type="number" min="1000" max="20000" step="500" value="${rv.hist_budget_chars}" style="width:96px" onchange="saveKVLoad('/api/reply-config',{hist_budget_chars:parseInt(this.value)||5000},'历史字符预算已保存')"><span class="k">字以内（超出时从最旧的开始丢）</span></div>
   <div class="k" style="margin-top:6px">带得多，机器人更容易接上前面聊过的内容，token 也花得多。提示词 v2 关着时不用这一项，按上面的精简上下文档位带</div></div>`}
+function stWorkers(c){return `
+ <div class="card"><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+   <span class="k" style="flex:none">同时处理的会话数</span>
+   <input type="number" min="1" max="8" value="${c.agent_workers??1}" style="width:64px" onchange="saveKVLoad('/api/app-config',{agent_workers:Math.max(1,Math.min(8,parseInt(this.value)||1))},'并发会话数已更新')">
+   <span class="k">（1–8）</span></div>
+  <div class="k" style="margin-top:6px">同时处理几个会话的消息。1 表示逐个处理；调大后不同群互不等待，同一个群内仍然按顺序。主人的私聊始终单独处理，不占这个名额。改动即时生效（并行名额的变化会等手头消息处理完再切换）；当前值和实时队列在状态页「处理队列」卡可见</div></div>`}
 function stEcon(rv){return `
  <div class="card"><div class="k" style="display:flex;gap:10px;align-items:center;margin-bottom:8px">高峰降耗
   ${rv.econ_active?'<span class="badge" style="background:var(--warn);color:#fff">降耗进行中</span>':'<span class="badge" style="background:var(--tint);color:var(--dim)">未生效</span>'}</div>
@@ -5336,6 +5366,13 @@ class UiHandler(BaseHTTPRequestHandler):
             r = proxy_get("127.0.0.1", _agent_port(), "/admin/status",
                           read_const(TOKEN_PATH))
             return self._reply(200, r if r.get("ok") else {"ok": False})
+        if u.path == "/api/agent-queues":
+            # 处理队列（agent 的 /admin/queues 只读透传；会话号已由 agent 打码）
+            r = proxy_get("127.0.0.1", _agent_port(), "/admin/queues",
+                          read_const(TOKEN_PATH))
+            return self._reply(200, r if r.get("ok") else
+                               {"ok": False, "workers": 0, "busy": 0,
+                                "sessions": []})
         if u.path == "/api/power/status":
             _boot_state_load()
             with _boot_lock:
@@ -7437,6 +7474,11 @@ class UiHandler(BaseHTTPRequestHandler):
                     cleaned["logs_keep_days"] = max(1, min(365, int(cfg_in["logs_keep_days"])))
                 except (TypeError, ValueError):
                     return self._reply(400, {"ok": False, "error": "日志保留天数应为 1-365 整数"})
+            if "agent_workers" in cfg_in:
+                try:
+                    cleaned["agent_workers"] = max(1, min(8, int(cfg_in["agent_workers"])))
+                except (TypeError, ValueError):
+                    return self._reply(400, {"ok": False, "error": "并发会话数应为 1-8 整数"})
             if "api_proxy" in cfg_in:
                 px = str(cfg_in["api_proxy"]).strip()[:120]
                 if px and px == _mask_url_cred(

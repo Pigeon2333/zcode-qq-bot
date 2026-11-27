@@ -136,7 +136,7 @@ Writing your own is fair game, and doesn't require waiting on my app releases. O
 qq_app.py         desktop shell (pywebview window + tray + single-instance + self-heal)
   ├─ qq_admin_ui.py    admin console :39765 (pages + all config APIs, loopback only, token auth)
   ├─ qq_daemon.py      pipeline :39763 (OneBot WS client, trigger gating, send queue, liveness)
-  ├─ qq_bot_agent.py   brain :39764 (model chain, persona/memory/safety, device control, review)
+  ├─ qq_bot_agent.py   brain :39764 (model chain, persona/memory/safety, device control, review; messages are handled one by one by default, adjustable to per-chat parallelism)
   ├─ qq_tts.py         TTS engine (Edge/Zhipu/SiliconFlow/custom OpenAI-compatible)
   ├─ qq_chatimport.py  chat-log import engine (parsing/isolated store/digestion)
   ├─ qq_lark.py        Feishu bridge engine

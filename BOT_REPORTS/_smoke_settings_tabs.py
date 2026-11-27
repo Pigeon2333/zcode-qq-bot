@@ -71,12 +71,13 @@ C_FIX = {
     "autostart_with_windows": False, "auto_power_on": False, "close_action": "tray",
 }
 KEYS_FIX = {"keys": [{"id": "k1", "label": "测试", "mask": "sk-***", "provider": "zhipu", "primary": True}]}
-# model 分页 2026-11-25 起多了一张「识图模型」卡（识图模型与每日上限从「聊天风格」搬来）
-EXPECT_CARDS = {"general": 8, "model": 6, "style": 8, "safe": 4, "maint": 4}
+# model 分页 2026-11-25 起多了一张「识图模型」卡（识图模型与每日上限从「聊天风格」搬来）；
+# 2026-11-27 起又多一张「同时处理」卡（WP-04 主循环并行的并发数输入）
+EXPECT_CARDS = {"general": 8, "model": 7, "style": 8, "safe": 4, "maint": 4}
 EXPECT_SECTIONS = {
     "general": ["身份与称呼", "运行环境", "功能开关", "应用行为"],
     "model": ["API Key 与代理", "识图模型（后台识图与看图用）",
-              "上下文（每次带多少历史和记忆）", "省额度"],
+              "上下文（每次带多少历史和记忆）", "同时处理", "省额度"],
     "style": ["活跃程度", "对话架构（怎么生成回复）", "风格与活跃程度", "接话时机", "看图"],
     "safe": ["防滥用", "账号风控", "隐私与数据"],
     "maint": ["自动化", "维护"],

@@ -22,6 +22,7 @@ v2 新增：
 """
 
 import argparse
+import bisect
 import collections
 import hmac
 import http.client
@@ -40,6 +41,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import qq_common as C
+import qq_scheduler
 
 CREATE_NO_WINDOW = 0x08000000  # Windows 子进程不弹黑窗
 
@@ -171,11 +173,13 @@ BOT_NAME = "藤原妹紅"
 
 _MEM_MAX_BYTES = 8 * 1024 * 1024   # 记忆流水轮转阈值（8MB；超出保最近 4MB）
 _MEM_ROTATE_OK = {"ts": 0.0}        # 上次轮转时刻（1 小时节流，避免频繁重写）
+_MEM_LOCK = threading.Lock()        # 追加/查重/轮转/纠错重写共用（并行工作线程）
 
 
 def _append_memory(rec):
     """追加一条记忆到 JSONL：每次即开即闭（不用常驻 FileHandler——
     长期持有句柄会挡住管理 UI 对该文件的原子重写，Windows 下 replace 被拒）。
+    调用方须已持 _MEM_LOCK（persist_memo / 本函数的轮转分支各自包好）。
     P2：超 8MB 自动轮转保最近一半（memory_snippets 每消息全量扫描，
     无限增长会线性拖慢；8MB≈3 万条，日常几年也够，真超了也只留新一半）。"""
     try:
@@ -188,6 +192,8 @@ def _append_memory(rec):
             try:
                 with open(MEMORY_STREAM_PATH, "r", encoding="utf-8") as f:
                     lines = f.readlines()
+                # （本函数整体在 _MEM_LOCK 内执行：轮转重写期间不会有并发追加
+                # 插进 readlines 与 replace 之间丢行）
                 keep = _MEM_MAX_BYTES // 2
                 kept, size = [], 0
                 for ln in reversed(lines):
@@ -412,6 +418,11 @@ def load_json_const(path, default):
     return data
 
 
+_ACK_TLS = threading.local()   # .barrier：并行工作线程处理消息期间指向按序确认
+                               # 屏障（DaemonClient.ack 看到标记就把编号交给
+                               # 屏障而不发包）；默认路径永远为空 = 确认照旧直发
+
+
 class DaemonClient:
     """本机 daemon 控制接口客户端（目标为字面量回环地址）。"""
 
@@ -626,6 +637,15 @@ class DaemonClient:
         return self._request("POST", "/botloop", body)
 
     def ack(self, ids):
+        # 并行工作线程里被截流：编号交给按序确认屏障（_AckBarrier），由它
+        # 决定何时真正发——并发下高编号先完成不得盖掉还在处理的低编号消息
+        # （daemon 的 ack 是水位 acked_max，盖掉即永久丢失）。默认路径
+        # （agent_workers=1）此标记永远为空，确认直接发、时机与从前一致。
+        barrier = getattr(_ACK_TLS, "barrier", None)
+        if barrier is not None:
+            for _i in (ids or []):
+                barrier.mark_done(_i)
+            return {"deferred": True}
         return self._request("POST", "/ack", {"ids": ids})
 
     def status(self):
@@ -1005,6 +1025,11 @@ def load_persona_collection():
 import qq_plugins as _qp
 
 PLUGIN_HOST = _qp.PluginHost(log_fn=out)
+# 主循环并行后 inject_all/on_message_all（工作线程）与 run_ticks/observe_all
+# （定时器线程）会并发进宿主：agent 侧一把锁把两类调用串行化（锁只包住
+# 钩子分发本身；插件钩子内部不该调模型/发网络——宿主文件不在本单改动范围，
+# 锁加在调用点，见终报说明）。
+_PLUGIN_LOCK = threading.RLock()
 
 
 PERSONA_ROUTES_PATH = os.path.join(DATA_DIR, "persona_routes.json")
@@ -1188,13 +1213,15 @@ def token_limit_state():
 
 
 _limit_notify_ts = [0.0]
+_limit_notify_lock = threading.Lock()
 
 
 def _notify_limit_owner(daemon, used, cap, hours):
     """到达限额时给主人私聊发一次提醒（30 分钟内不重复）。"""
-    if time.time() - _limit_notify_ts[0] < 1800 or not is_owner_qq_set():
-        return
-    _limit_notify_ts[0] = time.time()
+    with _limit_notify_lock:
+        if time.time() - _limit_notify_ts[0] < 1800 or not is_owner_qq_set():
+            return
+        _limit_notify_ts[0] = time.time()
     try:
         daemon.send("private", owner_qq(),
                     ["⚠️ token 限额已满：%d / %d（窗口 %d 小时），机器人已暂停一切响应。\n"
@@ -2667,7 +2694,8 @@ def _observe_pump(daemon):
         # 消息编号/图链是后台识图内部用的，不外发给插件：观察记录与从前一致
         it.pop("image_urls", None)
         it.pop("message_id", None)
-        PLUGIN_HOST.observe_all(it)
+        with _PLUGIN_LOCK:
+            PLUGIN_HOST.observe_all(it)
     _OBS_PUMP["seq"] = max(_OBS_PUMP["seq"], seq)
 
 
@@ -3312,7 +3340,8 @@ def _build_messages_impl(daemon, msg, ctx_k=32, v2=False):
     _aware = ""
     try:
         # 消息观察钩子：在注入前广播给插件（bili_scroll 借此预取视频卡片等）
-        PLUGIN_HOST.on_message_all(msg)
+        with _PLUGIN_LOCK:
+            PLUGIN_HOST.on_message_all(msg)
     except Exception:
         pass
     try:
@@ -3320,9 +3349,10 @@ def _build_messages_impl(daemon, msg, ctx_k=32, v2=False):
     except Exception:
         pass
     try:
-        _aware += PLUGIN_HOST.inject_all(msg["chat_type"], msg["chat_id"],
-                                         sender_id=msg.get("sender_id"),
-                                         sender_name=msg.get("sender_name"))
+        with _PLUGIN_LOCK:
+            _aware += PLUGIN_HOST.inject_all(msg["chat_type"], msg["chat_id"],
+                                             sender_id=msg.get("sender_id"),
+                                             sender_name=msg.get("sender_name"))
     except Exception:
         pass
     # （群成员画像已插件化：由上面的 PLUGIN_HOST.inject_all 注入）
@@ -3815,6 +3845,7 @@ def _strip_vcap_leak(text):
 # 开关：reply_config.context_log_enabled（默认开；隐私考量：内容含人设/
 # 记忆/聊天记录，只存在本机，页面可一键清空）。
 _CTX_DIR = os.path.join(DATA_DIR, "logs", "context")
+_CTX_LOG_LOCK = threading.Lock()   # 追加+环形截断互斥（并行工作线程）
 
 
 def context_log_enabled():
@@ -3841,20 +3872,21 @@ def _log_context_dump(msg, messages, active_p=""):
                  else str(m.get("content"))[:200]}
                 for m in messages],
         }
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        # 环形：超 200 条把最老的砍掉（整文件重写，量小无压力）
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-            if len(lines) > 200:
-                import tempfile as _tf
-                _fd, _tp = _tf.mkstemp(dir=_CTX_DIR, prefix="ctxrot_", suffix=".tmp")
-                with os.fdopen(_fd, "w", encoding="utf-8") as f:
-                    f.writelines(lines[-200:])
-                os.replace(_tp, path)
-        except OSError:
-            pass
+        with _CTX_LOG_LOCK:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            # 环形：超 200 条把最老的砍掉（整文件重写，量小无压力）
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+                if len(lines) > 200:
+                    import tempfile as _tf
+                    _fd, _tp = _tf.mkstemp(dir=_CTX_DIR, prefix="ctxrot_", suffix=".tmp")
+                    with os.fdopen(_fd, "w", encoding="utf-8") as f:
+                        f.writelines(lines[-200:])
+                    os.replace(_tp, path)
+            except OSError:
+                pass
     except Exception as e:
         out("CTX_LOG_FAIL %r" % e)
 
@@ -5051,6 +5083,9 @@ def _botloop_precheck(lines):
 
 _BOTLOOP_QUIET_PENDING = {}    # 键：归一化名字 / sender_id 字符串 → 待改判条目
 _BOTLOOP_QUIET_NOTIFY_TS = {}  # 键：sender_id → 上次私聊主人的时间戳（1 小时限频）
+# 主循环并行后 process 会在多个工作线程里跑：登记/清理要整段互斥
+# （_botloop_pending_touch 边遍历边删，不加锁会被并发插入打断抛 RuntimeError）
+_BOTLOOP_PENDING_LOCK = threading.Lock()
 _BOTLOOP_QUIET_VERDICT_RE = re.compile(
     r"^\s*(真人|机器人)\s*[:：]?\s*(\S.{0,39}?)\s*$")
 
@@ -5073,7 +5108,7 @@ def _botloop_quiet_name_of(msg):
 
 
 def _botloop_pending_touch(now=None):
-    """查/写待改判表前顺手清掉超过 24 小时的条目。"""
+    """查/写待改判表前顺手清掉超过 24 小时的条目（调用方须已持表锁）。"""
     now = time.time() if now is None else now
     for k in [k for k, v in _BOTLOOP_QUIET_PENDING.items()
               if now - v.get("ts", 0) > 86400]:
@@ -5083,28 +5118,30 @@ def _botloop_pending_touch(now=None):
 def _botloop_quiet_register(msg, quiet_min):
     """每次进入降温都登记待改判条目（不管主人通知有没有发出去）。"""
     now = time.time()
-    _botloop_pending_touch(now)
-    entry = {"chat_type": msg.get("chat_type"), "chat_id": msg.get("chat_id"),
-             "sender_id": msg.get("sender_id"),
-             "name": _botloop_quiet_name_of(msg), "ts": now,
-             "quiet_min": quiet_min}
-    key = re.sub(r"\s+", "", str(entry["name"])).casefold()
-    sid = str(msg.get("sender_id") or "")
-    if key:
-        _BOTLOOP_QUIET_PENDING[key] = entry
-    if sid:
-        _BOTLOOP_QUIET_PENDING[sid] = entry
+    with _BOTLOOP_PENDING_LOCK:
+        _botloop_pending_touch(now)
+        entry = {"chat_type": msg.get("chat_type"), "chat_id": msg.get("chat_id"),
+                 "sender_id": msg.get("sender_id"),
+                 "name": _botloop_quiet_name_of(msg), "ts": now,
+                 "quiet_min": quiet_min}
+        key = re.sub(r"\s+", "", str(entry["name"])).casefold()
+        sid = str(msg.get("sender_id") or "")
+        if key:
+            _BOTLOOP_QUIET_PENDING[key] = entry
+        if sid:
+            _BOTLOOP_QUIET_PENDING[sid] = entry
 
 
 def _botloop_quiet_find(token):
     """按归一化名字或 sender_id 字符串查待改判条目；查不到返回 None。"""
     now = time.time()
-    _botloop_pending_touch(now)
-    t = str(token or "").strip()
-    if not t:
-        return None
-    ent = _BOTLOOP_QUIET_PENDING.get(re.sub(r"\s+", "", t).casefold())
-    return ent if ent is not None else _BOTLOOP_QUIET_PENDING.get(t)
+    with _BOTLOOP_PENDING_LOCK:
+        _botloop_pending_touch(now)
+        t = str(token or "").strip()
+        if not t:
+            return None
+        ent = _BOTLOOP_QUIET_PENDING.get(re.sub(r"\s+", "", t).casefold())
+        return ent if ent is not None else _BOTLOOP_QUIET_PENDING.get(t)
 
 
 def _botloop_quiet_notice(daemon, msg, quiet_min):
@@ -5115,9 +5152,10 @@ def _botloop_quiet_notice(daemon, msg, quiet_min):
     if not oq:
         return "no-owner"
     now = time.time()
-    if now - _BOTLOOP_QUIET_NOTIFY_TS.get(sid, 0) < 3600:
-        return "no-rate"    # 限频跳过时不更新时间戳
-    _BOTLOOP_QUIET_NOTIFY_TS[sid] = now
+    with _BOTLOOP_PENDING_LOCK:
+        if now - _BOTLOOP_QUIET_NOTIFY_TS.get(sid, 0) < 3600:
+            return "no-rate"    # 限频跳过时不更新时间戳
+        _BOTLOOP_QUIET_NOTIFY_TS[sid] = now
     name = _botloop_quiet_name_of(msg)
     place = str(msg.get("chat_id") or "")
     try:
@@ -5853,26 +5891,29 @@ def _devctrl_search(pattern):
 
 
 def persist_memo(scope, cid, text):
-    """写一条记忆；同源文本 24 小时内已写过则跳过（互为前缀防变体绕过）。"""
+    """写一条记忆；同源文本 24 小时内已写过则跳过（互为前缀防变体绕过）。
+    查重→追加整段持 _MEM_LOCK：多个工作线程同时写记忆时不会双双过查重
+    或在轮转重写窗口里丢行（锁内只有文件 IO，不调模型不发网络）。"""
     key = _norm_dup(text)[:18]
-    if key:
-        try:
-            with open(MEMORY_STREAM_PATH, "r", encoding="utf-8") as f:
-                lines = f.readlines()[-400:]
-            now = time.time()
-            for ln in lines:
-                try:
-                    r = json.loads(ln)
-                except ValueError:
-                    continue
-                if r.get("ts", 0) > now - 86400 \
-                        and _memo_same_source(r.get("text", ""), text):
-                    out("AGENT_MEMO_DUP skip（24h 内已记过同源记忆）")
-                    return
-        except OSError:
-            pass
-    _append_memory({"ts": int(time.time()), "scope": scope,
-                    "id": str(cid), "text": text})
+    with _MEM_LOCK:
+        if key:
+            try:
+                with open(MEMORY_STREAM_PATH, "r", encoding="utf-8") as f:
+                    lines = f.readlines()[-400:]
+                now = time.time()
+                for ln in lines:
+                    try:
+                        r = json.loads(ln)
+                    except ValueError:
+                        continue
+                    if r.get("ts", 0) > now - 86400 \
+                            and _memo_same_source(r.get("text", ""), text):
+                        out("AGENT_MEMO_DUP skip（24h 内已记过同源记忆）")
+                        return
+            except OSError:
+                pass
+        _append_memory({"ts": int(time.time()), "scope": scope,
+                        "id": str(cid), "text": text})
     out("AGENT_MEMO scope=%s id=%s text=%.40s" % (scope, cid, text))
 
 
@@ -5886,27 +5927,28 @@ def _memory_forget(daemon, msg, keywords):
     if not kws:
         return 0
     try:
-        with open(MEMORY_STREAM_PATH, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-        keep, dropped = [], 0
-        for ln in lines:
-            try:
-                rec = json.loads(ln)
-                txt = str(rec.get("text") or "").lower()
-            except ValueError:
+        with _MEM_LOCK:
+            with open(MEMORY_STREAM_PATH, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            keep, dropped = [], 0
+            for ln in lines:
+                try:
+                    rec = json.loads(ln)
+                    txt = str(rec.get("text") or "").lower()
+                except ValueError:
+                    keep.append(ln)
+                    continue
+                if txt and any(k in txt for k in kws):
+                    dropped += 1
+                    continue
                 keep.append(ln)
-                continue
-            if txt and any(k in txt for k in kws):
-                dropped += 1
-                continue
-            keep.append(ln)
-        if dropped:
-            import tempfile as _tf
-            _fd, _tp = _tf.mkstemp(dir=os.path.dirname(MEMORY_STREAM_PATH) or ".",
-                                    prefix="memfg_", suffix=".tmp")
-            with os.fdopen(_fd, "w", encoding="utf-8") as f:
-                f.writelines(keep)
-            os.replace(_tp, MEMORY_STREAM_PATH)
+            if dropped:
+                import tempfile as _tf
+                _fd, _tp = _tf.mkstemp(dir=os.path.dirname(MEMORY_STREAM_PATH) or ".",
+                                        prefix="memfg_", suffix=".tmp")
+                with os.fdopen(_fd, "w", encoding="utf-8") as f:
+                    f.writelines(keep)
+                os.replace(_tp, MEMORY_STREAM_PATH)
         out("AGENT_MEM_FORGET dropped=%d kw=%s" % (dropped, ",".join(kws)))
         return dropped
     except Exception as e:
@@ -6397,10 +6439,18 @@ _CAP = {
     "stop": threading.Event(),   # 只给离线测试收线程用；运行中从不置位
     "seq": 0, "init": False, "poll": 0.0,
     "day": "", "n": 0, "drop_ts": 0.0,
-    "main_busy": False,   # 主线程正在生成回复：后台识图让路，不抢并发额度
+    "busy": 0,            # 正在处理消息/周期动作的主循环活动数（并行工作线程合计）
+    "main_busy": False,   # 旧键（保留一段时间）：值等同于 busy>0，后台识图让路用
     # 速写的成绩（管理台「识图状态」用）：ok=写出描述 fail=没写出来 timeout=主线程等超时
     "stat": {"ok": 0, "fail": 0, "timeout": 0, "last_model": "", "by_model": {}},
 }
+
+
+def _cap_busy_add(delta):
+    """主循环活动（收件派发/定时动作）进出时调：busy 计数 + 旧键 main_busy 同步。"""
+    with _CAP["lock"]:
+        _CAP["busy"] = max(0, _CAP["busy"] + delta)
+        _CAP["main_busy"] = _CAP["busy"] > 0
 
 
 def vision_caption_on():
@@ -6665,6 +6715,8 @@ def _caption_loop(daemon):
                         job = j            # 主线程正等着的这条：不让路
                         break
                 if job is None and not _CAP["main_busy"] and _CAP["queue"]:
+                    # main_busy 现由 _CAP["busy"]>0 推导（_cap_busy_add 维护），
+                    # 语义不变：主循环正在处理消息/周期动作时后台识图让路
                     job = _CAP["queue"][0]
                 if job is not None:
                     _CAP["queue"].remove(job)
@@ -8274,6 +8326,14 @@ class AdminHandler(BaseHTTPRequestHandler):
             return self._reply(200, {"ok": True, "code": _DEVCTRL_CODE["code"],
                                      "expires_in": max(0, int(_DEVCTRL_CODE["expires"] - time.time())),
                                      "enabled": True, "twofa": True})
+        if u.path == "/admin/queues":
+            # 处理队列只读查询：并发数 / 正在处理数 / 各会话排队与耗时
+            # （会话键和 QQ 号、群号一律打码只留尾 4 位）
+            try:
+                data = _queues_snapshot()
+            except Exception as _qe:
+                return self._reply(200, {"ok": False, "error": repr(_qe)[:200]})
+            return self._reply(200, {"ok": True, **data})
         return self._reply(404, {"ok": False, "error": "not found"})
 
     def do_POST(self):
@@ -8722,6 +8782,354 @@ def _daily_review_loop(daemon):
             out("AGENT_REVIEW_LOOP_ERR %r" % e)
 
 
+# ---------------- 主循环并行（WP-04）：定时器线程 + 收件线程 ----------------
+# 从前的单线程 while True 拆成两条：
+#   定时器线程 _timer_loop：周期性动作，顺序与节奏和从前一致；
+#   收件线程  _inbox_loop：拉收件箱 → 派发（agent_workers=1 时同步逐条 process，
+#             与从前逐字一致；>1 时按会话键进调度器，同会话保序、跨会话并行）。
+# 一条慢消息从此不再停摆其它会话与定时动作。
+
+
+def agent_workers():
+    """同时处理的会话数（app_config.agent_workers；钳 1–8，默认 1）。"""
+    try:
+        v = int(C.load_app_config().get("agent_workers", 1))
+    except (TypeError, ValueError):
+        return 1
+    return max(1, min(8, v))
+
+
+_SCHED = {}   # "s" → SessionScheduler。首次需要并行时才懒创建（=1 时不创建任何
+              # 工作线程）；配置改了且旧实例已排空时换新实例（排空判定与换入
+              # 同在收件线程做，不会有别的线程往旧实例再投消息）。
+
+
+def _sched_for(workers):
+    s = _SCHED.get("s")
+    if s is not None and s.workers != workers:
+        if _SCHED.get("want") != workers:
+            _SCHED["want"] = workers   # 只在配置变化的第一轮记一行日志（防刷屏）
+            out("AGENT_SCHED_WORKERS cfg=%d running=%d（等当前消息处理完切换）"
+                % (workers, s.workers))
+        try:
+            idle = all(v.get("queued", 0) == 0 and not v.get("running")
+                       for v in s.snapshot().values())
+        except Exception:
+            idle = False
+        if idle:
+            out("AGENT_SCHED_WORKERS %d→%d（旧实例已排空，即时切换）"
+                % (s.workers, workers))
+            s.close()
+            _SCHED.pop("s", None)
+            s = None
+    if s is None:
+        s = qq_scheduler.SessionScheduler(
+            workers=workers, idle_reap=600,
+            on_error=lambda k, e: out("AGENT_SCHED_TASK_FAIL key=%s %r" % (k, e)))
+        _SCHED["s"] = s
+        _SCHED.pop("want", None)
+        out("AGENT_SCHED_ON workers=%d" % workers)
+    return s
+
+
+_DISPATCH_BUSY = [0]   # 正在处理消息数（含主人通道；/admin/queues 的 busy 用）
+
+
+def _dispatch_busy_add(delta):
+    with _CAP["lock"]:
+        _DISPATCH_BUSY[0] = max(0, _DISPATCH_BUSY[0] + delta)
+
+
+def _process_scheduled(daemon, msg):
+    """调度器任务包装（仅并行路径走这里）：
+    - 忙碌计数进出（后台识图让路语义与从前一致）；
+    - 按序确认：处理期间给本线程挂上确认屏障标记，process 内部自己发的 ack
+      被 DaemonClient 截流进屏障，不直接发包；任务收尾（含异常）向屏障记
+      「完成」，由屏障在「已派发编号里最小的未完成项」也完成时，按编号从
+      小到大连续放行（见 _AckBarrier）；
+    - 任务抛异常：记 AGENT_LOOP_ERROR 后原样抛给调度器（on_error 接住，线程
+      不死）；屏障同样记完成——异常消息不再反复重试，水位也不会卡死。
+    返回时把消息 id 移出在处理集合（没 ack 的下轮拉回来重处理，同旧循环）。"""
+    barrier = _ack_barrier_for(daemon)
+    mid = str(msg.get("id"))
+    _cap_busy_add(1)
+    _dispatch_busy_add(1)
+    _ACK_TLS.barrier = barrier
+    _err = None
+    try:
+        process(daemon, msg)
+    except Exception as e:
+        import traceback as _tb
+        _err = e
+        out("AGENT_LOOP_ERROR msg_id=%s %r\n%s" % (mid, e, _tb.format_exc()))
+    finally:
+        _ACK_TLS.barrier = None      # 先摘标记再记完成：屏障放行时 ack 要真发
+        try:
+            barrier.mark_done(mid)
+        finally:
+            _dispatch_busy_add(-1)
+            _cap_busy_add(-1)
+    if _err is not None:
+        raise _err
+
+
+class _AckBarrier(object):
+    """并行模式的按序确认屏障。
+
+    背景：daemon 的 ack 是水位（inbox_ack 取传入编号的最大值，收件箱里编号
+    不超过它的条目全部弹出；inbox_get 只返回编号大于它的条目）。并行处理时
+    若放任工作线程各自确认，高编号先完成就把还在处理的低编号消息判为已收
+    ——那一刻进程若退出，低编号消息永久丢失（逐个处理时确认天然有序，没有
+    这个问题）。这里把工作线程的确认截流：编号按派发登记，只有「已派发编号
+    里最小的未完成项」也完成后，才按编号从小到大把连续的一段一次放行（ack
+    带这段里最大的编号，语义就是水位）。放行串行化（_send_lock），保证水位
+    序列严格递增。任务抛异常同样记完成——异常消息不再反复重试（与从前
+    「迟早被后面的确认盖掉」的净效果一致），水位不卡死。
+    锁纪律：_lock 只包登记表操作（无 IO）；放行的 ack 包发包在 _send_lock
+    内做（放行串行化锁，专职此事；_lock 已在发包前释放）。"""
+
+    def __init__(self, daemon, on_release=None):
+        self._daemon = daemon
+        self._on_release = on_release   # 编号真正交给 daemon 时回调（清在处理集合）
+        self._lock = threading.Lock()
+        self._send_lock = threading.Lock()
+        self._dispatched = []           # 已派发未放行的编号（升序）
+        self._dispatched_set = set()
+        self._done = set()              # 已完成、等前面编号的
+
+    @staticmethod
+    def _k(v):
+        s = str(v)
+        return int(s) if s.isdigit() else s
+
+    def register(self, mid):
+        """收件线程派发前登记：这个编号已派出、尚未完成。"""
+        k = self._k(mid)
+        with self._lock:
+            if k not in self._dispatched_set:
+                bisect.insort(self._dispatched, k)
+                self._dispatched_set.add(k)
+
+    def mark_done(self, mid):
+        """工作线程任务收尾（含异常）调用：记完成；够成连续一段就放行。"""
+        k = self._k(mid)
+        with self._lock:
+            if k in self._done or k not in self._dispatched_set:
+                return      # 重复完成 / 未登记过（同一消息重入处理的第二次 ack）
+            self._done.add(k)
+            head_done = bool(self._dispatched) and \
+                self._dispatched[0] in self._done
+        if not head_done:
+            return          # 前面还有没完成的编号：等着
+        with self._send_lock:           # 放行串行化：水位序列严格递增
+            with self._lock:
+                seg_max = None
+                while self._dispatched and self._dispatched[0] in self._done:
+                    x = self._dispatched.pop(0)
+                    self._dispatched_set.discard(x)
+                    self._done.discard(x)
+                    seg_max = x         # 这一段里最大的编号（=水位）
+                    if self._on_release is not None:
+                        self._on_release(x)
+            if seg_max is None:
+                return
+            try:
+                self._daemon.ack([seg_max])
+            except Exception as e:
+                # 发送失败：这段编号已完成是真，屏障不再持有；daemon 侧未
+                # ack，重启后会重投（或被更高编号的放行盖上——语义仍正确）
+                out("AGENT_ACK_RELEASE_FAIL id=%s %r" % (seg_max, e))
+
+
+_ACK_BARRIER = None   # 按序确认屏障单例（并行模式懒创建）。换调度器实例时不清：
+                      # 旧实例在途任务的完成照常经它放行
+
+
+def _ack_barrier_for(daemon):
+    global _ACK_BARRIER
+    if _ACK_BARRIER is None:
+        def _release(mid):
+            # 编号真正交给 daemon 后才移出在处理集合：在此之前再拉到它也不
+            # 重复派发（任务完成了、确认还在屏障里等前面的编号）
+            with _INFLIGHT_LOCK:
+                _INFLIGHT.discard(str(mid))
+        _ACK_BARRIER = _AckBarrier(daemon, on_release=_release)
+    return _ACK_BARRIER
+
+
+def _sched_drain_if_any():
+    """配置改回 1（逐个处理）时把残留的调度器实例排空后弃置。"""
+    s = _SCHED.get("s")
+    if s is None:
+        return
+    try:
+        idle = all(v.get("queued", 0) == 0 and not v.get("running")
+                   for v in s.snapshot().values())
+    except Exception:
+        idle = False
+    if idle:
+        s.close()
+        _SCHED.pop("s", None)
+        out("AGENT_SCHED_OFF（改回逐个处理，实例已排空弃置）")
+
+
+_INFLIGHT = set()          # 已派发、还没处理完的消息 id（防重复派发，见下）
+_INFLIGHT_LOCK = threading.Lock()
+
+
+def _dispatch_messages(daemon, items):
+    """派发一批收件消息。ack 语义不变：process 内部自己 ack，收件线程不提前
+    ack、也不重试；每轮拉到多少派多少，派完即返回。
+
+    并行模式下 daemon 的收件箱按「id > acked_max」返回未 ack 消息——一条还在
+    处理（未 ack）的消息下轮会被再拉回来。收件线程靠 _INFLIGHT 跳过还在处理
+    中的 id（等同旧单线程「本轮拉到的处理完才拉下一轮」的效果）；处理返回后
+    移出，若确实没 ack，下一轮会像从前一样重新处理。"""
+    if agent_workers() <= 1:
+        # 默认路径（与从前逐字一致）：同步逐条 process，一条处理完才下一条
+        if items:
+            _sched_drain_if_any()
+        _cap_busy_add(1)
+        _dispatch_busy_add(1)
+        try:
+            for msg in items:
+                if isinstance(msg, dict) and "id" in msg:
+                    process(daemon, msg)
+        finally:
+            _dispatch_busy_add(-1)
+            _cap_busy_add(-1)
+        return
+    sched = _sched_for(agent_workers())
+    barrier = _ack_barrier_for(daemon)
+    for msg in items:
+        if not (isinstance(msg, dict) and "id" in msg):
+            continue
+        mid = str(msg["id"])
+        with _INFLIGHT_LOCK:
+            if mid in _INFLIGHT:
+                continue          # 还在处理中：不重复派发
+            _INFLIGHT.add(mid)
+        barrier.register(mid)     # 按序确认：登记「已派出、未完成」
+        key = "%s:%s" % (msg.get("chat_type"), msg.get("chat_id"))
+        fn = lambda m=msg: _process_scheduled(daemon, m)
+        try:
+            if msg.get("chat_type") == "private" and is_owner(msg):
+                sched.submit_owner(key, fn)   # 主人私聊独占通道，不占 workers 名额
+            else:
+                sched.submit(key, fn)
+        except Exception as e:
+            # 派发失败（线程起不出来等）：按「已完成」处理——屏障放行、
+            # 下轮拉到重投，等同旧循环对处理失败消息的语义；不登记完成会把
+            # 水位和后面的所有确认永久卡死
+            out("AGENT_LOOP_ERROR msg_id=%s dispatch_fail=%r" % (mid, e))
+            barrier.mark_done(mid)
+
+
+def _mask_key_tail(key):
+    """会话键打码（/admin/queues 展示用）：类型可见，QQ 号/群号只留尾 4 位。"""
+    s = str(key or "")
+    ct, sep, cid = s.partition(":")
+    cid = cid if sep else s
+    tail = cid[-4:] if len(cid) > 4 else cid
+    return "%s:…%s" % (ct, tail)
+
+
+def _queues_snapshot():
+    """/admin/queues 数据：workers、正在处理数、各会话排队/执行/等待/耗时
+    （会话键与号码打码；调度器还没创建（=1 从未并行过）时会话列表为空）。"""
+    sessions = []
+    s = _SCHED.get("s")
+    if s is not None:
+        try:
+            raw = s.snapshot()
+        except Exception:
+            raw = {}
+        for k, v in raw.items():
+            row = {"chat": "owner" if k == "__owner__" else _mask_key_tail(k)}
+            for f in ("queued", "running", "waited", "last_dur"):
+                row[f] = v.get(f, 0)
+            sessions.append(row)
+    sessions.sort(key=lambda r: (0 if r.get("running") else 1,
+                                 -r.get("waited", 0), r.get("chat")))
+    return {"workers": agent_workers(), "busy": _DISPATCH_BUSY[0],
+            "sessions": sessions[:50]}
+
+
+def _inbox_loop(daemon, idle_sleep):
+    """收件线程（驻主线程）：reload → 暂停判定 → 拉收件箱 → 派发。
+    暂停/定时暂停时不拉不堆（内存里不积消息），30 秒查一次；每轮 idle_sleep。"""
+    while True:
+        try:
+            RT.reload_chain()
+            if RT.snapshot()["paused"] or _in_sched_pause():
+                time.sleep(30)   # 暂停中：30s 查一次，零 LLM 零 token
+                continue
+            items = daemon.inbox_triggered()
+            _dispatch_messages(daemon, items)
+        except Exception as e:
+            import traceback as _tb
+            out("AGENT_LOOP_ERROR %r\n%s" % (e, _tb.format_exc()))
+            time.sleep(5)
+        time.sleep(idle_sleep)
+
+
+def _timer_loop(daemon, idle_sleep):
+    """定时器线程：周期性动作按原来的顺序与节奏——reload → 定时暂停查 →
+    观察 → 识图探测 → 语音保活 → [非暂停] 主动发言/定时任务/插件 tick/追聊 →
+    ZCode 回传；每轮 idle_sleep；异常记 AGENT_LOOP_ERROR 睡 5 秒（沿用原写法）。"""
+    global _last_zcode_return
+    while True:
+        try:
+            RT.reload_chain()
+            snap = RT.snapshot()
+            if agent_workers() <= 1 and _DISPATCH_BUSY[0] > 0:
+                # 逐个处理（默认）模式：沿用从前「周期性动作排在一批消息处理完
+                # 之后」的次序——消息处理卡住时这一轮先不做，处理完再做（主动
+                # 发言不会和正在生成的回复撞车）。并行模式下才允许同时进行。
+                time.sleep(idle_sleep)
+                continue
+            if _in_sched_pause():
+                time.sleep(30)  # 定时暂停中：30s 检查一次，零 LLM 零 token
+                continue
+            try:
+                _observe_pump(daemon)
+            except Exception as _oe:
+                out("AGENT_OBSERVE_PUMP_FAIL %r" % _oe)
+            # 识图开着时：不知道链里谁能看图就在后台试一遍；一个能看图的都没有就提醒
+            try:
+                _vision_tick()
+            except Exception as _ve:
+                out("AGENT_VISION_TICK_FAIL %r" % _ve)
+            # 本地语音引擎防冷启动保活（引擎在跑且空闲超 5 分钟才动作，其余零开销）
+            try:
+                import qq_tts as _T
+                _T.gsv_keepalive_tick(_T.voice_cfg())
+            except Exception:
+                pass
+            if not snap["paused"]:
+                _cap_busy_add(1)
+                try:
+                    _proactive_tick(daemon)
+                    _cron_tick(daemon)
+                    with _PLUGIN_LOCK:
+                        PLUGIN_HOST.run_ticks(daemon)
+                    try:
+                        _nudge_tick(daemon)
+                    except Exception as _ne:
+                        out("AGENT_NUDGE_TICK_FAIL %r" % _ne)
+                finally:
+                    _cap_busy_add(-1)
+                now_ts = time.time()
+                if now_ts - _last_zcode_return > 60:
+                    _last_zcode_return = now_ts
+                    _zcode_return_tick(daemon)
+        except Exception as e:
+            import traceback as _tb
+            out("AGENT_LOOP_ERROR %r\n%s" % (e, _tb.format_exc()))
+            time.sleep(5)
+        time.sleep(idle_sleep)
+
+
 def main():
     if sys.stdout and hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -8760,64 +9168,17 @@ def main():
     threading.Thread(target=_caption_loop, args=(daemon,), daemon=True).start()
     threading.Thread(target=lambda: (time.sleep(15), describe_all_stickers()), daemon=True).start()
     threading.Thread(target=_daily_review_loop, args=(daemon,), daemon=True).start()
-    out("AGENT_READY chain=%s daemon=127.0.0.1:%d admin=127.0.0.1:%d"
-        % (",".join(RT.snapshot()["chain"]), args.port, args.admin_port))
+    threading.Thread(target=_timer_loop, args=(daemon, args.idle_sleep), daemon=True).start()
+    out("AGENT_READY chain=%s daemon=127.0.0.1:%d admin=127.0.0.1:%d workers=%d"
+        % (",".join(RT.snapshot()["chain"]), args.port, args.admin_port,
+           agent_workers()))
     if RT.paused:
         # 暂停状态存在 model_chain.json 里，重启后照旧生效。启动时明说一次，
         # 免得「机器人怎么不说话」查半天（2026-11-24 夜里被暂停了 23 分钟才发现）。
         out("AGENT_READY_PAUSED 机器人处于暂停状态（model_chain.json 里 paused=true）："
             "不会回复任何消息，直到在状态页点「恢复回复」或主人发遥控指令「恢复」")
-
-    while True:
-        try:
-            RT.reload_chain()
-            snap = RT.snapshot()
-            sched_hold = _in_sched_pause()
-            if sched_hold:
-                time.sleep(30)  # 定时暂停中：30s 检查一次，零 LLM 零 token
-                continue
-            try:
-                _observe_pump(daemon)
-            except Exception as _oe:
-                out("AGENT_OBSERVE_PUMP_FAIL %r" % _oe)
-            # 识图开着时：不知道链里谁能看图就在后台试一遍；一个能看图的都没有就提醒
-            try:
-                _vision_tick()
-            except Exception as _ve:
-                out("AGENT_VISION_TICK_FAIL %r" % _ve)
-            # 本地语音引擎防冷启动保活（引擎在跑且空闲超 5 分钟才动作，其余零开销）
-            try:
-                import qq_tts as _T
-                _T.gsv_keepalive_tick(_T.voice_cfg())
-            except Exception:
-                pass
-            if not snap["paused"]:
-                # 主线程处理消息/主动发言期间，后台识图让路（不抢模型的并发额度）
-                _CAP["main_busy"] = True
-                try:
-                    items = daemon.inbox_triggered()
-                    for msg in items:
-                        if isinstance(msg, dict) and "id" in msg:
-                            process(daemon, msg)
-                    _proactive_tick(daemon)
-                    _cron_tick(daemon)
-                    PLUGIN_HOST.run_ticks(daemon)
-                    try:
-                        _nudge_tick(daemon)
-                    except Exception as _ne:
-                        out("AGENT_NUDGE_TICK_FAIL %r" % _ne)
-                finally:
-                    _CAP["main_busy"] = False
-                global _last_zcode_return
-                now_ts = time.time()
-                if now_ts - _last_zcode_return > 60:
-                    _last_zcode_return = now_ts
-                    _zcode_return_tick(daemon)
-        except Exception as e:
-            import traceback as _tb
-            out("AGENT_LOOP_ERROR %r\n%s" % (e, _tb.format_exc()))
-            time.sleep(5)
-        time.sleep(args.idle_sleep)
+    # 收件线程驻主线程（与从前一样，主循环崩溃即进程退出、由外壳拉起）
+    _inbox_loop(daemon, args.idle_sleep)
 
 
 if __name__ == "__main__":

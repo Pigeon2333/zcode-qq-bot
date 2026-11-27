@@ -108,6 +108,7 @@ DEFAULT_CONFIG = {
     "sched_pause_enabled": False,  # 定时暂停（时段内停止一切回复+零消耗）
     "sched_pause_start": "23:00",  # 暂停开始时间
     "sched_pause_end": "07:00",    # 暂停结束时间（支持跨午夜）
+    "agent_workers": 1,        # 同时处理的会话数（1-8；1=逐个处理，与从前一致）
     "watchdog_enabled": True,      # NapCat 活性看门狗（半死连接检测）
     "watchdog_mode": "auto",       # auto=自动恢复（重连+重启 NapCat）| alert=仅告警
     "watchdog_interval": 120,      # 探测间隔秒（60-600）
