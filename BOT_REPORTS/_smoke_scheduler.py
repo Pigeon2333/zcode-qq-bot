@@ -147,6 +147,65 @@ def WT(sec):
     return max(sec, DRIFT * sec * 6.0)
 
 
+class _StopLoop(BaseException):
+    """让后台循环线程退出的哨兵。继承 BaseException：两个循环只捕获 Exception。"""
+
+
+_BG_ALL = []
+
+
+class BgLoops(object):
+    """在后台线程里跑真实的收件循环与定时器循环。
+
+    段落结束必须 close()。不关的话残留线程会一直调用派发逻辑，和后面的用例
+    抢全局状态——按序确认屏障是单例，谁先建就绑到谁的假 daemon 上，后面用例
+    的确认会全发给旧对象（2026-11-27 全套回归里 W8b 偶发失败的原因）。"""
+
+    def __init__(self, d, idle=0.05):
+        self.d = d
+        self.idle = idle
+        self.stop = threading.Event()
+        self.ths = []
+        self.prev = A._in_sched_pause
+        st = self.stop
+        prev = self.prev
+
+        def pause():
+            if st.is_set():
+                raise _StopLoop()
+            return prev()
+
+        A._in_sched_pause = pause      # 两个循环每一轮都会调它：在这条路上退出
+        _BG_ALL.append(self)
+
+    def _run(self, fn):
+        try:
+            fn(self.d, self.idle)
+        except _StopLoop:
+            pass
+
+    def start_inbox(self):
+        t = threading.Thread(target=self._run, args=(A._inbox_loop,),
+                             daemon=True)
+        self.ths.append(t)
+        t.start()
+
+    def start_timer(self):
+        t = threading.Thread(target=self._run, args=(A._timer_loop,),
+                             daemon=True)
+        self.ths.append(t)
+        t.start()
+
+    def close(self):
+        self.stop.set()
+        for t in self.ths:
+            t.join(WT(8))
+        A._in_sched_pause = self.prev
+        self.ths = []
+        if self in _BG_ALL:
+            _BG_ALL.remove(self)
+
+
 def _noop(*a, **k):
     return None
 
@@ -376,12 +435,9 @@ def test_wiring():
                  _cron_tick=rec_tick("cron"),
                  _nudge_tick=rec_tick("nudge")):
         # 收件线程在后台线程里跑（真机驻主线程；测试里等价于派发逻辑）
-        inbox = threading.Thread(target=A._inbox_loop, args=(d2, 0.05),
-                                 daemon=True)
-        timer = threading.Thread(target=A._timer_loop, args=(d2, 0.05),
-                                 daemon=True)
-        timer.start()
-        inbox.start()
+        bg = BgLoops(d2)
+        bg.start_inbox()
+        bg.start_timer()
         # 等会话 2002 的 102 处理完（此时 101 应还卡着）
         def g2_done():
             with lk2:
@@ -419,6 +475,7 @@ def test_wiring():
         chk("W3b 同会话保序（101 先于 103 完成，确认全部到位）",
             ok_all and g1_ids == ["101", "103"], "g1_done=%s wmark=%s"
             % (g1_ids, d2.acked_max))
+        bg.close()      # 段落结束就收走后台循环，不给后面的用例留残留线程
 
     # W4b 默认（=1）模式：沿用从前「周期性动作不打断消息处理」——process 卡住
     # 期间定时器一轮都不做，处理完之后才做（并行模式才允许同时进行，见 W4）。
@@ -448,13 +505,10 @@ def test_wiring():
                  _proactive_tick=rec_tick2b("proactive"),
                  _cron_tick=rec_tick2b("cron"),
                  _nudge_tick=rec_tick2b("nudge")):
-        ib = threading.Thread(target=A._inbox_loop, args=(d2b, 0.05),
-                              daemon=True)
-        ib.start()
+        bg2b = BgLoops(d2b)
+        bg2b.start_inbox()
         ok_enter = wait_until(entered2b.is_set, timeout=WT(10))
-        tm = threading.Thread(target=A._timer_loop, args=(d2b, 0.05),
-                              daemon=True)
-        tm.start()
+        bg2b.start_timer()
         time.sleep(WT(1.0))       # 卡住期间：留给定时器足够多轮
         with tlk2b:
             during = list(ticks2b)
@@ -465,6 +519,11 @@ def test_wiring():
         ok_after = wait_until(lambda: len(ticks2b) >= 3, timeout=WT(10))
         chk("W4b 默认（=1）模式：处理完之后定时器照常做周期动作",
             ok_after, "ticks=%d" % len(ticks2b))
+        bg2b.close()
+
+    # 兜底：上面任何一段没能走到 close()，也不把后台循环留给后面的用例
+    for _bg in list(_BG_ALL):
+        _bg.close()
 
     # W5 处理中的消息不重复派发：process 卡住未 ack 时，下一轮拉取会再
     # 返回同一条（FakeDaemon 水位语义），派发必须跳过它
