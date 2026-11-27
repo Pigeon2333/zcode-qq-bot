@@ -3205,6 +3205,88 @@ class Daemon:
                 % (json.dumps(op), json.dumps(repr(e)[:120])))
             return {"ok": False, "detail": self._gadmin_human_err(e)}
 
+    # ---------- 群文件（只读：列表 + 下载链接；agent 转发用） ----------
+
+    @staticmethod
+    def _gfile_gid(value):
+        """群号校验：5–12 位数字组成的字符串（int 也收，转成字符串）。
+        返回 (字符串群号, None) 或 (None, 一句拒绝原因)。
+        校验后以字符串传出：NapCat 三个群文件动作的 group_id 参数
+        定义就是字符串（传数字它也能预处理收下，但不规范）。"""
+        if isinstance(value, int) and not isinstance(value, bool):
+            value = str(value)
+        # [0-9] 而非 \d：Python 的 \d 匹配全角数字（Unicode Nd），全角群号
+        # 会被 int() 悄悄转成一个错号发出去——必须按 ASCII 数字拒绝。
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9]{5,12}", value):
+            return None, "群号必须是 5-12 位数字"
+        return value, None
+
+    @staticmethod
+    def _gfile_sane_str(value, what):
+        """群文件接口的字符串参数校验：必须是 str、≤200 字、不含换行。
+        不做规整（file_id 是 NapCat 重编码值，取链接要原样回传）。
+        返回 (原值, None) 或 (None, 一句拒绝原因)。"""
+        if not isinstance(value, str):
+            return None, "%s 必须是字符串" % what
+        if len(value) > 200:
+            return None, "%s 超过 200 字上限" % what
+        if "\n" in value or "\r" in value:
+            return None, "%s 不能包含换行" % what
+        return value, None
+
+    def group_files(self, group_id, folder_id="", file_count=None):
+        """列出群文件（只读；NapCat get_group_root_files /
+        get_group_files_by_folder）。动作参数定义：group_id（字符串，
+        必填）、folder_id（可选，空 = 根目录）、file_count（可选，一次
+        最多列多少个文件，NapCat 默认 50）。file_count=None 时不带这个
+        键；给了必须是 1–200 的 int（bool 不算），透传为数字。
+        成功返回 {ok, data=接口 data 原样}；失败 {ok:False, detail:人话}。"""
+        gid, err = self._gfile_gid(group_id)
+        if err:
+            return {"ok": False, "detail": err}
+        params = {"group_id": gid}
+        if folder_id:
+            folder_id, err = self._gfile_sane_str(folder_id, "folder_id")
+            if err:
+                return {"ok": False, "detail": err}
+            action = "get_group_files_by_folder"
+            params["folder_id"] = folder_id
+        else:
+            action = "get_group_root_files"
+        if file_count is not None:
+            if (isinstance(file_count, bool) or not isinstance(file_count, int)
+                    or not 1 <= file_count <= 200):
+                return {"ok": False, "detail": "file_count 必须是 1-200 的整数"}
+            params["file_count"] = file_count
+        try:
+            data = self._call_action(action, params, timeout=15)
+        except Exception as e:
+            out("AGENT_LOG {\"msg\": \"group_files_fail\", \"action\": %s, \"detail\": %s}"
+                % (json.dumps(action), json.dumps(repr(e)[:120])))
+            return {"ok": False, "detail": "群文件列表没取到（QQ那边没让这次查询成功）"}
+        return {"ok": True, "data": data}
+
+    def group_file_url(self, group_id, file_id):
+        """取群文件下载链接（只读；NapCat get_group_file_url）。
+        该动作参数定义只有 group_id（字符串）与 file_id（字符串），
+        不收 busid；file_id 用 files[] 里 NapCat 重编码过的值原样回传。
+        成功返回 {ok, data=接口 data 原样}；失败 {ok:False, detail:人话}。"""
+        gid, err = self._gfile_gid(group_id)
+        if err:
+            return {"ok": False, "detail": err}
+        file_id, err = self._gfile_sane_str(file_id, "file_id")
+        if err:
+            return {"ok": False, "detail": err}
+        try:
+            data = self._call_action("get_group_file_url",
+                                     {"group_id": gid, "file_id": file_id},
+                                     timeout=15)
+        except Exception as e:
+            out("AGENT_LOG {\"msg\": \"group_file_url_fail\", \"detail\": %s}"
+                % json.dumps(repr(e)[:120]))
+            return {"ok": False, "detail": "下载链接没取到（QQ那边没让这次查询成功）"}
+        return {"ok": True, "data": data}
+
     def _gadmin_keyword_check(self, chat_type, chat_id, info, message_id):
         """关键词撤回/禁言（群管模块；白名单群消息逐条检查）。
         在 ws 收线程上调用——撤回/禁言动作丢后台线程执行（同步 _call_action
@@ -3412,6 +3494,28 @@ class CtlHandler(http.server.BaseHTTPRequestHandler):
                 # 自然语言群管执行（agent [GADMIN] 标记；调用方已校验主人）
                 # {op, group_id, who(名字或QQ), minutes, count, content, on}
                 return self._reply(200, d.gadmin_exec(body))
+            # ---------------- 群文件只读接口（agent 转发） ----------------
+            if u.path == "/group-files":
+                # 群文件列表：{group_id, folder_id?, file_count?}
+                # （folder_id 空 = 根目录；file_count 一次最多列多少个）
+                if not isinstance(body, dict) or not body.get("group_id"):
+                    return self._reply(400, {"ok": False,
+                                             "error": "需要 group_id（folder_id、file_count 可选）"})
+                return self._reply(200, d.group_files(body.get("group_id"),
+                                                      body.get("folder_id") or "",
+                                                      body.get("file_count")))
+            if u.path == "/group-file-url":
+                # 群文件下载链接：{group_id, file_id}（动作不收 busid，多传忽略）
+                if not isinstance(body, dict):
+                    return self._reply(400, {"ok": False,
+                                             "error": "请求体必须是 JSON 对象"})
+                missing = [k for k in ("group_id", "file_id")
+                           if not body.get(k)]
+                if missing:
+                    return self._reply(400, {"ok": False,
+                                             "error": "缺少必填项：%s" % "、".join(missing)})
+                return self._reply(200, d.group_file_url(body.get("group_id"),
+                                                         body.get("file_id")))
             # ---------------- 群管模块（UI 转发；机器人需为目标群管理员） ----------------
             if u.path == "/group-admin/save":
                 # {groups: {gid: cfg}} 整表保存（UI 编辑态直写，_state 保留）
