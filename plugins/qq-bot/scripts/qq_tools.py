@@ -28,7 +28,8 @@
 本次可用的工具表 specs（已按说话人过滤）、授权状态 opts["auth_ok"]。
 resume 的用法：上次停在 confirm、主人回复确认后，把上次返回的 pending 原
 样传进 resume，first_reply 传上一次的模型输出（它会作为 assistant 消息
-进 history，给模型当上下文）。
+进 history，给模型当上下文），resume_done 传上次返回的 actions（停下之前
+已执行过的动作；第一轮回喂会把它们的结果条目放在最前面）。
 """
 import json
 import re
@@ -547,10 +548,11 @@ def _run_round(call_list, by_name, ctx, opts, actions, resume_mode=False):
 
 
 def tool_loop(call_model, specs, first_reply, ctx, opts, resume=None,
-              max_rounds=6, budget_sec=120):
+              max_rounds=6, budget_sec=120, resume_done=()):
     """工具循环。返回 {"final", "actions", "rounds", "stop", "pending"}：
       stop ∈ "final"（模型给了最终回复；含首轮就没有工具行的情况）
-           / "confirm"（write 级要复述确认，停在 pending 上）
+           / "confirm"（write 级要复述确认，停在 pending 上；此时 actions
+             ＝ 停下之前已执行过的动作，调用方拿它当续跑的 resume_done）
            / "rounds" / "budget" / "error"（额外调模型达到上限 / 超时 /
              call_model 抛异常；final 带确定性的已做/没做收尾）
       rounds ＝ 额外调模型的次数；actions ＝ 真正调用过 run 的记录；
@@ -559,6 +561,10 @@ def tool_loop(call_model, specs, first_reply, ctx, opts, resume=None,
     （role=user），回喂前把上一轮模型输出的原文追加为 assistant 消息。
     call_model(history) 收到的 history 只含 assistant/user 两种消息，
     调用方在前面拼系统提示后去调模型。
+    resume_done ＝ 续跑（resume 模式）时「停下之前已执行过的动作」列表，
+    每项是 actions 里的那种 dict（tool/args/ok/summary）。第一轮回喂把
+    这些结果条目放在最前面（格式与正常回喂一致），再接本轮续跑执行的
+    结果——否则停下前那一轮执行过什么，模型续写时就不知道了。
     """
     if not isinstance(first_reply, str):
         first_reply = "" if first_reply is None else str(first_reply)
@@ -570,6 +576,17 @@ def tool_loop(call_model, specs, first_reply, ctx, opts, resume=None,
     history = []
     rounds = 0
     t0 = time.monotonic()
+    # 续跑时「停下之前已执行过的动作」的结果条目：第一轮回喂放在最前面
+    # （格式与正常回喂一致），之后清空——只回喂这一次。
+    done_entries = []
+    if resume:
+        for a in (resume_done or ()):
+            if isinstance(a, dict):
+                done_entries.append((
+                    a.get("tool") or "",
+                    a.get("args") if isinstance(a.get("args"), dict) else {},
+                    bool(a.get("ok")),
+                    str(a.get("summary") or "")))
 
     if resume:
         # 续跑：主人已确认。resume 里的调用先执行（闸照过、不再重复要确认），
@@ -601,6 +618,9 @@ def tool_loop(call_model, specs, first_reply, ctx, opts, resume=None,
             return {"final": "\n".join(lines), "actions": actions,
                     "rounds": rounds, "stop": "confirm",
                     "pending": [call] + remaining}
+        if done_entries:
+            entries = done_entries + entries
+            done_entries = []
         history.append({"role": "user",
                         "content": _feedback(entries, len(overflow))})
         # 调下一针模型之前，先查轮数、再查时间预算（都超了就不调了）

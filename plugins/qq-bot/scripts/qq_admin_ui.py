@@ -2559,7 +2559,7 @@ function stToolLoop(rv){return `
   <label class="master" style="margin-top:8px"><input type="checkbox" ${rv.tool_loop_enabled?'checked':''} onchange="saveKVLoad('/api/reply-config',{tool_loop_enabled:this.checked?1:0},'工具循环已'+(this.checked?'开启':'关闭'))">
    <span><b>启用工具循环</b><div class="k" style="margin-top:3px">只对主人的消息生效。目前内置：联网搜索、给消息挂表情回应，后面按批次增加。每次执行在运行日志里留一行 AGENT_TOOL_LOOP（只记工具名和成败）</div></span></label>
   <label class="master" style="margin-top:10px"><input type="checkbox" ${rv.tool_confirm_write?'checked':''} onchange="saveKVLoad('/api/reply-config',{tool_confirm_write:this.checked?1:0},'复述确认已'+(this.checked?'开启':'关闭'))">
-   <span><b>发消息这类动作先复述、等确认再执行</b><div class="k" style="margin-top:3px">开启后，动手类的动作（如挂表情）会先把要做什么复述一遍，等你回「确认」才真正执行。当前版本确认后不会自动续跑，需要把要做的事再说一遍</div></span></label>
+   <span><b>发消息这类动作先复述、等确认再执行</b><div class="k" style="margin-top:3px">开启后，动手类的动作（如挂表情）会先把要做什么复述一遍，回复「确认」后执行；回别的或超过两分钟没回就当作不做</div></span></label>
  </div>`}
 // 识图状态一行（数据来自 agent 的 /admin/status → /api/agent-status 的 vision 字段）：
 // 能不能用、现在用谁、哪些模型不能看图、后台识图的成绩。留空的识图模型按模型链找，

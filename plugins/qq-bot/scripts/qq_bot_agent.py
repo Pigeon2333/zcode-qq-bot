@@ -7181,11 +7181,100 @@ _TOOL_FINAL_NOTE = ("（上面是工具执行结果。现在只用纯文本写�
                     "不要任何标记。）")
 
 
-def _tool_loop_run(daemon, msg, messages, first_reply):
+# ---- 复述确认的跨消息状态（A2b-2）----
+# write 类动作停下等确认时的待确认表：键＝「chat_type:chat_id」，每会话一格
+# （新复述覆盖旧的）。只在内存里（重启即丢，主人重说一遍即可）；只有主人在
+# 同一会话、有效期内、说了确认词才续跑（I3）。候选挂在这条消息自己的 msg
+# 字典上（并行模式各消息互不干扰），复述真的发送成功之后才落表（I1）。
+_TOOL_PENDING = {}
+_TOOL_PENDING_LOCK = threading.Lock()
+_TOOL_PENDING_TTL = 120.0
+_TOOL_CONFIRM_WORDS = frozenset((
+    "确认", "确定", "执行", "好", "好的", "可以", "是", "ok", "yes"))
+# 续跑执行出错且没有任何已执行动作时的确定性回复（不走模型；有已执行动作
+# 时用 _tool_actions_closing 的「已经做了」清单）。
+_TOOL_RESUME_FAIL_NOTE = ("刚才确认的那件事没做成（执行时出了点问题），"
+                          "需要的话再跟我说一次。")
+
+
+def _tool_confirm_word(text):
+    """确认词判定：去掉首尾空白和句末标点（。！!～~）后等于确认词之一
+    （不分大小写）。带别的内容（如「确认一下 details」）不算。"""
+    t = str(text or "").strip().strip("。！!～~").strip()
+    return t.lower() in _TOOL_CONFIRM_WORDS
+
+
+def _tool_confirm_chat_disp(key):
+    """日志里的会话键展示：类型可见、号码只留尾 4 位（与 /admin/queues
+    同一套打码），分隔符换成 /。"""
+    return _mask_key_tail(key).replace(":", "/", 1)
+
+
+def _tool_confirm_intercept(msg):
+    """主人消息的确定性拦截区第一步（安静词判断之前）：查本会话有没有
+    停在复述确认上的待确认。没有 → 原样返回（绝大多数消息，零副作用）；
+    已过期 → 删掉照常处理；是确认词 → 删掉、把续跑请求挂到这条消息上
+    （msg["_tool_resume"]，后面续跑代替主模型调用，本函数不 return）；
+    是别的话 → 删掉照常处理。非主人消息根本不走这里。"""
+    key = "%s:%s" % (msg.get("chat_type"), msg.get("chat_id"))
+    if key not in _TOOL_PENDING:
+        return
+    act = ""
+    with _TOOL_PENDING_LOCK:
+        ent = _TOOL_PENDING.get(key)
+        if ent is None:
+            return
+        _TOOL_PENDING.pop(key, None)
+        if time.monotonic() >= float(ent.get("expires") or 0):
+            act = "expire"
+        elif _tool_confirm_word(msg.get("text")):
+            act = "go"
+            msg["_tool_resume"] = ent
+        else:
+            act = "drop"
+    disp = _tool_confirm_chat_disp(key)
+    if act == "go":
+        tools = ",".join(str(c.get("tool") or "")
+                         for c in (ent.get("calls") or []))
+        out("AGENT_TOOL_CONFIRM_GO chat=%s tools=%s" % (disp, tools or "-"))
+    elif act == "expire":
+        out("AGENT_TOOL_CONFIRM_EXPIRE chat=%s" % disp)
+    else:
+        out("AGENT_TOOL_CONFIRM_DROP chat=%s" % disp)
+
+
+def _tool_commit_pending(msg, send_resp):
+    """复述文字发送出口处调用：发送成功（daemon.send 返回 ok 为真）才把
+    这条消息上挂的候选落进待确认表；发送失败/没走到发送不落（I1）。
+    同会话已有待确认 → 覆盖并打 AGENT_TOOL_CONFIRM_REPLACE（I2）。"""
+    cand = None
+    if isinstance(msg, dict):
+        cand = msg.pop("_tool_confirm_candidate", None)
+    if not isinstance(cand, dict):
+        return
+    if not (isinstance(send_resp, dict) and send_resp.get("ok")):
+        return
+    key = "%s:%s" % (msg.get("chat_type"), msg.get("chat_id"))
+    disp = _tool_confirm_chat_disp(key)
+    tools = ",".join(str(c.get("tool") or "") for c in (cand.get("calls") or []))
+    with _TOOL_PENDING_LOCK:
+        replaced = key in _TOOL_PENDING
+        _TOOL_PENDING[key] = dict(cand,
+                                  expires=time.monotonic() + _TOOL_PENDING_TTL)
+    out("AGENT_TOOL_CONFIRM_WAIT chat=%s tools=%s" % (disp, tools or "-"))
+    if replaced:
+        out("AGENT_TOOL_CONFIRM_REPLACE chat=%s" % disp)
+
+
+def _tool_loop_run(daemon, msg, messages, first_reply, resume=None,
+                   resume_done=()):
     """把一条带 [TOOL] 行的模型回复交给 qq_tools.tool_loop 真执行。
     返回循环结果 dict（final/actions/rounds/stop/pending）；本函数只拼
     回调与上下文、打一行日志（只记工具名与成败，不记参数与结果文本），
-    不做任何发送。"""
+    不做任何发送。resume/resume_done 是复述确认续跑用：前者＝上次停下时
+    待执行的调用，后者＝停下之前已执行过的动作（回喂给模型当上下文）。
+    confirm_write 照原样传——resume 模式下工具循环自己不再重复要确认；
+    danger 的授权判断不变（复述确认不是授权）。"""
     ctx = {"is_owner": True, "is_gadmin": False, "daemon": daemon, "msg": msg}
     opts = {"auth_ok": False, "confirm_write": _tool_confirm_write_on()}
 
@@ -7207,7 +7296,7 @@ def _tool_loop_run(daemon, msg, messages, first_reply):
         return _t
 
     res = qq_tools.tool_loop(_call_model, qq_tools.tools_for(ctx), first_reply,
-                             ctx, opts)
+                             ctx, opts, resume=resume, resume_done=resume_done)
     out("AGENT_TOOL_LOOP msg_id=%s stop=%s rounds=%s actions=%s" % (
         msg["id"], res.get("stop"), res.get("rounds"),
         ",".join("%s:%s" % (a.get("tool") or "",
@@ -7725,6 +7814,11 @@ def process(daemon, msg):
     t0 = time.time()
     owner = is_owner(msg)
     if owner:
+        # 复述确认跨消息续跑（A2b-2）：主人消息先查本会话有没有停在等确认
+        # 的待确认——命中确认词就把续跑请求挂上（msg["_tool_resume"]，下面
+        # 续跑代替主模型调用），别的话/过期则丢弃待确认，都照常往下走；
+        # 没有待确认时零副作用。非主人消息碰不到待确认（I3）。
+        _tool_confirm_intercept(msg)
         # 主人让安静（群里@说"歇一会/闭嘴"等，或私聊原文）→ 真实静默，@仍响应
         if _QUIET_WORDS_RE.search(str(msg.get("text") or "")) \
                 and len(str(msg.get("text") or "")) <= 40:
@@ -8247,6 +8341,38 @@ def process(daemon, msg):
             out("AGENT_VISION_REF msg_id=%s chat=%s/%s (上下文提及图，跳过概率)"
                 % (msg["id"], msg["chat_type"], msg["chat_id"]))
         # 概率骰子已经在识图之前掷过了（见上），这里不再掷第二遍
+    _resume_ent = msg.pop("_tool_resume", None)
+    if isinstance(_resume_ent, dict):
+        # 复述确认续跑（A2b-2）：主人在同会话回了确认词——不调主模型，把
+        # 上次停下时待执行的调用连同停下之前已执行的结果一起交给工具循环
+        # （闸照过、不再重复要确认，权限不变 I4）；循环的 final 当作这条
+        # 消息的 reply，照旧走普通回复的全部后处理与发送（I5）。
+        # _tool_resumed 标记让衔接点对这条消息跳过工具行收刮（续跑 final
+        # 里若再有工具行是循环内部的事）。出错不静默：发确定性、与事实相符
+        # 的一句话（见 _TOOL_RESUME_FAIL_NOTE 与下面的 error 分支）。
+        msg["_tool_resumed"] = True
+        try:
+            _tl = _tool_loop_run(daemon, msg, messages,
+                                 str(_resume_ent.get("first_reply") or ""),
+                                 resume=list(_resume_ent.get("calls") or []),
+                                 resume_done=list(_resume_ent.get("done") or []))
+            if _tl.get("stop") == "error":
+                # 续跑出错不静默：发一句确定性、与事实相符的话（不走模型）。
+                # 不用循环 error 时的 final——里面带着模型最后一次输出，
+                # 可能说了没做的事。
+                out("AGENT_TOOL_RESUME_ERR msg_id=%s (stop=error)" % msg["id"])
+                reply = (_tool_actions_closing(_tl.get("actions") or [])
+                         if (_tl.get("actions") or [])
+                         else _TOOL_RESUME_FAIL_NOTE)
+            else:
+                reply = _tl.get("final") or ""
+                if _tl.get("stop") == "final":
+                    reply = _tool_final_text(reply)
+                if not reply.strip() and (_tl.get("actions") or []):
+                    reply = _tool_actions_closing(_tl["actions"])
+        except Exception as _tres_err:
+            out("AGENT_TOOL_RESUME_ERR msg_id=%s err=%r" % (msg["id"], _tres_err))
+            reply = _TOOL_RESUME_FAIL_NOTE    # 异常分支拿不到 actions，用固定话
     if reply is None:
         last_err = None
         if reply_v2_on():
@@ -8273,31 +8399,45 @@ def process(daemon, msg):
     # qq_tools.tool_loop 真执行，循环的最终回复替换 reply 后照旧走下面的
     # 处理链（[QUIET] 及之后全部不动）。其余情况维持从前——只剥行不执行
     # （模型稀奇古怪输出了也不许漏进聊天）。旧标记执行段在后面，一字未动。
-    try:
-        _tool_calls, _tool_rest = qq_tools.parse_calls(reply)
-    except Exception as _tool_err:
-        _tool_calls, _tool_rest = [], ""
-        out("AGENT_TOOL_STRIP_ERR %r" % _tool_err)
-    if _tool_calls and _tool_loop_on() and owner:
+    # 续跑的消息（msg["_tool_resumed"]）整段跳过：循环的 final 里若再有
+    # 工具行是循环内部已经处理过的事，不再收刮第二遍。
+    if not msg.get("_tool_resumed"):
         try:
-            _tl = _tool_loop_run(daemon, msg, messages, reply)
-            if _tl.get("stop") == "error":
-                # call_model 抛了异常（循环内部接住转成 stop=error）：不发
-                # 循环收尾，退回剥掉工具行之后的文本，不让整条消息丢掉
-                out("AGENT_TOOL_LOOP_ERR msg_id=%s" % msg["id"])
-                reply = _tool_rest
-            else:
-                reply = _tl.get("final") or ""
-                if _tl.get("stop") == "final":
-                    # 模型的纯文本最终回复：不听话回了 JSON 就取 say 里的文字
-                    reply = _tool_final_text(reply)
-                if not reply.strip() and (_tl.get("actions") or []):
-                    reply = _tool_actions_closing(_tl["actions"])
+            _tool_calls, _tool_rest = qq_tools.parse_calls(reply)
         except Exception as _tool_err:
-            out("AGENT_TOOL_LOOP_ERR msg_id=%s err=%r" % (msg["id"], _tool_err))
+            _tool_calls, _tool_rest = [], ""
+            out("AGENT_TOOL_STRIP_ERR %r" % _tool_err)
+        if _tool_calls and _tool_loop_on() and owner:
+            try:
+                _tl = _tool_loop_run(daemon, msg, messages, reply)
+                if _tl.get("stop") == "error":
+                    # call_model 抛了异常（循环内部接住转成 stop=error）：不发
+                    # 循环收尾，退回剥掉工具行之后的文本，不让整条消息丢掉
+                    out("AGENT_TOOL_LOOP_ERR msg_id=%s" % msg["id"])
+                    reply = _tool_rest
+                else:
+                    _tool_first_raw = reply    # 进循环前的原始回复（带工具行）
+                    reply = _tl.get("final") or ""
+                    if _tl.get("stop") == "final":
+                        # 模型的纯文本最终回复：不听话回了 JSON 就取 say 里的文字
+                        reply = _tool_final_text(reply)
+                    if not reply.strip() and (_tl.get("actions") or []):
+                        reply = _tool_actions_closing(_tl["actions"])
+                    if _tl.get("stop") == "confirm" and reply.strip():
+                        # 复述确认（A2b-2）：候选挂在这条消息自己的字典上
+                        # （并行模式各消息互不干扰），复述真的发送成功之后
+                        # 才由发送出口落进待确认表（_tool_commit_pending）。
+                        # 只有复述文字真的成为这条消息的回复才挂——异常回退、
+                        # 收尾替换等路径不落表（主人没看到复述就不能被执行，I1）。
+                        msg["_tool_confirm_candidate"] = {
+                            "calls": list(_tl.get("pending") or []),
+                            "first_reply": _tool_first_raw,
+                            "done": list(_tl.get("actions") or [])}
+            except Exception as _tool_err:
+                out("AGENT_TOOL_LOOP_ERR msg_id=%s err=%r" % (msg["id"], _tool_err))
+                reply = _tool_rest
+        elif _tool_calls:
             reply = _tool_rest
-    elif _tool_calls:
-        reply = _tool_rest
     # 模型自发安静：[QUIET] / [QUIET:15] —— 真实触发安静模式（@/回复不受影响）
     qm = re.search(r"\[QUIET(?::(\d{1,3}))?\]", reply)
     if qm:
@@ -8598,9 +8738,13 @@ def process(daemon, msg):
                 # 被@或被回复的针对性回应：引用原消息（更像真人回话）；其余触发不引用
                 reply_target = str(msg.get("message_id") or "") \
                     if msg.get("trigger_reason") in ("at", "reply_to_bot") else None
-                daemon.send(msg["chat_type"], msg["chat_id"], texts,
-                            reply_message_id=reply_target)
+                _send_r = daemon.send(msg["chat_type"], msg["chat_id"], texts,
+                                      reply_message_id=reply_target)
                 sent_desc.append("text:%d%s" % (len(texts), "+quote" if reply_target else ""))
+                # 复述确认（A2b-2）：主回复文本真的发送成功（返回 ok 为真）
+                # 才把这条消息上挂的候选落进待确认表；发送失败/没走到发送
+                # 不落——主人没看到复述就不能被执行（I1）
+                _tool_commit_pending(msg, _send_r)
                 # A·记录本次话题（供 60 秒内同话题二次触发的轻提示判定）
                 _topic_remember(msg, " ".join(texts))
         if stickers:
