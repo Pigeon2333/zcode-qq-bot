@@ -1,12 +1,35 @@
 # -*- coding: utf-8 -*-
 """冒烟：复现 2026-11-11 20:46 鸽子窝时序，验证三个修复。
-不连 ws、不真发消息——离线实例化 Daemon 跑触发/合并逻辑。"""
+不连 ws、不真发消息——离线实例化 Daemon 跑触发/合并逻辑。
+
+数据目录隔离：import qq_daemon 前把 QQBOT_DATA_DIR 指到一次性临时目录，
+并在里面写一份固定的 reply_config.json（vision_enabled=true /
+vision_mode=all_prob / vision_prob=0.15）。不这样做的话本测试读的是生产
+reply_config.json，断言里写死的识图设置会跟着生产设置漂——2026-11-28
+生产把 vision_mode 改成 ask 后 Fix0/Fix2 两项就假红了。核实过：daemon
+触发判定只读 vision_enabled/vision_mode（qq_daemon._decide_trigger_normal
+的纯图绕过），vision_prob 是 agent 侧掷点用的、触发路径不读，照抄当时
+生产值仅为保真；burst_merge_enabled 等其余键缺省即默认，无需写入。
+跑完删临时目录。"""
+import json
 import os
+import pathlib
+import shutil
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, os.path.join("plugins", "qq-bot", "scripts"))
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+# 数据目录隔离（必须在 import 前生效：DATA_DIR/REPLY_CONFIG_PATH 在模块
+# import 时定死，事后设环境变量不回填）
+_SMOKE_OWN_DATA_DIR = tempfile.mkdtemp(prefix="qqbot_fwd_iso_")
+os.environ["QQBOT_DATA_DIR"] = _SMOKE_OWN_DATA_DIR
+pathlib.Path(_SMOKE_OWN_DATA_DIR, "reply_config.json").write_text(
+    json.dumps({"vision_enabled": True, "vision_mode": "all_prob",
+                "vision_prob": 0.15}), encoding="utf-8")
+
 import qq_daemon as D  # noqa: E402
 
 d = D.Daemon(ws_url="", token="", cfg={}, ctl_port=0)
@@ -92,4 +115,9 @@ chk("Fix1 重编号(acked_max=99 时 id 应 >99) 实得 id=%s" % got3.get("id"),
 
 print()
 print("失败 %d 项" % len(fails) if fails else "全部通过 ✓")
+shutil.rmtree(_SMOKE_OWN_DATA_DIR, ignore_errors=True)
+if os.path.isdir(_SMOKE_OWN_DATA_DIR):
+    print("注意：隔离目录没能删净 %s" % _SMOKE_OWN_DATA_DIR)
+else:
+    print("隔离目录已删净（os.path.isdir=False）：%s" % _SMOKE_OWN_DATA_DIR)
 sys.exit(1 if fails else 0)
