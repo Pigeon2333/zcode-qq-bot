@@ -47,7 +47,7 @@ Stickers come from three libraries: persona-specific, shared, and imported from 
 
 ### Capabilities
 
-Image understanding: images in messages go straight to a vision model — screenshots, memes, photos all work. You can give vision its own model instead of sharing the main one.
+Image understanding: images in messages go straight to a vision model — screenshots, memes, photos all work. Images inside merged-forward chat records are treated as part of the text, not fetched for vision; when a message carries more images than one call can attach (cap 4, or a fetch failure), only the ones that made it are attached and the model is told how many are missing. You can give vision its own model instead of sharing the main one.
 
 Image generation: "draw a xxx" or something looser like "make me an avatar" both work. No required command prefix. Sometimes the model understands but the system misses it; she'll emit an internal marker herself to retrigger.
 

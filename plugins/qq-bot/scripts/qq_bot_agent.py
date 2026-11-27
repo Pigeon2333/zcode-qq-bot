@@ -1117,6 +1117,32 @@ _IMG_REF_RE = re.compile(
     r"|截图|发[的个一]?图|什[么么]图|哪[个张]图|photo|pic|图呢"
     r"|这是什么|这是啥|这是什么梗|这是什么意思")
 
+# 合并转发记录的判定前缀：daemon 把转发记录展平成文字时以它开头
+# （qq_daemon.py 的 _forward_flattened_text）。记录里的 [图片] 占位对应的
+# 原图对机器人不可见——带此前缀的消息按纯文字处理（不走识图、不等后台
+# 描述、不登记速写、「话里提到图」规则一律判否）。
+_FWD_RECORD_PREFIX = "[合并转发记录"
+
+_FWD_RECORD_NOTE = ("（系统注：这是一段转发的聊天记录，记录里标 [图片] 的地方"
+                    "原图你看不到；对方没有明确在问的话，不要就这些图发问，"
+                    "也不要猜测图的内容。）")
+
+
+def _is_fwd_record_text(text):
+    """消息文字以 daemon 的转发记录展平前缀开头 → 是转发记录消息。"""
+    return str(text or "").startswith(_FWD_RECORD_PREFIX)
+
+
+def _img_ref_check(msg):
+    """「话里明确提到这张图」（_IMG_REF_RE 的唯一判定入口，三处共用）：
+    转发记录消息一律判否——记录文字里的「这是什么」说的是记录内部的图，
+    不是发给机器人的图（2026-11-27 实测：30 条记录 6 图被闲聊抽中，
+    「这是什么」误中规则，12k token 的识图调用只带上 4 张对不上号的图）。"""
+    if msg.get("_fwd_record"):
+        return False
+    return bool(_IMG_REF_RE.search(str(msg.get("text") or "") + " "
+                                   + str(msg.get("reply_text") or "")))
+
 
 def reaction_allowed():
     """表情回应：开关（默认开）+ 允许的表情 id 集合（默认全集；空集=全禁）。"""
@@ -3375,6 +3401,7 @@ def _build_messages_impl(daemon, msg, ctx_k=32, v2=False):
             _now, _miss = time.time(), []
             for h in _h0:
                 if (h.get("image_urls") and h.get("message_id") and not h.get("is_bot")
+                        and not _is_fwd_record_text(h.get("text"))
                         and _row_recent(h, _now, 1800)
                         and _caption_get(msg["chat_type"], msg["chat_id"],
                                          h["message_id"]) is None):
@@ -6353,15 +6380,29 @@ def call_vision(messages_text, image_urls, daemon=None):
                "聊天历史里的任何东西（历史里在聊食物而图是遮光罩时，\"想买"
                "这个\"指的是遮光罩）。）")
     _parts = []
-    for u in image_urls[:4]:
+    _total = len(image_urls or [])
+    _ok_last = 0    # 已附图中最大的原始序号（1 起）：用于判断附上的是否恰好是前 M 张
+    for _pos, u in enumerate(image_urls[:4], start=1):
         _du = _img_to_datauri(u, daemon)
         if _du:
             _parts.append({"type": "image_url", "image_url": {"url": _du}})
+            _ok_last = _pos
     if not _parts:
         # 一张图都没能本地化：QQ 图床原始链接模型服务端必拉不到，发了也是白烧
         # 一次调用——直接判失败，由调用方走降级（如实说图没加载出来）
         raise RuntimeError("视觉调用：图片全部获取失败")
-    content = [{"type": "text", "text": messages_text[1]["content"] + _ground}] + _parts
+    _note = _ground
+    # 一次带不完的图如实告诉模型（被 4 张上限截掉的 + 前 4 张里本地化失败的），
+    # 免得模型对着「只带上一部分」的输入说"图没显示出来"（2026-11-27 实测：
+    # 记录 6 图只带 4 张，模型答"图这边没显示出来"）。全带上了就一字不加。
+    _short = _total - len(_parts)
+    if _short > 0:
+        _seq = ("（按顺序是第 1 到第 %d 张）" % len(_parts)
+                if _ok_last == len(_parts) else "")
+        _note += ("\n\n（系统注：这条消息共 %d 张图，你只能看到附带的 %d 张%s；"
+                  "没附带的图你看不到。对方没有明确在问的话，不要主动说图没显示，"
+                  "也不要追问发了什么。）" % (_total, len(_parts), _seq))
+    content = [{"type": "text", "text": messages_text[1]["content"] + _note}] + _parts
     vmsgs = [{"role": "system", "content": messages_text[0]["content"]},
              {"role": "user", "content": content}]
 
@@ -6647,7 +6688,8 @@ def _caption_poll(daemon):
         _CAP["seq"], _CAP["init"] = 0, False
         return
     for it in items:
-        if it.get("image_urls"):
+        # 转发记录的 image_urls 是记录内部的图，不给它登记速写
+        if it.get("image_urls") and not _is_fwd_record_text(it.get("text")):
             _caption_enqueue(it.get("chat_type"), it.get("chat_id"),
                              it.get("message_id"), it.get("image_urls"))
     _CAP["seq"] = max(_CAP["seq"], seq)
@@ -7676,13 +7718,20 @@ def process(daemon, msg):
             out("AGENT_TASK_ACCEPT msg_id=%s chat=%s/%s" % (
                 msg["id"], msg["chat_type"], msg["chat_id"]))
             return
+    # 转发记录：daemon 展平的文字带专属前缀（_is_fwd_record_text）。记录内部的
+    # 图不是对方发给机器人看的图，之后所有识图分支对它按「无图」处理——
+    # 不等描述、不登记速写、不走同步识图（image_urls 字段本身保持原样）；
+    # 「该不该接话」两道判定也按纯文字看待（Z-8 裁决：与普通文字同一条路）
+    msg["_fwd_record"] = _is_fwd_record_text(msg.get("text"))
     # 旁观(chat_random)两段式判定（精简上下文开启时）：先轻量判定值不值得开口，
     # 通过才走全量提示词生成回复——回复质量不受影响；开关关闭则直接全量流程
     # all_prob 档的带图消息跳过 gate：图必看，插话与否交给识图后的概率
+    # （转发记录按纯文字处理，不跳）
     _vmode = vision_mode() if vision_enabled() else ""
     if msg.get("trigger_reason") == "chat_random" and chat_anti_interrupt_enabled() \
             and lean_ctx_on() and not reply_v2_on() \
-            and not (_vmode == "all_prob" and msg.get("image_urls")):
+            and not (_vmode == "all_prob" and msg.get("image_urls")
+                     and not msg.get("_fwd_record")):
         _pcoll, _pname = load_persona_collection()
         if _interrupt_gate(daemon, msg, _pname or "智谱娘"):
             daemon.ack([msg["id"]])
@@ -7703,7 +7752,7 @@ def process(daemon, msg):
     _vcap_mode = reply_v2_on() and vision_caption_on()
     # 「识图概率」的骰子在这条路上掷过并且掷中了：后面的同步识图不再掷第二遍
     _vision_dice_passed = False
-    if _vcap_mode and msg.get("image_urls"):
+    if _vcap_mode and msg.get("image_urls") and not msg.get("_fwd_record"):
         _trig_kind = msg.get("trigger_reason")
         _wait_cap = (_trig_kind == "chat_random")
         # 等描述之前先掷「识图概率」：没掷中的话，等到描述也是直接沉默，犯不着让主线程
@@ -7711,8 +7760,7 @@ def process(daemon, msg):
         # （2026-11-25 复审发现：识图概率是默认的 0% 时，每张闲聊图都白等一轮）。
         # 描述仍照常登记到后台补上，供以后的对话用；没人在等，就不插队。
         # 话里明确提到这张图的不掷点（对话正等着图的信息）。
-        if _wait_cap and _vmode == "all_prob" and not _IMG_REF_RE.search(
-                str(msg.get("text") or "") + " " + str(msg.get("reply_text") or "")):
+        if _wait_cap and _vmode == "all_prob" and not _img_ref_check(msg):
             _p = vision_prob()
             _vision_dice_passed = _p > 0 and __import__("random").random() < _p
             if not _vision_dice_passed:
@@ -7745,6 +7793,15 @@ def process(daemon, msg):
                 with _CAP["lock"]:
                     _CAP["stat"]["timeout"] += 1
     messages, active_persona = build_messages(daemon, msg, ctx_k=_ctx_k)
+    if msg.get("_fwd_record"):
+        # 转发记录的图不进视觉输入（见上），但记录文字里留着 [图片] 占位——
+        # 如实告诉模型这些图看不到，免得它对着占位追问或瞎猜图的内容
+        try:
+            _uc = messages[1].get("content")
+            if isinstance(_uc, str):
+                messages[1]["content"] = _uc + "\n\n" + _FWD_RECORD_NOTE
+        except Exception:
+            pass
     # v2：闲聊触发的「要不要接」判定挪到这里——用的是刚构造好的完整历史
     # （旧闸门只看 10 行×80 字）。判定不接就到此为止，后面的搜索/落盘都不做
     # 带图消息已有描述时同样交给判定（图看过了）；没描述的仍走旧路径。
@@ -7753,7 +7810,8 @@ def process(daemon, msg):
     _gate_note = ""
     if reply_v2_on() and msg.get("trigger_reason") == "chat_random" \
             and chat_anti_interrupt_enabled() and lean_ctx_on() \
-            and not (_vmode == "all_prob" and msg.get("image_urls") and not msg.get("_vcap")):
+            and not (_vmode == "all_prob" and msg.get("image_urls")
+                     and not msg.get("_fwd_record") and not msg.get("_vcap")):
         _g = _reply_gate_v2(daemon, msg, messages, active_persona)
         out("AGENT_GATE_V2 msg_id=%s chat=%s/%s verdict=%s"
             % (msg["id"], msg["chat_type"], msg["chat_id"], _g))
@@ -7787,7 +7845,8 @@ def process(daemon, msg):
     # 看图模式 vision_mode：all=所有图都识；all_prob=所有图都识+识图后按
     # 概率决定插话；ask=仅明确要求才识（@/回复机器人 → 任何档都直接识）
     # （v2 后台识图已给出描述的，不再同步识图）
-    _vision_go = vision_enabled() and msg.get("image_urls") and not msg.get("_vcap") and (
+    _vision_go = vision_enabled() and msg.get("image_urls") \
+        and not msg.get("_fwd_record") and not msg.get("_vcap") and (
         _vmode in ("all", "all_prob")
         or msg.get("trigger_reason") in ("at", "reply_to_bot"))
     # 裸@反应降级（2026-11-13 用户实测+设计哲学：纯@=戳一戳——没有实质
@@ -7827,8 +7886,7 @@ def process(daemon, msg):
     # 这里不再掷第二遍。
     if _vision_go and _vmode == "all_prob" and not _vision_dice_passed \
             and msg.get("trigger_reason") not in ("at", "reply_to_bot") \
-            and not _IMG_REF_RE.search(str(msg.get("text") or "") + " "
-                                       + str(msg.get("reply_text") or "")):
+            and not _img_ref_check(msg):
         _p = vision_prob()
         if _p <= 0:
             daemon.ack([msg["id"]])
@@ -7893,8 +7951,7 @@ def process(daemon, msg):
             out("AGENT_VISION_FAIL_SKIP msg_id=%s chat=%s/%s (all_prob 看图失败，不猜)"
                 % (msg["id"], msg["chat_type"], msg["chat_id"]))
             return
-        _img_referenced = _IMG_REF_RE.search(
-            str(msg.get("text") or "") + " " + str(msg.get("reply_text") or ""))
+        _img_referenced = _img_ref_check(msg)
         if _img_referenced:
             out("AGENT_VISION_REF msg_id=%s chat=%s/%s (上下文提及图，跳过概率)"
                 % (msg["id"], msg["chat_type"], msg["chat_id"]))

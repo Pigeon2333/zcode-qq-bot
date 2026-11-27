@@ -579,9 +579,14 @@ def _flatten_forward_subs(subs):
     return lines, imgs
 
 
+# 合并转发记录展平文字的统一前缀：大脑侧（qq_bot_agent）按它识别转发记录，
+# 邻近图并入/历史回捞也按它排除记录内部的图——改动前缀必须两处同步。
+_FWD_TEXT_PREFIX = "[合并转发记录"
+
+
 def _forward_flattened_text(lines):
     """展平结果 → 文本块（带条数头，总长限 1200）。"""
-    return ("[合并转发记录，%d条]\n%s" % (len(lines), "\n".join(lines)))[:1200]
+    return (_FWD_TEXT_PREFIX + "，%d条]\n%s" % (len(lines), "\n".join(lines)))[:1200]
 
 
 # 经典 QQ 表情 id→名称（OneBot face 段；社区通用表，0-66 为公认核心段，
@@ -995,8 +1000,11 @@ class Daemon:
         _ck = "%s_%s_%s" % (chat_type, chat_id or group_id, user_id)
         _now = ev.get("time") or now_ts()
         _txt = info.get("text") or ""
-        if info.get("image_urls"):
+        if info.get("image_urls") and not info.get("forward_inline"):
             # 本条带图 → 记缓存，供之后的纯文字条回捞
+            # 转发记录（已就地展平，forward_inline）的 image_urls 是记录内部的
+            # 图，不是发送者发给机器人的图——不记缓存，免得并进之后他的纯文字条
+            # （只带 id 的转发走 worker 线程补拉，本段执行时还没有图，天然不进缓存）
             # 若该会话+发送者有等待配图的被触发文字条（先打字后配图），
             # 压住本图自身的主动触发——它将并入那条文字一次性回复；
             # @/回复机器人的图不压（用户点名要立刻看的就是这张）
@@ -1159,6 +1167,9 @@ class Daemon:
                     break
                 if _rec.get("is_bot") or not _rec.get("image_urls"):
                     continue
+                if str(_rec.get("text") or "").startswith(_FWD_TEXT_PREFIX):
+                    # 转发记录行：image_urls 是记录内部的图，不是 TA 发给机器人的图
+                    continue
                 if _pick_any is None:
                     _pick_any = _rec
                 if _pick_same is None \
@@ -1201,9 +1212,12 @@ class Daemon:
                                     "text": str(rec.get("text") or "")[:60],
                                     "is_bot": bool(rec.get("is_bot"))}
                         # 被引用消息带图 → 并进当前消息视觉输入
-                        for mu in (rec.get("image_urls") or [])[:2]:
-                            if mu and mu not in info["image_urls"]:
-                                info["image_urls"].append(mu)
+                        # 被引的是转发记录行（展平前缀，Z-8）时不并：记录里的
+                        # 图是记录内部的图，不是被引用的那张图；摘要照常给
+                        if not str(rec.get("text") or "").startswith(_FWD_TEXT_PREFIX):
+                            for mu in (rec.get("image_urls") or [])[:2]:
+                                if mu and mu not in info["image_urls"]:
+                                    info["image_urls"].append(mu)
                         break
                 # 兜底①：NapCat 的 reply 段常不带 content 预览、本地历史又只
                 # 覆盖最近消息——引用较早/跨天的消息时 reply_text 为空，
@@ -1284,6 +1298,15 @@ class Daemon:
                                         mu = str(du.get("url") or "")
                                         if mu.startswith("http") and mu not in img_urls:
                                             img_urls.append(mu)
+                            # 被引的是转发记录卡片（Z-8；get_msg 拿到的是原始
+                            # 卡片，没有展平文字可比前缀，以 forward 段为准）：
+                            # 记录里的图是记录内部的图，不并进当前消息视觉输入
+                            if (isinstance(segs, str) and "CQ:forward" in segs) \
+                                    or (isinstance(segs, list) and any(
+                                        isinstance(s, dict)
+                                        and s.get("type") == "forward"
+                                        for s in segs)):
+                                img_urls = []
                             if txt:
                                 it["reply_text"] = txt[:120]
                             if img_urls:
