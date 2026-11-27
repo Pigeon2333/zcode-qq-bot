@@ -1,18 +1,30 @@
 # -*- coding: utf-8 -*-
 """冒烟：2026-11-18 识图三修（回捞不吞缓存 / 历史回捞 / TTL 180s）。
 复现用户实测痛点：发图后连发"继续""重试"，机器人对着明晃晃的图说没看到图。
-不连 ws、不真发消息——离线实例化 Daemon 跑完整 _handle_message_event 路径。"""
+不连 ws、不真发消息——离线实例化 Daemon 跑完整 _handle_message_event 路径。
+
+数据目录隔离：import qq_daemon 前把 QQBOT_DATA_DIR 指到一次性临时目录，不读
+生产 ~/.zcode-qq-bot——白名单/回复配置/互聊判定跟着线上设置漂（群白名单缺
+文件=默认全放行，正好覆盖本测试的群号）。空目录即所需配置，跑完删临时目录。"""
 import os
+import shutil
 import sys
+import tempfile
 import threading
 import time
 
 sys.path.insert(0, os.path.join("..", "plugins", "qq-bot", "scripts"))
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+# 数据目录隔离（必须在 import 前生效：DATA_DIR/GROUP_WHITELIST_PATH 等模块
+# 常量在 import 时定死，事后设环境变量不回填）
+_SMOKE_OWN_DATA_DIR = tempfile.mkdtemp(prefix="qqbot_vision_merge2_iso_")
+os.environ["QQBOT_DATA_DIR"] = _SMOKE_OWN_DATA_DIR
+
 import qq_daemon as D  # noqa: E402
 
 d = D.Daemon(ws_url="", token="", cfg={}, ctl_port=0)
-GID = "602323545"          # 与 _smoke_fwd 同群（本机群白名单已知放行）
+GID = "602323545"          # 与 _smoke_fwd 同群（隔离下白名单缺文件=默认全放行）
 OWNER = 3349525227
 BOT_SELF = 1234567
 IMG = "https://example.com/pic.jpg"
@@ -121,4 +133,9 @@ chk("S5 延迟并图成功(图后到)", bool(got and IMG in got))
 chk("S5 重编号越过 acked_max", item["id"] > 100)
 
 print("\n== 结果: %s ==" % ("全部通过" if not fails else "失败 %d 项" % len(fails)))
+shutil.rmtree(_SMOKE_OWN_DATA_DIR, ignore_errors=True)
+if os.path.isdir(_SMOKE_OWN_DATA_DIR):
+    print("注意：隔离目录没能删净 %s" % _SMOKE_OWN_DATA_DIR)
+else:
+    print("隔离目录已删净（os.path.isdir=False）：%s" % _SMOKE_OWN_DATA_DIR)
 sys.exit(1 if fails else 0)

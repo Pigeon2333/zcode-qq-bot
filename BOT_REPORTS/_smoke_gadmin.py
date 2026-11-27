@@ -1,12 +1,25 @@
 # -*- coding: utf-8 -*-
-"""群管模块冒烟：定时禁言tick（跨午夜/同日/状态防重）+关键词撤回禁言钩子。"""
+"""群管模块冒烟：定时禁言tick（跨午夜/同日/状态防重）+关键词撤回禁言钩子。
+
+数据目录隔离：import qq_daemon 前把 QQBOT_DATA_DIR 指到一次性临时目录，不读
+生产 ~/.zcode-qq-bot。本测试的群管配置全程只驻内存（file_sig 打成常量签名），
+空目录即所需配置；隔离还顺带保证 Daemon 构造时的 ws_token/互聊判定等启动
+读取也落在临时目录，跑完删临时目录。"""
 import datetime
 import os
+import shutil
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, os.path.join("plugins", "qq-bot", "scripts"))
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+# 数据目录隔离（必须在 import 前生效：DATA_DIR/GROUP_ADMIN_PATH 等模块常量
+# 在 import 时定死，事后设环境变量不回填）
+_SMOKE_OWN_DATA_DIR = tempfile.mkdtemp(prefix="qqbot_gadmin_iso_")
+os.environ["QQBOT_DATA_DIR"] = _SMOKE_OWN_DATA_DIR
+
 import qq_daemon as D  # noqa: E402
 
 fails = []
@@ -152,4 +165,9 @@ D.file_sig = _REAL_FILE_SIG
 
 print()
 print("失败 %d 项: %s" % (len(fails), fails) if fails else "全部通过 ✓")
+shutil.rmtree(_SMOKE_OWN_DATA_DIR, ignore_errors=True)
+if os.path.isdir(_SMOKE_OWN_DATA_DIR):
+    print("注意：隔离目录没能删净 %s" % _SMOKE_OWN_DATA_DIR)
+else:
+    print("隔离目录已删净（os.path.isdir=False）：%s" % _SMOKE_OWN_DATA_DIR)
 sys.exit(1 if fails else 0)

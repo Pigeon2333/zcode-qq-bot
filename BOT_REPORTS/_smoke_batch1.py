@@ -5,6 +5,12 @@
 视觉链降级与冷却键 / 识图概率 0 跳过（源码级）/ 定时禁言跨午夜 / 群管保存保留
 开关 / 市场镜像地址与哈希 / 飞书转发方法名 / 管理台转义函数。
 
+数据目录隔离：import 被测模块前把 QQBOT_DATA_DIR 指到一次性临时目录，不读
+生产 ~/.zcode-qq-bot。里面只写一份最小 app_config.json：第 11 节任务桥用
+A.owner_qq() 读主人号（缺省为空=任务桥全禁，11a 必假红），主人号取本套冒烟
+通用的常量（同 _smoke_fwd/_smoke_gadmin_chat）；其余键缺省即默认（如
+task_bridge_enabled 等开关缺文件时默认开启）。跑完删临时目录。
+
 用法：python BOT_REPORTS/_smoke_batch1.py
 """
 import datetime
@@ -13,6 +19,7 @@ import io
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -21,6 +28,14 @@ import time
 
 sys.path.insert(0, os.path.join("plugins", "qq-bot", "scripts"))
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+# 数据目录隔离（必须在 import 前生效：DATA_DIR/REPLY_CONFIG_PATH/
+# APP_CONFIG_PATH 等模块常量在 import 时定死，事后设环境变量不回填）
+_SMOKE_OWN_DATA_DIR = tempfile.mkdtemp(prefix="qqbot_batch1_iso_")
+os.environ["QQBOT_DATA_DIR"] = _SMOKE_OWN_DATA_DIR
+pathlib.Path(_SMOKE_OWN_DATA_DIR, "app_config.json").write_text(
+    json.dumps({"owner_qq": "3349525227"}), encoding="utf-8")
+
 import qq_daemon as D  # noqa: E402
 import qq_bot_agent as A  # noqa: E402
 import qq_plugins as P  # noqa: E402
@@ -413,4 +428,12 @@ chk("11b 非主人的「任务：」→ 不进入任务桥，走普通对话路�
     calls == [] and where.startswith("passed"), (calls, where))
 
 print("\n%d 项失败" % len(fails) + (": " + "; ".join(fails) if fails else "（全部通过）"))
+for _h in list(A._usage_log.handlers):
+    _h.close()                     # 放掉 usage_log.jsonl 句柄，Windows 才删得净
+    A._usage_log.removeHandler(_h)
+shutil.rmtree(_SMOKE_OWN_DATA_DIR, ignore_errors=True)
+if os.path.isdir(_SMOKE_OWN_DATA_DIR):
+    print("注意：隔离目录没能删净 %s" % _SMOKE_OWN_DATA_DIR)
+else:
+    print("隔离目录已删净（os.path.isdir=False）：%s" % _SMOKE_OWN_DATA_DIR)
 sys.exit(1 if fails else 0)

@@ -1,12 +1,33 @@
 # -*- coding: utf-8 -*-
-"""对话群管冒烟：教学仅主人注入+标记解析全op+越权拒绝+daemon拦截器+成员解析。"""
+"""对话群管冒烟：教学仅主人注入+标记解析全op+越权拒绝+daemon拦截器+成员解析。
+
+数据目录隔离：import 被测模块前把 QQBOT_DATA_DIR 指到一次性临时目录，不读
+生产 ~/.zcode-qq-bot（daemon 侧模块常量与 agent 侧 DATA_DIR 一并隔离；旧版
+只切 agent 的 DATA_DIR，daemon 侧不受影响）。临时目录里写两份最小固定配置：
+group_admin.json 带 chat_enabled=true（1b 教学注入要求开关开着）、
+app_config.json 带 owner_qq（值=本测试 msg_owner 的主人号；缺省为空=主人
+判定恒假，1b 必假红）。跑完删临时目录。"""
+import json
 import os
+import pathlib
+import shutil
 import sys
+import tempfile
 import time
 from collections import deque
 
 sys.path.insert(0, os.path.join("plugins", "qq-bot", "scripts"))
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+# 数据目录隔离（必须在 import 前生效：daemon 的 DATA_DIR/GROUP_ADMIN_PATH 与
+# agent 的 DATA_DIR 都在 import 时定死，事后设环境变量不回填）
+_SMOKE_OWN_DATA_DIR = tempfile.mkdtemp(prefix="qqbot_gadmin_chat_iso_")
+os.environ["QQBOT_DATA_DIR"] = _SMOKE_OWN_DATA_DIR
+pathlib.Path(_SMOKE_OWN_DATA_DIR, "group_admin.json").write_text(
+    json.dumps({"chat_enabled": True, "groups": {}}), encoding="utf-8")
+pathlib.Path(_SMOKE_OWN_DATA_DIR, "app_config.json").write_text(
+    json.dumps({"owner_qq": "3349525227"}), encoding="utf-8")
+
 import qq_daemon as D  # noqa: E402
 import qq_bot_agent as A  # noqa: E402
 
@@ -121,4 +142,12 @@ chk("4 拦截器剥GADMIN残留", "好嘞已办" == s, s)
 
 print()
 print("失败 %d 项: %s" % (len(fails), fails) if fails else "全部通过 ✓")
+for _h in list(A._usage_log.handlers):
+    _h.close()                     # 放掉 usage_log.jsonl 句柄，Windows 才删得净
+    A._usage_log.removeHandler(_h)
+shutil.rmtree(_SMOKE_OWN_DATA_DIR, ignore_errors=True)
+if os.path.isdir(_SMOKE_OWN_DATA_DIR):
+    print("注意：隔离目录没能删净 %s" % _SMOKE_OWN_DATA_DIR)
+else:
+    print("隔离目录已删净（os.path.isdir=False）：%s" % _SMOKE_OWN_DATA_DIR)
 sys.exit(1 if fails else 0)

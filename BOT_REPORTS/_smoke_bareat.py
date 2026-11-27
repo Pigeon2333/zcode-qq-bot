@@ -1,12 +1,25 @@
 # -*- coding: utf-8 -*-
-"""冒烟：裸@补内容（2026-11-11 用户两连报场景）。离线跑 _ingest_message 全链。"""
+"""冒烟：裸@补内容（2026-11-11 用户两连报场景）。离线跑 _ingest_message 全链。
+
+数据目录隔离：import qq_daemon 前把 QQBOT_DATA_DIR 指到一次性临时目录，不读
+生产 ~/.zcode-qq-bot——B 场景「补发内容未触发」依赖默认 standard 回复模式，
+生产 reply_config 的 reply_mode/关键词、群管关键词配置都会跟着线上设置漂。
+空目录即所需配置（回复配置/群管/白名单全部走产品默认值），跑完删临时目录。"""
 import os
+import shutil
 import sys
+import tempfile
 import threading
 import time
 
 sys.path.insert(0, os.path.join("plugins", "qq-bot", "scripts"))
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+# 数据目录隔离（必须在 import 前生效：DATA_DIR/REPLY_CONFIG_PATH 等模块常量
+# 在 import 时定死，事后设环境变量不回填）
+_SMOKE_OWN_DATA_DIR = tempfile.mkdtemp(prefix="qqbot_bareat_iso_")
+os.environ["QQBOT_DATA_DIR"] = _SMOKE_OWN_DATA_DIR
+
 import qq_daemon as D  # noqa: E402
 
 d = D.Daemon(ws_url="", token="", cfg={}, ctl_port=0)
@@ -137,4 +150,9 @@ chk("G 纯图上一条：图并入裸@",
 
 print()
 print("失败 %d 项: %s" % (len(fails), fails) if fails else "全部通过 ✓")
+shutil.rmtree(_SMOKE_OWN_DATA_DIR, ignore_errors=True)
+if os.path.isdir(_SMOKE_OWN_DATA_DIR):
+    print("注意：隔离目录没能删净 %s" % _SMOKE_OWN_DATA_DIR)
+else:
+    print("隔离目录已删净（os.path.isdir=False）：%s" % _SMOKE_OWN_DATA_DIR)
 sys.exit(1 if fails else 0)
