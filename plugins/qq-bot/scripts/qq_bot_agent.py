@@ -6015,18 +6015,11 @@ def _handle_devctrl(daemon, msg):
     m_code = None if (in_window or not _ask_open) else \
         _re.search(r"(?<!\d)(\d{6})(?!\d)", text)
     if m_code and cfg_2fa_on():
-        code = m_code.group(1)
-        if not _DEVCTRL_CODE["code"] or time.time() > _DEVCTRL_CODE["expires"]:
-            _say("expired_text", ("用你的话告诉主人：授权码过期了，让他去电脑控制台"
-                                  "「设备操控」页看当前的新码再发来。", ""))
+        # 比对、旋转新码、开窗在 _devctrl_code_accept（B2b 与收窄版共用）；
+        # 码过期/不对时话术已在里面发过。连线成功话术与日志留在调用侧——
+        # 收窄版认码后还要查授权类待确认，两边的收尾不同。
+        if _devctrl_code_accept(m_code.group(1), flow, _say) is None:
             return True
-        if code != _DEVCTRL_CODE["code"]:
-            _say("fail_text", ("用你的话告诉主人授权码不对，让他重新输一次（就刚才那句话里的数字不对）。", ""))
-            return True
-        _DEVCTRL_CODE["code"] = C.gen_auth_code()
-        _DEVCTRL_CODE["expires"] = time.time() + 300
-        _DEVCTRL_AUTH["ok_until"] = time.time() + win
-        _DEVCTRL_SESSION.update({"msgs": [], "noticed": False})
         _say("ok_text", ("连线成功！用你的语气告诉主人：接下来 %d 分钟内直接用自然语言"
                          "指挥你操作电脑就行（找文件/发文件/看目录/联网查都行），顺便"
                          "随口带一句刚才那句授权码说得挺顺。" % max(1, win // 60),
@@ -7209,6 +7202,9 @@ _TOOL_PENDING_LOCK = threading.Lock()
 _TOOL_PENDING_TTL = 120.0
 _TOOL_CONFIRM_WORDS = frozenset((
     "确认", "确定", "执行", "好", "好的", "可以", "是", "ok", "yes"))
+# 授权类待确认的主动作废词（B2b）：判定方式同确认词（去首尾空白和句末
+# 标点后整句相等）。主人改主意了就不等授权码了。
+_TOOL_AUTH_CANCEL_WORDS = frozenset(("取消", "不做了", "算了"))
 # 续跑执行出错且没有任何已执行动作时的确定性回复（不走模型；有已执行动作
 # 时用 _tool_actions_closing 的「已经做了」清单）。
 _TOOL_RESUME_FAIL_NOTE = ("刚才确认的那件事没做成（执行时出了点问题），"
@@ -7233,7 +7229,12 @@ def _tool_confirm_intercept(msg):
     停在复述确认上的待确认。没有 → 原样返回（绝大多数消息，零副作用）；
     已过期 → 删掉照常处理；是确认词 → 删掉、把续跑请求挂到这条消息上
     （msg["_tool_resume"]，后面续跑代替主模型调用，本函数不 return）；
-    是别的话 → 删掉照常处理。非主人消息根本不走这里。"""
+    是别的话 → 删掉照常处理。
+    授权类待确认（kind="auth"，B2b）不一样：它只等正确的授权码、主动
+    作废词或过期（I2）——没过期就原样留着、这条消息照常往下走（哪怕是
+    别的话，也不丢弃、不消费；授权码由 _handle_devctrl_link_only 认下之
+    后取出）；说「取消 / 不做了 / 算了」→ 删掉、打 AGENT_TOOL_AUTH_CANCEL、
+    照常处理；过期才删掉并打 EXPIRE 照常处理。非主人消息根本不走这里。"""
     key = "%s:%s" % (msg.get("chat_type"), msg.get("chat_id"))
     if key not in _TOOL_PENDING:
         return
@@ -7242,14 +7243,26 @@ def _tool_confirm_intercept(msg):
         ent = _TOOL_PENDING.get(key)
         if ent is None:
             return
-        _TOOL_PENDING.pop(key, None)
-        if time.monotonic() >= float(ent.get("expires") or 0):
-            act = "expire"
-        elif _tool_confirm_word(msg.get("text")):
-            act = "go"
-            msg["_tool_resume"] = ent
+        if ent.get("kind") == "auth":
+            # B2b 授权类：确认词不算数（确认不是授权，I3），别的话更不能
+            # 把它冲掉——留着等授权码；主人说取消词才主动作废。
+            if time.monotonic() >= float(ent.get("expires") or 0):
+                _TOOL_PENDING.pop(key, None)
+                act = "expire"
+            elif _tool_auth_cancel_word(msg.get("text")):
+                _TOOL_PENDING.pop(key, None)
+                act = "auth_cancel"
+            else:
+                return
         else:
-            act = "drop"
+            _TOOL_PENDING.pop(key, None)
+            if time.monotonic() >= float(ent.get("expires") or 0):
+                act = "expire"
+            elif _tool_confirm_word(msg.get("text")):
+                act = "go"
+                msg["_tool_resume"] = ent
+            else:
+                act = "drop"
     disp = _tool_confirm_chat_disp(key)
     if act == "go":
         tools = ",".join(str(c.get("tool") or "")
@@ -7257,6 +7270,8 @@ def _tool_confirm_intercept(msg):
         out("AGENT_TOOL_CONFIRM_GO chat=%s tools=%s" % (disp, tools or "-"))
     elif act == "expire":
         out("AGENT_TOOL_CONFIRM_EXPIRE chat=%s" % disp)
+    elif act == "auth_cancel":
+        out("AGENT_TOOL_AUTH_CANCEL chat=%s" % disp)
     else:
         out("AGENT_TOOL_CONFIRM_DROP chat=%s" % disp)
 
@@ -7264,7 +7279,9 @@ def _tool_confirm_intercept(msg):
 def _tool_commit_pending(msg, send_resp):
     """复述文字发送出口处调用：发送成功（daemon.send 返回 ok 为真）才把
     这条消息上挂的候选落进待确认表；发送失败/没走到发送不落（I1）。
-    同会话已有待确认 → 覆盖并打 AGENT_TOOL_CONFIRM_REPLACE（I2）。"""
+    同会话已有待确认 → 覆盖并打 AGENT_TOOL_CONFIRM_REPLACE（I2）。
+    候选带 ttl（秒）就用它当有效期（授权类候选带 300），没有就用默认
+    120 秒；kind（"auth"＝授权类）原样存进表里。"""
     cand = None
     if isinstance(msg, dict):
         cand = msg.pop("_tool_confirm_candidate", None)
@@ -7275,11 +7292,15 @@ def _tool_commit_pending(msg, send_resp):
     key = "%s:%s" % (msg.get("chat_type"), msg.get("chat_id"))
     disp = _tool_confirm_chat_disp(key)
     tools = ",".join(str(c.get("tool") or "") for c in (cand.get("calls") or []))
+    _ttl = cand.get("ttl")
+    _ttl = float(_ttl) if isinstance(_ttl, (int, float)) and _ttl > 0 \
+        else _TOOL_PENDING_TTL
     with _TOOL_PENDING_LOCK:
         replaced = key in _TOOL_PENDING
         _TOOL_PENDING[key] = dict(cand,
-                                  expires=time.monotonic() + _TOOL_PENDING_TTL)
-    out("AGENT_TOOL_CONFIRM_WAIT chat=%s tools=%s" % (disp, tools or "-"))
+                                  expires=time.monotonic() + _ttl)
+    out("AGENT_TOOL_CONFIRM_WAIT chat=%s tools=%s%s" % (
+        disp, tools or "-", " kind=auth" if cand.get("kind") == "auth" else ""))
     if replaced:
         out("AGENT_TOOL_CONFIRM_REPLACE chat=%s" % disp)
 
@@ -8433,34 +8454,54 @@ def process(daemon, msg):
             _tool_calls, _tool_rest = [], ""
             out("AGENT_TOOL_STRIP_ERR %r" % _tool_err)
         if _tool_calls and _tool_loop_on() and owner:
-            try:
-                _tl = _tool_loop_run(daemon, msg, messages, reply)
-                if _tl.get("stop") == "error":
-                    # call_model 抛了异常（循环内部接住转成 stop=error）：不发
-                    # 循环收尾，退回剥掉工具行之后的文本，不让整条消息丢掉
-                    out("AGENT_TOOL_LOOP_ERR msg_id=%s" % msg["id"])
+            # B2b 索码预检（进循环之前）：这一轮的调用里有 danger 级工具
+            # （且可用）、授权没过 → 不进循环：置一次索码窗口（不发消息，
+            # I1——不预检的话主人之后发的 6 位数不会被认），reply 换成确定
+            # 性要码文本（不经模型，「需要授权码」一定传达到；write 不会被
+            # 循环截在复述上），这一轮全部调用记成授权类候选，主回复发送
+            # 成功后落表等授权码（或「取消」主动作废）。
+            if _devctrl_danger_precheck(_tool_calls):
+                _tool_hold_raw = reply    # 原始回复（带工具行，续跑时给模型当上下文）
+                msg["_tool_resumed"] = True   # 工具行已处理过：衔接点不再收刮、[TOOL] 不漏出去
+                reply = _tool_auth_hold_text(_tool_calls)
+                msg["_tool_confirm_candidate"] = {
+                    "kind": "auth",
+                    "calls": [dict(c) for c in _tool_calls],
+                    "first_reply": _tool_hold_raw,
+                    "done": [],
+                    "ttl": 300.0}
+                out("AGENT_TOOL_AUTH_HOLD tools=%s" % (
+                    ",".join(str(c.get("tool") or "") for c in _tool_calls)
+                    or "-"))
+            else:
+                try:
+                    _tl = _tool_loop_run(daemon, msg, messages, reply)
+                    if _tl.get("stop") == "error":
+                        # call_model 抛了异常（循环内部接住转成 stop=error）：不发
+                        # 循环收尾，退回剥掉工具行之后的文本，不让整条消息丢掉
+                        out("AGENT_TOOL_LOOP_ERR msg_id=%s" % msg["id"])
+                        reply = _tool_rest
+                    else:
+                        _tool_first_raw = reply    # 进循环前的原始回复（带工具行）
+                        reply = _tl.get("final") or ""
+                        if _tl.get("stop") == "final":
+                            # 模型的纯文本最终回复：不听话回了 JSON 就取 say 里的文字
+                            reply = _tool_final_text(reply)
+                        if not reply.strip() and (_tl.get("actions") or []):
+                            reply = _tool_actions_closing(_tl["actions"])
+                        if _tl.get("stop") == "confirm" and reply.strip():
+                            # 复述确认（A2b-2）：候选挂在这条消息自己的字典上
+                            # （并行模式各消息互不干扰），复述真的发送成功之后
+                            # 才由发送出口落进待确认表（_tool_commit_pending）。
+                            # 只有复述文字真的成为这条消息的回复才挂——异常回退、
+                            # 收尾替换等路径不落表（主人没看到复述就不能被执行，I1）。
+                            msg["_tool_confirm_candidate"] = {
+                                "calls": list(_tl.get("pending") or []),
+                                "first_reply": _tool_first_raw,
+                                "done": list(_tl.get("actions") or [])}
+                except Exception as _tool_err:
+                    out("AGENT_TOOL_LOOP_ERR msg_id=%s err=%r" % (msg["id"], _tool_err))
                     reply = _tool_rest
-                else:
-                    _tool_first_raw = reply    # 进循环前的原始回复（带工具行）
-                    reply = _tl.get("final") or ""
-                    if _tl.get("stop") == "final":
-                        # 模型的纯文本最终回复：不听话回了 JSON 就取 say 里的文字
-                        reply = _tool_final_text(reply)
-                    if not reply.strip() and (_tl.get("actions") or []):
-                        reply = _tool_actions_closing(_tl["actions"])
-                    if _tl.get("stop") == "confirm" and reply.strip():
-                        # 复述确认（A2b-2）：候选挂在这条消息自己的字典上
-                        # （并行模式各消息互不干扰），复述真的发送成功之后
-                        # 才由发送出口落进待确认表（_tool_commit_pending）。
-                        # 只有复述文字真的成为这条消息的回复才挂——异常回退、
-                        # 收尾替换等路径不落表（主人没看到复述就不能被执行，I1）。
-                        msg["_tool_confirm_candidate"] = {
-                            "calls": list(_tl.get("pending") or []),
-                            "first_reply": _tool_first_raw,
-                            "done": list(_tl.get("actions") or [])}
-            except Exception as _tool_err:
-                out("AGENT_TOOL_LOOP_ERR msg_id=%s err=%r" % (msg["id"], _tool_err))
-                reply = _tool_rest
         elif _tool_calls:
             reply = _tool_rest
     # 模型自发安静：[QUIET] / [QUIET:15] —— 真实触发安静模式（@/回复不受影响）
@@ -9129,6 +9170,98 @@ def _devctrl_auth_ok():
     return (not cfg_2fa_on()) or (_DEVCTRL_AUTH["ok_until"] > time.time())
 
 
+def _devctrl_ask_code(src):
+    """索码（B2b 工具循环预检）：只置索码窗口——此后 5 分钟内主人发的
+    6 位数才被当成授权码（没有这一步，主人的授权码会被当普通聊天）——
+    并记一行日志；不发任何消息（I1），要主人取码这件事由模型根据工具
+    结果里那句固定拒答自己转述，避免两条。"""
+    _DEVCTRL_ASK["until"] = time.time() + 300
+    out("AGENT_DEVC_ASK src=%s" % str(src or "-"))
+
+
+def _devctrl_danger_precheck(calls):
+    """进工具循环前的索码预检（B2b）：这一轮解析出的调用里，只要有一个
+    是登记表里的 danger 级工具、当前可用（_tool_available——pc_* 只在设备
+    操控开关开着时算数，不可用的不算命中，照常进循环）、且授权没过
+    （_devctrl_auth_ok() 为假），就调一次索码（_devctrl_ask_code，只置
+    窗口不发消息）并返回 True——调用方不进循环，发确定性要码文本。
+    返回 False ＝没命中（索码窗口原样不动；授权窗口开着或授权码开关关着
+    时 danger 本来就会直接执行，也不命中，I3）。"""
+    for c in (calls or []):
+        name = str((c or {}).get("tool") or "")
+        spec = qq_tools.get_tool(name)
+        if spec is not None and spec.get("risk") == "danger" \
+                and _tool_available(name) and not _devctrl_auth_ok():
+            _devctrl_ask_code("tool")
+            return True
+    return False
+
+
+def _tool_auth_hold_text(calls):
+    """预检命中时不进循环：给主人的确定性要码文本（不经模型，危险这步
+    「需要授权码」一定传达到，write 也不会被复述截走）。逐行列出这一轮
+    每个调用的工具说明（spec 的 desc）与参数；结尾给「取消」出口。
+    文本里的 [TOOL] 一律改写成 [TOOL·]，不许漏出调用行。"""
+    lines = ["这一步需要授权码：到管理台 → 设备操控 里取 6 位授权码发给我。"
+             "授权后我会执行："]
+    for c in (calls or []):
+        name = str((c or {}).get("tool") or "")
+        spec = qq_tools.get_tool(name)
+        desc = str(spec.get("desc") or "") if spec else ""
+        args = c.get("args") if isinstance(c.get("args"), dict) else {}
+        js = json.dumps(args, ensure_ascii=False).replace("[TOOL]", "[TOOL·]")
+        lines.append("- %s(%s)：%s" % (
+            name, js, desc.replace("[TOOL]", "[TOOL·]")))
+    lines.append("不想做了就回「取消」。")
+    return "\n".join(lines)
+
+
+def _devctrl_code_accept(code, flow, _say):
+    """授权码比对与开窗（旧路径与工具循环收窄版共用的一段，B2b 抽出）：
+    码过期或不对 → 发对应话术、返回 None（调用方把本条当已处理）；
+    比对成功 → 旋转新码、打开授权窗口（flow 的 auth_window_sec）、重置
+    会话记录，返回窗口秒数。连线成功话术与日志由调用方发——两条路径的
+    收尾不同（收窄版认码后还要查授权类待确认决定续跑）。"""
+    win = int(flow.get("auth_window_sec", 120))
+    if not _DEVCTRL_CODE["code"] or time.time() > _DEVCTRL_CODE["expires"]:
+        _say("expired_text", ("用你的话告诉主人：授权码过期了，让他去电脑控制台"
+                              "「设备操控」页看当前的新码再发来。", ""))
+        return None
+    if code != _DEVCTRL_CODE["code"]:
+        _say("fail_text", ("用你的话告诉主人授权码不对，让他重新输一次（就刚才那句话里的数字不对）。", ""))
+        return None
+    _DEVCTRL_CODE["code"] = C.gen_auth_code()
+    _DEVCTRL_CODE["expires"] = time.time() + 300
+    _DEVCTRL_AUTH["ok_until"] = time.time() + win
+    _DEVCTRL_SESSION.update({"msgs": [], "noticed": False})
+    return win
+
+
+def _tool_auth_take(key):
+    """取出本会话未过期的授权类待确认（B2b，授权码比对成功之后调）：
+    有 → 从表里移除并返回（调用方挂到 msg["_tool_resume"] 续跑）；没有、
+    不是授权类（复述确认类不归这里管）、或已过期 → None（已过期的一并
+    清掉并照 _tool_confirm_intercept 打 AGENT_TOOL_CONFIRM_EXPIRE）。
+    授权类待确认只被「正确的授权码」、主动作废词或过期消费（I2）。"""
+    with _TOOL_PENDING_LOCK:
+        ent = _TOOL_PENDING.get(key)
+        if ent is None or ent.get("kind") != "auth":
+            return None
+        _TOOL_PENDING.pop(key, None)
+    if time.monotonic() >= float(ent.get("expires") or 0):
+        out("AGENT_TOOL_CONFIRM_EXPIRE chat=%s"
+            % _tool_confirm_chat_disp(key))
+        return None
+    return ent
+
+
+def _tool_auth_cancel_word(text):
+    """授权类待确认的主动作废词判定（B2b）：去掉首尾空白和句末标点
+    （。！!～~）后等于「取消 / 不做了 / 算了」之一。带别的内容不算。"""
+    t = str(text or "").strip().strip("。！!～~").strip()
+    return t in _TOOL_AUTH_CANCEL_WORDS
+
+
 def _handle_devctrl_link_only(daemon, msg):
     """_handle_devctrl 的工具循环收窄版（B2a）：只认「索码窗口内收到 6 位
     授权码 → 比对 → 打开窗口 → 发固定话术」这一条路，其余一律 return False
@@ -9162,23 +9295,30 @@ def _handle_devctrl_link_only(daemon, msg):
                             bot=bot_name, **kw),
                             route=("private", owner_qq()))])
 
-    code = m_code.group(1)
-    if not _DEVCTRL_CODE["code"] or time.time() > _DEVCTRL_CODE["expires"]:
-        _say("expired_text", ("用你的话告诉主人：授权码过期了，让他去电脑控制台"
-                              "「设备操控」页看当前的新码再发来。", ""))
+    # 比对、旋转新码、开窗与旧路径共用 _devctrl_code_accept（B2b 抽出）；
+    # 码过期/不对时话术已在里面发过，本条消息照旧算已处理（return True）。
+    win = _devctrl_code_accept(m_code.group(1), flow, _say)
+    if win is None:
         return True
-    if code != _DEVCTRL_CODE["code"]:
-        _say("fail_text", ("用你的话告诉主人授权码不对，让他重新输一次（就刚才那句话里的数字不对）。", ""))
-        return True
-    _DEVCTRL_CODE["code"] = C.gen_auth_code()
-    _DEVCTRL_CODE["expires"] = time.time() + 300
-    _DEVCTRL_AUTH["ok_until"] = time.time() + win
-    _DEVCTRL_SESSION.update({"msgs": [], "noticed": False})
+    out("AGENT_DEVCTRL_LINKED window=%ds" % win)
+    # B2b 授权后续跑：本会话有未过期的授权类待确认 → 取出挂到这条消息上
+    # （msg["_tool_resume"]，下面走到续跑分叉；续跑时授权窗口已开，danger
+    # 工具直接执行），不发固定的「授权成功」话术、也不算本条已处理——
+    # 让这条授权码消息继续往下走（返回 False）。没有待确认时保持现状。
+    _auth_ent = _tool_auth_take("%s:%s" % (msg.get("chat_type"),
+                                           msg.get("chat_id")))
+    if _auth_ent is not None:
+        msg["_tool_resume"] = _auth_ent
+        out("AGENT_TOOL_AUTH_GO chat=%s tools=%s" % (
+            _tool_confirm_chat_disp("%s:%s" % (msg.get("chat_type"),
+                                               msg.get("chat_id"))),
+            ",".join(str(c.get("tool") or "")
+                     for c in (_auth_ent.get("calls") or [])) or "-"))
+        return False
     _say("ok_text", ("连线成功！用你的语气告诉主人：接下来 %d 分钟内直接用自然语言"
                      "指挥你操作电脑就行（找文件/发文件/看目录/联网查都行），顺便"
                      "随口带一句刚才那句授权码说得挺顺。" % max(1, win // 60),
                      ), mins=max(1, win // 60))
-    out("AGENT_DEVCTRL_LINKED window=%ds" % win)
     return True
 
 
