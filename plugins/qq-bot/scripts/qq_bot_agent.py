@@ -7180,11 +7180,18 @@ def _tool_doc_block():
     再按 _tool_available 过滤——B2a 起 pc_* 只在设备操控开关开着时列出；
     尚未登记任何工具时清单为空，只有说明行）＋固定用法说明。
     替代「带话」「画图」两段旧标记教学；B2a 起设备操控的「已开启版」教学
-    也由这里的 pc_* 行代替。"""
+    也由这里的 pc_* 行代替。B3 起固定用法说明之后附 MCP 索引段
+    （_tool_mcp_index_block：MCP 总开关开才附，索引行带 60 秒缓存）——
+    工具循环开时旧 _mcp_tools_doc() 不再注入，索引在这里给出。"""
     doc = qq_tools.list_doc([
         s for s in qq_tools.tools_for({"is_owner": True, "is_gadmin": False})
         if _tool_available(s.get("name"))])
-    return "- 你能用的工具（仅主人；工具会真实执行）：%s\n  %s\n" % (doc, _TOOL_USAGE_NOTE)
+    txt = "- 你能用的工具（仅主人；工具会真实执行）：%s\n  %s\n" % (
+        doc, _TOOL_USAGE_NOTE)
+    mcp_block = _tool_mcp_index_block()
+    if mcp_block:
+        txt += mcp_block
+    return txt
 
 
 # 回喂后的最终回复提示（派单定死）：工具结果已在 history 里，请模型给纯文本。
@@ -8264,8 +8271,10 @@ def process(daemon, msg):
                 % (msg["id"], sbackend, msg.get("text", "")))
         else:
             out("AGENT_SEARCH_EMPTY msg_id=%s" % msg["id"])
-    # MCP 工具桥（仅主人）：启用中才注入工具索引——模型据此决定是否用 [MCP] 动作行
-    if owner:
+    # MCP 工具桥（仅主人）：启用中才注入工具索引——模型据此决定是否用 [MCP] 动作行。
+    # B3：工具循环开时不再注入（MCP 索引已并入 _tool_doc_block 的工具清单，
+    # [MCP] 行在衔接点转 mcp_call 走循环）；开关关时照旧注入，逐字一致（I2）。
+    if owner and not _tool_loop_on():
         _mcp_txt = _mcp_tools_doc()
         if _mcp_txt:
             messages[0]["content"] += "\n\n" + _mcp_txt
@@ -8448,6 +8457,12 @@ def process(daemon, msg):
     # 续跑的消息（msg["_tool_resumed"]）整段跳过：循环的 final 里若再有
     # 工具行是循环内部已经处理过的事，不再收刮第二遍。
     if not msg.get("_tool_resumed"):
+        # B3：工具循环开且是主人时，模型旧习惯写的「[MCP] 服务.工具 {json}」
+        # 行在这里改写成 [TOOL] mcp_call 调用行，随后的 parse_calls 一并收进
+        # 循环（不进旧 _mcp_agent_loop）；解析不了的 [MCP] 行原样留在正文，
+        # 由后面旧 [MCP] 标记段照旧剥掉——任何情况下不漏进聊天（I3）。
+        if owner and _tool_loop_on() and _MCP_ACT_ANY_RE.search(reply):
+            reply = _mcp_lines_to_calls(reply)
         try:
             _tool_calls, _tool_rest = qq_tools.parse_calls(reply)
         except Exception as _tool_err:
@@ -8632,7 +8647,11 @@ def process(daemon, msg):
             if not reply.strip() and _g_ok_details:
                 reply = _g_ok_details[0]
     if _MCP_ACT_ANY_RE.search(reply):
-        if owner and _mcp_tools_doc():
+        # B3：工具循环开时不再分流进旧循环（索引在工具清单、[MCP] 行已在
+        # 衔接点转 mcp_call 走循环；这里残余的多半是循环 final 里模型旧习惯
+        # 又写出的行）——照旧只剥掉，不漏进聊天（I3）。开关关时与从前逐字
+        # 一致（I2）：主人 + 索引非空照旧进 _mcp_agent_loop。
+        if owner and not _tool_loop_on() and _mcp_tools_doc():
             daemon.ack([msg["id"]])
             RT.count_processed()
             out("AGENT_MCP_ACCEPT msg_id=%s chat=%s/%s"
@@ -9155,11 +9174,15 @@ def _owner_auth_code_on():
 
 def _tool_available(name):
     """工具清单与工具循环共用的可用性过滤（B2a）：pc_* 前缀（设备操控八个
-    工具）只在设备操控开关打开时可用；其它工具一律可用。开关关着时 pc_* 不
-    进清单也不进循环，模型就算凭空写出 pc_* 也只会在 run 的同一道开关上得到
-    「电脑操控没有开启」。"""
-    if str(name or "").startswith("pc_"):
+    工具）只在设备操控开关打开时可用；B3 起 mcp_call 只在 MCP 总开关开着时
+    可用（与 run 第一道闸是同一判断——都走 _mcp_tool_allowed）；其它工具
+    一律可用。开关关着时对应工具不进清单也不进循环（模型凭空写出时，由
+    工具循环按「没有这个工具」回喂）。"""
+    n = str(name or "")
+    if n.startswith("pc_"):
         return _device_ctrl_enabled()
+    if n == "mcp_call":
+        return _mcp_tool_allowed()
     return True
 
 
@@ -9320,6 +9343,109 @@ def _handle_devctrl_link_only(daemon, msg):
                      "随口带一句刚才那句授权码说得挺顺。" % max(1, win // 60),
                      ), mins=max(1, win // 60))
     return True
+
+
+# ---------------------------------------------------------------------------
+# B3 MCP 并入工具表：工具清单附 MCP 索引、[MCP] 行转 mcp_call、main() 接线。
+# 开关：MCP 能不能用由它自己的总开关（qq_mcp.mcp_allowed）决定（I1），工具
+# 循环开关只决定「走新通道还是旧路径」（I2——循环关时旧 MCP 路径逐字一致）。
+# ---------------------------------------------------------------------------
+
+_MCP_IDX_CACHE = {"ts": 0.0, "rows": None}
+
+
+def _mcp_index_rows():
+    """工具清单附带的 MCP 索引行（B3）：M.tool_index(doc_cap=doc_cap_cfg())
+    的行列表（已格式化好），60 秒缓存（照 _mcp_tools_doc 的写法——索引要
+    跟服务器握手才拿得到）。返回 (rows, ok)：ok=False＝拉取抛了异常（不
+    缓存，下次构建再试），调用方附兜底句。"""
+    if _MCP_IDX_CACHE["rows"] is not None \
+            and time.time() - _MCP_IDX_CACHE["ts"] < 60:
+        return _MCP_IDX_CACHE["rows"], True
+    import qq_mcp as M
+    try:
+        rows, errors = M.tool_index(doc_cap=M.doc_cap_cfg())
+        if errors:
+            out("AGENT_MCP_INDEX_ERR %s" % "; ".join(errors)[:160])
+    except Exception as e:
+        out("AGENT_MCP_INDEX_FAIL %r" % e)
+        return [], False
+    _MCP_IDX_CACHE.update(ts=time.time(), rows=rows)
+    return rows, True
+
+
+def _tool_mcp_index_block():
+    """工具清单后面附的 MCP 索引段（B3）：调用点（_tool_doc_block）已保证
+    工具循环开且是主人，这里再查 MCP 自己的总开关（I1）——关着就不附。
+    标题 + _mcp_index_rows() 的行；总长受 doc_cap_cfg()+700 约束（照旧
+    _mcp_tools_doc 的预算，按行累加，超了截掉后面的行并加省略说明）；
+    拉取异常附一句兜底。返回空串＝不附。"""
+    import qq_mcp as M
+    if not M.mcp_allowed():
+        return ""
+    rows, ok = _mcp_index_rows()
+    head = "## 外部工具（用 mcp_call 调用，服务器名和工具名照下面写）"
+    if not ok:
+        return head + "\n（外部工具清单暂时拿不到）\n"
+    if not rows:
+        return ""
+    cap = M.doc_cap_cfg() + 700
+    kept = []
+    used = len(head) + 1
+    truncated = False
+    for r in rows:
+        if used + len(r) + 1 > cap:
+            truncated = True
+            break
+        kept.append(r)
+        used += len(r) + 1
+    lines = [head] + kept
+    if truncated:
+        lines.append("（其余外部工具略）")
+    return "\n".join(lines) + "\n"
+
+
+def _mcp_lines_to_calls(text):
+    """把 text 里的「[MCP] 服务器.工具 {json}」行改写成「[TOOL] mcp_call
+    {…}」行（B3：工具循环开时旧习惯走新通道）。逐行用 _MCP_ACT_RE 解析：
+    服务器名.工具名（带点）+ 参数是合法 JSON 对象的行才转换（args 规范化
+    成 JSON 文本塞进 mcp_call 的 args 参数；原行没有 {} 就不带 args 键，
+    run 里按 "{}" 处理——与旧循环的空参数行为一致）；解析不了的行原样
+    保留（之后由旧 [MCP] 标记段照旧剥掉，任何情况下不漏进聊天 I3）。"""
+    def _conv(m):
+        line = m.group(0)
+        am = _MCP_ACT_RE.match(line)
+        if not am:
+            return line
+        spec = am.group(1).strip()
+        server, _dot, tool = spec.partition(".")
+        if not server or not tool:
+            return line
+        argjson = (am.group(2) or "").strip()
+        call = {"server": server, "tool": tool}
+        if argjson:
+            try:
+                parsed = json.loads(argjson)
+            except ValueError:
+                return line
+            if not isinstance(parsed, dict):
+                return line
+            call["args"] = json.dumps(parsed, ensure_ascii=False)
+        return "[TOOL] mcp_call " + json.dumps(call, ensure_ascii=False)
+    return _MCP_ACT_ANY_RE.sub(_conv, text)
+
+
+def _mcp_tool_call(server, tool, args_dict):
+    """mcp_call 工具的执行函数（main() 接线）：薄包装，只调 qq_mcp.call_tool
+    （它自己查总开关、只抛 McpError、返回文本）——异常由工具 run 统一接。"""
+    import qq_mcp as M
+    return M.call_tool(server, tool, args_dict)
+
+
+def _mcp_tool_allowed():
+    """mcp_call 工具的开关函数（main() 接线）：MCP 自己的总开关。"""
+    import qq_mcp as M
+    return M.mcp_allowed()
 
 
 def start_admin_server(port, daemon=None):
@@ -10064,7 +10190,9 @@ def main():
     # 函数在这里接上——web_search 用本模块的统一搜索入口；发到群/画图/定时
     # 三个有对外副作用的分别走 _sendgrp_tool_send（含歧义拒发）/ _draw_tool /
     # _cron_add_tool / _cron_list_tool，全是既有逻辑的薄包装；B2a 的八个设备
-    # 工具（pc_*）走 _devctrl_step（四道防护都在它内部）+ _device_ctrl_enabled。
+    # 工具（pc_*）走 _devctrl_step（四道防护都在它内部）+ _device_ctrl_enabled；
+    # B3 的 mcp_call 走 _mcp_tool_call（薄包装 qq_mcp.call_tool）+
+    # _mcp_tool_allowed（MCP 自己的总开关）。
     # 登记放 main 里而不是 import 时做，测试 import 本模块不会往登记表塞东西。
     try:
         qq_tools_builtin.register_builtin(
@@ -10074,7 +10202,9 @@ def main():
             cron_add_fn=_cron_add_tool,
             cron_list_fn=_cron_list_tool,
             devctrl_step_fn=_devctrl_step,
-            devctrl_enabled_fn=_device_ctrl_enabled)
+            devctrl_enabled_fn=_device_ctrl_enabled,
+            mcp_call_fn=_mcp_tool_call,
+            mcp_allowed_fn=_mcp_tool_allowed)
     except Exception as e:
         out("AGENT_TOOLS_REG_FAIL %r" % e)
     threading.Thread(target=_caption_loop, args=(daemon,), daemon=True).start()

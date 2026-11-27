@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 """qq_tools_builtin.py — 内置工具登记处（A2a：web_search、react；
 A2b：send_group、draw、cron_add、cron_list；
-B2a：pc_find/pc_read/pc_list/pc_search/pc_apps/pc_send/pc_open/pc_close）
+B2a：pc_find/pc_read/pc_list/pc_search/pc_apps/pc_send/pc_open/pc_close；
+B3：mcp_call——MCP 外部工具并入工具表的通用入口）
 
 每个工具是一层薄包装：调用既有函数（统一搜索入口 search_web、daemon 的
 set_msg_reaction、发群的解析+校验+发送、画图执行、定时的存入/读取、
@@ -16,6 +17,7 @@ _devctrl_step 内部，pc_* 只许调它。执行函数由调用方传入（regi
 
 模型侧约定见 qq_tools.py：回复里一行一个「[TOOL] 名字 {json参数}」。
 """
+import json
 import re
 
 import qq_tools
@@ -28,11 +30,13 @@ def _clip(text, limit):
 
 def register_builtin(search_web_fn, send_group_fn=None, draw_fn=None,
                      cron_add_fn=None, cron_list_fn=None,
-                     devctrl_step_fn=None, devctrl_enabled_fn=None):
+                     devctrl_step_fn=None, devctrl_enabled_fn=None,
+                     mcp_call_fn=None, mcp_allowed_fn=None):
     """把内置工具登记进 qq_tools。幂等：已登记的名字原样跳过，不抛异常、
-    也不覆盖已登记的同名工具。四个带对外副作用的工具（发到群/画图/定时）
-    与八个设备工具（B2a 的 pc_*，两个 devctrl 函数都传了才登记）只登记
-    调用方传了对应执行函数的那些，没传的不登记。"""
+    也不覆盖已登记的同名工具。四个带对外副作用的工具（发到群/画图/定时）、
+    八个设备工具（B2a 的 pc_*，两个 devctrl 函数都传了才登记）与 MCP 通用
+    入口（B3 的 mcp_call，mcp_call_fn/mcp_allowed_fn 两个都传了才登记）
+    只登记调用方传了对应执行函数的那些，没传的不登记。"""
     if qq_tools.get_tool("web_search") is None:
         qq_tools.register({
             "name": "web_search",
@@ -107,6 +111,24 @@ def register_builtin(search_web_fn, send_group_fn=None, draw_fn=None,
         for _spec in _devctrl_specs(devctrl_step_fn, devctrl_enabled_fn):
             if qq_tools.get_tool(_spec["name"]) is None:
                 qq_tools.register(_spec)
+    if (mcp_call_fn is not None and mcp_allowed_fn is not None
+            and qq_tools.get_tool("mcp_call") is None):
+        qq_tools.register({
+            "name": "mcp_call",
+            "desc": "调用 MCP 外部工具（服务器名和工具名照工具清单写）",
+            "params": [
+                {"name": "server", "type": "str", "required": True,
+                 "desc": "MCP 服务器名（照工具清单写）"},
+                {"name": "tool", "type": "str", "required": True,
+                 "desc": "工具名（照工具清单写）"},
+                {"name": "args", "type": "str", "required": False,
+                 "desc": "JSON 对象的文本（如 {\"key\": \"值\"}），"
+                         "没有参数就不填"},
+            ],
+            "risk": "write", "scope": "owner",
+            "returns": "外部工具的返回文本",
+            "run": _mcp_call_run(mcp_call_fn, mcp_allowed_fn),
+        })
 
 
 def _web_search_run(search_web_fn):
@@ -347,3 +369,45 @@ def _devctrl_specs(step_fn, enabled_fn):
          "run": _devctrl_run(step_fn, enabled_fn, "close",
                              lambda a: a["name"])},
     )
+
+
+# ---- B3：MCP 并入工具表（mcp_call）----
+# MCP 的服务器维护、总开关、连接与超时都在 qq_mcp 里，这里不重新实现任何
+# 一道防护——执行函数 mcp_call_fn / 开关函数 mcp_allowed_fn 由调用方传入
+# （qq_bot_agent.main 接 _mcp_tool_call / _mcp_tool_allowed），本模块不
+# import qq_mcp。write 级的复述确认、scope=owner 的权限闸都由 qq_tools
+# 的统一工具闸管（I4）。
+
+_MCP_RESULT_CAP = 1500
+
+
+def _mcp_call_run(mcp_call_fn, mcp_allowed_fn):
+    """mcp_call 的薄包装体。第一行查 MCP 自己的总开关（工具循环开关与它
+    无关——MCP 能不能用由这个总开关决定，I1）；args 必须是 JSON 对象的
+    文本（解析失败、数组、标量都不行）；调 mcp_call_fn，返回文本截 1500
+    字（截断处加一句说明；qq_tools.make_result 对 summary 另有自己的上限，
+    见该模块）；调用抛异常（McpError 或别的）一律 ok=False 带原因（截
+    200 字），不外抛。"""
+    def run(daemon, msg, args):
+        if not mcp_allowed_fn():
+            return qq_tools.make_result(
+                False, "MCP 没有启用（管理台 → MCP 服务 里打开）")
+        raw = str(args.get("args") or "").strip() or "{}"
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            parsed = None
+        if not isinstance(parsed, dict):
+            return qq_tools.make_result(
+                False, "args 要是 JSON 对象的文本，例如 {\"key\": \"值\"}")
+        try:
+            text = mcp_call_fn(str(args.get("server") or "").strip(),
+                               str(args.get("tool") or "").strip(), parsed)
+        except Exception as exc:
+            return qq_tools.make_result(
+                False, "调用失败：%s" % str(exc)[:200])
+        text = str(text or "")
+        if len(text) > _MCP_RESULT_CAP:
+            text = text[:_MCP_RESULT_CAP] + "\n（结果过长，已截断）"
+        return qq_tools.make_result(True, text)
+    return run
