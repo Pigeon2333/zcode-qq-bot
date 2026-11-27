@@ -5429,9 +5429,10 @@ def _intent_botloop_verdict(text, cands):
     ① 确定性预筛（零 token）：消息去空白、casefold 后包含某个候选的名字或
        QQ 号 → 取该候选；或含「刚刚那个/刚才那个/上面那个」这类指代且最近
        30 分钟内恰好有一条登记 → 取那一条；都不满足直接返回 None，不调模型。
-    ② 小模型判定（写法照 _botloop_precheck）：只输出一行 JSON。置信度低于
-       0.7、解析不出 JSON、verdict 为 null、target 和预筛候选对不上、任何
-       异常 → 一律返回 None，落回普通聊天（绝不误拦主人的正常消息）。"""
+    ② 小模型判定（调模型＋取 JSON 委托给 _intent_json）：只输出一行 JSON。
+       置信度低于 0.7、解析不出 JSON、verdict 为 null、target 和预筛候选
+       对不上、任何异常 → 一律返回 None，落回普通聊天（绝不误拦主人的
+       正常消息）。"""
     t = re.sub(r"\s+", "", str(text or "")).casefold()
     if not t:
         return None
@@ -5474,12 +5475,9 @@ def _intent_botloop_verdict(text, cands):
               "{\"verdict\":\"bot\"|\"human\"|null,"
               "\"target\":\"名字或null\",\"confidence\":0到1之间的小数}")
     try:
-        _m, raw = call_glm_with_fallback([{"role": "user", "content": prompt}],
-                                         route="judge")
-        m = re.search(r"\{[^{}]*\}", str(raw or ""), re.S)
-        if not m:
-            return None
-        d = json.loads(m.group(0))
+        d = _intent_json(prompt)
+        if not isinstance(d, dict):
+            raise ValueError("改判输出解析不出 JSON")
         verdict = str(d.get("verdict") or "").strip().lower()
         if verdict not in ("bot", "human"):
             return None
