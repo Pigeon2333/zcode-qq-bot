@@ -451,6 +451,8 @@ def t_page_js(work):
     fix_js = """
 globalThis.__FIXFN = function(p, opts){
   if (p.indexOf('/api/plugins/pagejs') === 0) return {ok: true, js: "function x(){return '<i>y</i>'}"};
+  // 沙箱开关固定关：4d/4e 钉的是旧注入路径（沙箱路径由 _smoke_pluginsandbox.py 钉）
+  if (p === '/api/app-config') return {plugin_page_sandbox: false};
   if (p === '/api/plugins') {
     function plug(name, enabled){ return {name: name, title: name, version: '1.0',
       enabled: enabled, page: {js: name + 'Page'}, page_js: true,
@@ -476,7 +478,8 @@ ce('v-grp', {checked: false}); ce('v-wt', {checked: false});
 ce('v-kw', {value: '你好'}); ce('v-prob', {value: '50'});
 const sandbox = {
   TAB: 'plugins',
-  window: {},
+  // 页面脚本现在含插件页面沙箱块（SBX），装块时要注册 message 监听——给个空桩即可
+  window: {addEventListener: function(){}, _sbMsgBound: false},
   _VM: {config: {zhipu_key_set: true, sf_key_set: true, custom_key_set: true,
                  custom_base: 'https://***@api.example.com/v1/'}},
   $: function(sel){ if (sel === '#view') return view;

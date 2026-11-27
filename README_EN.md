@@ -128,7 +128,7 @@ Install, pause and update plugins from the console's Plugins page. No app change
 | Humanizer ZH | Less AI-flavored Chinese |
 | Group Check-in | Send 签到 in group to check in; daily and all-time boards (third-party demo plugin) |
 
-Writing your own is fair game, and doesn't require waiting on my app releases. One zip (plugin.py + manifest.json, plus page.js if it needs a settings page) gets you the full API surface: message hooks, sending text/images/voice, scheduled jobs, context injection, declarative settings, private storage, custom HTTP endpoints. Install and it works; updates flow through the plugin channel independently — similar to how a Minecraft server core relates to its plugins. To share yours, open an issue and I'll list it on the marketplace. Docs in [PLUGINS.md](./PLUGINS.md).
+Writing your own is fair game, and doesn't require waiting on my app releases. One zip (plugin.py + manifest.json, plus page.js if it needs a settings page) gets you the full API surface: message hooks, sending text/images/voice, scheduled jobs, context injection, declarative settings, private storage, custom HTTP endpoints. Install and it works; updates flow through the plugin channel independently — similar to how a Minecraft server core relates to its plugins. Plugin settings pages (page.js) run in an isolated sandbox iframe: they can use the host-provided `api`/`esc`/`toast`/`dlgConfirm`/`plPage`/`head` helpers but cannot touch the console's token or globals, and `api()` only reaches a small path whitelist. To share yours, open an issue and I'll list it on the marketplace. Docs in [PLUGINS.md](./PLUGINS.md).
 
 ## Architecture
 

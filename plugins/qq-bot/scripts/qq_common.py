@@ -134,6 +134,7 @@ DEFAULT_CONFIG = {
     "update_token": "",            # 私有仓库读取 Release 用的 GitHub Token（留空=公开仓库匿名读）
     "update_mirror": "auto",       # 下载加速：auto=直连失败自动换镜像 | off=只直连 | 自定义前缀
     "update_skip_version": "",     # 用户选择跳过的版本号（如 0.1.2）
+    "plugin_page_sandbox": True,   # 插件页面脚本跑在隔离 iframe（关=旧的注入方式，只用于排查插件页面不兼容）
 }
 
 # 备份/恢复统一文件清单（basename 冲突无；子目录文件扁平存放）

@@ -3422,9 +3422,11 @@ function plCatBar(cats,cur,fn){
 }
 async function vPlugins(){
  if(_plTab==='market'){await vMarket();return}
- const [r,mk]=await Promise.all([
+ const [r,mk,cfg]=await Promise.all([
   pwApi('/api/plugins',{plugins:[]}),
-  pwApi('/api/plugins/market',{ok:false})]);
+  pwApi('/api/plugins/market',{ok:false}),
+  pwApi('/api/app-config',{})]);
+ const sbOn=!(cfg&&cfg.plugin_page_sandbox===false);
  const all=r.plugins||[];
  const mkt={};((mk&&mk.plugins)||[]).forEach(p=>{mkt[p.name]=p});
  window._mktMap=mkt;
@@ -3462,6 +3464,7 @@ async function vPlugins(){
  +'<div class="k" style="margin-top:4px">已装过该插件的会在升级时自动停用（配置共用，「语音消息」页里所有设置原样生效），可在下方直接卸载残留文件。</div></div>')+
  '<div style="display:flex;gap:8px;margin-bottom:14px"><button class="act" style="margin:0" onclick="plTab(\'mine\')">我的插件</button><button class="act ghost" style="margin:0" onclick="plTab(\'market\')">🌐 插件市场</button><span style="flex:1"></span><button class="act ghost" style="margin:0" onclick="plInstall()">从 zip 安装…</button></div>'+
  '<div id="plnote" class="k" style="display:none;margin:-6px 0 12px;color:#b25e09"></div>'+
+ '<div class="card" style="margin-bottom:12px"><label class="master"><input type="checkbox" '+(sbOn?'checked':'')+' onchange="plSandboxSet(this.checked)"><span><b>插件页面在隔离环境里运行</b><div class="k" style="margin-top:2px">插件的页面脚本拿不到管理台的令牌和其它全局变量。关掉后回到旧的运行方式，只用于排查某个插件页面不兼容</div></span></label></div>'+
  (cats.length>1?plCatBar(cats,_plCat,'plCatSel'):'')+
  (totalPct>0?'<div class="card" style="margin-bottom:12px"><div class="k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b>消耗总览</b>'+plCostBadge(totalPct)+'<span class="k">按启用插件各自声明的估算口径汇总；点开插件卡片可看单项明细与口径说明</span></div></div>':'')+
  (shown.length?'<div style="margin-top:4px">'+rows+'</div>':'<div class="card">该分类暂无插件</div>');
@@ -3519,25 +3522,233 @@ async function mktInstall(name,updating){
  toast((r.updated?'已更新':(updating?'已更新':'已安装'))+'「'+(r.title||name)+'」'+(r.updated?'':'（默认停用，可在我的插件里启用）'));
  load();
 }
+/* SBX-START 插件页面脚本沙箱（0.5.23 WP-06）——page.js 不再进宿主全局作用域，
+   放进 sandbox="allow-scripts" 的 srcdoc iframe；宿主与它只走 postMessage 白名单
+   通道，接口令牌永不下发。通道校验：iframe 是不透明源只能 postMessage(msg,"*")，
+   宿主侧核对 event.source 就是那个 iframe 的 contentWindow，且消息带宿主创建
+   iframe 时生成、写进桥接脚本的通道 id，两者都对才处理（防别的窗口伪造）。 */
+var _sbFrames={},_sbSeq=0;
+function _sbChNew(){_sbSeq+=1;return 'sb'+Date.now().toString(36)+'_'+_sbSeq+'_'+Math.random().toString(36).slice(2,8)}
+// srcdoc 内嵌文本里禁出现闭合标签（<style>/<script> 块都会被它截断）
+function _sbEmbed(t,tag){return String(t==null?'':t).replace(new RegExp('</('+tag+')','gi'),'<\\/$1')}
+// 沙箱确认请求的 body 净化（宿主 _dlgBuild 用 innerHTML 拼 body/okText，绝不能让
+// 沙箱把脚本注进宿主页面）：DOMParser 解析后遍历——script/style/iframe/img/a 等
+// 整段删除；白名单标签剥掉全部属性保留；其余标签解包只留（已净化过的）子内容。
+function _sbCleanBody(html){
+ try{
+  const doc=new DOMParser().parseFromString(String(html==null?'':html),'text/html');
+  const nasty=/^(script|style|iframe|object|embed|img|svg|math|link|meta|base|video|audio|source|form|input|button|textarea|select|option|a)$/i;
+  const safe=/^(br|b|strong|i|em|u|div|p|span|code|pre|ul|ol|li|table|thead|tbody|tr|td|th|h4|small)$/i;
+  const walk=node=>{
+   [...node.children].forEach(el=>{
+    walk(el);
+    if(nasty.test(el.tagName)){el.remove();return}
+    if(safe.test(el.tagName)){[...el.attributes].forEach(a=>el.removeAttribute(a.name))}
+    else{el.replaceWith(...el.childNodes)}
+   });
+  };
+  walk(doc.body);
+  return doc.body.innerHTML;
+ }catch(e){return ''}
+}
+// okText 只取纯文本并转义（宿主同样经 innerHTML 拼）
+function _sbCleanText(t){
+ try{
+  const doc=new DOMParser().parseFromString(String(t==null?'':t),'text/html');
+  return esc(doc.body.textContent||'');
+ }catch(e){return ''}
+}
+// 白名单：按「插件名 + 路径」放行（voice_reply 另放行语音端点前缀）。
+// 匹配前先化简成浏览器实际会请求的路径：拒协议相对(//)、带协议/主机、反斜杠；
+// .. 段（含 %2e%2e、..%2f 这类编码变体）按解码后的段逐一拒掉，防前缀绕过。
+function _sbAllow(name,path){
+ const raw=String(path||'');
+ if(!raw||/[\s\r\n]/.test(raw))return false;
+ if(raw.slice(0,2)==='//')return false;
+ if(/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(raw))return false;
+ if(raw.indexOf('\\')>=0)return false;
+ let pn='';
+ try{pn=new URL(raw,location.origin).pathname}catch(e){return false}
+ const segs=pn.split('/').map(s=>{try{return decodeURIComponent(s)}catch(e){return '\u0000'}});
+ if(segs.some(s=>s==='..'||s==='.'||s.indexOf('/')>=0||s.indexOf('\\')>=0))return false;
+ if(pn==='/api/plugins/call'||pn==='/api/friend-names'||pn==='/api/pick-dir')return true;
+ if(name==='voice_reply'&&pn.indexOf('/api/voice/')===0)return true;
+ return false;
+}
+function _sbPost(ent,msg){try{ent.frame.contentWindow.postMessage(msg,'*')}catch(e){}}
+function _sbOnMsg(ev){
+ const d=ev.data;
+ if(!d||typeof d!=='object'||typeof d.ch!=='string')return;
+ const ent=_sbFrames[d.ch];
+ if(!ent||ev.source!==ent.frame.contentWindow)return;
+ if(d.__sb==='ready'){
+  if(!ent.ready){ent.ready=true;if(ent.timer){clearTimeout(ent.timer);ent.timer=null}
+   _sbPost(ent,{__sb:'init',ch:ent.ch,args:ent.args||[]})}
+ }else if(d.__sb==='height'){ent.frame.style.height=Math.max(180,(parseInt(d.h,10)||0)+16)+'px'}
+ else if(d.__sb==='api'){_sbHostApi(ent,d)}
+ else if(d.__sb==='toast'){toast(d.msg,d.ok!==false)}
+ else if(d.__sb==='confirm'){
+  // 沙箱传来的 body/okText 先净化再交给宿主弹窗（_dlgBuild 用 innerHTML 拼），
+  // title 宿主本就走 textContent 可原样；danger 只认严格 true
+  const o=(d.opts&&typeof d.opts==='object')?d.opts:{};
+  const clean={title:String(o.title==null?'':o.title),body:_sbCleanBody(o.body),
+   okText:o.okText==null?undefined:_sbCleanText(o.okText),danger:o.danger===true};
+  dlgConfirm(clean).then(v=>_sbPost(ent,{__sb:'confirm_resp',ch:ent.ch,id:d.id,v:v}))
+   .catch(()=>_sbPost(ent,{__sb:'confirm_resp',ch:ent.ch,id:d.id,v:false}))}
+ else if(d.__sb==='plPage'){if(d.target===ent.name)plPage(ent.name)}
+ else if(d.__sb==='error'){
+  if(d.fatal===false){
+   // 页面已渲染出来之后的小异常：只记录（走 client-error）＋提示，不替换整页
+   try{clErr('plugin_page_sandbox',String(d.detail||'').slice(0,500))}catch(e){}
+   toast('插件页面脚本出了一点错，已记录',false)
+  }else _sbFail(ent,d.detail)}
+}
+async function _sbHostApi(ent,d){
+ const done=(err,res)=>_sbPost(ent,{__sb:'api_resp',ch:ent.ch,id:d.id,err:err,res:res});
+ try{
+  const path=String(d.path||'');
+  if(!_sbAllow(ent.name,path)){done('该路径不在插件白名单：'+path);return}
+  const o=(d.opts&&typeof d.opts==='object')?d.opts:{};
+  const opts={method:o.method,headers:o.headers,body:o.body};
+  if(path==='/api/plugins/call'){
+   // 强制请求体里的插件名=当前 iframe 对应的插件（防调到别的插件的路由）
+   let cn='';
+   try{cn=String((JSON.parse(String(opts.body||'{}'))||{}).name||'')}catch(e){cn=''}
+   if(cn!==ent.name){done('沙箱里只能调本插件（'+ent.name+'）的路由');return}
+  }
+  // 令牌只在宿主这一侧塞进请求头，桥接脚本的 opts 覆盖不了它
+  opts.headers=Object.assign({},(opts.headers&&typeof opts.headers==='object')?opts.headers:{},{'X-UI-Token':UI_TOKEN});
+  const r=await fetch(path,opts);
+  done(null,await r.json());
+ }catch(e){done(String(e&&e.message||e))}
+}
+function _sbFail(ent,detail){
+ for(const k in _sbFrames){if(_sbFrames[k]===ent)delete _sbFrames[k]}
+ if(ent.timer){clearTimeout(ent.timer);ent.timer=null}
+ try{
+  const f=ent.frame;
+  const d=document.createElement('div');
+  d.className='card';
+  d.style.cssText='border-color:var(--err);margin-top:12px';
+  d.innerHTML='<div class="k"><b>这个插件的页面脚本出错了</b>'+(detail?'<div class="k" style="margin-top:4px;opacity:.7">'+esc(String(detail).slice(0,300))+'</div>':'')+'</div>';
+  if(f&&f.parentNode)f.replaceWith(d);
+ }catch(e){}
+ try{clErr('plugin_page_sandbox',String(detail||''))}catch(e){}
+}
+async function _sbEnabled(){
+ const c=await api('/api/app-config').catch(()=>({}));
+ return !(c&&c.plugin_page_sandbox===false);
+}
+function _sbRender(p,pjText,data){
+ const name=p.name,ch=_sbChNew();
+ for(const k in _sbFrames){
+  const old=_sbFrames[k];
+  if(old.name===name||!document.contains(old.frame)){try{old.frame.remove()}catch(e){}delete _sbFrames[k]}
+ }
+ const f=document.createElement('iframe');
+ f.setAttribute('sandbox','allow-scripts');
+ f.style.cssText='width:100%;border:0;display:block;min-height:180px;background:transparent';
+ f.srcdoc=_sbSrcdoc(p,ch,pjText,data);
+ const ent={name:name,ch:ch,frame:f,ready:false,timer:null,args:[data,p]};
+ _sbFrames[ch]=ent;
+ ent.timer=setTimeout(function(){const e=_sbFrames[ch];if(e&&!e.ready)_sbFail(e,'页面脚本没有起来')},10000);
+ const box=document.getElementById('plpage');
+ if(box){
+  box.innerHTML='';
+  box.appendChild(f);
+  const sh=plSettingsHtml(p);
+  box.insertAdjacentHTML('beforeend',sh||'<div class="card">该插件没有可配置项</div>');
+ }
+}
+function _sbSrcdoc(p,ch,pjText,data){
+ const st=document.querySelector('style');
+ const bridge=_SB_BRIDGE.split('__CH__').join(JSON.stringify(ch))
+  .split('__NAME__').join(JSON.stringify(p.name))
+  .split('__FN__').join(JSON.stringify(p.page.js||''));
+ // 沙箱是不透明源：样式表不能靠链接加载，宿主页面 <style> 原文内联进去；
+ // 依次：①样式文本 ②桥接脚本（含通道 id/插件名/入口函数名）③page.js 原文。
+ // 初始化由宿主在收到桥接脚本的 ready 消息后 postMessage('init') 触发。
+ // CSP：断掉沙箱脚本自己的网络出口（fetch/XHR/表单/外链），一切数据只走白名单通道
+ return '<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8">'
+  +'<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'unsafe-inline\'; style-src \'unsafe-inline\'; img-src data: https:; connect-src \'none\'; form-action \'none\'; base-uri \'none\'">'
+  +'<style>'
+  +_sbEmbed(st?String(st.textContent):'','style')
+  +'</style></head><body><div id="view"><div id="plpage"></div></div>'
+  +'<scr'+'ipt>'+bridge+'</scr'+'ipt>'
+  +'<scr'+'ipt>'+_sbEmbed(pjText,'script')+'</scr'+'ipt></body></html>';
+}
+function plSettingsHtml(p){
+ if(!(p.settings&&p.settings.length))return '';
+ const rowsS=(p.settings||[]).map(s=>{
+  const v=p.values&&p.values[s.key]!==undefined?p.values[s.key]:s.default;
+  if(s.type==='toggle')return '<div class="card" style="margin-top:10px"><label class="master"><input type="checkbox" '+(v?'checked':'')+' onchange="plSet(\''+esc(p.name)+'\',\''+esc(s.key)+'\',this.checked)"><span><b>'+esc(s.label||s.key)+'</b></span></label></div>';
+  if(s.type==='number')return '<div class="card" style="margin-top:10px"><div class="k">'+esc(s.label||s.key)+'</div><div style="margin-top:6px"><input type="number" value="'+esc(String(v??''))+'" style="width:110px" onchange="plSet(\''+esc(p.name)+'\',\''+esc(s.key)+'\',parseInt(this.value)||0)"></div></div>';
+  return '<div class="card" style="margin-top:10px"><div class="k">'+esc(s.label||s.key)+'</div><input value="'+esc(String(v??''))+'" style="width:100%;margin-top:6px" onchange="plSet(\''+esc(p.name)+'\',\''+esc(s.key)+'\',this.value)"></div>';
+ }).join('');
+ return '<div class="card" style="margin-top:12px"><div class="k" style="display:flex;gap:8px;align-items:center"><div class="k" style="font-weight:600">插件设置</div><span class="badge" style="background:var(--tint);color:var(--dim)">✓ 修改后自动保存，即时生效</span></div></div>'+rowsS;
+}
+async function plSandboxSet(on){
+ const r=await saveKV('/api/app-config',{plugin_page_sandbox:on?1:0},on?'插件页面隔离已开启':'插件页面隔离已关闭');
+ if(r.ok!==false)load();
+}
+// 桥接脚本（进 srcdoc；__CH__/__NAME__/__FN__ 由 _sbSrcdoc 替换）：
+// 提供与宿主同名的 api/esc/toast/dlgConfirm/plPage/head 包装；
+// 收到宿主 init 消息后按宿主调用约定执行入口函数（传 data 与 manifest，
+// 返回 Promise 也支持），最后若定义了「入口函数名+Init」再调它。
+var _SB_BRIDGE=[
+'(function(){',
+'var _CH=__CH__,_NM=__NAME__,_FN=__FN__,_sq=0,_pd={},_pc={},_done=false,_shown=false;',
+'function _post(m){try{parent.postMessage(m,"*")}catch(e){}}',
+'window.api=function(p,o){return new Promise(function(res,rej){var id=++_sq;_pd[id]={res:res,rej:rej};_post({__sb:"api",ch:_CH,id:id,path:p,opts:o||{}})})};',
+'window.esc=function(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/\\x27/g,"&#39;")};',
+'window.head=function(sub){return "<h2>插件</h2>"+(sub?"<div class=\\"sub\\">"+sub+"</div>":"")};',
+'window.toast=function(m,ok){_post({__sb:"toast",ch:_CH,msg:m,ok:ok!==false})};',
+'window.dlgConfirm=function(o){return new Promise(function(res){var id=++_sq;_pc[id]=res;_post({__sb:"confirm",ch:_CH,id:id,opts:o||{}})})};',
+'window.plPage=function(n){_post({__sb:"plPage",ch:_CH,target:String(n||"")})};',
+'window.addEventListener("message",function(ev){if(ev.source!==parent)return;var d=ev.data;if(!d||typeof d!=="object"||d.ch!==_CH)return;',
+' if(d.__sb==="api_resp"&&_pd[d.id]){var q=_pd[d.id];delete _pd[d.id];if(d.err)q.rej(new Error(String(d.err)));else q.res(d.res)}',
+' else if(d.__sb==="confirm_resp"&&_pc[d.id]){var f=_pc[d.id];delete _pc[d.id];f(d.v)}',
+' else if(d.__sb==="init"&&!_done){_done=true;_boot(d)}});',
+'function _boot(d){',
+' var fn=window[_FN],args=d.args||[],el=document.getElementById("plpage");',
+' var rep=function(t){if(el)el.innerHTML="<div class=\\"card\\">"+window.esc(t)+"</div>"};',
+' try{',
+'  if(typeof fn!=="function"){rep("插件页缺少 "+_FN+"()");_post({__sb:"error",ch:_CH,detail:"缺少 "+_FN+"()"});return}',
+'  var ret=fn.apply(null,args);',
+'  if(ret&&typeof ret.then==="function"){if(el)el.innerHTML="<div class=\\"card\\">页面生成中…</div>";ret.then(function(h){if(el&&typeof h==="string"){el.innerHTML=h;_shown=true}_h()}).catch(function(){})}',
+'  else if(typeof ret==="string"){if(el)el.innerHTML=ret;_shown=true;_h()}',
+'  else{rep("插件页 "+_FN+"() 必须返回 HTML 字符串（不得自写界面容器）")}',
+' }catch(e){_post({__sb:"error",ch:_CH,detail:String(e&&e.message||e)})}',
+' if(typeof window[_FN+"Init"]==="function"){try{window[_FN+"Init"].apply(null,args)}catch(e){}}',
+'}',
+'function _h(){try{_post({__sb:"height",ch:_CH,h:document.documentElement.scrollHeight})}catch(e){}}',
+'window.addEventListener("load",_h);',
+'try{if(typeof ResizeObserver==="function"){new ResizeObserver(function(){_h()}).observe(document.body)}else{setTimeout(_h,200);setTimeout(_h,900)}}catch(e){}',
+'window.addEventListener("error",function(ev){_post({__sb:"error",ch:_CH,fatal:!_shown,detail:(ev.message||"")+" @"+String((ev.filename||"")).split("/").pop()+":"+(ev.lineno||0)})});',
+'_post({__sb:"ready",ch:_CH});',
+'})();'
+].join('\n');
+if(!window._sbMsgBound){window._sbMsgBound=true;window.addEventListener('message',_sbOnMsg)}
+/* SBX-END */
 async function plPage(name){
  const r=await api('/api/plugins').catch(()=>({plugins:[]}));
  const p=(r.plugins||[]).find(x=>x.name===name);
  if(!p){toast('插件不存在',false);return}
- // 插件包自带页面脚本：随 zip 分发（版本变化重新注入）——页面改版走插件更新通道
- // 停用的插件不注入它的 page.js（服务端 /api/plugins/pagejs 同样只对启用插件回内容）
- if(p.enabled&&p.page&&p.page_js&&(!window['__pj_'+name]||window['__pj_'+name]!==p.version)){
+ const sbOn=await _sbEnabled();
+ // 插件包自带页面脚本：随 zip 分发（版本变化重新拉取）——页面改版走插件更新通道
+ // 停用的插件不拉它的 page.js（服务端 /api/plugins/pagejs 同样只对启用插件回内容）
+ // 版本缓存 window['__pj_'+name] 与脚本文本缓存 window['__pjText_'+name] 都留在宿主；
+ // 沙箱模式每次渲染都要拿文本重建 srcdoc，命中文本缓存就不再发请求
+ const verChanged=(!window['__pj_'+name]||window['__pj_'+name]!==p.version);
+ let pjText='';
+ if(p.enabled&&p.page&&p.page_js&&(verChanged||(sbOn&&!window['__pjText_'+name]))){
   const pj=await api('/api/plugins/pagejs?name='+encodeURIComponent(name)).catch(()=>({ok:false}));
   if(pj&&pj.ok&&pj.js){
-   // 必须用 <script> 注入：new Function 内的 function 声明是局部作用域，
-   // 挂不到 window，宿主后续 window[p.page.js] 会找不到（页面"缺少 xx()"）
-   try{
-    const s=document.createElement('script');
-    s.textContent=pj.js;
-    document.body.appendChild(s);
-    window['__pj_'+name]=p.version;
-   }catch(e){ toast('插件页面脚本加载失败：'+e,false) }
+   pjText=pj.js;
+   window['__pj_'+name]=p.version;
+   window['__pjText_'+name]=pjText;
   }
- }
+ }else if(!verChanged&&window['__pjText_'+name]){pjText=window['__pjText_'+name]}
  let data={};
  if(p.page&&p.page.data){data=await api(p.page.data).catch(()=>({}))}
  // 停用时不取页面函数：即便脚本早前已注入过（本会话内），也不再执行
@@ -3551,6 +3762,20 @@ async function plPage(name){
   if(pct>0)costBadge=plCostBadge(pct);
  }
  $('#view').innerHTML=head('插件 · '+esc(p.title||name)+'  '+costBadge)+'<div style="margin-top:10px"><button class="act ghost" onclick="goTab(\'plugins\')">← 返回插件列表</button></div>'+(p.enabled?'':'<div class="card" style="border-color:#f0c36d;background:#fffcf0;margin-top:10px">插件已停用：设置可以先改，启用后生效</div>')+'<div id="plpage" style="margin-top:12px"></div>';
+ // 沙箱模式：page.js 在 srcdoc iframe 里跑（声明式 settings 卡仍由宿主渲染在
+ // iframe 外面，保存走宿主的 plSet，不经沙箱通道）
+ if(sbOn&&p.enabled&&p.page){_sbRender(p,pjText,data);return}
+ // —— plugin_page_sandbox 关闭时的旧路径：注入宿主全局作用域执行（排查兼容性用）——
+ // 版本变了要重新注入；版本没变但入口函数不在（中途才把沙箱关掉的情景）也补注入
+ if(p.enabled&&p.page&&pjText&&(verChanged||typeof window[p.page.js]!=='function')){
+  // 必须用 <script> 注入：new Function 内的 function 声明是局部作用域，
+  // 挂不到 window，宿主后续 window[p.page.js] 会找不到（页面"缺少 xx()"）
+  try{
+   const s=document.createElement('script');
+   s.textContent=pjText;
+   document.body.appendChild(s);
+  }catch(e){ toast('插件页面脚本加载失败：'+e,false) }
+ }
  // 专属页结构：①插件自带 page（登录等专属界面）②声明式 settings 卡（任何插件都有）
  // 插件页契约（硬规矩）：page 函数必须是同步纯函数——接收预取 data、返回 HTML
  // 字符串；禁止自写 #view（会冲掉宿主注入的「← 返回插件列表」按钮与页面头）。
@@ -3565,15 +3790,7 @@ async function plPage(name){
    else{inner+='<div class="card">插件页 '+esc(p.page.js)+'() 必须返回 HTML 字符串（不得自写界面容器）</div>'}
  }
  else if(p.enabled&&p.page){inner+='<div class="card">插件设置页加载失败：缺少 '+esc(p.page.js)+'()</div>'}
- if(p.settings&&p.settings.length){
-  const rowsS=(p.settings||[]).map(s=>{
-   const v=p.values&&p.values[s.key]!==undefined?p.values[s.key]:s.default;
-   if(s.type==='toggle')return '<div class="card" style="margin-top:10px"><label class="master"><input type="checkbox" '+(v?'checked':'')+' onchange="plSet(\''+esc(p.name)+'\',\''+esc(s.key)+'\',this.checked)"><span><b>'+esc(s.label||s.key)+'</b></span></label></div>';
-   if(s.type==='number')return '<div class="card" style="margin-top:10px"><div class="k">'+esc(s.label||s.key)+'</div><div style="margin-top:6px"><input type="number" value="'+esc(String(v??''))+'" style="width:110px" onchange="plSet(\''+esc(p.name)+'\',\''+esc(s.key)+'\',parseInt(this.value)||0)"></div></div>';
-   return '<div class="card" style="margin-top:10px"><div class="k">'+esc(s.label||s.key)+'</div><input value="'+esc(String(v??''))+'" style="width:100%;margin-top:6px" onchange="plSet(\''+esc(p.name)+'\',\''+esc(s.key)+'\',this.value)"></div>';
-  }).join('');
-  inner+='<div class="card" style="margin-top:12px"><div class="k" style="display:flex;gap:8px;align-items:center"><div class="k" style="font-weight:600">插件设置</div><span class="badge" style="background:var(--tint);color:var(--dim)">✓ 修改后自动保存，即时生效</span></div></div>'+rowsS;
- }
+ inner+=plSettingsHtml(p);
  document.getElementById('plpage').innerHTML=inner||'<div class="card">该插件没有可配置项</div>';
  if(typeof fn==='function'&&typeof window[p.page.js+'Init']==='function'){try{window[p.page.js+'Init'](data,p)}catch(e){}}
 }
@@ -7460,7 +7677,8 @@ class UiHandler(BaseHTTPRequestHandler):
                       "zcode_notify_enabled", "zcode_reports_enabled",
                       "zcode_sticker_enabled", "zcode_watch_enabled",
                       "zcode_cron_enabled", "zcode_context_enabled",
-                      "device_ctrl_actions", "device_ctrl_open_allow_exe"):
+                      "device_ctrl_actions", "device_ctrl_open_allow_exe",
+                      "plugin_page_sandbox"):
                 if k in cfg_in:
                     cleaned[k] = bool(cfg_in[k])
             if "backup_dir" in cfg_in:
