@@ -13,7 +13,8 @@
     name/desc/params/risk/scope/returns/run（可选 verify）。登记时全量
     校验；danger 级的 scope 必须是 owner——非主人连授权那一步都走不到
     （不变量 I3）。
-  - 权限闸 gate：先看谁在用（scope），再看风险等级：read 直接做、write
+  - 权限闸 gate：先看谁在用（scope），再看风险等级：read 只读直接做、
+    soft 恢复性动作（会改状态但随时可反悔）与 read 同一支直接做、write
     看 confirm_write（开着就先复述等确认）、danger 要授权码。权限由调用
     方给的 ctx 决定，不由模型的话决定（I2）；表外的名字永远不执行（I1）。
   - 单工具执行 run_tool：参数校验 → 闸 → 调 run →（可选）回读核对 verify
@@ -35,7 +36,11 @@ import json
 import re
 import time
 
-RISK = ("read", "write", "danger")
+RISK = ("read", "soft", "write", "danger")
+# 四级的含义（C7 补 soft）：read＝只读、无副作用；soft＝会改状态但无害、
+# 随时可以反悔的恢复性动作（如解禁）——闸上与 read 同一支，直接执行；
+# write＝有对外副作用（受复述确认开关管）；danger＝不可逆或影响面大
+# （要授权码）。
 SCOPE = ("owner", "owner_gadmin", "all")
 PARAM_TYPES = ("str", "int", "bool")
 MAX_CALLS_PER_ROUND = 3
@@ -335,7 +340,8 @@ def _auth_ok(opts):
 
 def gate(spec, ctx, opts):
     """权限闸。返回 (决定, 原因)，决定 ∈ "run" / "confirm" / "deny"。
-    顺序（派单定死）：scope 不满足先拒；read 直接做；write 看
+    顺序（派单定死）：scope 不满足先拒；read 与 soft 直接做（soft＝会改
+    状态但随时可以反悔的恢复性动作，不受复述确认与授权管）；write 看
     confirm_write；danger 要授权。权限由 ctx 决定，不由模型的话决定（I2）；
     danger 的 scope 在登记时已锁死 owner，非主人到不了授权这一步（I3）。"""
     if opts is None:
@@ -352,7 +358,7 @@ def gate(spec, ctx, opts):
         if not (is_owner or is_gadmin):
             return "deny", "这个工具只有主人和群管能用"
     risk = spec.get("risk")
-    if risk == "read":
+    if risk in ("read", "soft"):
         return "run", ""
     if risk == "write":
         if opts.get("confirm_write"):

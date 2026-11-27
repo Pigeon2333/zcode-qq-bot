@@ -3,7 +3,9 @@
 """qq_tools_builtin.py — 内置工具登记处（A2a：web_search、react；
 A2b：send_group、draw、cron_add、cron_list；
 B2a：pc_find/pc_read/pc_list/pc_search/pc_apps/pc_send/pc_open/pc_close；
-B3：mcp_call——MCP 外部工具并入工具表的通用入口）
+B3：mcp_call——MCP 外部工具并入工具表的通用入口；
+C7：gadmin_ban/gadmin_unban/gadmin_whole_ban/gadmin_whole_unban/
+gadmin_notice/gadmin_recall——群管动作并入工具表）
 
 每个工具是一层薄包装：调用既有函数（统一搜索入口 search_web、daemon 的
 set_msg_reaction、发群的解析+校验+发送、画图执行、定时的存入/读取、
@@ -31,12 +33,14 @@ def _clip(text, limit):
 def register_builtin(search_web_fn, send_group_fn=None, draw_fn=None,
                      cron_add_fn=None, cron_list_fn=None,
                      devctrl_step_fn=None, devctrl_enabled_fn=None,
-                     mcp_call_fn=None, mcp_allowed_fn=None):
+                     mcp_call_fn=None, mcp_allowed_fn=None,
+                     gadmin_exec_fn=None, gadmin_enabled_fn=None):
     """把内置工具登记进 qq_tools。幂等：已登记的名字原样跳过，不抛异常、
     也不覆盖已登记的同名工具。四个带对外副作用的工具（发到群/画图/定时）、
-    八个设备工具（B2a 的 pc_*，两个 devctrl 函数都传了才登记）与 MCP 通用
+    八个设备工具（B2a 的 pc_*，两个 devctrl 函数都传了才登记）、MCP 通用
     入口（B3 的 mcp_call，mcp_call_fn/mcp_allowed_fn 两个都传了才登记）
-    只登记调用方传了对应执行函数的那些，没传的不登记。"""
+    与六个群管工具（C7 的 gadmin_*，gadmin_exec_fn/gadmin_enabled_fn 两个
+    都传了才登记）只登记调用方传了对应执行函数的那些，没传的不登记。"""
     if qq_tools.get_tool("web_search") is None:
         qq_tools.register({
             "name": "web_search",
@@ -129,6 +133,11 @@ def register_builtin(search_web_fn, send_group_fn=None, draw_fn=None,
             "returns": "外部工具的返回文本",
             "run": _mcp_call_run(mcp_call_fn, mcp_allowed_fn),
         })
+    if (gadmin_exec_fn is not None and gadmin_enabled_fn is not None
+            and qq_tools.get_tool("gadmin_ban") is None):
+        for _spec in _gadmin_specs(gadmin_exec_fn, gadmin_enabled_fn):
+            if qq_tools.get_tool(_spec["name"]) is None:
+                qq_tools.register(_spec)
 
 
 def _web_search_run(search_web_fn):
@@ -411,3 +420,112 @@ def _mcp_call_run(mcp_call_fn, mcp_allowed_fn):
             text = text[:_MCP_RESULT_CAP] + "\n（结果过长，已截断）"
         return qq_tools.make_result(True, text)
     return run
+
+
+# ---- C7：群管动作并入工具表（gadmin_* 六个）----
+# 全部只调 daemon.gadmin_exec（执行函数 gadmin_exec_fn 由调用方传入，
+# qq_bot_agent.main 接 _gadmin_tool_call）：找人的三级解析、参数钳制、
+# 失败的人话都在它内部，这里不重新实现任何一套。开关（群管对话总开关
+# chat_enabled）与旧 [GADMIN] 标记教学/执行是同一个，由 gadmin_enabled_fn
+# 传入。write 级的复述确认、danger 级的授权码、scope=owner 的权限闸都由
+# qq_tools 的统一工具闸管（复用，不另写）。
+
+def _gadmin_run(exec_fn, enabled_fn, op, fixed):
+    """六个群管工具共用的薄包装体（C7，照 _devctrl_run 的先例）：第一行先
+    查群管对话总开关（关着时任何路径都执行不了）；然后只调
+    exec_fn(daemon, op, 参数)——它内部转 daemon.gadmin_exec。返回值是
+    gadmin_exec 的 {"ok": bool, "detail": str}，按 ok 如实回喂：detail 是
+    daemon 拟好的人话，原样进 summary（失败的原因就在 detail 里；工具循环
+    的回喂行自己会标「没做成：」，这里不再叠一层前缀）。fixed 是各工具
+    固定带入的参数键（whole_ban/whole_unban 的 on=True/False——开与解除
+    拆成两个工具后，on 不再是模型可填的参数）。"""
+    def run(daemon, msg, args):
+        if not enabled_fn():
+            return qq_tools.make_result(
+                False, "对话群管没有开启（管理台 → 群管 里打开）")
+        payload = dict(args) if isinstance(args, dict) else {}
+        payload.update(fixed)
+        try:
+            r = exec_fn(daemon, op, payload)
+        except Exception as exc:
+            return qq_tools.make_result(
+                False, "群管执行出错：%s" % str(exc)[:200])
+        r = r if isinstance(r, dict) else {}
+        detail = str(r.get("detail") or "").strip()
+        if r.get("ok"):
+            return qq_tools.make_result(True, detail or "办好了")
+        return qq_tools.make_result(False, detail or "执行失败")
+    return run
+
+
+def _gadmin_specs(exec_fn, enabled_fn):
+    """六个群管工具的说明书（C7 定稿表）：scope 全部 owner（现状只有主人
+    能触发，不扩大）；gadmin_whole_ban / gadmin_recall 是 danger 级（撤回
+    不可逆、全体禁言影响全群），由工具循环的授权闸管；gadmin_ban /
+    gadmin_notice 是 write 级（受复述确认开关保护）；解禁两个是 soft 级
+    （会改状态但随时可以反悔的恢复性动作——qq_tools 自 C7 起有 soft 这
+    一级，闸上与 read 同一支直接执行，不受复述与授权管）。
+    minutes / count 没填时的缺省（10 / 1）与越界钳制都在 exec_fn /
+    daemon.gadmin_exec 那一侧（与旧分发处的缺省一致），这里不另写一套。"""
+    return (
+        {"name": "gadmin_ban",
+         "desc": "禁言群里的某个成员一段时间（默认 10 分钟）",
+         "params": [
+             {"name": "group", "type": "str", "required": True,
+              "desc": "群号（优先）或完整群名"},
+             {"name": "member", "type": "str", "required": True,
+              "desc": "要禁言的人：群名片/昵称或QQ号"},
+             {"name": "minutes", "type": "int", "required": False,
+              "desc": "禁言分钟数，不填默认 10"}],
+         "risk": "write", "scope": "owner",
+         "returns": "禁言办没办成和原因",
+         "run": _gadmin_run(exec_fn, enabled_fn, "ban", {})},
+        {"name": "gadmin_unban",
+         "desc": "解除群里某个成员的禁言",
+         "params": [
+             {"name": "group", "type": "str", "required": True,
+              "desc": "群号（优先）或完整群名"},
+             {"name": "member", "type": "str", "required": True,
+              "desc": "要解禁的人：群名片/昵称或QQ号"}],
+         "risk": "soft", "scope": "owner",
+         "returns": "解禁办没办成和原因",
+         "run": _gadmin_run(exec_fn, enabled_fn, "unban", {})},
+        {"name": "gadmin_whole_ban",
+         "desc": "开启整个群的全体禁言（除了管理员大家都不能发言）",
+         "params": [
+             {"name": "group", "type": "str", "required": True,
+              "desc": "群号（优先）或完整群名"}],
+         "risk": "danger", "scope": "owner",
+         "returns": "全体禁言办没办成和原因",
+         "run": _gadmin_run(exec_fn, enabled_fn, "whole", {"on": True})},
+        {"name": "gadmin_whole_unban",
+         "desc": "解除整个群的全体禁言（恢复大家发言）",
+         "params": [
+             {"name": "group", "type": "str", "required": True,
+              "desc": "群号（优先）或完整群名"}],
+         "risk": "soft", "scope": "owner",
+         "returns": "解除全体禁言办没办成和原因",
+         "run": _gadmin_run(exec_fn, enabled_fn, "whole", {"on": False})},
+        {"name": "gadmin_notice",
+         "desc": "在群里发一条全员公告",
+         "params": [
+             {"name": "group", "type": "str", "required": True,
+              "desc": "群号（优先）或完整群名"},
+             {"name": "text", "type": "str", "required": True,
+              "desc": "公告全文（不超过 2000 字）"}],
+         "risk": "write", "scope": "owner",
+         "returns": "公告发没发成和原因",
+         "run": _gadmin_run(exec_fn, enabled_fn, "notice", {})},
+        {"name": "gadmin_recall",
+         "desc": "撤回群里某个成员最近发的消息（1–10 条）",
+         "params": [
+             {"name": "group", "type": "str", "required": True,
+              "desc": "群号（优先）或完整群名"},
+             {"name": "member", "type": "str", "required": True,
+              "desc": "要撤回其消息的人：群名片/昵称或QQ号"},
+             {"name": "count", "type": "int", "required": False,
+              "desc": "撤回条数，不填默认 1"}],
+         "risk": "danger", "scope": "owner",
+         "returns": "撤回办没办成和原因",
+         "run": _gadmin_run(exec_fn, enabled_fn, "recall", {})},
+    )

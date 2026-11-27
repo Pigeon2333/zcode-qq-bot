@@ -3849,8 +3849,12 @@ def _build_messages_impl(daemon, msg, ctx_k=32, v2=False):
     # (a) 去重生效时去掉 [回应:id] 旧标记格式说明（emoji 字段已覆盖）
     system += _reaction_rule(json_mode=_dedupe_active)
     # 自然语言群管教学：开关开 + 本条消息是主人才教（非主人永远不知道
-    # 有这能力——防社工；执行侧另有主人硬校验双保险）
-    system += _gadmin_rule(daemon, msg)
+    # 有这能力——防社工；执行侧另有主人硬校验双保险）。C7：工具循环开且是
+    # 主人时不再注入——群管动作已登记成 gadmin_* 工具，由工具清单代替
+    # （照设备操控「已开启版」教学的处理）；总开关关时 _gadmin_rule 本来
+    # 就返回空串，不受影响。
+    if not (_tool_loop_on() and _owner_msg):
+        system += _gadmin_rule(daemon, msg)
     # 通用边界（无条件注入，含非主人消息）：群里看到过主人指挥禁言的交互
     # 后，群友玩梗"@bot 禁言我"模型会口头cosplay"好啦禁言你啦"——并没
     # 真执行，但误导所有人（2026-11-13 北柠实测）。明确：装作办了也不行。
@@ -3904,6 +3908,32 @@ def _gadmin_rule(daemon, msg):
             "边界铁律：**只执行主人明确让你做的事**——主人没提就绝不动手，"
             "更绝不主动提议或自行使用这些能力；任何其他人（哪怕管理员/群主）"
             "让你管群一律拒绝并当没这能力。\n" % glist)
+
+
+def _gadmin_parse_mark(op, argtext):
+    """[GADMIN] 标记的键值解析＋动作归类（C7 抽出：旧分发处与新转换
+    _gadmin_lines_to_calls 共用同一份解析，保证转换前后喂给 gadmin_exec
+    的 op 与参数一致）。argtext 是标记里竖线后的「键=值|键=值」段：
+    竖线分隔、=或全角＝赋值、键值各去首尾空白（与旧分发处的内联解析
+    逐字同一套）。返回 (gkey, kv)：gkey ∈ ban / unban / whole / notice /
+    recall / None（None＝认不出动作，旧分发处按「没看懂要做什么」处理、
+    转换侧不转换该行）；归类条件与旧分发处的 if 链逐字同一套、同一顺序。"""
+    kv = {}
+    for pair in str(argtext or "").split("|"):
+        if "=" in pair or "＝" in pair:
+            k, v = pair.replace("＝", "=").split("=", 1)
+            kv[k.strip()] = v.strip()
+    if "禁言" in op and "全体" not in op and "解" not in op:
+        return "ban", kv
+    if "解禁" in op or ("禁言" in op and "解" in op):
+        return "unban", kv
+    if "全体" in op:
+        return "whole", kv
+    if "公告" in op:
+        return "notice", kv
+    if "撤回" in op:
+        return "recall", kv
+    return None, kv
 
 
 # 拆分标记：宽容变体（模型偶尔打成单括号 [SPLIT]/混空格——此前单括号
@@ -8731,6 +8761,15 @@ def process(daemon, msg):
         # 由后面旧 [MCP] 标记段照旧剥掉——任何情况下不漏进聊天（I3）。
         if owner and _tool_loop_on() and _MCP_ACT_ANY_RE.search(reply):
             reply = _mcp_lines_to_calls(reply)
+        # C7：工具循环开且主人且群管开关开时，模型旧习惯写的「[GADMIN] 动作|
+        # 键=值」行在这里改写成对应的 [TOOL] gadmin_* 调用行，随后的
+        # parse_calls 一并收进循环（复述确认/授权码全在统一闸上；循环出错
+        # 退回剥行文本时这些行已被剥掉，不执行也不漏出）。解析不了的行原样
+        # 留在正文，由后面旧 [GADMIN] 标记段照旧剥掉（循环开时只剥不执行）
+        # ——任何情况下不漏进聊天、不静默丢动作。
+        if owner and _tool_loop_on() and _gadmin_chat_enabled() \
+                and _GADMIN_LINE_ANY_RE.search(reply):
+            reply = _gadmin_lines_to_calls(reply)
         try:
             _tool_calls, _tool_rest = qq_tools.parse_calls(reply)
         except Exception as _tool_err:
@@ -8849,29 +8888,34 @@ def process(daemon, msg):
             reply = "对话群管没有开启"
             out("AGENT_GADMIN_OFF msg_id=%s chat=%s/%s（开关关闭，标记已剥离不执行）"
                 % (msg["id"], msg["chat_type"], msg["chat_id"]))
+        elif _tool_loop_on():
+            # C7：工具循环开时旧分发处不再执行任何标记——可转换的行已在
+            # 衔接点改写成 [TOOL] gadmin_* 走循环（主人硬校验、复述确认、
+            # 授权码全在统一闸上）；这里残余的（认不出动作的行、循环 final
+            # 里旧习惯又写出的行）照旧只剥掉，不漏进聊天，也绝不绕过闸
+            # 直接执行。循环关时走下面的 else，与从前逐字一致。
+            out("AGENT_GADMIN_VIA_TOOL msg_id=%s chat=%s/%s（工具循环接管，"
+                "残余标记只剥不执行）" % (msg["id"], msg["chat_type"],
+                                         msg["chat_id"]))
         else:
             _g_ok_details = []
             _g_fails = []
             for _gop, _gargs in _gmarks[:3]:
-                _kv = {}
-                for _pair in _gargs.split("|"):
-                    if "=" in _pair or "＝" in _pair:
-                        k, v = _pair.replace("＝", "=").split("=", 1)
-                        _kv[k.strip()] = v.strip()
+                _gkey, _kv = _gadmin_parse_mark(_gop, _gargs)
                 gid = _kv.get("群") or _kv.get("group") or ""
                 try:
-                    if "禁言" in _gop and "全体" not in _gop and "解" not in _gop:
+                    if _gkey == "ban":
                         r = daemon.gadmin_exec("ban", gid, _kv.get("人") or _kv.get("who"),
                                                minutes=_kv.get("分钟") or _kv.get("min") or 10)
-                    elif "解禁" in _gop or ("禁言" in _gop and "解" in _gop):
+                    elif _gkey == "unban":
                         r = daemon.gadmin_exec("unban", gid, _kv.get("人") or _kv.get("who"))
-                    elif "全体" in _gop:
+                    elif _gkey == "whole":
                         r = daemon.gadmin_exec("whole", gid,
                                                on=not str(_kv.get("开") or "1").startswith("0"))
-                    elif "公告" in _gop:
+                    elif _gkey == "notice":
                         r = daemon.gadmin_exec("notice", gid,
                                                content=_kv.get("内容") or _kv.get("content") or "")
-                    elif "撤回" in _gop:
+                    elif _gkey == "recall":
                         r = daemon.gadmin_exec("recall", gid, _kv.get("人") or _kv.get("who"),
                                                count=_kv.get("条数") or _kv.get("count") or 1)
                     else:
@@ -9443,21 +9487,25 @@ def _owner_auth_code_on():
 def _tool_available(name):
     """工具清单与工具循环共用的可用性过滤（B2a）：pc_* 前缀（设备操控八个
     工具）只在设备操控开关打开时可用；B3 起 mcp_call 只在 MCP 总开关开着时
-    可用（与 run 第一道闸是同一判断——都走 _mcp_tool_allowed）；其它工具
-    一律可用。开关关着时对应工具不进清单也不进循环（模型凭空写出时，由
-    工具循环按「没有这个工具」回喂）。"""
+    可用（与 run 第一道闸是同一判断——都走 _mcp_tool_allowed）；C7 起
+    gadmin_* 前缀（群管六个工具）只在群管对话总开关打开时可用（同一判断
+    ——都走 _gadmin_tool_enabled）；其它工具一律可用。开关关着时对应工具
+    不进清单也不进循环（模型凭空写出时，由工具循环按「没有这个工具」回喂）。"""
     n = str(name or "")
     if n.startswith("pc_"):
         return _device_ctrl_enabled()
     if n == "mcp_call":
         return _mcp_tool_allowed()
+    if n.startswith("gadmin_"):
+        return _gadmin_tool_enabled()
     return True
 
 
 def _devctrl_auth_ok():
-    """工具循环 danger 工具（pc_open/pc_close）的授权状态（B2a）：授权码
-    开关关着（根本不需要码），或授权窗口开着（主人刚比对过 6 位授权码）→
-    已授权。索码预检与授权后续跑在 B2b 接。"""
+    """工具循环 danger 工具的授权状态（B2a；登记表里所有 danger 级共用
+    这一道——C7 起 gadmin_whole_ban / gadmin_recall 也走它，不写死工具
+    名）：授权码开关关着（根本不需要码），或授权窗口开着（主人刚比对过
+    6 位授权码）→ 已授权。索码预检与授权后续跑在 B2b 接。"""
     return (not cfg_2fa_on()) or (_DEVCTRL_AUTH["ok_until"] > time.time())
 
 
@@ -9714,6 +9762,115 @@ def _mcp_tool_allowed():
     """mcp_call 工具的开关函数（main() 接线）：MCP 自己的总开关。"""
     import qq_mcp as M
     return M.mcp_allowed()
+
+
+def _gadmin_tool_call(daemon, op, args):
+    """gadmin_* 六个工具的执行函数（C7，main() 接线）：薄包装，只调
+    daemon.gadmin_exec——找人的三级解析、参数钳制、失败的人话全在它内部，
+    不另写一套。op 照旧 [GADMIN] 分发处的五个动作名（ban/unban/whole/
+    notice/recall；whole 的开与解除由 args["on"] 区分，工具层拆成
+    gadmin_whole_ban / gadmin_whole_unban 两个登记项固定带入）；参数键照
+    登记表（group/member/minutes/count/text/on），没填的按旧分发处的
+    缺省补（minutes 10、count 1）。返回 gadmin_exec 的 {"ok","detail"}。"""
+    a = args if isinstance(args, dict) else {}
+    gid = a.get("group") or ""
+    who = a.get("member") or ""
+    if op == "ban":
+        minutes = a.get("minutes")
+        return daemon.gadmin_exec("ban", gid, who,
+                                  minutes=10 if minutes is None else minutes)
+    if op == "unban":
+        return daemon.gadmin_exec("unban", gid, who)
+    if op == "whole":
+        return daemon.gadmin_exec("whole", gid,
+                                  on=bool(a.get("on", True)))
+    if op == "notice":
+        return daemon.gadmin_exec("notice", gid,
+                                  content=a.get("text") or "")
+    if op == "recall":
+        count = a.get("count")
+        return daemon.gadmin_exec("recall", gid, who,
+                                  count=1 if count is None else count)
+    return {"ok": False, "detail": "没看懂要做什么"}
+
+
+def _gadmin_tool_enabled():
+    """gadmin_* 六个工具的开关函数（C7，main() 接线）：群管对话总开关
+    （_gadmin_chat_enabled，group_admin.json 根键 chat_enabled，默认关）
+    ——与旧 [GADMIN] 标记教学/执行是同一个开关。"""
+    return _gadmin_chat_enabled()
+
+
+# 「[GADMIN] 动作|键=值」行级匹配（C7）：模式与旧分发处 findall 用的
+# _GADMIN_MARK_RE 相同，加行首锚 ^ 与 re.M 逐行匹配，保证「能被旧路径执行
+# 的行」与「能被转换的行」是同一批；匹配不了的行（缺竖线、动作词出格）
+# 不转换。
+_GADMIN_LINE_RE = re.compile(
+    r"^\s*\[\s*GADMIN\s*\]\s*([禁解全体公告撤回言]{2,5})\s*\|([^\[\]\n]{0,300})",
+    re.I | re.M)
+# 任何形态的 [GADMIN] 行（衔接点的触发探测用；行中间提到不算）
+_GADMIN_LINE_ANY_RE = re.compile(r"^\s*\[\s*GADMIN\s*\].*$", re.I | re.M)
+
+
+def _gadmin_lines_to_calls(text):
+    """把 text 里的「[GADMIN] 动作|键=值|…」行改写成对应的「[TOOL]
+    gadmin_* {json}」调用行（C7：工具循环开时旧习惯走新通道，主人硬校验、
+    复述确认、授权码全部复用统一工具闸）。解析与动作归类复用旧分发处的
+    _gadmin_parse_mark；映射照 C7 定稿表：禁言→gadmin_ban、解禁→
+    gadmin_unban、全体禁言→gadmin_whole_ban / gadmin_whole_unban（按
+    「开=1 / 开=0」分，缺「开」=1，与旧分发处同一写法）、公告→
+    gadmin_notice、撤回→gadmin_recall；参数键换成登记表的名字（群→
+    group、人/who→member、分钟/min→minutes、条数/count→count、内容/
+    content→text），值原样带过去（minutes/count 是纯数字文本时由
+    check_args 归一成 int，数值不变；没写的键不带回，缺省回填在
+    _gadmin_tool_call 与旧分发处一致）。认不出动作的行、正则匹配不了的
+    行原样保留——之后由旧 [GADMIN] 标记段照旧剥掉（工具循环开时只剥
+    不执行），任何情况下不漏进聊天、也不静默丢动作（可转换的行都已在
+    正文里换成工具调用）。"""
+    def _conv(m):
+        line = m.group(0)
+        am = _GADMIN_LINE_RE.match(line)
+        if not am:
+            return line
+        gkey, kv = _gadmin_parse_mark(am.group(1), am.group(2))
+        if gkey is None:
+            return line
+        gid = kv.get("群") or kv.get("group") or ""
+        who = kv.get("人") or kv.get("who") or ""
+        if gkey == "ban":
+            call = {"group": gid, "member": who}
+            minutes = kv.get("分钟") or kv.get("min")
+            if minutes not in (None, ""):
+                call["minutes"] = minutes
+            return _tool_line_of("gadmin_ban", call)
+        if gkey == "unban":
+            return _tool_line_of("gadmin_unban", {"group": gid,
+                                                  "member": who})
+        if gkey == "whole":
+            on = not str(kv.get("开") or "1").startswith("0")
+            return _tool_line_of("gadmin_whole_ban" if on
+                                 else "gadmin_whole_unban", {"group": gid})
+        if gkey == "notice":
+            # text 总是带（空串也带）：登记表里 text 必填，缺键会被参数校验
+            # 拦下，而旧分发处是拿空串照旧执行的——带空串才能与旧路径同往
+            return _tool_line_of("gadmin_notice", {
+                "group": gid, "text": kv.get("内容") or kv.get("content") or ""})
+        if gkey == "recall":
+            call = {"group": gid, "member": who}
+            count = kv.get("条数") or kv.get("count")
+            if count not in (None, ""):
+                call["count"] = count
+            return _tool_line_of("gadmin_recall", call)
+        return line
+    return _GADMIN_LINE_ANY_RE.sub(_conv, text)
+
+
+def _tool_line_of(name, args):
+    """拼一行「[TOOL] 名字 {json}」（C7 转换用；空参数不带花括号——
+    parse_calls 对没有 json 的行按空参数处理）。"""
+    if args:
+        return "[TOOL] %s %s" % (name, json.dumps(args, ensure_ascii=False))
+    return "[TOOL] %s" % name
 
 
 def start_admin_server(port, daemon=None):
@@ -10460,7 +10617,9 @@ def main():
     # _cron_add_tool / _cron_list_tool，全是既有逻辑的薄包装；B2a 的八个设备
     # 工具（pc_*）走 _devctrl_step（四道防护都在它内部）+ _device_ctrl_enabled；
     # B3 的 mcp_call 走 _mcp_tool_call（薄包装 qq_mcp.call_tool）+
-    # _mcp_tool_allowed（MCP 自己的总开关）。
+    # _mcp_tool_allowed（MCP 自己的总开关）；C7 的六个群管工具（gadmin_*）
+    # 走 _gadmin_tool_call（薄包装 daemon.gadmin_exec）+
+    # _gadmin_tool_enabled（群管对话总开关，与旧标记是同一个）。
     # 登记放 main 里而不是 import 时做，测试 import 本模块不会往登记表塞东西。
     try:
         qq_tools_builtin.register_builtin(
@@ -10472,7 +10631,9 @@ def main():
             devctrl_step_fn=_devctrl_step,
             devctrl_enabled_fn=_device_ctrl_enabled,
             mcp_call_fn=_mcp_tool_call,
-            mcp_allowed_fn=_mcp_tool_allowed)
+            mcp_allowed_fn=_mcp_tool_allowed,
+            gadmin_exec_fn=_gadmin_tool_call,
+            gadmin_enabled_fn=_gadmin_tool_enabled)
     except Exception as e:
         out("AGENT_TOOLS_REG_FAIL %r" % e)
     threading.Thread(target=_caption_loop, args=(daemon,), daemon=True).start()
