@@ -307,6 +307,27 @@ chk("W7h POST 关掉后回读 False、读取函数 False",
     and A._tool_loop_on() is False)
 chk("W7i 模块级 import qq_tools（agent 用的就是登记模块本体）", A.qq_tools is T)
 
+# ---- C2b：owner_intent_enabled（主人自然语言指令开关）登记点同类断言 ----
+chk("W7j 文件缺键：GET 默认 owner_intent_enabled=False",
+    r0[0][1].get("owner_intent_enabled") is False,
+    r0[0][1].get("owner_intent_enabled"))
+write_reply_cfg({"owner_intent_enabled": "yes"})   # 非布尔 true 的脏值：读取必须当关
+chk("W7k 读取容错：脏值不是布尔 true → GET 一律当关",
+    ui_call("do_GET", "/api/reply-config")[0][1].get("owner_intent_enabled") is False)
+rp2 = ui_call("do_POST", "/api/reply-config", {"owner_intent_enabled": True})
+chk("W7l POST 保存 owner_intent_enabled 返回 ok",
+    rp2 and rp2[0][0] == 200 and rp2[0][1].get("ok") is True, rp2)
+chk("W7m POST 后回读 owner_intent_enabled=True",
+    ui_call("do_GET", "/api/reply-config")[0][1].get("owner_intent_enabled") is True)
+ui_call("do_POST", "/api/reply-config", {"owner_intent_enabled": False})
+chk("W7n POST 关掉后回读 False",
+    ui_call("do_GET", "/api/reply-config")[0][1].get("owner_intent_enabled") is False)
+_ui_src = pathlib.Path(U.__file__).read_text(encoding="utf-8")
+chk("W7o 卡片复选框：标题、勾选绑定、保存写法齐全（「工具循环（实验性）」卡内）",
+    "听懂自然语言指令（仅主人私聊）" in _ui_src
+    and "rv.owner_intent_enabled?'checked':''" in _ui_src
+    and "{owner_intent_enabled:this.checked?1:0}" in _ui_src)
+
 # ============ W5/W6：真实 process() 的出站清洗 ============
 
 def run_process(msg, main_reply, v2, json_mode, tool_loop_on):

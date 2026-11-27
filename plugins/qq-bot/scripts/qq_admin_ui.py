@@ -2560,6 +2560,8 @@ function stToolLoop(rv){return `
    <span><b>启用工具循环</b><div class="k" style="margin-top:3px">只对主人的消息生效。目前内置：联网搜索、给消息挂表情回应，后面按批次增加。每次执行在运行日志里留一行 AGENT_TOOL_LOOP（只记工具名和成败）</div></span></label>
   <label class="master" style="margin-top:10px"><input type="checkbox" ${rv.tool_confirm_write?'checked':''} onchange="saveKVLoad('/api/reply-config',{tool_confirm_write:this.checked?1:0},'复述确认已'+(this.checked?'开启':'关闭'))">
    <span><b>发消息这类动作先复述、等确认再执行</b><div class="k" style="margin-top:3px">开启后，动手类的动作（如挂表情）会先把要做什么复述一遍，回复「确认」后执行；回别的或超过两分钟没回就当作不做</div></span></label>
+  <label class="master" style="margin-top:10px"><input type="checkbox" ${rv.owner_intent_enabled?'checked':''} onchange="saveKVLoad('/api/reply-config',{owner_intent_enabled:this.checked?1:0},'听懂自然语言指令已'+(this.checked?'开启':'关闭'))">
+   <span><b>听懂自然语言指令（仅主人私聊）</b><div class="k" style="margin-top:3px">关着时，主人私聊里只认精确命令；打开后，用平常说话的说法也能下指令，机器人先认出你说的是哪条命令再执行，效果和回复都跟手打命令一样。现在先支持查状态、用量、帮助、各种列表、日志，以及安静和继续；会改动设置的指令（定时、加群、暂停、恢复这些）之后陆续开放，眼下仍要手打精确命令。用之前先到「模型与消耗」页的「按用途选模型」给「判定」用途配一个快的模型，不然每条私聊都会多等一次主模型才回话</div></span></label>
  </div>`}
 // 识图状态一行（数据来自 agent 的 /admin/status → /api/agent-status 的 vision 字段）：
 // 能不能用、现在用谁、哪些模型不能看图、后台识图的成绩。留空的识图模型按模型链找，
@@ -6417,6 +6419,8 @@ class UiHandler(BaseHTTPRequestHandler):
                                      # 设置页控件下一批加
                                      "tool_loop_enabled": data.get("tool_loop_enabled", False),
                                      "tool_confirm_write": data.get("tool_confirm_write", False),
+                                     # 主人自然语言指令（C2b）：读取容错，不是布尔 true 的一律当关
+                                     "owner_intent_enabled": data.get("owner_intent_enabled") is True,
                                      # 恢复后不回暂停期间的消息（2026-11-27 用户定：默认开）
                                      "pause_skip_backlog": data.get("pause_skip_backlog", True),
                                      "proactive_private_silent_start": data.get("proactive_private_silent_start", "22:00"),
@@ -7635,6 +7639,9 @@ class UiHandler(BaseHTTPRequestHandler):
                 data["tool_loop_enabled"] = bool(body["tool_loop_enabled"])
             if "tool_confirm_write" in body:
                 data["tool_confirm_write"] = bool(body["tool_confirm_write"])
+            # 主人自然语言指令（C2b）：白名单登记，保存布尔值
+            if "owner_intent_enabled" in body:
+                data["owner_intent_enabled"] = bool(body["owner_intent_enabled"])
             # 恢复后不回暂停期间的消息（2026-11-27 用户定：默认开）
             if "pause_skip_backlog" in body:
                 data["pause_skip_backlog"] = bool(body["pause_skip_backlog"])
