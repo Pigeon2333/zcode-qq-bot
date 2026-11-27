@@ -508,6 +508,8 @@ _CALL_OWNER_ROUTES = {
     "devctrl_agent_loop": "reply", "evolve_tick": "memo", "_mcp_agent_loop": "reply",
     "_reply_gate_v2": "gate", "_generate_reply_v2": "reply", "process": (
         "reply", "reply", "reply", "reply", "reply", "reply", "memo"),
+    # 0.5.24 A2a-2：工具循环里回喂之后的续写调用（reply）
+    "_tool_loop_run": "reply",
     "_daily_review_once": "memo",
 }
 
@@ -555,7 +557,7 @@ def t_static():
         got = re.findall(r'route="([a-z]+)"', text)
         per_owner.setdefault(owner, []).append(got[0] if got else "?变量")
     chk("H1 源码里每一处 call_glm_with_fallback( 调用都带 route=（共 %d 处）"
-        % n_calls, not bad and n_calls == 23, bad or n_calls)
+        % n_calls, not bad and n_calls == 24, bad or n_calls)
     chk("H2 调用点归类与设计定稿一致",
         all(per_owner.get(k, []) == (list(v) if isinstance(v, tuple) else [v])
             for k, v in _CALL_OWNER_ROUTES.items())
@@ -577,8 +579,8 @@ def t_static():
     cj = src.index("\ndef ", ci + 10)
     chk("H4 识图两条路（call_vision / _caption_call）的成功记录带 route=\"caption\"",
         'route="caption"' in src[vi:vj] and 'route="caption"' in src[ci:cj], "")
-    # 行数兜底：确认没有第 24 处调用漏标（23 处调用 + 1 处定义，定义行已排除）
-    chk("H5 调用总数与现状一致（23 处调用）", n_calls == 23, n_calls)
+    # 行数兜底：确认没有第 25 处调用漏标（24 处调用 + 1 处定义，定义行已排除）
+    chk("H5 调用总数与现状一致（24 处调用）", n_calls == 24, n_calls)
 
 
 def main():

@@ -10,8 +10,8 @@
      无 [TOOL]、无固定说明（与旧代码的逐字节比对由主会话基准比对工具做）。
   W5 出站清洗：正文夹 [TOOL] 行的回复，v1/v2 × 开关开/关 四种组合，发出的
      文字无 [TOOL]，其余文字原样保留。
-  W6 开关开+主人：actions[] 带 [TOOL] 条目 → 不执行任何东西（run_tool/tool_loop
-     打桩确认未被调用）、无报错。
+  W6 开关开+主人：actions[] 带 [TOOL] 条目 → A2a-2 起收进 tool_loop 真执行
+     （tool_loop 打桩恰好被调 1 次、run_tool 不走单发路径）、无报错。
   W7 键登记：/api/reply-config GET 默认两键 False；POST 保存回读一致；
      agent 两个读取函数读得到。
   W8 三场景冒烟：无引用无图/带引用/纯图 × 开关开/关 各构建一次，不抛异常。
@@ -352,18 +352,20 @@ for v2, json_mode, tag in ((False, False, "v1"), (True, True, "v2结构化")):
         chk("W5 %s 开关%s：无 AGENT_TOOL_STRIP_ERR/AGENT_ERROR" % (tag, "开" if loop_on else "关"),
             not alog_of("AGENT_TOOL_STRIP_ERR") and not alog_of("AGENT_ERROR"))
 
-# W6：开关开 + 主人 + actions[] 带 [TOOL] 条目 → 不执行任何东西、无报错
+# W6：开关开 + 主人 + actions[] 带 [TOOL] 条目 → A2a-2 起收进 tool_loop 真执行
+# （工具执行统一走 tool_loop，run_tool 单发路径不在此走）；循环打桩返回的
+# final 替换整条回复照常发送，无报错。开关关与非主人的「不执行」在 W5 钉住。
 set_tool_loop(True)
 _m6 = base_msg(text="今天吃什么呢", message_id="w6", sender_id=OWNER_QQ,
                chat_type="private", chat_id=OWNER_QQ, chat_name="主人",
                sender_name="主人", at_me=False, trigger_reason="chat")
 sent6, logs6, runs6, loops6 = run_process(_m6, _json_reply, True, True, True)
 joined6 = "".join(t for ts in sent6 for t in ts)
-chk("W6a run_tool 打桩未被调用", runs6 == [], runs6)
-chk("W6b tool_loop 打桩未被调用", loops6 == [], loops6)
-chk("W6c 不报错、正文无 [TOOL]、其余文字保留",
+chk("W6a run_tool 打桩未被调用（统一走 tool_loop）", runs6 == [], runs6)
+chk("W6b tool_loop 打桩恰好被调 1 次（主人+开关开收走调用）", len(loops6) == 1, loops6)
+chk("W6c 不报错、发出的文字是循环桩的 final、无 [TOOL]",
     sent6 and "EXC" not in joined6 and TOOL_MARK not in joined6
-    and all(g in joined6 for g in GOOD_TEXTS) and not alog_of("AGENT_ERROR"),
+    and "smoke: must not be called" in joined6 and not alog_of("AGENT_ERROR"),
     (sent6, joined6[:120]))
 
 # ============ W8 三场景冒烟：不抛异常 ============

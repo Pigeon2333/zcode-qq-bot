@@ -2396,7 +2396,7 @@ async function vSettings(){
   +stSec('按用途选模型')+stRoutes()
   :__ST_TAB==='style'
   ?stSec('活跃程度')+stActivityGuide(c,rv)
-  +stSec('对话架构（怎么生成回复）')+stArchV2(rv)
+  +stSec('对话架构（怎么生成回复）')+stArchV2(rv)+stToolLoop(rv)
   +stSec('风格与活跃程度')+stStyle(rv)+stLen(rv)
   +stSec('接话时机')+stTiming(rv)
   +stSec('看图')+stVision(rv)
@@ -2551,6 +2551,14 @@ function stArchV2(rv){return `
   <label class="master" style="margin-top:10px"><input type="checkbox" ${rv.reply_json?'checked':''} onchange="saveKVLoad('/api/reply-config',{reply_json:this.checked?1:0},'结构化输出已'+(this.checked?'开启':'关闭'))">
    <span><b>结构化输出</b><div class="k" style="margin-top:3px">回复策略 v2 下，模型按固定字段输出（说不说、说什么、挂什么表情），不再靠文本标记。需要先开启回复策略 v2</div></span></label>
   <div class="k" style="margin-top:10px">这里的三项是生成回复的做法。说话多不多、长不长由下方「风格与活跃程度」决定；后台识图在「看图」卡片里</div></div>`}
+function stToolLoop(rv){return `
+ <div class="card"><div class="k" style="margin-bottom:8px"><b>工具循环（实验性）</b></div>
+  <div class="k">打开后，主人让机器人做事时，它可以按工具清单真的去执行，再把结果告诉你；做不了会直说。默认关闭。</div>
+  <label class="master" style="margin-top:8px"><input type="checkbox" ${rv.tool_loop_enabled?'checked':''} onchange="saveKVLoad('/api/reply-config',{tool_loop_enabled:this.checked?1:0},'工具循环已'+(this.checked?'开启':'关闭'))">
+   <span><b>启用工具循环</b><div class="k" style="margin-top:3px">只对主人的消息生效。目前内置：联网搜索、给消息挂表情回应，后面按批次增加。每次执行在运行日志里留一行 AGENT_TOOL_LOOP（只记工具名和成败）</div></span></label>
+  <label class="master" style="margin-top:10px"><input type="checkbox" ${rv.tool_confirm_write?'checked':''} onchange="saveKVLoad('/api/reply-config',{tool_confirm_write:this.checked?1:0},'复述确认已'+(this.checked?'开启':'关闭'))">
+   <span><b>发消息这类动作先复述、等确认再执行</b><div class="k" style="margin-top:3px">开启后，动手类的动作（如挂表情）会先把要做什么复述一遍，等你回「确认」才真正执行。当前版本确认后不会自动续跑，需要把要做的事再说一遍</div></span></label>
+ </div>`}
 // 识图状态一行（数据来自 agent 的 /admin/status → /api/agent-status 的 vision 字段）：
 // 能不能用、现在用谁、哪些模型不能看图、后台识图的成绩。留空的识图模型按模型链找，
 // 链里一个能看图的都没有时这里和管理台首页都会提示「识图相关功能不可用」。

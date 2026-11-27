@@ -73,8 +73,9 @@ C_FIX = {
 KEYS_FIX = {"keys": [{"id": "k1", "label": "测试", "mask": "sk-***", "provider": "zhipu", "primary": True}]}
 # model 分页 2026-11-25 起多了一张「识图模型」卡（识图模型与每日上限从「聊天风格」搬来）；
 # 2026-11-27 起又多一张「同时处理」卡（WP-04 主循环并行的并发数输入）；
-# 同日再多一张「按用途选模型」卡（WP-05 路由表）
-EXPECT_CARDS = {"general": 8, "model": 8, "style": 8, "safe": 4, "maint": 4}
+# 同日再多一张「按用途选模型」卡（WP-05 路由表）；
+# style 分页 2026-11-27 起多一张「工具循环（实验性）」卡（WP-07 A2a-2）
+EXPECT_CARDS = {"general": 8, "model": 8, "style": 9, "safe": 4, "maint": 4}
 EXPECT_SECTIONS = {
     "general": ["身份与称呼", "运行环境", "功能开关", "应用行为"],
     "model": ["API Key 与代理", "识图模型（后台识图与看图用）",
@@ -94,7 +95,8 @@ SAVE_KEYS = {
     "prompt_v2": 1, "reply_v2": 1, "reply_json": 1, "direct_must_reply": 1, "len_follow_group": 1,
     "react_only": 1, "proactive_mode": 1, "nudge_mode": 1, "chat_max_len": 1,
     "wait_gate_enabled": 1, "burst_merge_enabled": 1, "botloop_guard_enabled": 1,
-    "botloop_cooldown_min": 1, "vision_caption": 1, "vision_caption_model": 1,
+    "botloop_cooldown_min": 1, "tool_loop_enabled": 1, "tool_confirm_write": 1,
+    "vision_caption": 1, "vision_caption_model": 1,
     "vision_caption_daily_cap": 1, "vision_prob": 1, "risk_limit_image_fetch": 1,
     "risk_proactive_downscale": 1, "risk_human_pace": 1, "task_bridge_enabled": 1,
     "remote_control_enabled": 1, "draw_enabled": 1, "daily_review_enabled": 1, "review_time": 1,

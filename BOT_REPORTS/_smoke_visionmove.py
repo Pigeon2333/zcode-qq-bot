@@ -22,7 +22,8 @@
     WP-04 主循环并行的并发数输入；同日再多一张「按用途选模型」卡——WP-05 路由表）、
     分区标题依次是「API Key 与代理」「识图模型
     （后台识图与看图用）」「上下文（每次带多少历史和记忆）」「同时处理」「省额度」
-    「按用途选模型」；style 分页 8 张卡。
+    「按用途选模型」；style 分页 9 张卡（2026-11-27 起多一张「工具循环
+    （实验性）」卡——WP-07 A2a-2）。
 
 隔离方式：import 被测模块前把 QQBOT_DATA_DIR 指到 tempfile.mkdtemp()（照
 _smoke_promptbudget_ui 的做法）；服务端处理器用 UiHandler.__new__ 直接调；
@@ -370,7 +371,8 @@ def t_page(rv77, rv_def):
         chk("e2 model 分区标题依次是 API Key 与代理 / 识图模型 / 上下文 / 同时处理 / 省额度 / 按用途选模型",
             secs == ["API Key 与代理", "识图模型（后台识图与看图用）",
                      "上下文（每次带多少历史和记忆）", "同时处理", "省额度", "按用途选模型"], secs)
-        chk("e3 style 分页仍是 8 张卡", cards.get("style") == 8, cards.get("style"))
+        # 2026-11-27 起 style 分页多一张「工具循环（实验性）」卡（WP-07 A2a-2）
+        chk("e3 style 分页 9 张卡（原 8 + 工具循环）", cards.get("style") == 9, cards.get("style"))
     finally:
         shutil.rmtree(str(work), ignore_errors=True)
 

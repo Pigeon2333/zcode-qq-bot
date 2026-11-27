@@ -43,6 +43,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import qq_common as C
 import qq_scheduler
 import qq_tools
+import qq_tools_builtin
 
 CREATE_NO_WINDOW = 0x08000000  # Windows 子进程不弹黑窗
 
@@ -7082,6 +7083,65 @@ def _tool_doc_block():
     return "- 你能用的工具（仅主人；工具会真实执行）：%s\n  %s\n" % (doc, _TOOL_USAGE_NOTE)
 
 
+# 回喂后的最终回复提示（派单定死）：工具结果已在 history 里，请模型给纯文本。
+_TOOL_FINAL_NOTE = ("（上面是工具执行结果。现在只用纯文本写最终回复，不要输出 JSON、"
+                    "不要任何标记。）")
+
+
+def _tool_loop_run(daemon, msg, messages, first_reply):
+    """把一条带 [TOOL] 行的模型回复交给 qq_tools.tool_loop 真执行。
+    返回循环结果 dict（final/actions/rounds/stop/pending）；本函数只拼
+    回调与上下文、打一行日志（只记工具名与成败，不记参数与结果文本），
+    不做任何发送。"""
+    ctx = {"is_owner": True, "is_gadmin": False, "daemon": daemon, "msg": msg}
+    opts = {"auth_ok": False, "confirm_write": _tool_confirm_write_on()}
+
+    def _call_model(history):
+        # 基础 messages（build_messages 的产物，不含 JSON 输出格式段）+ 循环
+        # history + 最终回复提示。提示照 _generate_reply_v2._with_note 的做法
+        # 并进末条 user 回喂的拷贝（history 为空或末条不是 user 才独立追加
+        # 一条 user）——避免连续两条 user 被部分接口拒收；history 本体不动，
+        # text_ctx 给空串（route 仍按 reply 走）。
+        hist = list(history or [])
+        if hist and isinstance(hist[-1], dict) and hist[-1].get("role") == "user":
+            hist[-1] = dict(hist[-1], content=str(hist[-1].get("content") or "")
+                            + "\n\n" + _TOOL_FINAL_NOTE)
+            msgs = list(messages) + hist
+        else:
+            msgs = list(messages) + hist + [
+                {"role": "user", "content": _TOOL_FINAL_NOTE}]
+        _m, _t = call_glm_with_fallback(msgs, "", route="reply")
+        return _t
+
+    res = qq_tools.tool_loop(_call_model, qq_tools.tools_for(ctx), first_reply,
+                             ctx, opts)
+    out("AGENT_TOOL_LOOP msg_id=%s stop=%s rounds=%s actions=%s" % (
+        msg["id"], res.get("stop"), res.get("rounds"),
+        ",".join("%s:%s" % (a.get("tool") or "",
+                            "成功" if a.get("ok") else "失败")
+                 for a in (res.get("actions") or [])) or "-"))
+    return res
+
+
+def _tool_final_text(raw):
+    """循环最终回复按纯文本理解：模型不听话回了带 say 的 JSON 时，把 say
+    里的文字拼起来当最终回复；其余原样返回。"""
+    ok, obj = _parse_reply_json(raw)
+    if ok and isinstance(obj, dict):
+        return "\n".join(str(x) for x in obj.get("say") or [])
+    return raw
+
+
+def _tool_actions_closing(actions):
+    """循环 stop=final 且模型没给文字时（只有已执行的动作）：按 actions 拼
+    确定性收尾清单，格式与 qq_tools._closing 一致（成败都列、标明成败）。"""
+    items = ["%s（%s：%s）" % (a.get("tool") or "",
+                              "成功" if a.get("ok") else "没做成",
+                              str(a.get("summary") or ""))
+             for a in (actions or [])]
+    return "已经做了：%s。" % "；".join(items)
+
+
 def gate_v2_hist_lines():
     """判定调用瘦身时带的历史条数（默认 6，越界夹到 1–14）。"""
     try:
@@ -8116,15 +8176,35 @@ def process(daemon, msg):
         out("AGENT_ERROR msg_id=%s llm_failed=%r" % (msg["id"], last_err))
         daemon.ack([msg["id"]])
         return
-    # 出站清洗：正文里的 [TOOL] 行一律剥掉（不看工具循环开关——模型稀奇古怪
-    # 输出了也不许漏进聊天）。A2b 将在同一个衔接点收走调用进工具循环；
-    # 本单清洗之后没有工具行可收，结构化输出的 actions[] 条目原样保留不执行。
+    # 工具循环衔接点＋出站清洗：开关开且是主人时，剥行之前的原回复交给
+    # qq_tools.tool_loop 真执行，循环的最终回复替换 reply 后照旧走下面的
+    # 处理链（[QUIET] 及之后全部不动）。其余情况维持从前——只剥行不执行
+    # （模型稀奇古怪输出了也不许漏进聊天）。旧标记执行段在后面，一字未动。
     try:
         _tool_calls, _tool_rest = qq_tools.parse_calls(reply)
-        if _tool_calls:
-            reply = _tool_rest
     except Exception as _tool_err:
+        _tool_calls, _tool_rest = [], ""
         out("AGENT_TOOL_STRIP_ERR %r" % _tool_err)
+    if _tool_calls and _tool_loop_on() and owner:
+        try:
+            _tl = _tool_loop_run(daemon, msg, messages, reply)
+            if _tl.get("stop") == "error":
+                # call_model 抛了异常（循环内部接住转成 stop=error）：不发
+                # 循环收尾，退回剥掉工具行之后的文本，不让整条消息丢掉
+                out("AGENT_TOOL_LOOP_ERR msg_id=%s" % msg["id"])
+                reply = _tool_rest
+            else:
+                reply = _tl.get("final") or ""
+                if _tl.get("stop") == "final":
+                    # 模型的纯文本最终回复：不听话回了 JSON 就取 say 里的文字
+                    reply = _tool_final_text(reply)
+                if not reply.strip() and (_tl.get("actions") or []):
+                    reply = _tool_actions_closing(_tl["actions"])
+        except Exception as _tool_err:
+            out("AGENT_TOOL_LOOP_ERR msg_id=%s err=%r" % (msg["id"], _tool_err))
+            reply = _tool_rest
+    elif _tool_calls:
+        reply = _tool_rest
     # 模型自发安静：[QUIET] / [QUIET:15] —— 真实触发安静模式（@/回复不受影响）
     qm = re.search(r"\[QUIET(?::(\d{1,3}))?\]", reply)
     if qm:
@@ -9424,6 +9504,13 @@ def main():
         PLUGIN_HOST.load_all()
     except Exception as e:
         out("PLUGIN_INIT_FAIL %r" % e)
+    # 内置工具登记（幂等，见 qq_tools_builtin.register_builtin）：工具的执行
+    # 函数在这里接上——web_search 用本模块的统一搜索入口。登记放 main 里而
+    # 不是 import 时做，测试 import 本模块不会往登记表塞东西。
+    try:
+        qq_tools_builtin.register_builtin(search_web)
+    except Exception as e:
+        out("AGENT_TOOLS_REG_FAIL %r" % e)
     threading.Thread(target=_caption_loop, args=(daemon,), daemon=True).start()
     threading.Thread(target=lambda: (time.sleep(15), describe_all_stickers()), daemon=True).start()
     threading.Thread(target=_daily_review_loop, args=(daemon,), daemon=True).start()
