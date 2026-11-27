@@ -2561,7 +2561,7 @@ function stToolLoop(rv){return `
   <label class="master" style="margin-top:10px"><input type="checkbox" ${rv.tool_confirm_write?'checked':''} onchange="saveKVLoad('/api/reply-config',{tool_confirm_write:this.checked?1:0},'复述确认已'+(this.checked?'开启':'关闭'))">
    <span><b>发消息这类动作先复述、等确认再执行</b><div class="k" style="margin-top:3px">开启后，动手类的动作（如挂表情）会先把要做什么复述一遍，回复「确认」后执行；回别的或超过两分钟没回就当作不做</div></span></label>
   <label class="master" style="margin-top:10px"><input type="checkbox" ${rv.owner_intent_enabled?'checked':''} onchange="saveKVLoad('/api/reply-config',{owner_intent_enabled:this.checked?1:0},'听懂自然语言指令已'+(this.checked?'开启':'关闭'))">
-   <span><b>听懂自然语言指令（仅主人私聊）</b><div class="k" style="margin-top:3px">关着时，主人私聊里只认精确命令；打开后，用平常说话的说法也能下指令，机器人先认出你说的是哪条命令再执行，效果和回复都跟手打命令一样。现在先支持查状态、用量、帮助、各种列表、日志，以及安静和继续；会改动设置的指令（定时、加群、暂停、恢复这些）之后陆续开放，眼下仍要手打精确命令。用之前先到「模型与消耗」页的「按用途选模型」给「判定」用途配一个快的模型，不然每条私聊都会多等一次主模型才回话</div></span></label>
+   <span><b>听懂自然语言指令（仅主人私聊）</b><div class="k" style="margin-top:3px">关着时，主人私聊里只认精确命令；打开后，用平常说话的说法也能下指令，机器人先认出你说的是哪条命令再执行，效果和回复都跟手打命令一样。查状态、用量、帮助、各种列表、日志、安静、继续这类直接执行；会改动设置的指令（定时、加群、移除群、开关功能、暂停、恢复、切换人设、转交 ZCode）要在原话里说清群号、编号或人设名才会执行，上面「先复述、等确认再执行」开着时还会先问你一声。用之前先到「模型与消耗」页的「按用途选模型」给「判定」用途配一个快的模型，不然每条私聊都会多等一次主模型才回话</div></span></label>
  </div>`}
 // 识图状态一行（数据来自 agent 的 /admin/status → /api/agent-status 的 vision 字段）：
 // 能不能用、现在用谁、哪些模型不能看图、后台识图的成绩。留空的识图模型按模型链找，

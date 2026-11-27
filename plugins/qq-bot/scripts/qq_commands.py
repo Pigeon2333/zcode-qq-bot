@@ -10,10 +10,12 @@ owner_command 执行（执行体零重复，回复与手打命令逐字相同）
 不读配置开关，不调模型，也不 import qq_bot_agent：
 
   - 指令表 COMMANDS：18 条主人私聊命令，每条写明 name/risk/intent/desc/
-    examples（三条例句，兼判定模型的提示词与测试用例）/params/render（参数
-    → 精确命令文本）。带必填参数的命令另有 ask_missing（缺参时的反问文本）；
-    删定时、切换人设两条再带 ask_extra，标记反问时要附上的列表命令——附
-    列表本身由 agent 侧实现，这里只放标记。
+    usage（精确命令的写法，参数校验没过时回给主人看）/examples（三条例句，
+    兼判定模型的提示词与测试用例）/params/render（参数 → 精确命令文本）。
+    带必填参数的命令另有 ask_missing（缺参时的反问文本）；删定时、切换人设
+    两条再带 ask_extra，标记反问时要附上的列表命令——附列表本身由 agent 侧
+    实现，这里只放标记。enum 参数可带 aliases（同义归一：「开/打开/启用」
+    →「开启」这类），归一后仍不在选项里照样拒。
   - 参数校验 validate：判定模型给的参数做类型转换与校验，任何一项不过
     （必填缺失、类型不对、越界、enum 不在选项、含换行、subset 参数不是
     主人原话的子串、渲染后超过 400 字）一律不通过；通过时返回规范化后的
@@ -34,9 +36,11 @@ owner_command 的正则（「分钟?」的量词只管「钟」字），渲染�
 补成 10，回复与主人手打的期望逐字一致。渲染文本长度按 owner_command 入口
 检查钳在 400 字（正文 strip 后超过 400 字直接不中）。
 
-C1 只到表与纯逻辑为止：意图识别、开关、接线、反问附列表都不在这里
-（C2/C3）。risk 归类：read＝只读信息；soft＝安静/继续这类可随时反悔的；
-write＝有对外副作用的，C2 先不放行（intent=False），C3 再开。
+C1 只做表与纯逻辑；C2 接线只开放查询类与安静、继续九条；C3 起会改设置的
+九条 write 也开放（intent 全 True），write 靠更高的置信度门槛、标识型参数
+必须出自主人原话、以及 agent 侧 tool_confirm_write 开时的复述确认来兜。
+risk 归类：read＝只读信息；soft＝安静/继续这类可随时反悔的；write＝有对
+外副作用的。
 """
 import re
 
@@ -48,6 +52,12 @@ INTENT_MIN_CONF = {"read": 0.7, "soft": 0.7, "write": 0.85}
 
 # owner_command 入口：正文 strip 后超过 400 字直接不中——渲染文本同一条杠。
 RENDER_MAX = 400
+
+# 「暂不支持」标注的原文：intent_doc 的 mark 模式给未开放条目加的行尾标注。
+# agent 侧的提示词引用这个常量判断清单里有没有标注（有才输出标注说明与
+# 「不许代替」那条规矩）——两边用同一份，不许各写各的字面量。
+CLOSED_NOTE = ("（暂不支持：主人要的正是这件事时，is_cmd 填 false，"
+               "不要换成清单里的其它条目）")
 
 # 用 [0-9] 不用 \d：\d 连全角数字也认，全角群号会被 owner_command 的 \d
 # 放行后存成对不上的字符串。
@@ -104,6 +114,7 @@ COMMANDS = [
         "risk": "read",
         "intent": True,
         "desc": "发一遍主人遥控指令的帮助清单",
+        "usage": "帮助",
         "examples": ("你都会些啥指令", "看看帮助", "把菜单发我看看"),
         "params": (),
         "render": "帮助",
@@ -113,6 +124,7 @@ COMMANDS = [
         "risk": "read",
         "intent": True,
         "desc": "查看机器人当前的运行状态（管道、账号、模型）",
+        "usage": "状态",
         "examples": ("给我报个状态", "现在什么状态", "看看你的运行状态"),
         "params": (),
         "render": "状态",
@@ -122,6 +134,7 @@ COMMANDS = [
         "risk": "read",
         "intent": True,
         "desc": "查看模型 token 用量统计（今日、近 7 天、总量）",
+        "usage": "用量",
         "examples": ("今天用了多少 token", "看看最近的用量", "模型用量统计一下"),
         "params": (),
         "render": "用量",
@@ -129,8 +142,9 @@ COMMANDS = [
     {
         "name": "pause",
         "risk": "write",
-        "intent": False,
+        "intent": True,
         "desc": "完全暂停自动回复（运维用；恢复前一律不回任何人）",
+        "usage": "暂停",
         "examples": ("先暂停，别回复任何人", "暂停一下所有自动回复",
                      "现在开始停一停，全部暂停"),
         "params": (),
@@ -139,8 +153,9 @@ COMMANDS = [
     {
         "name": "resume",
         "risk": "write",
-        "intent": False,
+        "intent": True,
         "desc": "解除暂停，恢复自动回复",
+        "usage": "恢复",
         "examples": ("好了，恢复回复吧", "可以恢复了", "解除暂停，继续干活"),
         "params": (),
         "render": "恢复",
@@ -150,6 +165,7 @@ COMMANDS = [
         "risk": "soft",
         "intent": True,
         "desc": "让机器人安静若干分钟：群里不再主动说话，有人@或回复仍会答",
+        "usage": "安静 分钟数",
         "examples": ("安静半小时", "别在群里说话了，安静俩小时", "先安静个五分钟吧"),
         "params": ({
             "name": "minutes",
@@ -169,6 +185,7 @@ COMMANDS = [
         "risk": "soft",
         "intent": True,
         "desc": "结束安静状态，恢复正常聊天",
+        "usage": "继续",
         "examples": ("好了，可以说话了", "继续吧", "出来说话"),
         "params": (),
         "render": "继续",
@@ -178,6 +195,7 @@ COMMANDS = [
         "risk": "read",
         "intent": True,
         "desc": "看最近的服务日志（默认 12 条，最多 40 条）",
+        "usage": "日志 条数",
         "examples": ("看看最近的日志", "把最近 30 条日志发我", "拉 5 条日志给我瞅瞅"),
         "params": ({
             "name": "n",
@@ -195,9 +213,10 @@ COMMANDS = [
     {
         "name": "cron_add",
         "risk": "write",
-        "intent": False,
+        "intent": True,
         "desc": "设一个每天到点的定时任务：到点后机器人把这句话当任务交给"
                 "沙箱执行器跑，结果私聊发你（提醒类的事也可以这么说）",
+        "usage": "定时 HH:MM 要做的事",
         "examples": ("每天早上八点半提醒我给花浇水", "每晚十点整提醒我写日报",
                      "晚上十一点半的时候，记得提醒我关窗"),
         "params": ({
@@ -213,7 +232,8 @@ COMMANDS = [
             "subset": True,
             "min": 4,
             "max": 300,
-            "desc": "定时要做的事，4–300 字，必须用主人原话里的原文",
+            "desc": "定时要做的事：取主人原话里完整的那个短语（从「提醒我…」"
+                    "起，如「提醒我写日报」），至少 4 个字，必须用原话",
         }),
         "render": _render_cron_add,
         "ask_missing": "定几点、做什么？一句话说全，比如「每天八点半提醒我喝水」",
@@ -223,6 +243,7 @@ COMMANDS = [
         "risk": "read",
         "intent": True,
         "desc": "列出当前所有定时代码任务",
+        "usage": "定时列表",
         "examples": ("现在都有哪些定时任务", "看看定时列表", "我把哪些定时都列一下"),
         "params": (),
         "render": "定时列表",
@@ -230,8 +251,9 @@ COMMANDS = [
     {
         "name": "cron_del",
         "risk": "write",
-        "intent": False,
+        "intent": True,
         "desc": "按编号删除一个定时代码任务",
+        "usage": "删定时 编号",
         "examples": ("把 3 号定时删了", "把定时 5 那条删了吧", "2 号那个定时不要了"),
         "params": ({
             "name": "id",
@@ -249,6 +271,7 @@ COMMANDS = [
         "risk": "read",
         "intent": True,
         "desc": "列出所有人设和当前激活的人设",
+        "usage": "人设列表",
         "examples": ("现在有哪些人设", "看看人设列表", "把人设都列出来"),
         "params": (),
         "render": "人设列表",
@@ -256,8 +279,9 @@ COMMANDS = [
     {
         "name": "persona_switch",
         "risk": "write",
-        "intent": False,
+        "intent": True,
         "desc": "切换到指定名字的人设，即时生效",
+        "usage": "切换人设 人设名",
         "examples": ("切换到小雪这个人设", "换成人设「毒舌」", "用「助理」那个人设回我消息"),
         "params": ({
             "name": "name",
@@ -275,8 +299,9 @@ COMMANDS = [
     {
         "name": "group_add",
         "risk": "write",
-        "intent": False,
+        "intent": True,
         "desc": "把一个群号加进群回应白名单",
+        "usage": "加群 群号",
         "examples": ("把 555001 这个群加进白名单", "加个群 555002", "555003 也加进去"),
         "params": ({
             "name": "gid",
@@ -293,6 +318,7 @@ COMMANDS = [
         "risk": "read",
         "intent": True,
         "desc": "列出机器人在哪些群里（群回应白名单）",
+        "usage": "群列表",
         "examples": ("你都在哪些群里", "看看群列表", "列一下白名单里的群"),
         "params": (),
         "render": "群列表",
@@ -300,8 +326,9 @@ COMMANDS = [
     {
         "name": "group_remove",
         "risk": "write",
-        "intent": False,
+        "intent": True,
         "desc": "把一个群号从群回应白名单移除",
+        "usage": "移除群 群号",
         "examples": ("把 555002 移出白名单", "移除群 555003", "555001 不用了，从白名单里撤了吧"),
         "params": ({
             "name": "gid",
@@ -316,8 +343,9 @@ COMMANDS = [
     {
         "name": "feature_toggle",
         "risk": "write",
-        "intent": False,
+        "intent": True,
         "desc": "开启或关闭某个功能（看图、联网搜索、防滥用）",
+        "usage": "开启/关闭 看图|联网搜索|防滥用",
         "examples": ("把看图关掉吧", "联网搜索给我打开", "防滥用先关一会儿"),
         "params": ({
             "name": "action",
@@ -325,14 +353,21 @@ COMMANDS = [
             "required": True,
             "subset": False,
             "choices": ("开启", "关闭"),
-            "desc": "开还是关",
+            "aliases": {"开": "开启", "打开": "开启", "启用": "开启",
+                        "开启": "开启",
+                        "关": "关闭", "关掉": "关闭", "关闭": "关闭",
+                        "停用": "关闭", "禁用": "关闭"},
+            "desc": "开还是关（说「开/打开/启用/关/关掉/停用/禁用」也认）",
         }, {
             "name": "feature",
             "type": "enum",
             "required": True,
             "subset": False,
             "choices": ("看图", "联网搜索", "防滥用"),
-            "desc": "要动哪个功能",
+            "aliases": {"识图": "看图", "图片识别": "看图",
+                        "搜索": "联网搜索", "联网": "联网搜索"},
+            "desc": "要动哪个功能（说「识图/图片识别」＝看图，"
+                    "「搜索/联网」＝联网搜索）",
         }),
         "render": _render_feature_toggle,
         "ask_missing": "开还是关、哪个功能？看图、联网搜索、防滥用，说一个",
@@ -340,8 +375,9 @@ COMMANDS = [
     {
         "name": "zcode_handoff",
         "risk": "write",
-        "intent": False,
+        "intent": True,
         "desc": "把一个任务原文转交到电脑上 ZCode 的收件箱，打开 ZCode 即可接手",
+        "usage": "转交ZCode 任务原文",
         "examples": ("把这个任务转交给 ZCode：写一个爬虫脚本", "转给 ZCode 处理一下：整理周报数据",
                      "让 ZCode 帮我修一下登录的bug"),
         "params": ({
@@ -362,12 +398,13 @@ COMMANDS = [
 # ---- 加载时全量自检（照 qq_tools.register 的手法：表坏了当场炸） ----
 
 def _check_table():
-    """字段齐、名字唯一、risk/intent/subset 合法、例句三条互不相同、有必填
-    参数的命令要有反问文本、ask_extra 指向表里真有的命令。"""
+    """字段齐、名字唯一、risk/intent/subset 合法、usage 非空、例句三条互不
+    相同、有必填参数的命令要有反问文本、ask_extra 指向表里真有的命令、
+    enum 的 aliases 是「非空字典且归一的值都在 choices 里」。"""
     seen = set()
     for c in COMMANDS:
-        for key in ("name", "risk", "intent", "desc", "examples", "params",
-                    "render"):
+        for key in ("name", "risk", "intent", "desc", "usage", "examples",
+                    "params", "render"):
             if key not in c:
                 raise ValueError("指令 %r 缺字段 %s" % (c.get("name"), key))
         name = c["name"]
@@ -380,11 +417,9 @@ def _check_table():
             raise ValueError("指令 %s 的 risk 不合法：%r" % (name, c["risk"]))
         if not isinstance(c["intent"], bool):
             raise ValueError("指令 %s 的 intent 要是布尔" % name)
-        if c["risk"] == "write" and c["intent"]:
-            raise ValueError("指令 %s 是 write 却开了 intent（本批 write 全关）" % name)
-        if c["risk"] in ("read", "soft") and not c["intent"]:
-            raise ValueError("指令 %s 是 %s 却没开 intent（本批全开）"
-                             % (name, c["risk"]))
+        if not isinstance(c["usage"], str) or not c["usage"].strip():
+            raise ValueError("指令 %s 的 usage 要是非空字符串"
+                             "（给主人看的精确命令写法）" % name)
         if not isinstance(c["desc"], str) or not c["desc"].strip():
             raise ValueError("指令 %s 的 desc 要是非空字符串" % name)
         ex = c["examples"]
@@ -417,6 +452,15 @@ def _check_table():
                                                     for x in p["choices"])):
                 raise ValueError("指令 %s 参数 %s 是 enum 但 choices 不合法"
                                  % (name, p["name"]))
+            if "aliases" in p:
+                _al = p["aliases"]
+                if not isinstance(_al, dict) or not _al \
+                        or not all(isinstance(k, str) and k
+                                   and v in p.get("choices", ())
+                                   for k, v in _al.items()):
+                    raise ValueError("指令 %s 参数 %s 的 aliases 要是非空字典"
+                                     "且归一的值都在 choices 里"
+                                     % (name, p["name"]))
             if p["type"] == "text" and not (isinstance(p.get("min"), int)
                                             and isinstance(p.get("max"), int)):
                 raise ValueError("指令 %s 参数 %s 是 text 但没写 min/max 长度"
@@ -491,9 +535,15 @@ def _norm_one(p, v):
             return False, None, "参数 %s 要 00:00–23:59 的时间" % n
         return True, "%02d:%02d" % (hh, mm), ""
     if t == "enum":
-        if not isinstance(v, str) or v.strip() not in p["choices"]:
+        if not isinstance(v, str):
             return False, None, "参数 %s 要是 %s 之一" % (n, "/".join(p["choices"]))
-        return True, v.strip(), ""
+        s = v.strip()
+        ali = p.get("aliases") or {}
+        if s in ali:
+            s = ali[s]                     # 同义归一（「开」→「开启」这类）
+        if s not in p["choices"]:
+            return False, None, "参数 %s 要是 %s 之一" % (n, "/".join(p["choices"]))
+        return True, s, ""
     # text
     if not isinstance(v, str):
         return False, None, "参数 %s 要文本（字符串）" % n
@@ -569,6 +619,19 @@ def missing(name, args):
             if p["required"] and p["name"] not in args]
 
 
+def explain_failure(name, why):
+    """参数校验没过时回给主人的确定性文本：一句口语，含原因（validate 给的
+    why）和这条指令精确命令的写法（usage），不说教。只拼文本、不做任何
+    动作；名字不认识（正常路径到不了这里）就只回原因。"""
+    c = by_name(name)
+    usage = str(c.get("usage") or "").strip() if c else ""
+    reason = str(why or "").strip() or "参数没过校验"
+    if not usage:
+        return "这句话我没能当成指令来执行：%s" % reason
+    return ("这句话我没能当成指令来执行：%s。要办这件事可以直接发：%s"
+            % (reason, usage))
+
+
 def render(name, norm_args):
     """把 validate 通过的参数拼成精确命令文本（喂给 owner_command 一定命中
     的那种）。参数没先过 validate（缺必填键、类型不对、越界、enum 不在
@@ -603,18 +666,18 @@ def _param_note(p):
 
 
 def intent_doc(max_chars=2500, closed="mark"):
-    """给判定模型看的提示词片段：closed="mark"（默认）＝18 条全列，未开放的
-    九条在行尾加「暂不支持」标注——清单里没有「暂停/恢复」时，主人要的正是
-    这件事，模型会被迫在已开放条目里挑最像的（把「先暂停」判成安静、「恢复
-    回复」判成继续），标注让模型对这类话直接回 is_cmd=false；closed="hide"
-    ＝只列 intent=True 的（旧行为）；closed="plain"＝全列但不标注（评测对照
-    用）。一条一行「名字：说明。例：「…」「…」「…」。参数：…」。总长不超过
-    max_chars（默认 2500），放不下的从第一条放不下的起整条截掉，末尾注明
-    还剩几条（那行说明不计入预算）；标注计入长度。纯函数、输出确定。"""
+    """给判定模型看的提示词片段：closed="mark"（默认）＝全列，未开放的条目
+    在行尾加「暂不支持」标注（清单里没有主人要的那条时，模型会被迫在已开放
+    条目里挑最像的，标注让模型对这类话直接回 is_cmd=false）；closed="hide"
+    ＝只列 intent=True 的；closed="plain"＝全列但不标注（评测对照用）。
+    全部条目都开放时（C3 起的现状）没有可标注的条目，mark 的输出与 hide
+    完全相同——参数保留，给将来再分批留。一条一行「名字：说明。例：
+    「…」「…」「…」。参数：…」。总长不超过 max_chars（默认 2500），放不下
+    的从第一条放不下的起整条截掉，末尾注明还剩几条（那行说明不计入预算）；
+    标注计入长度。纯函数、输出确定。"""
     if closed not in ("mark", "hide", "plain"):
         raise ValueError("closed 要是 mark/hide/plain 之一：%r" % (closed,))
-    note = ("（暂不支持：主人要的正是这件事时，is_cmd 填 false，"
-            "不要换成清单里的其它条目）")
+    note = CLOSED_NOTE
     lines = []
     total = sum(1 for c in COMMANDS
                 if c["intent"] or closed in ("mark", "plain"))

@@ -5559,24 +5559,28 @@ def _intent_json(prompt):
 
 def _intent_prompt(text, doc=None):
     """给判定模型的提示词（纯函数，不调模型、不读配置）。doc 缺省用
-    qq_commands.intent_doc()（默认 closed="mark"：18 条全列、未开放九条带
-    「暂不支持」标注——清单里没有「暂停/恢复」时，模型被迫在已开放条目里
-    挑最像的，全量实测把「先暂停」判成安静并自己编 minutes=10、「恢复回复」
-    三条全判成继续）。文案口语，不出现任何厂商的模型名。"""
+    qq_commands.intent_doc()。清单里有「暂不支持」标注（qq_commands.
+    CLOSED_NOTE）时才输出标注说明与「不许代替」那条规矩——全部开放时
+    清单没有标注，这两句也不出现，不跟模型说没有的东西。文案口语，不出现
+    任何厂商的模型名。"""
     if doc is None:
         doc = qq_commands.intent_doc()
-    return ("机器人这里有一张它能做的指令清单，每条写了名字、用途、例句和"
-            "参数，有的条目行尾标着「暂不支持」。请你判断主人发给机器人的"
-            "下面这句话，是不是在下达清单里的某一条指令。\n"
-            "指令清单：\n" + str(doc) + "\n"
-            "判断规矩：\n"
-            "- 聊天、提问、发任务、发感慨、陈述事实，都算不是指令；主人是在"
-            "说一件事、而不是让机器人去做，也算不是指令。\n"
-            "- 拿不准就算不是指令；只能从上面的清单里选，清单之外没有指令。\n"
-            "- 清单里标着「暂不支持」的条目，主人要的正是那件事时，is_cmd 填 "
-            "false，不要用清单里的其它条目代替。\n"
-            "- 参数只能填主人原话里说到的，或者参数说明里列出的选项；主人没"
-            "说的参数不要填。\n"
+    doc = str(doc)
+    marked = qq_commands.CLOSED_NOTE in doc
+    head = ("机器人这里有一张它能做的指令清单，每条写了名字、用途、例句和"
+            "参数%s。请你判断主人发给机器人的下面这句话，是不是在下达清单"
+            "里的某一条指令。\n"
+            % ("，有的条目行尾标着「暂不支持」" if marked else ""))
+    rules = ["- 聊天、提问、发任务、发感慨、陈述事实，都算不是指令；主人是在"
+             "说一件事、而不是让机器人去做，也算不是指令。",
+             "- 拿不准就算不是指令；只能从上面的清单里选，清单之外没有指令。"]
+    if marked:
+        rules.append("- 清单里标着「暂不支持」的条目，主人要的正是那件事时，"
+                     "is_cmd 填 false，不要用清单里的其它条目代替。")
+    rules.append("- 参数只能填主人原话里说到的，或者参数说明里列出的选项；主人没"
+                 "说的参数不要填。")
+    return (head + "指令清单：\n" + doc + "\n"
+            "判断规矩：\n" + "\n".join(rules) + "\n"
             "只输出一行 JSON，不要解释、不要用围栏："
             "{\"is_cmd\": true或false, \"name\": \"指令名\", \"args\": {参数}, "
             "\"confidence\": 0到1}；不是指令时 name 填空字符串、args 填空对象。\n"
@@ -5587,9 +5591,15 @@ def _intent_command(daemon, msg):
     """主人私聊自然语言指令识别。返回 True＝已处理（已回复并确认），False＝
     不是指令、照原流程往下走。前提任一不满足直接返回 False、不调模型：
     开关开；是主人；私聊；遥控开关开（与精确命令同门槛，与 owner_command
-    的调用前提一致）；纯文字（带图不调）；正文去首尾空白后 1 到 200 字。
-    任何解析或校验失败都当不是指令、零副作用；缺必填参数走表里的反问文本
-    （带 ask_extra 的附上对应的列表）。日志一律不记主人原话、不记参数值。"""
+    的调用前提一致）；纯文字（带图不调）；不带合并转发内容（转发记录里的
+    话不是主人说的）；这条消息没挂着待确认续跑（复述确认/授权码续跑的
+    「确认」「授权码」不该被判定模型抢走）。正文去首尾空白后 1 到 200 字。
+    缺必填参数走表里的反问文本（带 ask_extra 的附上对应的列表）；参数没过
+    校验（判定模型已认出指令、置信度也够）不再悄悄掉回聊天路径——回一句
+    确定性说明（qq_commands.explain_failure），否则主模型会随口答应却什么
+    也没做。置信度不够、模型说不是指令、指令未开放仍静默走聊天。write 命中
+    且 tool_confirm_write 开时先复述等「确认」（挂 kind="cmd" 的待确认，
+    发送成功才落表）。日志一律不记主人原话、不记参数值。"""
     if not _owner_intent_on():
         return False
     if not is_owner(msg) or msg.get("chat_type") != "private":
@@ -5598,6 +5608,10 @@ def _intent_command(daemon, msg):
         return False
     if msg.get("image_urls"):
         return False
+    if msg.get("forward_lines"):
+        return False                    # 合并转发记录里的话不是主人说的
+    if msg.get("_tool_resume"):
+        return False                    # 续跑已挂上，别让判定模型抢走这条
     body = str(msg.get("text") or "").strip()
     if not body or len(body) > 200:
         return False
@@ -5650,13 +5664,62 @@ def _intent_command(daemon, msg):
         return True
     ok, norm, why = qq_commands.validate(name, args, body)
     if not ok:
+        # C3：判定模型已认出这条指令、置信度也够，只是参数没过校验——悄悄
+        # 掉回聊天路径的话，主模型不知道这是一条指令，会随口答应「好的我记
+        # 下了」却什么也没做（谎报）。回一句确定性说明（含精确命令写法），
+        # 到此为止。日志只记参数名，不记参数值。
         pm = (re.search(r"缺少必填参数：(\w+)", str(why or ""))
               or re.search(r"参数 (\w+)", str(why or ""))
               or re.search(r"多了不认识的参数：(\w+)", str(why or "")))
-        out("AGENT_INTENT_SKIP reason=validate%s"
-            % ((" param=" + pm.group(1)) if pm else ""))
-        return False
+        out("AGENT_INTENT_MISS name=%s reason=validate%s"
+            % (name, (" param=" + pm.group(1)) if pm else ""))
+        try:
+            daemon.send("private", msg["chat_id"],
+                        [qq_commands.explain_failure(name, why)])
+        except Exception as e:
+            out("AGENT_OWNER_CMD_FAIL %r" % e)
+        daemon.ack([msg["id"]])
+        RT.count_processed()
+        return True
     rendered = qq_commands.render(name, norm)
+    if ent["risk"] == "write" and _tool_confirm_write_on():
+        # C3：write 命中且复述确认开关开——不执行，回一句确定性复述并挂
+        # kind="cmd" 的待确认（与工具循环的复述确认共用一张表、同一套
+        # 确认词/过期/取消处理；复述真的发送成功之后才落表，I1）。
+        _ckey = "%s:%s" % (msg.get("chat_type"), msg.get("chat_id"))
+        with _TOOL_PENDING_LOCK:
+            _prev = _TOOL_PENDING.get(_ckey)
+            _prev_kind = str(_prev.get("kind") or "") if _prev else ""
+        if _prev is not None:
+            # 该会话已有待确认：不覆盖、不挂新的，旧的原样保留。到这里旧条
+            # 目基本只剩授权类（工具循环/指令类的复述确认在拦截区就被任何
+            # 主人消息消费了），而授权类等的是授权码——主人回「确认」没有
+            # 用，会被留着不动，话术要分开说，别让人卡在「确认」上。
+            if _prev_kind == "auth":
+                reply = ("你上一条还在等授权码：发 6 位授权码就执行，"
+                         "回「取消」就作废；这条先不办：" + rendered)
+            else:
+                reply = ("你上一条还在等确认，先回「确认」或「取消」；"
+                         "这条先不办：" + rendered)
+            _confirm_state = "confirm=blocked prev=%s" % (_prev_kind or "-")
+        else:
+            msg["_tool_confirm_candidate"] = {
+                "kind": "cmd", "cmd": name, "rendered": rendered,
+                "conf": conf, "ttl": 120.0}
+            reply = ("要做：%s。回「确认」就执行，回「取消」就算了"
+                     "（两分钟内）" % rendered)
+            _confirm_state = "confirm=asked"
+        try:
+            _send_r = daemon.send("private", msg["chat_id"], [reply])
+        except Exception as e:
+            _send_r = None
+            out("AGENT_OWNER_CMD_FAIL %r" % e)
+        _tool_commit_pending(msg, _send_r)
+        daemon.ack([msg["id"]])
+        RT.count_processed()
+        out("AGENT_INTENT_HIT name=%s risk=write conf=%.2f %s"
+            % (name, conf, _confirm_state))
+        return True
     hit, reply = owner_command(dict(msg, text=rendered), daemon)
     if not hit:
         reply = "这条没有执行，请直接发：" + rendered
@@ -7408,7 +7471,10 @@ def _tool_confirm_intercept(msg):
     作废词或过期（I2）——没过期就原样留着、这条消息照常往下走（哪怕是
     别的话，也不丢弃、不消费；授权码由 _handle_devctrl_link_only 认下之
     后取出）；说「取消 / 不做了 / 算了」→ 删掉、打 AGENT_TOOL_AUTH_CANCEL、
-    照常处理；过期才删掉并打 EXPIRE 照常处理。非主人消息根本不走这里。"""
+    照常处理；过期才删掉并打 EXPIRE 照常处理。指令类待确认（kind="cmd"，
+    C3）与复述确认同支：确认词 → msg["_tool_resume"]（process() 的续跑
+    分叉里按 kind 分流，由 owner_command 执行渲染文本），别的话照旧丢弃。
+    非主人消息根本不走这里。"""
     key = "%s:%s" % (msg.get("chat_type"), msg.get("chat_id"))
     if key not in _TOOL_PENDING:
         return
@@ -7455,7 +7521,8 @@ def _tool_commit_pending(msg, send_resp):
     这条消息上挂的候选落进待确认表；发送失败/没走到发送不落（I1）。
     同会话已有待确认 → 覆盖并打 AGENT_TOOL_CONFIRM_REPLACE（I2）。
     候选带 ttl（秒）就用它当有效期（授权类候选带 300），没有就用默认
-    120 秒；kind（"auth"＝授权类）原样存进表里。"""
+    120 秒；kind（"auth"＝授权类、"cmd"＝指令类）原样存进表里，WAIT 日志
+    带上 kind（工具循环的复述确认没有 kind，行尾不带）。"""
     cand = None
     if isinstance(msg, dict):
         cand = msg.pop("_tool_confirm_candidate", None)
@@ -7474,7 +7541,8 @@ def _tool_commit_pending(msg, send_resp):
         _TOOL_PENDING[key] = dict(cand,
                                   expires=time.monotonic() + _ttl)
     out("AGENT_TOOL_CONFIRM_WAIT chat=%s tools=%s%s" % (
-        disp, tools or "-", " kind=auth" if cand.get("kind") == "auth" else ""))
+        disp, tools or "-",
+        (" kind=%s" % cand["kind"]) if cand.get("kind") else ""))
     if replaced:
         out("AGENT_TOOL_CONFIRM_REPLACE chat=%s" % disp)
 
@@ -8570,6 +8638,31 @@ def process(daemon, msg):
         # 概率骰子已经在识图之前掷过了（见上），这里不再掷第二遍
     _resume_ent = msg.pop("_tool_resume", None)
     if isinstance(_resume_ent, dict):
+        if _resume_ent.get("kind") == "cmd":
+            # 指令类待确认续跑（C3）：主人在同会话回了确认词——不调主模型、
+            # 不进工具循环，把待确认里存的渲染文本当精确命令交给现有的
+            # owner_command 执行；发回复、确认、计数照 _intent_command 的
+            # 收尾。渲染文本万一不命中属于内部错误：发确定性说明，不静默。
+            _c_name = str(_resume_ent.get("cmd") or "")
+            _c_text = str(_resume_ent.get("rendered") or "")
+            try:
+                _c_hit, _c_reply = owner_command(dict(msg, text=_c_text),
+                                                 daemon)
+            except Exception as _c_err:
+                _c_hit, _c_reply = False, ""
+                out("AGENT_OWNER_CMD_FAIL %r" % _c_err)
+            if not _c_hit:
+                _c_reply = "这条没有执行，请直接发：" + _c_text
+                out("AGENT_INTENT_RENDER_MISS name=%s" % _c_name)
+            try:
+                daemon.send("private", msg["chat_id"], [_c_reply])
+            except Exception as _c_send_err:
+                out("AGENT_OWNER_CMD_FAIL %r" % _c_send_err)
+            daemon.ack([msg["id"]])
+            RT.count_processed()
+            if _c_hit:
+                out("AGENT_INTENT_CONFIRM_DONE name=%s" % _c_name)
+            return
         # 复述确认续跑（A2b-2）：主人在同会话回了确认词——不调主模型，把
         # 上次停下时待执行的调用连同停下之前已执行的结果一起交给工具循环
         # （闸照过、不再重复要确认，权限不变 I4）；循环的 final 当作这条

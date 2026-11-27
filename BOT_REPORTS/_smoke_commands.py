@@ -2,8 +2,9 @@
 """冒烟：C1 主人指令表 qq_commands.py（纯逻辑模块）+ 渲染必命中。
 
   T1 表完整：正好 18 条、名字唯一、字段齐、risk/intent/subset 合法、每条
-      至少三条互不相同的例句；write 九条 intent 全 False，read 与 soft 全
-      True；INTENT_MIN_CONF 与派单一致；by_name 查得到/查不到返回 None。
+      至少三条互不相同的例句；C3 起 18 条 intent 全 True（write 九条随本批
+      开放）；每条 usage 非空；INTENT_MIN_CONF 与派单一致；by_name 查得到/
+      查不到返回 None。
   T2 渲染必命中（本单最重要）：每条命令的三条例句各配一组合理参数 →
       validate 通过 → render 出的文本逐字等于预期 → 喂给真实的
       owner_command（执行体全打桩）返回 (True, 非空字符串)；再抽一批细看
@@ -16,8 +17,11 @@
       owner_command 确实不中（400 字杠的依据）。
   T4 intent_doc 三态（closed=hide/mark/plain）：hide 不含任何 intent=False
       的命令名；hide 与 mark 均不超过 2500 字；两次调用输出相同（默认＝
-      mark）；mark 18 条全列且未开放九条行尾带「暂不支持」标注、plain 全列
-      无标注；非法 closed 值拒绝；预算压小时按条截断并注明。
+      mark）；C3 起全部开放，mark/hide/plain 三态输出相同、无「暂不支持」
+      标注；非法 closed 值拒绝；预算压小时按条截断并注明。
+  T4x C3 新增：18 条 usage 齐全且互不相同；枚举别名归一正反例（归一后仍
+      不在选项的拒）；explain_failure 文本含原因与 usage 的精确写法；
+      「暂不支持」标注文本＝模块常量 CLOSED_NOTE。
   T5 render 对没过 validate 的参数（缺必填键、类型不对、越界、未知命令）
       抛 ValueError，不拼半截命令。
 
@@ -178,10 +182,7 @@ for c in K.COMMANDS:
             fields_ok = False
     if c["risk"] != RISK_OF[c["name"]] or c["risk"] not in K.RISKS:
         risk_ok = False
-    if c["risk"] == "write":
-        if c["intent"] is not False:
-            intent_ok = False
-    elif c["intent"] is not True:
+    if c["intent"] is not True:
         intent_ok = False
     if (len(c["examples"]) < 3 or len(set(c["examples"])) != len(c["examples"])
             or not all(isinstance(x, str) and x.strip() for x in c["examples"])):
@@ -203,7 +204,8 @@ nonsubset_ok = all(
     if (c["name"], p["name"]) not in SUBSET_OF)
 chk("T1b 每条字段齐（name/risk/intent/desc/examples/params/render）", fields_ok, "")
 chk("T1c risk 归类与派单一致、全部合法", risk_ok, "")
-chk("T1d write 九条 intent=False；read 与 soft 全 True", intent_ok, "")
+chk("T1d C3 起 18 条 intent 全 True（write 九条随本批开放，设计变更：原断言"
+    "「write 九条 intent 全 False」改成全 True）", intent_ok, "")
 chk("T1e 每条至少三条互不相同的非空例句", ex_ok, "")
 chk("T1f 每个参数带 name/type/required/subset 且类型合法", param_ok, "")
 chk("T1g 六个 subset 参数正是派单点名的六个（且必填）；其余全 False",
@@ -469,8 +471,8 @@ REJECTS = [
     ("int 越界（log 1000）", "log", {"n": 1000}, "拉一千条日志", "最大 999"),
     ("int 非整数", "log", {"n": "abc"}, "看看日志", "要整数"),
     ("int 布尔不算", "quiet", {"minutes": True}, "安静", "true/false"),
-    ("enum 不在选项（action）", "feature_toggle", {"action": "打开", "feature": "看图"},
-     "把看图打开", "开启/关闭"),
+    ("enum 不在选项（action，且不在别名表）", "feature_toggle",
+     {"action": "换个", "feature": "看图"}, "把看图换个玩法", "开启/关闭"),
     ("enum 不在选项（feature）", "feature_toggle", {"action": "开启", "feature": "画视频"},
      "开个画视频", "看图/联网搜索/防滥用"),
     ("task 含换行", "zcode_handoff", {"task": "第一行\n第二行"},
@@ -569,14 +571,14 @@ def _note_per_line_ok():
     return True
 
 
-chk("T4e mark：18 条全列、未开放九条行尾带「暂不支持」标注（恰好九处、逐行"
-    "对得上）",
+chk("T4e mark：18 条全列；全部开放时无任何「暂不支持」标注（逐行对得上）",
     all(n in doc_m for n in names_all)
     and doc_m.count("暂不支持") == len(write_names)
     and _note_per_line_ok(), "")
-chk("T4f plain：18 条全列、无任何标注、与 mark 不同、非法 closed 值拒绝",
+chk("T4f plain：18 条全列、无任何标注；全部开放时与 mark/hide 输出相同、"
+    "非法 closed 值拒绝",
     all(n in doc_p for n in names_all) and "暂不支持" not in doc_p
-    and doc_p != doc_m, "")
+    and doc_p == doc_m == doc, "")
 try:
     K.intent_doc(closed="nope")
     _ve = "没抛"
@@ -588,6 +590,78 @@ chk("T4d 预算压小时按条截断并注明",
     len(doc2) < len(doc_m) and "没列出" in doc2
     and doc2.splitlines()[0] == doc_m.splitlines()[0]
     and doc2 == K.intent_doc(max_chars=200), len(doc2))
+
+# ============ T4x C3：usage / 枚举别名 / mark=hide / explain_failure ============
+
+chk("T4h 全部开放：closed=\"mark\" 与 \"hide\" 输出相同（参数保留）",
+    K.intent_doc(closed="mark") == K.intent_doc(closed="hide")
+    and K.intent_doc() == K.intent_doc(closed="hide"), "")
+chk("T4i 18 条 usage 齐全（非空字符串）且互不相同",
+    all(isinstance(c.get("usage"), str) and c["usage"].strip()
+        for c in K.COMMANDS)
+    and len(set(c["usage"] for c in K.COMMANDS)) == 18,
+    sorted(set(c["name"] for c in K.COMMANDS if not c.get("usage"))))
+
+ALIAS_OK = [
+    ("开", "识图", "开启", "看图"),
+    ("打开", "图片识别", "开启", "看图"),
+    ("启用", "看图", "开启", "看图"),
+    ("开启", "搜索", "开启", "联网搜索"),
+    ("关", "联网", "关闭", "联网搜索"),
+    ("关掉", "看图", "关闭", "看图"),
+    ("关闭", "防滥用", "关闭", "防滥用"),
+    ("停用", "识图", "关闭", "看图"),
+    ("禁用", "联网", "关闭", "联网搜索"),
+]
+bad_alias = []
+for a_in, f_in, a_want, f_want in ALIAS_OK:
+    ok, norm, why = K.validate("feature_toggle",
+                               {"action": a_in, "feature": f_in}, "随便一句话")
+    if ok is not True or norm.get("action") != a_want \
+            or norm.get("feature") != f_want:
+        bad_alias.append((a_in, f_in, ok, norm, why))
+chk("T4j 枚举别名归一（开/打开/启用/关/关掉/停用/禁用；识图/图片识别/"
+    "搜索/联网），归一后的值进 norm_args",
+    not bad_alias, bad_alias)
+ok, norm, why = K.validate("feature_toggle",
+                           {"action": "打开", "feature": "画视频"}, "开个画视频")
+chk("T4k 别名归一后仍不在选项 → 拒（feature=画视频）",
+    ok is False and norm == {} and "看图/联网搜索/防滥用" in why, (ok, why))
+ok, norm, why = K.validate("feature_toggle",
+                           {"action": "换个", "feature": "看图"}, "换个花样开")
+chk("T4k2 不在别名表也不在选项 → 拒（action=换个）",
+    ok is False and norm == {} and "开启/关闭" in why, (ok, why))
+
+FAIL_TXT = [
+    ("cron_add", "参数 text 要用主人原话里的原文", "定时 HH:MM 要做的事"),
+    ("group_add", "参数 gid 要用主人原话里的原文", "加群 群号"),
+    ("feature_toggle", "参数 action 要是 开启/关闭 之一",
+     "开启/关闭 看图|联网搜索|防滥用"),
+    ("pause", "随便一个原因", "暂停"),
+]
+bad_explain = []
+for nm, rsn, want_usage in FAIL_TXT:
+    txt = K.explain_failure(nm, rsn)
+    if not ("没能当成指令来执行" in txt and rsn in txt
+            and ("要办这件事可以直接发：%s" % want_usage) in txt):
+        bad_explain.append((nm, txt))
+chk("T4l explain_failure：一句口语、含原因与 usage 的精确写法",
+    not bad_explain, bad_explain)
+chk("T4l2 explain_failure 原因为空也能回（兜底话）",
+    "没能当成指令来执行" in K.explain_failure("status", ""), "")
+_pz = K.by_name("pause")
+_pz_old = _pz["intent"]
+try:
+    _pz["intent"] = False          # 临时借一条未开放，看 mark 标注的原文
+    _doc_marked = K.intent_doc()
+finally:
+    _pz["intent"] = _pz_old
+chk("T4n 「暂不支持」标注逐字等于模块常量 CLOSED_NOTE（agent 提示词引用"
+    "同一份，不各写各的字面量）",
+    K.CLOSED_NOTE in _doc_marked
+    and _doc_marked.count(K.CLOSED_NOTE) == 1
+    and "（暂不支持：主人要的正是这件事时，is_cmd 填 false" in K.CLOSED_NOTE,
+    K.CLOSED_NOTE)
 
 # ============ T5 render 对没过 validate 的参数抛 ValueError ============
 
@@ -601,15 +675,17 @@ def raises_ve(name, args):
         return False
 
 
-chk("T5a 缺必填键 / 类型不对 / 越界 / 未知命令 / 非 dict 都抛 ValueError",
+chk("T5a 缺必填键 / 类型不对 / 越界 / 未知命令 / 非 dict 都抛 ValueError"
+    "（别名归一的值如今能 render，C3 设计变更）",
     raises_ve("cron_add", {"text": "提醒我喝水"})
     and raises_ve("cron_add", {"time": "25:00", "text": "提醒我喝水"})
     and raises_ve("quiet", {"minutes": "abc"})
     and raises_ve("log", {"n": True})
     and raises_ve("group_add", {"gid": "123"})
-    and raises_ve("feature_toggle", {"action": "打开", "feature": "看图"})
+    and raises_ve("feature_toggle", {"action": "换个", "feature": "看图"})
     and raises_ve("nope", {})
     and raises_ve("status", None)
+    and not raises_ve("feature_toggle", {"action": "打开", "feature": "识图"})
     and not raises_ve("quiet", {})          # 缺省参数合法：渲染裸「安静」
     and not raises_ve("quiet", {"minutes": 1440}),  # 超顶是 validate 的钳顶
     "")

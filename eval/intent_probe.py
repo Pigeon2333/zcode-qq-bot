@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""intent_probe.py — 主人自然语言指令识别的离线评测（C2 机器关）。
+"""intent_probe.py — 主人自然语言指令识别的离线评测（C2/C3 机器关）。
 
 只识别、不执行：对每条输入用产品路径同款的 _intent_prompt 构造提示词，调
 真实的 call_glm_with_fallback(..., route="judge")，按产品路径逐道校验
@@ -8,23 +8,24 @@
 
 用法：
   python eval/intent_probe.py            # 默认：产品同款，提示词用
-                                         # intent_doc(closed="mark")＝18 条全列、
-                                         # 未开放九条带「暂不支持」标注
-  python eval/intent_probe.py --plain    # 对照：清单全列但不加标注
-                                         #（closed="plain"，看标注到底起多大作用）
+                                         # intent_doc(closed="mark")
+                                         #（C3 起全部开放，与 hide 相同）
+  python eval/intent_probe.py --plain    # 对照：closed="plain"
+                                         #（全部开放后与 mark 输出相同，留作
+                                         # 将来再分批时的对照通道）
   python eval/intent_probe.py --limit N  # 总共只跑前 N 条（正例在前、其后依次是
-                                         # 应不执行/负例/边界；两种模式都可先用它
+                                         # 负例/边界；两种模式都可先用它
                                          # 做小样冒烟）
 
-输入四类（群号一律虚构 5550xx）：
-  正例 54 条＝表里 18 条 × 3 个例句，预期命中对应指令；
-  应不执行 10 条＝未开放指令（暂停/恢复）的说法，预期不执行任何已开放命令
-    （判成 pause/resume 后被 closed 挡掉算对）；
+输入三类（群号一律虚构 5550xx）：
+  正例 64 条＝表里 18 条 × 3 个例句 + 追加 10 条暂停/恢复的说法（C2 时它们
+    是「应不执行」组——那会儿 pause/resume 未开放；C3 起开放，预期判成
+    pause/resume 并会执行，改成正例）；
   负例 40 条＝不该命中的闲聊/提问/发任务/陈述；
   边界 1 条＝「你今天用了多少 token 啊，随便问问」——语义上就是在问用量，
     判成 usage 可接受，单独一类、不计入误报。
-汇总里单列「正例错类命中」（预期 X、实际判成已开放的 Y 并会执行）与「应不
-执行的错执行」——这两类是最危险的，逐条列出。
+汇总里单列「正例错类命中」（预期 X、实际判成已开放的 Y 并会执行）——最
+危险的一类，逐条列出；负例误报与格式失败照旧。
 输出＝评测专用目录 EC.EVAL_DIR 下 intent_probe_<YYYYMMDD-HHMM>_mark.txt
 （--plain 时后缀 _plain，同一分钟跑两种模式不会互相覆盖）：
 逐条记录（输入、预期、模型原始输出截 300 字、各道校验、最终判定）＋汇总。
@@ -69,18 +70,19 @@ A.call_glm_with_fallback = _recording_call
 
 # ---- 三类内置用例（预期见 docstring；群里 5550xx 全是虚构群号） ----
 
-# 应不执行：未开放指令（暂停/恢复）的说法——不被吸到已开放的安静/继续才算对
-NO_EXEC_CASES = [
-    "你先歇着吧，暂停，谁都别回",
-    "恢复，可以继续回复了",
-    "全部停了，先别回任何消息",
-    "把自动回复停掉",
-    "现在恢复自动回复",
-    "暂停回复，等我叫你",
-    "先把回复暂停一下，我这边要改东西",
-    "暂停服务，我调试的时候用",
-    "现在解除暂停吧",
-    "恢复吧，刚才让你停的就是这个",
+# 追加正例：暂停/恢复的说法（C2 时是「应不执行」组——那会儿 pause/resume
+# 未开放，不被吸到已开放的安静/继续才算对；C3 起开放，预期判成对应指令）
+EXTRA_POSITIVE_CASES = [
+    ("pause", "你先歇着吧，暂停，谁都别回"),
+    ("resume", "恢复，可以继续回复了"),
+    ("pause", "全部停了，先别回任何消息"),
+    ("pause", "把自动回复停掉"),
+    ("resume", "现在恢复自动回复"),
+    ("pause", "暂停回复，等我叫你"),
+    ("pause", "先把回复暂停一下，我这边要改东西"),
+    ("pause", "暂停服务，我调试的时候用"),
+    ("resume", "现在解除暂停吧"),
+    ("resume", "恢复吧，刚才让你停的就是这个"),
 ]
 
 # 边界（可接受）：语义上就是在问用量，判成 usage 合理，不计入误报
@@ -136,7 +138,7 @@ NEGATIVE_CASES = [
 ]
 
 MISFIRE_VERDICTS = ("命中", "命中(错指令)", "反问")
-WANT_LABEL = {"hit": "应命中 %s", "no_exec": "应不执行（未开放指令）",
+WANT_LABEL = {"hit": "应命中 %s",
               "boundary": "边界（可接受）", "miss": "不应命中"}
 
 
@@ -203,22 +205,21 @@ def main():
     doc = K.intent_doc(closed=mode)
     positives = [{"expect": "hit", "cmd": c["name"], "text": ex}
                  for c in K.COMMANDS for ex in c["examples"]]
-    no_exec = [{"expect": "no_exec", "cmd": None, "text": t}
-               for t in NO_EXEC_CASES]
+    positives += [{"expect": "hit", "cmd": cmd, "text": t}
+                  for cmd, t in EXTRA_POSITIVE_CASES]
     boundary = [{"expect": "boundary", "cmd": None, "text": t}
                 for t in BOUNDARY_CASES]
     negatives = [{"expect": "miss", "cmd": None, "text": t}
                  for t in NEGATIVE_CASES]
-    cases = positives + no_exec + negatives + boundary
+    cases = positives + negatives + boundary
     if a.limit:
         cases = cases[:a.limit]
     n_pos = sum(1 for c in cases if c["expect"] == "hit")
-    n_noe = sum(1 for c in cases if c["expect"] == "no_exec")
     n_neg = sum(1 for c in cases if c["expect"] == "miss")
-    n_bnd = len(cases) - n_pos - n_noe - n_neg
-    print("指令识别离线评测：closed=%s 模式，%d 条（正例 %d＋应不执行 %d＋"
+    n_bnd = len(cases) - n_pos - n_neg
+    print("指令识别离线评测：closed=%s 模式，%d 条（正例 %d＋"
           "负例 %d＋边界 %d），并发 2"
-          % (mode, len(cases), n_pos, n_noe, n_neg, n_bnd))
+          % (mode, len(cases), n_pos, n_neg, n_bnd))
     print("判定路由预算 %d 秒；只识别、不执行、不发消息"
           % A._route_budget_sec("judge"))
 
@@ -241,10 +242,10 @@ def main():
 
     lines = []
     lines.append("主人自然语言指令识别 · 离线评测（只识别、不执行）")
-    lines.append("模式：closed=%s%s  用例 %d 条（正例 %d＋应不执行 %d＋负例 %d"
+    lines.append("模式：closed=%s%s  用例 %d 条（正例 %d＋负例 %d"
                  "＋边界 %d）"
-                 % (mode, "（对照：无标注）" if a.plain else "（产品同款：带标注）",
-                    len(cases), n_pos, n_noe, n_neg, n_bnd))
+                 % (mode, "（对照）" if a.plain else "（产品同款）",
+                    len(cases), n_pos, n_neg, n_bnd))
     lines.append("")
     for i, (case, r) in enumerate(zip(cases, results)):
         raw, st, verdict = r
@@ -263,7 +264,6 @@ def main():
     pos_ask = 0
     pos_miss = 0
     wrong_exec = []      # 正例错类命中：预期 X、实际判成已开放的 Y 并会执行
-    noe_bad = []         # 应不执行的错执行：被判成已开放命令并会执行
     neg_misfire = []
     boundary_fired = []
     fmt_fail = 0
@@ -284,9 +284,6 @@ def main():
                 pos_ask += 1
             else:
                 pos_miss += 1
-        elif case["expect"] == "no_exec":
-            if verdict in ("命中", "反问"):
-                noe_bad.append((_st.get("name"), case["text"], _raw))
         elif case["expect"] == "boundary":
             if verdict in MISFIRE_VERDICTS:
                 boundary_fired.append((_st.get("name"), case["text"], _raw))
@@ -298,8 +295,6 @@ def main():
                  "反问 %d，未命中 %d"
                  % (n_pos, pos_hit, 100.0 * pos_hit / max(1, n_pos),
                     len(wrong_exec), pos_ask, pos_miss))
-    lines.append("应不执行 %d 条：错执行 %d（逐条见下）"
-                 % (n_noe, len(noe_bad)))
     lines.append("负例 %d 条：误报 %d（%s）"
                  % (n_neg, len(neg_misfire),
                     "见下" if neg_misfire else "零误报"))
@@ -318,15 +313,10 @@ def main():
         for want, got, text, raw in wrong_exec:
             lines.append("  - 预期 %s → 实际 %s ｜ %s ｜ 输出：%s"
                          % (want, got, text, raw[:100].replace("\n", " ")))
-    if noe_bad:
-        lines.append("应不执行却被判成会执行的，逐条列出：")
-        for got, text, raw in noe_bad:
-            lines.append("  - 判成 %s ｜ %s ｜ 输出：%s"
-                         % (got, text, raw[:100].replace("\n", " ")))
     if neg_misfire:
         lines.append("负例里被判成命中的逐条列出：")
         for text, verdict, raw in neg_misfire:
-            lines.append("  - [%s] %s ｜ 模型输出：%s"
+            lines.append("  [%s] %s ｜ 模型输出：%s"
                          % (verdict, text, raw.replace("\n", " ")))
     if boundary_fired:
         lines.append("边界被判成命中的（可接受）：")
@@ -339,14 +329,12 @@ def main():
     out_path = EC.EVAL_DIR / ("intent_probe_%s_%s.txt" % (stamp, mode))
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("结果：%s" % out_path)
-    print("正例命中 %d/%d（错类命中 %d），应不执行错执行 %d，负例误报 %d，"
+    print("正例命中 %d/%d（错类命中 %d），负例误报 %d，"
           "格式失败 %d"
-          % (pos_hit, n_pos, len(wrong_exec), len(noe_bad),
+          % (pos_hit, n_pos, len(wrong_exec),
              len(neg_misfire), fmt_fail))
     for want, got, text, _raw in wrong_exec:
         print("  错类命中：预期 %s → 实际 %s ｜ %s" % (want, got, text))
-    for got, text, _raw in noe_bad:
-        print("  错执行：判成 %s ｜ %s" % (got, text))
     for text, verdict, _raw in neg_misfire:
         print("  误报 [%s] %s" % (verdict, text))
 
