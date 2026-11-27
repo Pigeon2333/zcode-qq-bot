@@ -14,8 +14,10 @@
       enum 不在选项、参数含换行、subset 不在原话（在原话但空格不同则过）、
       渲染超 400 字、多了不认识的参数、未知命令名——全拒；len>400 的原文
       owner_command 确实不中（400 字杠的依据）。
-  T4 intent_doc：不含任何 intent=False 的命令名；不超过 2500 字；两次调用
-      输出相同；预算压小时按条截断并注明。
+  T4 intent_doc 三态（closed=hide/mark/plain）：hide 不含任何 intent=False
+      的命令名；hide 与 mark 均不超过 2500 字；两次调用输出相同（默认＝
+      mark）；mark 18 条全列且未开放九条行尾带「暂不支持」标注、plain 全列
+      无标注；非法 closed 值拒绝；预算压小时按条截断并注明。
   T5 render 对没过 validate 的参数（缺必填键、类型不对、越界、未知命令）
       抛 ValueError，不拼半截命令。
 
@@ -540,20 +542,51 @@ chk("T3c owner_command 对 >400 字的原文确实不中（400 字杠的依据�
 
 # ============ T4 intent_doc ============
 
-doc = K.intent_doc()
+doc = K.intent_doc(closed="hide")   # T4a 原语义不变：只改调用方式（closed="hide"）
+doc_m = K.intent_doc()              # 默认 closed="mark"
+doc_p = K.intent_doc(closed="plain")
 write_names = [c["name"] for c in K.COMMANDS if not c["intent"]]
 read_soft_names = [c["name"] for c in K.COMMANDS if c["intent"]]
-chk("T4a 不含任何 intent=False 的命令名（read/soft 的都在）",
+names_all = [c["name"] for c in K.COMMANDS]
+chk("T4a hide 不含任何 intent=False 的命令名（read/soft 的都在）",
     all(n not in doc for n in write_names)
     and all(n in doc for n in read_soft_names),
     [n for n in write_names if n in doc])
-chk("T4b 总长不超过 2500 字", len(doc) <= 2500, len(doc))
-chk("T4c 两次调用输出相同（纯函数、确定）",
-    doc == K.intent_doc() and K.intent_doc() == K.intent_doc(max_chars=2500), "")
-doc2 = K.intent_doc(max_chars=200)
+chk("T4b hide 总长不超过 2500 字", len(doc) <= 2500, len(doc))
+chk("T4b2 默认（mark）总长不超过 2500 字", len(doc_m) <= 2500, len(doc_m))
+chk("T4c 两次调用输出相同（纯函数、确定；默认＝closed=\"mark\"）",
+    doc_m == K.intent_doc() and K.intent_doc() == K.intent_doc(closed="mark"), "")
+
+
+def _note_per_line_ok():
+    """mark 文档逐行核对：未开放命令的行带「暂不支持」，已开放的行不带。"""
+    for ln in doc_m.splitlines():
+        if not ln.startswith("- "):
+            continue
+        nm = ln[2:].split("：", 1)[0]
+        if (nm in write_names) != ("暂不支持" in ln):
+            return False
+    return True
+
+
+chk("T4e mark：18 条全列、未开放九条行尾带「暂不支持」标注（恰好九处、逐行"
+    "对得上）",
+    all(n in doc_m for n in names_all)
+    and doc_m.count("暂不支持") == len(write_names)
+    and _note_per_line_ok(), "")
+chk("T4f plain：18 条全列、无任何标注、与 mark 不同、非法 closed 值拒绝",
+    all(n in doc_p for n in names_all) and "暂不支持" not in doc_p
+    and doc_p != doc_m, "")
+try:
+    K.intent_doc(closed="nope")
+    _ve = "没抛"
+except ValueError:
+    _ve = "ValueError"
+chk("T4g 非法 closed 值抛 ValueError", _ve == "ValueError", _ve)
+doc2 = K.intent_doc(max_chars=200)   # mark 模式下预算压小：标注计入长度
 chk("T4d 预算压小时按条截断并注明",
-    len(doc2) < len(doc) and "没列出" in doc2
-    and doc2.splitlines()[0] == doc.splitlines()[0]
+    len(doc2) < len(doc_m) and "没列出" in doc2
+    and doc2.splitlines()[0] == doc_m.splitlines()[0]
     and doc2 == K.intent_doc(max_chars=200), len(doc2))
 
 # ============ T5 render 对没过 validate 的参数抛 ValueError ============

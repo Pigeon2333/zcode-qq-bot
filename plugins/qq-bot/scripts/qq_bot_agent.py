@@ -40,6 +40,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import qq_commands
 import qq_common as C
 import qq_scheduler
 import qq_tools
@@ -5506,6 +5507,172 @@ def _intent_botloop_verdict(text, cands):
     return (verdict, pick)
 
 
+# ---- 主人私聊自然语言指令识别（C2） ----
+# 精确命令（owner_command）没命中时，用一次判定模型的调用判断这句话是不是
+# qq_commands 表里已开放的某条指令；命中就渲染成精确命令文本交给现有的
+# owner_command 执行（执行体零重复，回复与主人手打命令逐字相同）。开关
+# owner_intent_enabled 默认关，关着时 _intent_command 第一行就返回 False，
+# 一切与从前逐字一致。
+
+def _owner_intent_on():
+    """主人自然语言指令开关（reply_config.owner_intent_enabled，默认关＝
+    与从前逐字一致）。读法照 _tool_loop_on：读不到、坏值一律 False，
+    只有布尔值 true 才算开。"""
+    cfg = load_json_const(REPLY_CONFIG_PATH, {})
+    return isinstance(cfg, dict) and cfg.get("owner_intent_enabled") is True
+
+
+def _intent_json(prompt):
+    """判定模型调用（route judge）＋取 JSON，返回 dict 或 None。解析按三步
+    试：① 整段 strip 后 loads；② 去掉首尾 ``` 围栏再整段 loads；③ 首个
+    { 到最后一个 } 的子串 loads。不能用取首个花括号块（正则 \\{[^{}]*\\}）
+    的那种写法——指令识别的输出里 args 是嵌套对象，那样会取到内层的
+    {"minutes": 30} 而丢掉外层。三步都失败、模型抛异常、结果不是 dict，
+    一律返回 None，不外抛。"""
+    try:
+        _m, raw = call_glm_with_fallback([{"role": "user", "content": prompt}],
+                                         route="judge")
+    except Exception:
+        return None
+    s = str(raw or "").strip()
+    if not s:
+        return None
+    cands = [s]
+    if s.startswith("```"):                      # ② 去掉首尾的 ``` 围栏
+        s2 = s[s.find("\n") + 1:] if "\n" in s else ""
+        s2 = s2.strip()
+        if s2.endswith("```"):
+            s2 = s2[:-3].strip()
+        cands.append(s2)
+    i, j = s.find("{"), s.rfind("}")             # ③ 首个 { 到最后一个 }
+    if i != -1 and j > i:
+        cands.append(s[i:j + 1])
+    for cand in cands:
+        try:
+            d = json.loads(cand)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(d, dict):
+            return d
+    return None
+
+
+def _intent_prompt(text, doc=None):
+    """给判定模型的提示词（纯函数，不调模型、不读配置）。doc 缺省用
+    qq_commands.intent_doc()（默认 closed="mark"：18 条全列、未开放九条带
+    「暂不支持」标注——清单里没有「暂停/恢复」时，模型被迫在已开放条目里
+    挑最像的，全量实测把「先暂停」判成安静并自己编 minutes=10、「恢复回复」
+    三条全判成继续）。文案口语，不出现任何厂商的模型名。"""
+    if doc is None:
+        doc = qq_commands.intent_doc()
+    return ("机器人这里有一张它能做的指令清单，每条写了名字、用途、例句和"
+            "参数，有的条目行尾标着「暂不支持」。请你判断主人发给机器人的"
+            "下面这句话，是不是在下达清单里的某一条指令。\n"
+            "指令清单：\n" + str(doc) + "\n"
+            "判断规矩：\n"
+            "- 聊天、提问、发任务、发感慨、陈述事实，都算不是指令；主人是在"
+            "说一件事、而不是让机器人去做，也算不是指令。\n"
+            "- 拿不准就算不是指令；只能从上面的清单里选，清单之外没有指令。\n"
+            "- 清单里标着「暂不支持」的条目，主人要的正是那件事时，is_cmd 填 "
+            "false，不要用清单里的其它条目代替。\n"
+            "- 参数只能填主人原话里说到的，或者参数说明里列出的选项；主人没"
+            "说的参数不要填。\n"
+            "只输出一行 JSON，不要解释、不要用围栏："
+            "{\"is_cmd\": true或false, \"name\": \"指令名\", \"args\": {参数}, "
+            "\"confidence\": 0到1}；不是指令时 name 填空字符串、args 填空对象。\n"
+            "主人的这句话：" + str(text or ""))
+
+
+def _intent_command(daemon, msg):
+    """主人私聊自然语言指令识别。返回 True＝已处理（已回复并确认），False＝
+    不是指令、照原流程往下走。前提任一不满足直接返回 False、不调模型：
+    开关开；是主人；私聊；遥控开关开（与精确命令同门槛，与 owner_command
+    的调用前提一致）；纯文字（带图不调）；正文去首尾空白后 1 到 200 字。
+    任何解析或校验失败都当不是指令、零副作用；缺必填参数走表里的反问文本
+    （带 ask_extra 的附上对应的列表）。日志一律不记主人原话、不记参数值。"""
+    if not _owner_intent_on():
+        return False
+    if not is_owner(msg) or msg.get("chat_type") != "private":
+        return False
+    if not feature_enabled("remote_control_enabled"):
+        return False
+    if msg.get("image_urls"):
+        return False
+    body = str(msg.get("text") or "").strip()
+    if not body or len(body) > 200:
+        return False
+    d = _intent_json(_intent_prompt(body))
+    if not isinstance(d, dict):
+        out("AGENT_INTENT_SKIP reason=no_json")
+        return False
+    if d.get("is_cmd") is not True:
+        return False                              # 最常见：聊天，不记日志
+    name = str(d.get("name") or "").strip()
+    ent = qq_commands.by_name(name)
+    if ent is None or ent.get("intent") is not True:
+        out("AGENT_INTENT_SKIP reason=closed")
+        return False
+    conf_raw = d.get("confidence")
+    if isinstance(conf_raw, bool) or not isinstance(conf_raw, (int, float)) \
+            or conf_raw != conf_raw \
+            or float(conf_raw) < qq_commands.INTENT_MIN_CONF[ent["risk"]]:
+        out("AGENT_INTENT_SKIP reason=low_conf")
+        return False
+    conf = float(conf_raw)
+    args = d.get("args")
+    if not isinstance(args, dict):
+        out("AGENT_INTENT_SKIP reason=bad_args")
+        return False
+    if qq_commands.missing(name, args):
+        ask = str(ent.get("ask_missing") or "")
+        extra = ent.get("ask_extra")
+        if extra and qq_commands.by_name(extra) is not None:
+            _boom = ""
+            try:
+                _eh, _er = owner_command(
+                    dict(msg, text=qq_commands.render(extra, {})), daemon)
+            except Exception as e:
+                _eh, _er = False, ""
+                _boom = "AGENT_INTENT_ASK_EXTRA_FAIL name=%s %r" % (name, e)
+            if _boom:
+                out(_boom)
+            elif not _eh:
+                out("AGENT_INTENT_ASK_EXTRA_FAIL name=%s reason=no_hit" % name)
+            elif _er:
+                ask = ask + "\n\n" + _er
+        try:
+            daemon.send("private", msg["chat_id"], [ask])
+        except Exception as e:
+            out("AGENT_OWNER_CMD_FAIL %r" % e)
+        daemon.ack([msg["id"]])
+        RT.count_processed()
+        out("AGENT_INTENT_ASK name=%s" % name)
+        return True
+    ok, norm, why = qq_commands.validate(name, args, body)
+    if not ok:
+        pm = (re.search(r"缺少必填参数：(\w+)", str(why or ""))
+              or re.search(r"参数 (\w+)", str(why or ""))
+              or re.search(r"多了不认识的参数：(\w+)", str(why or "")))
+        out("AGENT_INTENT_SKIP reason=validate%s"
+            % ((" param=" + pm.group(1)) if pm else ""))
+        return False
+    rendered = qq_commands.render(name, norm)
+    hit, reply = owner_command(dict(msg, text=rendered), daemon)
+    if not hit:
+        reply = "这条没有执行，请直接发：" + rendered
+        out("AGENT_INTENT_RENDER_MISS name=%s" % name)
+    try:
+        daemon.send("private", msg["chat_id"], [reply])
+    except Exception as e:
+        out("AGENT_OWNER_CMD_FAIL %r" % e)
+    daemon.ack([msg["id"]])
+    RT.count_processed()
+    if hit:   # RENDER_MISS（内部错误、没执行成）不算命中，不记 HIT
+        out("AGENT_INTENT_HIT name=%s risk=%s conf=%.2f"
+            % (name, ent["risk"], conf))
+    return True
+
+
 def _devctrl_should_ask(text, mode, flow):
     """是否需要发起授权（协议一）。mode: auto | keyword。
 
@@ -7976,6 +8143,11 @@ def process(daemon, msg):
                 out("AGENT_OWNER_CMD msg_id=%s chat=private/%s cmd=%.30s"
                     % (msg["id"], msg["chat_id"], str(msg.get("text", ""))))
                 return
+        # 主人自然语言指令识别（C2）：精确命令没命中才轮到；前提检查都在
+        # _intent_command 内部，开关关时第一行就返回。限额快速通道里那处
+        # owner_command 之后不插——限额期间不调模型。
+        if _intent_command(daemon, msg):
+            return
         # 合并转发导入：主人把聊天记录合并转发发给机器人并说「导入」（可带会话名，
         # 如"导入 和小明的聊天"）→ 展平内容直接入隔离库，插件页可学习。
         # 不碰数据库解密，官方消息通道，任何 QQ 版本可用。

@@ -602,20 +602,31 @@ def _param_note(p):
     return "%s%s（%s）" % (p["name"], "" if p["required"] else "?", p["desc"])
 
 
-def intent_doc(max_chars=2500):
-    """给判定模型看的提示词片段：只列 intent=True 的命令，一条一行
-    「名字：说明。例：「…」「…」「…」。参数：…」。总长不超过 max_chars
-    （默认 2500），放不下的从第一条放不下的起整条截掉，末尾注明还剩几条
-    （那行说明不计入预算）。纯函数、输出确定。"""
+def intent_doc(max_chars=2500, closed="mark"):
+    """给判定模型看的提示词片段：closed="mark"（默认）＝18 条全列，未开放的
+    九条在行尾加「暂不支持」标注——清单里没有「暂停/恢复」时，主人要的正是
+    这件事，模型会被迫在已开放条目里挑最像的（把「先暂停」判成安静、「恢复
+    回复」判成继续），标注让模型对这类话直接回 is_cmd=false；closed="hide"
+    ＝只列 intent=True 的（旧行为）；closed="plain"＝全列但不标注（评测对照
+    用）。一条一行「名字：说明。例：「…」「…」「…」。参数：…」。总长不超过
+    max_chars（默认 2500），放不下的从第一条放不下的起整条截掉，末尾注明
+    还剩几条（那行说明不计入预算）；标注计入长度。纯函数、输出确定。"""
+    if closed not in ("mark", "hide", "plain"):
+        raise ValueError("closed 要是 mark/hide/plain 之一：%r" % (closed,))
+    note = ("（暂不支持：主人要的正是这件事时，is_cmd 填 false，"
+            "不要换成清单里的其它条目）")
     lines = []
-    total = sum(1 for c in COMMANDS if c["intent"])
+    total = sum(1 for c in COMMANDS
+                if c["intent"] or closed in ("mark", "plain"))
     used = 0
     for c in COMMANDS:
-        if not c["intent"]:
+        if not c["intent"] and closed == "hide":
             continue
         ps = "、".join(_param_note(p) for p in c["params"]) or "无"
         line = "- %s：%s。例：「%s」。参数：%s" % (
             c["name"], c["desc"], "」「".join(c["examples"]), ps)
+        if closed == "mark" and not c["intent"]:
+            line += note
         if used + len(line) + 1 > max_chars:
             rest = total - len(lines)
             if rest > 0:
