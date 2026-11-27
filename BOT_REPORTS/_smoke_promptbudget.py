@@ -255,7 +255,7 @@ chk("5b (a)+(b)：行为规则保留",
 def gate_capture():
     seen = {}
 
-    def _fake(ms, t, budget_sec=200):
+    def _fake(ms, t, budget_sec=200, **kwargs):
         seen["sys"], seen["usr"] = ms[0]["content"], ms[1]["content"]
         return "m", "Y"
     return seen, _fake

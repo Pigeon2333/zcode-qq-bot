@@ -154,7 +154,7 @@ BACKUP_GROUPS = [
      "desc": "回复模式/白名单/私聊/模型链/应用设置等——丢了可手动重配",
      "files": ["group_reply_modes.json", "reply_config.json",
                "private_config.json", "group_whitelist.json",
-               "model_chain.json", "app_config.json"]},
+               "model_chain.json", "model_routes.json", "app_config.json"]},
     {"group": "voice", "label": "语音音色", "critical": False,
      "desc": "克隆音色（索引+参考音频本体）、微调模型索引——音频本体很小"
              "（约 1MB）会一起备；微调模型文件太大只备索引，丢了需重新导入",

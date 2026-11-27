@@ -184,7 +184,7 @@ def group_msg(text, mid, trig="chat_random", sender="777", msg_id=7001, **kw):
 
 def glm_script(resps, calls):
     """按调用次序回放的 glm 桩；str→(模型名, 文本)；Exception→原样抛出。"""
-    def _glm(messages, text_ctx="", budget_sec=200):
+    def _glm(messages, text_ctx="", budget_sec=200, **kwargs):
         calls.append(messages)
         r = resps[min(len(calls) - 1, len(resps) - 1)]
         if isinstance(r, BaseException):
@@ -641,7 +641,7 @@ _PARSE_CASES = [
 ]
 for _i, (_raw, _want) in enumerate(_PARSE_CASES):
     with patched(A, call_glm_with_fallback=lambda ms, t="", budget_sec=200,
-                 _r=_raw: ("m", _r)):
+                 _r=_raw, **kwargs: ("m", _r)):
         _got_p = A._botloop_precheck(["话"])
         _got_j = A._botloop_judge("我是个AI助手")
     chk("S17-%d 预判/判定从严解析 %s → %s" % (_i + 1, _raw, _want),

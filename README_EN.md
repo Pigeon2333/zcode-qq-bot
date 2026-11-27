@@ -97,6 +97,8 @@ This is the mirror image of the MCP tool bridge above: **the bridge lets the bot
 
 The model chain is what keeps her stable. Configure multiple models (Zhipu, DeepSeek, Kimi, OpenAI, Grok, Gemini, or any OpenAI-compatible endpoint) in order — if one fails the next takes over, 429s trigger a cooldown before returning, expired plans get skipped. Each entry binds its own API key; overseas providers can use a dedicated outbound proxy.
 
+Four kinds of work (replies, whether-to-reply gating, small judgements, memory distillation) can each be pinned to a specific chain entry in Console → Settings → Models & cost ("choose models by purpose"); everything follows the chain by default, and leaving it untouched keeps today's behavior. A pinned model still falls back to the chain when it fails or is cooling down, and a console-pinned "use now" model keeps top priority. Each purpose carries its own retry budget (gating and judgements default to 30 s, replies and memory to 200 s, adjustable 5–600 s) — the budget caps how long one call keeps hopping to the next model when servers misbehave; when it runs out that call is abandoned (a reply is skipped for that message, a gate or judgement falls back to its default) and the next message is served as usual.
+
 Usage stats live on the model page: totals, last 30 days, today, broken down by model, with trend charts. Set a rolling token quota and she stops when it's hit. To save money, enable lean context (30–45% fewer tokens) and peak-hour saving mode (thinking off, flagship skipped automatically).
 
 Zhipu's free quota (like new-user grants) is consumed first automatically by entries on the same key, with graceful fallback when it runs out. No manual juggling.

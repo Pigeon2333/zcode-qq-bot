@@ -37,6 +37,7 @@ DATA_DIR = C.DATA_DIR
 TOKEN_PATH = os.path.join(DATA_DIR, "token")
 API_KEY_PATH = os.path.join(DATA_DIR, "zhipu_api_key")
 MODEL_CHAIN_PATH = os.path.join(DATA_DIR, "model_chain.json")
+MODEL_ROUTES_PATH = os.path.join(DATA_DIR, "model_routes.json")
 GROUPS_PATH = os.path.join(DATA_DIR, "group_whitelist.json")
 GROUP_MODES_PATH = os.path.join(DATA_DIR, "group_reply_modes.json")
 PRIVATE_CONFIG_PATH = os.path.join(DATA_DIR, "private_config.json")
@@ -1231,6 +1232,7 @@ async function vModels(){
   <div class="k" style="margin-top:6px">逐模型覆盖：点模型行「编辑」在弹窗中单独设置（默认=跟随上面的默认思考）。</div></div>
  <div class="card"><div class="k">模型降级链：从上往下逐个尝试，某个模型限流/失效会自动冷却并切到下一个。</div>
  <div class="k" style="margin-top:4px">点「编辑」改模型名 / API Key / 上下文档位 / 思考模式。「立即使用」= 无视冷却强制切到该模型（自动切换切错了、或模型已恢复但还在冷却时用）；它再次失败或被移出链会自动解锁。</div>
+ <div class="k" style="margin-top:4px">想把某一类活固定用链里的某个模型（回复/该不该接话/判定/记忆），到「设置 → 模型与消耗 → 按用途选模型」里选；默认全部跟随本链。</div>
  <div class="chain" style="margin-top:10px">${rows||'<i class="k">空</i>'}</div>
  <div style="margin-top:10px;display:flex;gap:8px"><button class="act" onclick="editModel(-1)">＋ 添加模型</button></div></div>
  <div class="card"><div class="k" style="display:flex;gap:10px;align-items:center;margin-bottom:8px">限额管理
@@ -2391,6 +2393,7 @@ async function vSettings(){
   +stSec('上下文（每次带多少历史和记忆）')+stLean(rv)+stDyn(rv)+stHist(rv)
   +stSec('同时处理')+stWorkers(c)
   +stSec('省额度')+stEcon(rv)
+  +stSec('按用途选模型')+stRoutes()
   :__ST_TAB==='style'
   ?stSec('活跃程度')+stActivityGuide(c,rv)
   +stSec('对话架构（怎么生成回复）')+stArchV2(rv)
@@ -2411,6 +2414,7 @@ async function vSettings(){
  $('#view').innerHTML=__stTabBar()+head('机器人设置')+saveHint(_SAVE_HINT)+body;
  if(__ST_TAB==='maint')bkGroupsRender();
  if(__ST_TAB==='style'||__ST_TAB==='model')visionStatePaint();
+ if(__ST_TAB==='model')routesPaint();
  if(__ST_TAB==='general'){
   // 下面三项的控件（NapCat 下载进度、QQ 版本锁、独立运行时）已迁到「框架管理」页，这里保留原来的时序，
   // 元素不在本页时各自直接返回
@@ -2790,6 +2794,62 @@ function stPrivacy(rv){return `
    <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;margin-top:8px"><span class="badge" style="background:var(--tint);color:var(--dim);flex:none">群成员画像、电脑状态感知 · ${(rv.member_profiles_enabled||rv.env_pulse_enabled)?'有开启的':'都未开启'}</span><span class="k">把群成员的昵称和部分发言、或这台电脑的状态放进发给模型的上下文。它们是插件，开关在「插件」页，默认关闭</span></div>
   </div>
   <div class="k" style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--line)">API Key 只存在本机数据目录，自动备份不含密钥。</div></div>`}
+// ---- 按用途选模型（model_routes.json）：回复/该不该接话/判定/记忆四类活
+// 各自可点名模型链里的一个条目，默认全部跟随主链；看图/识图不在这里——
+// 它就是上面的「识图模型」格。下拉选项只来自用户自己的模型链（不预置任何模型名）。
+const MR_NAMES={reply:'回复',gate:'该不该接话',judge:'判定',memo:'记忆'};
+function stRoutes(){return `
+ <div class="card"><div class="k" style="margin-bottom:6px"><b>按用途选模型</b><span class="k" style="margin-left:6px">把某一类活固定交给模型链里的某个模型；默认全部跟随主链，一行都不改就是现在的做法</span></div>
+  <div id="mr-rows" class="k" style="margin-top:8px">读取中…</div>
+  <div class="k" style="margin-top:8px">看图/识图用的模型不在这里换：到上面的「识图模型」一格去改。</div>
+  <div class="k" style="margin-top:4px">预算：一次调用超过这么多秒，就不再换下一个模型（默认 回复、记忆 200 秒，该不该接话、判定 30 秒）。</div>
+  <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+   <button class="act" onclick="saveRoutes()">保存路由</button>
+   <span class="k">点名后失败或冷却时照旧回落主链；控制台「立即使用」锁定的模型仍排最前</span></div></div>`}
+async function routesPaint(){
+ const el=document.getElementById('mr-rows');
+ if(!el)return;
+ const [r,u,k]=await Promise.all([
+  api('/api/model-routes',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>null),
+  api('/api/usage').catch(()=>({})),
+  api('/api/keys').catch(()=>({keys:[]}))
+ ]);
+ if(!r||!r.ok){el.textContent='读不到路由配置';return}
+ const byRoute={};(u.by_route||[]).forEach(x=>{byRoute[x.route]=x});
+ const entries=r.entries||[];
+ window._mrEntries=entries;
+ window._mrBudget=r.budget||{};   // 保存时预算框被清空就用这个值（各路由自己的默认）
+ const keys=k.keys||[];
+ const klabel=id=>{const kk=keys.find(x=>x.id===id);return kk?(kk.primary?'主Key':(kk.label||id)):(id||'')};
+ const elabel=e=>e.model+(e.key?'（'+klabel(e.key)+'）':'');
+ el.innerHTML=Object.keys(MR_NAMES).map(kk=>{
+  const v=r.routes[kk]||null;
+  const sel='<select id="mr-'+kk+'" class="mini" style="max-width:280px"><option value="">跟随主链</option>'
+   +entries.map(e=>'<option value="'+esc(JSON.stringify([e.key,e.model]))+'"'
+    +(v&&v.model===e.model&&(v.key||'')===e.key?' selected':'')+'>'+esc(elabel(e))+'</option>').join('')+'</select>';
+  const toks=byRoute[kk]?byRoute[kk].total.toLocaleString()+' tok / '+byRoute[kk].calls+' 次':'—';
+  const bud=(r.budget&&r.budget[kk])||200;
+  return '<div class="row" style="margin:4px 0;gap:8px;flex-wrap:wrap"><span style="flex:0 0 92px">'+MR_NAMES[kk]+'</span>'+sel
+   +'<span class="k" style="flex:none">预算</span><input id="mr-bud-'+kk+'" type="number" min="5" max="600" value="'+bud+'" style="width:70px"><span class="k" style="flex:none">秒</span>'
+   +'<span class="k mono" style="margin-left:auto">'+toks+'</span></div>';
+ }).join('');
+}
+async function saveRoutes(){
+ const routes={},budget={};
+ for(const kk of Object.keys(MR_NAMES)){
+  const sel=document.getElementById('mr-'+kk);
+  const b=document.getElementById('mr-bud-'+kk);
+  if(!sel||!b)return;
+  const v=sel.value;
+  if(v){try{const kv=JSON.parse(v);routes[kk]={model:kv[1],key:kv[0]||''}}catch(_){routes[kk]=null}}
+  else routes[kk]=null;
+  budget[kk]=Math.max(5,Math.min(600,parseInt(b.value,10)||((window._mrBudget||{})[kk]||200)));
+ }
+ const r=await api('/api/model-routes',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({routes,budget})}).catch(()=>null);
+ if(!r||r.ok===false){toast((r&&r.error)?r.error:'保存失败',false);return}
+ toast('按用途选模型已保存（即时生效）');
+}
 let _rtTimer=null;
 function rtPaint(rt){
  const el=document.getElementById('rt-status');
@@ -5233,6 +5293,56 @@ def write_const(path, text):
         raise
 
 
+# 按用途选模型（model_routes.json）：四条路由 reply/gate/judge/memo，
+# null/缺键/文件不存在＝跟随主链；预算是每条路由 5–600 的秒数。
+# caption（识图）不在这里——它就是「识图模型」那一格设置。
+MODEL_ROUTE_NAMES = ("reply", "gate", "judge", "memo")
+MODEL_ROUTE_BUDGET_DEFAULTS = {"reply": 200, "gate": 30, "judge": 30, "memo": 200}
+
+
+def _model_routes_read():
+    """读 model_routes.json 并规范化（与 agent 侧同一套回退规则）。"""
+    d = load_json_const(MODEL_ROUTES_PATH, {})
+    rin = d.get("routes") if isinstance(d, dict) and isinstance(d.get("routes"), dict) else {}
+    routes = {}
+    for k in MODEL_ROUTE_NAMES:
+        v = rin.get(k)
+        if isinstance(v, dict):
+            m = str(v.get("model", "")).strip()
+            kid = str(v.get("key", "")).strip()
+            routes[k] = {"model": m, "key": kid} if m else None
+        else:
+            routes[k] = None
+    bin_ = d.get("budget") if isinstance(d, dict) and isinstance(d.get("budget"), dict) else {}
+    budget = {}
+    for k in MODEL_ROUTE_NAMES:
+        try:
+            v = int(bin_.get(k))
+        except (TypeError, ValueError):
+            v = MODEL_ROUTE_BUDGET_DEFAULTS[k]
+        budget[k] = max(5, min(600, v))
+    return {"routes": routes, "budget": budget}
+
+
+def _model_chain_entries():
+    """模型链条目清单（下拉选项只来自这里）：[{model, key}]，链里写成字符串
+    的条目 key 为空串；超过 8 条的截断与 agent 侧 _chain_candidates 一致。"""
+    cfg = load_json_const(MODEL_CHAIN_PATH, {})
+    models = cfg.get("models")
+    if not isinstance(models, list):
+        return []
+    out = []
+    for e in models[:8]:
+        if isinstance(e, dict):
+            m = str(e.get("model", "")).strip()
+            kid = str(e.get("key", "")).strip()
+        else:
+            m, kid = str(e).strip(), ""
+        if m:
+            out.append({"model": m, "key": kid})
+    return out
+
+
 def _sticker_pool_items(data, pool):
     """取指定库条目；兼容旧版 {"items":[...]} 扁平结构（视为通用库）。"""
     if not isinstance(data, dict):
@@ -6109,6 +6219,7 @@ class UiHandler(BaseHTTPRequestHandler):
             daily = {}
             hourly = {}
             by_model = {}
+            by_route = {}
             try:
                 for ln in usage_path.read_text(encoding="utf-8").splitlines():
                     try:
@@ -6147,6 +6258,15 @@ class UiHandler(BaseHTTPRequestHandler):
                     e["completion"] += mc
                     e["total"] += mt
                     e["_last"] = max(e["_last"], ts)
+                    # 按用途聚合：route 缺字段或为空的旧记录归「未标注」
+                    rt = str(r.get("route") or "").strip() or "未标注"
+                    er = by_route.setdefault(rt, {"route": rt, "calls": 0,
+                                                  "prompt": 0, "completion": 0,
+                                                  "total": 0})
+                    er["calls"] += 1
+                    er["prompt"] += mp
+                    er["completion"] += mc
+                    er["total"] += mt
             except OSError:
                 pass
             rows = []
@@ -6156,6 +6276,10 @@ class UiHandler(BaseHTTPRequestHandler):
                              "total": e["total"],
                              "last": time.strftime("%m-%d %H:%M",
                                                    time.localtime(e["_last"])) if e["_last"] else "-"})
+            route_rows = [{"route": e["route"], "calls": e["calls"],
+                           "prompt": e["prompt"], "completion": e["completion"],
+                           "total": e["total"]}
+                          for e in sorted(by_route.values(), key=lambda x: -x["total"])]
             # 近30天逐日序列（无数据日补零，供趋势曲线）
             daily_rows = []
             for i in range(29, -1, -1):
@@ -6169,6 +6293,7 @@ class UiHandler(BaseHTTPRequestHandler):
                 he = hourly.get(key, {"hour": key, "tokens": 0, "calls": 0})
                 hourly_rows.append({"label": key, "tokens": he["tokens"], "calls": he["calls"]})
             return self._reply(200, {"ok": True, **totals, "by_model": rows,
+                                     "by_route": route_rows,
                                      "daily": daily_rows, "hourly": hourly_rows})
         if u.path == "/api/reply-config":
             data = load_json_const(REPLY_CONFIG_PATH, {})
@@ -6953,7 +7078,8 @@ class UiHandler(BaseHTTPRequestHandler):
                 cfgs = {"app_config.json": ddir / "app_config.json",
                         "reply_config.json": ddir / "reply_config.json",
                         "group_whitelist.json": ddir / "group_whitelist.json",
-                        "model_chain.json": ddir / "model_chain.json"}
+                        "model_chain.json": ddir / "model_chain.json",
+                        "model_routes.json": ddir / "model_routes.json"}
                 for name, p in cfgs.items():
                     if p.is_file():
                         try:
@@ -7150,6 +7276,70 @@ class UiHandler(BaseHTTPRequestHandler):
                 cfg["thinking"] = clean
             write_const(MODEL_CHAIN_PATH, json.dumps(cfg, ensure_ascii=False, indent=2))
             return self._reply(200, {"ok": True})
+        if u.path == "/api/model-routes":
+            # 按用途选模型：空请求体＝读取；带 routes/budget＝校验并保存
+            # （原子写 model_routes.json，机器人每次调用时自己读，无需重启）。
+            entries = _model_chain_entries()
+            if "routes" not in body and "budget" not in body:
+                cur = _model_routes_read()
+                return self._reply(200, {"ok": True, "routes": cur["routes"],
+                                         "budget": cur["budget"], "entries": entries})
+            routes_in = body.get("routes")
+            budget_in = body.get("budget")
+            if not isinstance(routes_in, dict):
+                return self._reply(400, {"ok": False,
+                                         "error": "routes 必须是一个对象：每个用途填空（跟随主链）或模型链里的一个条目"})
+            if not isinstance(budget_in, dict):
+                return self._reply(400, {"ok": False,
+                                         "error": "budget 必须是一个对象：每个用途一项预算秒数（5–600）"})
+            name_cn = {"reply": "回复", "gate": "该不该接话", "judge": "判定", "memo": "记忆"}
+            for k in routes_in:
+                if k not in MODEL_ROUTE_NAMES:
+                    return self._reply(400, {"ok": False,
+                                             "error": "「%s」不是有效的用途（只支持 reply/gate/judge/memo）" % k})
+            for k in budget_in:
+                if k not in MODEL_ROUTE_NAMES:
+                    return self._reply(400, {"ok": False,
+                                             "error": "「%s」不是有效的用途（只支持 reply/gate/judge/memo）" % k})
+            chain_set = {(e["model"], e["key"]) for e in entries}
+            norm_routes = {}
+            for k in MODEL_ROUTE_NAMES:
+                v = routes_in.get(k)
+                if v is None:
+                    norm_routes[k] = None
+                elif isinstance(v, dict):
+                    m = str(v.get("model", "")).strip()
+                    kid = str(v.get("key", "")).strip()
+                    if not m:
+                        return self._reply(400, {"ok": False,
+                                                 "error": "「%s」的模型名是空的：选模型链里的一个条目，或改回跟随主链" % name_cn[k]})
+                    if (m, kid) not in chain_set:
+                        return self._reply(400, {"ok": False,
+                                                 "error": "「%s」选的模型不在模型链里：先到模型链添加它，再回来选" % name_cn[k]})
+                    norm_routes[k] = {"model": m, **({"key": kid} if kid else {})}
+                else:
+                    return self._reply(400, {"ok": False,
+                                             "error": "「%s」的值只能是空（跟随主链）或模型链里的一个条目" % name_cn[k]})
+            norm_budget = {}
+            for k in MODEL_ROUTE_NAMES:
+                v = budget_in.get(k, MODEL_ROUTE_BUDGET_DEFAULTS[k])
+                if isinstance(v, bool):
+                    return self._reply(400, {"ok": False,
+                                             "error": "「%s」的预算要是 5–600 的秒数" % name_cn[k]})
+                try:
+                    iv = int(v)
+                except (TypeError, ValueError):
+                    return self._reply(400, {"ok": False,
+                                             "error": "「%s」的预算要是 5–600 的秒数" % name_cn[k]})
+                if not (5 <= iv <= 600):
+                    return self._reply(400, {"ok": False,
+                                             "error": "「%s」的预算 %d 超出范围（5–600 秒）" % (name_cn[k], iv)})
+                norm_budget[k] = iv
+            write_const(MODEL_ROUTES_PATH, json.dumps(
+                {"routes": norm_routes, "budget": norm_budget},
+                ensure_ascii=False, indent=2))
+            return self._reply(200, {"ok": True, "routes": norm_routes,
+                                     "budget": norm_budget, "entries": entries})
         if u.path == "/api/groups":
             groups = body.get("groups")
             if not isinstance(groups, list) or len(groups) > 50 or \

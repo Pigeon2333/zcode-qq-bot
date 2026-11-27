@@ -18,10 +18,11 @@
   d 上限输入框 onchange 表达式把 this.value 换成 0、6、-5、99999、"abc"、""（空）
     逐个实际执行，提交给 saveKVLoad 的 vision_caption_daily_cap 必须是
     0、6、0、5000、0、0；表达式里不含「0=不识」字样。
-  e 卡片数与分区标题：model 分页 7 张卡（2026-11-27 起多一张「同时处理」卡——
-    WP-04 主循环并行的并发数输入）、分区标题依次是「API Key 与代理」「识图模型
-    （后台识图与看图用）」「上下文（每次带多少历史和记忆）」「同时处理」「省额度」；
-    style 分页 8 张卡。
+  e 卡片数与分区标题：model 分页 8 张卡（2026-11-27 起多一张「同时处理」卡——
+    WP-04 主循环并行的并发数输入；同日再多一张「按用途选模型」卡——WP-05 路由表）、
+    分区标题依次是「API Key 与代理」「识图模型
+    （后台识图与看图用）」「上下文（每次带多少历史和记忆）」「同时处理」「省额度」
+    「按用途选模型」；style 分页 8 张卡。
 
 隔离方式：import 被测模块前把 QQBOT_DATA_DIR 指到 tempfile.mkdtemp()（照
 _smoke_promptbudget_ui 的做法）；服务端处理器用 UiHandler.__new__ 直接调；
@@ -360,14 +361,15 @@ def t_page(rv77, rv_def):
         chk("d1' 每次都走 /api/reply-config、提示「每日识图上限已保存」", allok, out.get("d"))
         chk("d2 表达式里不含「0=不识」字样", "0=不识" not in expr and "0＝不识" not in expr, expr[:120])
 
-        # ---- e 卡片数与分区标题（2026-11-27 起 model 分页多一张「同时处理」卡）
+        # ---- e 卡片数与分区标题（2026-11-27 起 model 分页多一张「同时处理」卡，
+        #      同日再多一张「按用途选模型」卡——WP-05 路由表）
         cards = out.get("cards", {})
-        chk("e1 model 分页 7 张卡、div 闭合平衡", cards.get("model") == 7 and out.get("bal", {}).get("model") == 0,
+        chk("e1 model 分页 8 张卡、div 闭合平衡", cards.get("model") == 8 and out.get("bal", {}).get("model") == 0,
             {k: cards.get(k) for k in cards})
         secs = re.findall(r'letter-spacing:1px">(.*?)</div>', model)
-        chk("e2 model 分区标题依次是 API Key 与代理 / 识图模型 / 上下文 / 同时处理 / 省额度",
+        chk("e2 model 分区标题依次是 API Key 与代理 / 识图模型 / 上下文 / 同时处理 / 省额度 / 按用途选模型",
             secs == ["API Key 与代理", "识图模型（后台识图与看图用）",
-                     "上下文（每次带多少历史和记忆）", "同时处理", "省额度"], secs)
+                     "上下文（每次带多少历史和记忆）", "同时处理", "省额度", "按用途选模型"], secs)
         chk("e3 style 分页仍是 8 张卡", cards.get("style") == 8, cards.get("style"))
     finally:
         shutil.rmtree(str(work), ignore_errors=True)

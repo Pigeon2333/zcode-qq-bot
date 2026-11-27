@@ -157,7 +157,7 @@ def group_msg(text, mid, trig="chat_random", sender="777", msg_id=7001, **kw):
 
 def glm_script(resps, calls):
     """按调用次序回放的 glm 桩；str→(模型名, 文本)；Exception→原样抛出。"""
-    def _glm(messages, text_ctx="", budget_sec=200):
+    def _glm(messages, text_ctx="", budget_sec=200, **kwargs):
         calls.append(messages)
         r = resps[min(len(calls) - 1, len(resps) - 1)]
         if isinstance(r, BaseException):

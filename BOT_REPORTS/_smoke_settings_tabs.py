@@ -72,8 +72,9 @@ C_FIX = {
 }
 KEYS_FIX = {"keys": [{"id": "k1", "label": "测试", "mask": "sk-***", "provider": "zhipu", "primary": True}]}
 # model 分页 2026-11-25 起多了一张「识图模型」卡（识图模型与每日上限从「聊天风格」搬来）；
-# 2026-11-27 起又多一张「同时处理」卡（WP-04 主循环并行的并发数输入）
-EXPECT_CARDS = {"general": 8, "model": 7, "style": 8, "safe": 4, "maint": 4}
+# 2026-11-27 起又多一张「同时处理」卡（WP-04 主循环并行的并发数输入）；
+# 同日再多一张「按用途选模型」卡（WP-05 路由表）
+EXPECT_CARDS = {"general": 8, "model": 8, "style": 8, "safe": 4, "maint": 4}
 EXPECT_SECTIONS = {
     "general": ["身份与称呼", "运行环境", "功能开关", "应用行为"],
     "model": ["API Key 与代理", "识图模型（后台识图与看图用）",

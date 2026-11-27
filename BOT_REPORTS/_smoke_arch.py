@@ -166,7 +166,7 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
 
 
     def _always(text):
-        def _f(messages, text_ctx="", budget_sec=200):
+        def _f(messages, text_ctx="", budget_sec=200, **kwargs):
             calls.append(copy.deepcopy(messages))
             return "m", text
         return _f
@@ -200,7 +200,7 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
         LOG.clear()
         script = iter(['{"say": []}', '{"say": ["在呢"]}'])
 
-        def _next2(ms, t, budget_sec=200):
+        def _next2(ms, t, budget_sec=200, **kwargs):
             calls.append(copy.deepcopy(ms))
             return "m", next(script)
 
@@ -243,14 +243,14 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
                 A._GATE_Y_NOTE not in calls[0][0]["content"] and A._GATE_E_NOTE_JSON not in calls[0][0]["content"])
 
     # 判定
-    with patched(A, call_glm_with_fallback=lambda ms, t, budget_sec=200: ("m", " Y。")):
+    with patched(A, call_glm_with_fallback=lambda ms, t, budget_sec=200, **kwargs: ("m", " Y。")):
         chk("3g 判定返回 Y", A._reply_gate_v2(dm, group_msg("x", "m", []), [
             {"role": "system", "content": "S"}, {"role": "user", "content": "U"}], "智谱娘") == "Y")
-    with patched(A, call_glm_with_fallback=lambda ms, t, budget_sec=200: ("m", "不知道")):
+    with patched(A, call_glm_with_fallback=lambda ms, t, budget_sec=200, **kwargs: ("m", "不知道")):
         chk("3h 判定输出不合法 → 按沉默", A._reply_gate_v2(dm, group_msg("x", "m", []), [
             {"role": "system", "content": "S"}, {"role": "user", "content": "U"}], "智谱娘") == "N")
 
-    def _raise(ms, t, budget_sec=200):
+    def _raise(ms, t, budget_sec=200, **kwargs):
         raise RuntimeError("down")
 
     with patched(A, call_glm_with_fallback=_raise):
@@ -458,7 +458,7 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
             vis.append(1)
             raise _Stop()
 
-        def _chain(messages, text_ctx="", budget_sec=200):
+        def _chain(messages, text_ctx="", budget_sec=200, **kwargs):
             mcalls.append(messages[0]["content"][:20])
             if len(messages) == 2 and _gate_head in messages[0]["content"]:
                 gates.append(messages[1]["content"])
@@ -760,7 +760,7 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
         row(now - 400, "阿明", "我去趟楼下", qq="20002"),
         row(now - 200, "BOT", "行，顺便帮我带瓶可乐", is_bot=True)])
     c14 = []
-    with patched(A, call_glm_with_fallback=lambda ms, t, budget_sec=200: c14.append(ms) or (
+    with patched(A, call_glm_with_fallback=lambda ms, t, budget_sec=200, **kwargs: c14.append(ms) or (
             "m", '{"nudge": true, "say": "楼下的事办完了吗"}')):
         t14 = A._nudge_compose_v2(ndm, "private", "20002")
     txt14 = c14[0][0]["content"] + "\n" + c14[0][1]["content"]
@@ -769,15 +769,15 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
         "说到一半" in txt14 and "新进展" in txt14 and "距现在多久" in txt14
         and "先判断对话停在哪一种" not in txt14 and "新话头" not in txt14
         and '"nudge": false' in txt14)
-    with patched(A, call_glm_with_fallback=lambda ms, t, budget_sec=200: ("m", '{"nudge": false, "say": ""}')):
+    with patched(A, call_glm_with_fallback=lambda ms, t, budget_sec=200, **kwargs: ("m", '{"nudge": false, "say": ""}')):
         chk("14j 判断不追 → 空串", A._nudge_compose_v2(ndm, "private", "20002") == "")
     LOG.clear()
-    with patched(A, call_glm_with_fallback=lambda ms, t, budget_sec=200: ("m", "要问一下吗")):
+    with patched(A, call_glm_with_fallback=lambda ms, t, budget_sec=200, **kwargs: ("m", "要问一下吗")):
         chk("14k 输出不是 JSON → 不追并记日志",
             A._nudge_compose_v2(ndm, "private", "20002") == ""
             and any(x.startswith("AGENT_NUDGE_JSON_FAIL") for x in LOG), LOG[-2:])
     g14 = []
-    with patched(A, call_glm_with_fallback=lambda ms, t, budget_sec=200: g14.append(ms) or (
+    with patched(A, call_glm_with_fallback=lambda ms, t, budget_sec=200, **kwargs: g14.append(ms) or (
             "m", '{"nudge": false}')):
         A._nudge_compose_v2(ndm, "group", "555001")
     chk("14l 群聊版更保守：明说冷场是常态、不@人不找话",
@@ -872,7 +872,7 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
                      _proactive_state_save=lambda: None,      # 不写真实的 proactive_state.json
                      _dedup_reply=lambda dm, m, texts: (list(texts), 0),
                      load_json_const=_cfg_ljc({"proactive_groups_enabled": True}),
-                     call_glm_with_fallback=lambda ms, t, budget_sec=200: used.append(ms[0]["content"][:12]) or ("m", reply),
+                     call_glm_with_fallback=lambda ms, t, budget_sec=200, **kwargs: used.append(ms[0]["content"][:12]) or ("m", reply),
                      _proactive_compose=lambda dm, ct, cid: (used.append("v1") or [
                          {"role": "system", "content": "S"}, {"role": "user", "content": "U"}], "p"), **_pm):
             A._proactive_tick(dm)
@@ -948,7 +948,7 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
         "回个表情就够" not in _g_ro and "1=只给对方这条消息挂个表情" not in _r_ro
         and "不要只挂表情不说话" in _r_ro and _def_ro is False, _r_ro[:150])
     with patched(A, reaction_allowed=lambda: (False, []),
-                 call_glm_with_fallback=lambda ms, t, budget_sec=200: ("m", "E")):
+                 call_glm_with_fallback=lambda ms, t, budget_sec=200, **kwargs: ("m", "E")):
         chk("17h 表情回应关着时模型仍答了 E → 按接话处理，不白白沉默",
             A._reply_gate_v2(NullDaemon(), _chat17, list(_SU), "智谱娘") == "Y")
     # 默认下旁观回复只挂了表情 → 请它说一句（重试一次）；重试仍是表情就保持原样，不硬凑
@@ -956,7 +956,7 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
     _seq = iter(['{"want": 1, "say": [], "emoji": 63}', '{"say": ["哈哈这个好玩"]}'])
     with patched(A, REPLY_V2_FORCE=True, REPLY_JSON_FORCE=True, REACT_ONLY_FORCE=False,
                  reaction_allowed=lambda: (True, ["63"]),
-                 call_glm_with_fallback=lambda ms, t, budget_sec=200: c17.append(ms) or ("m", next(_seq))):
+                 call_glm_with_fallback=lambda ms, t, budget_sec=200, **kwargs: c17.append(ms) or ("m", next(_seq))):
         LOG.clear()
         _m, _r = A._generate_reply_v2(NullDaemon(), _chat17, [dict(x) for x in _SU], gate="Y")
     chk("17h' 默认：只挂了表情 → 重试一次并采用文字回复",
@@ -966,7 +966,7 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
     _seq = iter(['{"want": 1, "say": [], "emoji": 63}', '{"want": 1, "say": [], "emoji": 63}'])
     with patched(A, REPLY_V2_FORCE=True, REPLY_JSON_FORCE=True, REACT_ONLY_FORCE=False,
                  reaction_allowed=lambda: (True, ["63"]),
-                 call_glm_with_fallback=lambda ms, t, budget_sec=200: c17.append(ms) or ("m", next(_seq))):
+                 call_glm_with_fallback=lambda ms, t, budget_sec=200, **kwargs: c17.append(ms) or ("m", next(_seq))):
         _m, _r = A._generate_reply_v2(NullDaemon(), _chat17, [dict(x) for x in _SU], gate="Y")
     chk("17h'' 重试后还是只挂表情 → 不再重试（保持原样，由后面的流程处理）",
         len(c17) == 2 and A._REACT_MARK_RE.search(_r) is not None, (len(c17), _r))
@@ -974,7 +974,7 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
     _seq = iter(['{"want": 1, "say": [], "emoji": 63}'])
     with patched(A, REPLY_V2_FORCE=True, REPLY_JSON_FORCE=True, REACT_ONLY_FORCE=True,
                  reaction_allowed=lambda: (True, ["63"]),
-                 call_glm_with_fallback=lambda ms, t, budget_sec=200: c17.append(ms) or ("m", next(_seq))):
+                 call_glm_with_fallback=lambda ms, t, budget_sec=200, **kwargs: c17.append(ms) or ("m", next(_seq))):
         _m, _r = A._generate_reply_v2(NullDaemon(), _chat17, [dict(x) for x in _SU], gate="E")
     chk("17h''' 允许只挂表情时 → 不重试", len(c17) == 1, len(c17))
 
@@ -984,7 +984,7 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
     _seq = iter([_LONG, '{"say": ["短的了"]}'])
     with patched(A, REPLY_V2_FORCE=True, REPLY_JSON_FORCE=True, chat_max_len=lambda: 40,
                  direct_must_reply=lambda: True,
-                 call_glm_with_fallback=lambda ms, t, budget_sec=200: c17.append(ms) or ("m", next(_seq))):
+                 call_glm_with_fallback=lambda ms, t, budget_sec=200, **kwargs: c17.append(ms) or ("m", next(_seq))):
         LOG.clear()
         _m, _r = A._generate_reply_v2(NullDaemon(), _chat17, [dict(x) for x in _SU])
     chk("17i 闲聊回复超过上限 → 带上限要求重试一次，采用压缩后的",
@@ -993,19 +993,19 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
     c17[:] = []
     _seq = iter([_LONG])
     with patched(A, REPLY_V2_FORCE=True, REPLY_JSON_FORCE=True, chat_max_len=lambda: 40,
-                 call_glm_with_fallback=lambda ms, t, budget_sec=200: c17.append(ms) or ("m", next(_seq))):
+                 call_glm_with_fallback=lambda ms, t, budget_sec=200, **kwargs: c17.append(ms) or ("m", next(_seq))):
         _m, _r = A._generate_reply_v2(NullDaemon(), _at17, [dict(x) for x in _SU])
     chk("17j 直接@的长回复不触发压缩重试", len(c17) == 1 and "很长" in _r, len(c17))
     c17[:] = []
     _seq = iter([_LONG])
     with patched(A, REPLY_V2_FORCE=True, REPLY_JSON_FORCE=True, chat_max_len=lambda: 0,
-                 call_glm_with_fallback=lambda ms, t, budget_sec=200: c17.append(ms) or ("m", next(_seq))):
+                 call_glm_with_fallback=lambda ms, t, budget_sec=200, **kwargs: c17.append(ms) or ("m", next(_seq))):
         _m, _r = A._generate_reply_v2(NullDaemon(), _chat17, [dict(x) for x in _SU])
     chk("17k 上限为 0 → 再长也不重试", len(c17) == 1 and "很长" in _r, len(c17))
     c17[:] = []
     _seq = iter([_LONG, "```json\n{\"say\": [], \"want\": 0}\n```"])
     with patched(A, REPLY_V2_FORCE=True, REPLY_JSON_FORCE=True, chat_max_len=lambda: 40,
-                 call_glm_with_fallback=lambda ms, t, budget_sec=200: c17.append(ms) or ("m", next(_seq))):
+                 call_glm_with_fallback=lambda ms, t, budget_sec=200, **kwargs: c17.append(ms) or ("m", next(_seq))):
         LOG.clear()
         _m, _r = A._generate_reply_v2(NullDaemon(), _chat17, [dict(x) for x in _SU])
     chk("17l 压缩后变成了「不回」→ 不采纳，保留原来的长回复（宁可长也不丢回复）",
@@ -1700,7 +1700,7 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
 
         with patched(A, PROMPT_V2_FORCE=True, REPLY_V2_FORCE=False, REPLY_JSON_FORCE=False,
                      REACT_ONLY_FORCE=False,
-                     call_glm_with_fallback=lambda ms, t="", budget_sec=200: ("mx", reply_text),
+                     call_glm_with_fallback=lambda ms, t="", budget_sec=200, **kwargs: ("mx", reply_text),
                      _emit_memo=lambda daemon, msg, memo: _emitted22.append(tuple(memo)),
                      vision_enabled=lambda: False, chat_anti_interrupt_enabled=lambda: True,
                      lean_ctx_on=lambda: True, _cap_chat_allowed=lambda ct, cid: False):
@@ -2039,7 +2039,7 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
     _dm23p.send = lambda ct, cid, texts, reply_message_id=None: _probe_sent.append(list(texts))
     A.PLUGIN_HOST.daemon = _dm23p
 
-    def _probe_glm23(messages, text_ctx="", budget_sec=200):
+    def _probe_glm23(messages, text_ctx="", budget_sec=200, **kwargs):
         _glm_calls23.append(messages)
         if len(_glm_calls23) == 1:
             return "m", '{"is_bot": true}'      # 第 1 次：预判，判成机器人
@@ -2064,7 +2064,7 @@ with patched(A, log_usage=lambda *x, **k: None, _log_context_dump=lambda *x, **k
         msg = group_msg("帮我把小明禁言5分钟", "g23", [], trig="at", sender=sender)
         with patched(A, PROMPT_V2_FORCE=True, REPLY_V2_FORCE=False, REPLY_JSON_FORCE=False,
                      REACT_ONLY_FORCE=False,
-                     call_glm_with_fallback=lambda ms, t="", budget_sec=200: ("mx", reply_text),
+                     call_glm_with_fallback=lambda ms, t="", budget_sec=200, **kwargs: ("mx", reply_text),
                      vision_enabled=lambda: False, chat_anti_interrupt_enabled=lambda: True,
                      lean_ctx_on=lambda: True, _cap_chat_allowed=lambda ct, cid: False,
                      owner_qq=lambda: "10001", _gadmin_chat_enabled=lambda: enabled):
