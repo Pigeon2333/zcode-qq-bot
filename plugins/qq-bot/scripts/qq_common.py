@@ -101,7 +101,8 @@ DEFAULT_CONFIG = {
     "evolved_inject_notes": 12,  # 自进化注入提示词条数（4-40；直接影响每条回复 token）
     "timezone": "Asia/Shanghai",  # 机器人时区（IANA 名，影响 AI 感知的时间）
     "device_ctrl_enabled": False,  # 设备操控（高危，默认关）
-    "device_ctrl_2fa": True,       # 设备操控动态授权码（每次需验证）
+    "device_ctrl_2fa": True,       # 设备操控动态授权码（每次需验证；旧开关，新开关 owner_auth_code_enabled 没设过时跟随它）
+    "owner_auth_code_enabled": None,  # 危险操作是否需要授权码（设备操控的危险动作，以及工具循环里的 danger 级动作）；None＝跟随旧的 device_ctrl_2fa，用户没设过时行为不变
     "device_ctrl_protected_dirs": [],  # 额外保护目录（不可搜索/发送）
     "device_ctrl_actions": False,  # 动作执行（打开/关闭程序等真操作；独立高危开关，默认关）
     "device_ctrl_open_allow_exe": False,  # 「打开」动作允许启动程序和脚本（默认只开文档/媒体/文件夹/网页）

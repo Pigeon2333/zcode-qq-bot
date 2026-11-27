@@ -2180,7 +2180,7 @@ async function vDevCtrl(){
  ]);
  window._flow=(fl.flow||{});
  const on=!!c.device_ctrl_enabled;
- const on2fa=c.device_ctrl_2fa===undefined?true:!!c.device_ctrl_2fa;
+ const on2fa=!!(c.owner_auth_code_enabled??c.device_ctrl_2fa??true);
  const winMin=Math.max(1,Math.min(1440,Math.round((window._flow.auth_window_sec||120)/60)));
  window._pdDirs=(c.device_ctrl_protected_dirs||[]).slice();
  $('#view').innerHTML=head('设备操控（高危功能：让机器人搜索/读取/发送你电脑上的文件）')+saveHint('仅限主人 QQ · 结果只发私聊 · 保护目录不可触达 · 授权码一次一换')+
@@ -2191,7 +2191,7 @@ async function vDevCtrl(){
   <div style="margin-top:14px;padding:14px;border:2px solid ${on?'var(--err)':'var(--line)'};border-radius:10px;text-align:center">
    <div class="k" style="margin-bottom:6px">当前动态授权码（使用后自动换新）</div>
    <div id="devcode" style="font-size:36px;font-weight:700;letter-spacing:8px;font-family:monospace;color:${on&&on2fa?'var(--err)':'var(--dim)'}">${on&&on2fa?esc(code.code||'------'):(on?'——':'------')}</div>
-   <div class="k" style="margin-top:6px">${!on?'功能未启用':(!on2fa?'动态授权码已关闭：仅主人 QQ 即可操控（极不推荐）':(code.code?'有效期剩 <span id="devleft">'+Math.max(0,code.expires_in||0)+'</span> 秒 · 用完即换新（本页自动同步） · 也可手动刷新':'获取授权码失败'+(code.error?'：'+esc(code.error):'（agent 未运行？）')))}</div>
+   <div class="k" style="margin-top:6px">${!on?'功能未启用':(!on2fa?'授权码已关闭：主人一句话直接执行（仍仅限主人；界面的红色二次确认不受影响）':(code.code?'有效期剩 <span id="devleft">'+Math.max(0,code.expires_in||0)+'</span> 秒 · 用完即换新（本页自动同步） · 也可手动刷新':'获取授权码失败'+(code.error?'：'+esc(code.error):'（agent 未运行？）')))}</div>
    ${on&&on2fa?'<button class="act ghost" style="margin-top:8px" onclick="refreshDevCode()">刷新授权码</button>':''}
   </div>
 
@@ -2204,8 +2204,8 @@ async function vDevCtrl(){
   </div>
 
   <div class="k" style="margin-top:14px;margin-bottom:6px">安全设置</div>
-  <label class="master" style="margin-bottom:8px"><input type="checkbox" ${on2fa?'checked':''} onchange="saveKVLoad('/api/app-config',{device_ctrl_2fa:this.checked?1:0},'动态授权码已'+(this.checked?'开启（推荐）':'关闭——极危险'))">
-   <span><b>动态授权码（2FA）</b><div class="k" style="margin-top:3px">每次操控需授权码验证，一次用完自动换新；关闭后只需主人 QQ 即可操控——极不推荐</div></span></label>
+  <label class="master" style="margin-bottom:8px"><input type="checkbox" ${on2fa?'checked':''} onchange="saveKVLoad('/api/app-config',{owner_auth_code_enabled:this.checked?1:0},'危险操作需要授权码：已'+(this.checked?'开启':'关闭'))">
+   <span><b>危险操作需要授权码</b><div class="k" style="margin-top:3px">勾选后，设备操控的危险动作（打开文件、结束进程）要先取 6 位授权码；取消勾选后主人一句话就能直接执行。别人无论如何都不能操控。界面上的红色二次确认不受这个开关影响</div></span></label>
   <label class="master" style="margin-bottom:8px"><input type="checkbox" ${c.device_ctrl_open_allow_exe?'checked':''} onchange="saveKVLoad('/api/app-config',{device_ctrl_open_allow_exe:this.checked?1:0},'已'+(this.checked?'开启':'关闭')+'：允许「打开」动作启动程序和脚本')">
    <span><b>允许『打开』动作启动程序和脚本</b><div class="k" style="margin-top:3px">默认只打开文档、图片、音视频、文件夹和网页。开启后，模型可以让电脑打开任意程序，包括被群消息或网页内容诱导的情况</div></span></label>
   <label class="master"><input type="checkbox" id="devact" ${c.device_ctrl_actions?'checked':''} onchange="toggleDevActions(this.checked)">
@@ -7870,6 +7870,8 @@ class UiHandler(BaseHTTPRequestHandler):
                 cleaned["device_ctrl_enabled"] = bool(cfg_in["device_ctrl_enabled"])
             if "device_ctrl_2fa" in cfg_in:
                 cleaned["device_ctrl_2fa"] = bool(cfg_in["device_ctrl_2fa"])
+            if "owner_auth_code_enabled" in cfg_in:
+                cleaned["owner_auth_code_enabled"] = bool(cfg_in["owner_auth_code_enabled"])
             if "device_ctrl_protected_dirs" in cfg_in:
                 dirs = cfg_in["device_ctrl_protected_dirs"]
                 if not isinstance(dirs, list) or len(dirs) > 20:

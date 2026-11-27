@@ -59,7 +59,7 @@ Voice: she sends voice messages. Five voice sources — Edge-TTS is free with ni
 
 Task sandbox: send "task: write a scraper for xxx" and it goes to an isolated subprocess with whitelisted commands and a time budget. Results come back automatically.
 
-Device control: the most powerful and most dangerous feature. Say "find that report on my PC" in private chat and she'll ask for a 6-digit dynamic code (shown live in the console, changes each use). Authorized, you command in plain language — find files, read them, send them, open apps. Critical system processes are untouchable, protected directories are unreachable, and all results go to private chat only. Turn it off when you don't need it.
+Device control: the most powerful and most dangerous feature. Say "find that report on my PC" in private chat and she'll ask for a 6-digit dynamic code (shown live in the console, changes each use). Authorized, you command in plain language — find files, read them, send them, open apps. Critical system processes are untouchable, protected directories are unreachable, and all results go to private chat only. Whether a code is required at all is governed by one switch, "Dangerous actions need an auth code" (device-control page; shared by device control and dangerous tool actions): it follows your previous setting by default; turn it off and the owner commands directly — owner-only still applies, and the red confirmation before dangerous actions in the console stays. Turn it off when you don't need it.
 
 Proactive messages: let her start conversations herself, controlled separately for groups and private chat, with probability caps, rate limits and quiet hours. She won't ping you at 3am unless you ask for it.
 

@@ -5568,7 +5568,11 @@ def _apply_owner_name(texts):
 
 
 def cfg_2fa_on():
-    return bool(C.load_app_config().get("device_ctrl_2fa", True))
+    """统一授权开关的别名（WP-08）：实际逻辑在 _owner_auth_code_on()。
+
+    「危险操作要不要 6 位授权码」现在是一个开关（owner_auth_code_enabled），
+    设备操控与工具循环共用；调用点不改，统一从这里走。"""
+    return _owner_auth_code_on()
 
 
 def _device_ctrl_enabled():
@@ -9070,6 +9074,18 @@ def _pause_backlog_skip(daemon):
         out("AGENT_PAUSE_BACKLOG_SKIP n=%d" % n)
     except Exception as e:
         out("AGENT_PAUSE_BACKLOG_ERR %r" % e)
+
+
+def _owner_auth_code_on():
+    """危险操作授权码总开关（WP-08）：读 owner_auth_code_enabled。
+
+    新键是布尔就直接用它；None（没设过）或其它脏值回落旧的 device_ctrl_2fa
+    （缺省 True）——用户原来关掉旧开关的，升级后行为不变。"""
+    cfg = C.load_app_config()
+    v = cfg.get("owner_auth_code_enabled", None)
+    if isinstance(v, bool):
+        return v
+    return bool(cfg.get("device_ctrl_2fa", True))
 
 
 def start_admin_server(port, daemon=None):
