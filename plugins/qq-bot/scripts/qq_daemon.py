@@ -2178,9 +2178,9 @@ class Daemon:
         if self._is_bursting(chat_type, chat_id, info.get("sender_id", "")) \
                 and not info.get("image_urls"):
             return False, "burst_wait"
-        # 看图模式 all_prob：所有图都识——带图消息绕过闲聊概率直接送达 agent，
-        # 识图后由 agent 按 vision_prob 掷点决定插不插话（识图与概率解耦；
-        # 暂停/安静/互聊/别人对话/连发中等防护都在上面已拦，此处只放行普通裸图）
+        # 看图模式 all_prob：带图消息绕过闲聊概率直接送达 agent，由 agent 先按
+        # vision_prob 掷点、掷中才看图（2026-11-25 起骰子在识图之前掷）；
+        # 暂停/安静/互聊/别人对话/连发中等防护都在上面已拦，此处只放行普通裸图
         if info.get("image_urls"):
             rc = self._reply_config()
             if rc.get("vision_enabled") and \

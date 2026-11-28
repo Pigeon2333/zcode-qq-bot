@@ -1214,9 +1214,9 @@ def vision_enabled():
 
 
 def vision_mode():
-    """看图模式三档：all=所有图都识（识不识跟着群触发概率走）；
-    all_prob=所有图都识（图必看，识图后按 vision_prob 单独决定插不插话）；
-    ask=仅明确要求才识图（@/回复/点名看图）。
+    """看图模式三档：all=识不识跟着群触发概率走（触发才看图，不掷点）；
+    all_prob=带图消息绕过闲聊概率送达，先按 vision_prob 掷点、掷中才看图；
+    ask=仅 @/回复机器人才看图（点名看图、私聊发图都不例外）。
     （all 全识显突兀、ask 全不识变笨——选民证只凭"我们领证啦"文字被当成
     结婚证，用户要求加中间档：看是真看，说不说另算。）"""
     cfg = load_json_const(REPLY_CONFIG_PATH, {})
@@ -1280,7 +1280,8 @@ def reaction_allowed():
 
 
 def vision_prob():
-    """all_prob 档：识图后的插话概率（0-1，默认 0.3；@/回复不受限）。"""
+    """all_prob 档：看图概率（0-1，默认 0.3）：先按它掷点，掷中才真的看图；
+    @/回复机器人、话里明确在问这张图的不掷点。"""
     cfg = load_json_const(REPLY_CONFIG_PATH, {})
     try:
         v = float(cfg.get("vision_prob", 0.3))
@@ -6703,7 +6704,7 @@ def _probe_msgs():
 
 
 def vision_wanted():
-    """用户是不是在用识图：看图总开关开着，并且开了后台识图、或看图范围不是「仅明确要求才识」。"""
+    """用户是不是在用识图：看图总开关开着，并且开了后台识图、或看图范围不是「仅 @ 或回复时才看图」。"""
     return vision_enabled() and (vision_caption_on() or vision_mode() != "ask")
 
 
@@ -6992,7 +6993,7 @@ def _cap_busy_add(delta):
 
 
 def vision_caption_on():
-    """后台识图开关：识图总开关 + 本开关，且看图模式不是「仅明确要求才识」。"""
+    """后台识图开关：识图总开关 + 本开关，且看图模式不是「仅 @ 或回复时才看图」。"""
     return (vision_enabled() and vision_mode() in ("all", "all_prob")
             and _cfg_flag("vision_caption", VCAP_DEFAULT, VCAP_FORCE))
 
@@ -8469,7 +8470,7 @@ def process(daemon, msg):
     msg["_fwd_record"] = _is_fwd_record_text(msg.get("text"))
     # 旁观(chat_random)两段式判定（精简上下文开启时）：先轻量判定值不值得开口，
     # 通过才走全量提示词生成回复——回复质量不受影响；开关关闭则直接全量流程
-    # all_prob 档的带图消息跳过 gate：图必看，插话与否交给识图后的概率
+    # all_prob 档的带图消息跳过 gate：看不看图交给后面的概率骰子
     # （转发记录按纯文字处理，不跳）
     _vmode = vision_mode() if vision_enabled() else ""
     if msg.get("trigger_reason") == "chat_random" and chat_anti_interrupt_enabled() \
@@ -8588,8 +8589,9 @@ def process(daemon, msg):
     reply = None
     model = None
     # 视觉分支：开关开启 + 消息带图 + 已配视觉模型；失败降级文本链
-    # 看图模式 vision_mode：all=所有图都识；all_prob=所有图都识+识图后按
-    # 概率决定插话；ask=仅明确要求才识（@/回复机器人 → 任何档都直接识）
+    # 看图模式 vision_mode：all=触发即看图（不掷点）；all_prob=掷中概率才
+    # 走到同步识图（骰子已在前面掷过）；ask=仅 @/回复机器人才识
+    # （@/回复机器人 → 任何档都直接识）
     # （v2 后台识图已给出描述的，不再同步识图）
     _vision_go = vision_enabled() and msg.get("image_urls") \
         and not msg.get("_fwd_record") and not msg.get("_vcap") and (
@@ -8684,11 +8686,11 @@ def process(daemon, msg):
         out("AGENT_BARE_AT_SKIP msg_id=%s chat=%s/%s (图看不了+表情回应未启用，不回)"
             % (msg["id"], msg["chat_type"], msg["chat_id"]))
         return
-    # all_prob 档：图是真看了，回不回按单独概率掷点；看图失败/概率未中 →
+    # all_prob 档：走到这里图是真看了（骰子已在识图前掷过）；看图失败 →
     # 沉默跳过（绝不走纯文本链瞎猜图的内容——那正是"选民证被当结婚证"的来源）。
     # 例外（用户实测反馈"图和上下文有关也应主动看"）：消息文字或所回复的上文
-    # 明确提到这张图（这图/这张/看看这个/如图/图里/截图…）→ 图已识完内容，
-    # 对话正在等图的信息，骰子跳过——此时沉默等于答非所问。
+    # 明确提到这张图（这图/这张/看看这个/如图/图里/截图…）→ 骰子跳过、
+    # 一定看图——此时沉默等于答非所问。
     if _vision_go and _vmode == "all_prob" and \
             msg.get("trigger_reason") not in ("at", "reply_to_bot"):
         if reply is None:

@@ -2604,7 +2604,7 @@ async function visionStatePaint(){
 function stCaption(rv){return `
   <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
   <label class="master"><input type="checkbox" ${rv.vision_caption?'checked':''} onchange="saveKVLoad('/api/reply-config',{vision_caption:this.checked?1:0},'后台识图已'+(this.checked?'开启':'关闭'));setTimeout(visionStatePaint,800)">
-   <span><b>后台识图</b><div class="k" style="margin-top:3px">群里的图片到达后在后台生成一行描述，机器人据此判断接不接话，不再整条跳过带图消息；@机器人或引用图片提问时仍然直接看图。开启后，机器人收到的带图消息都会交给模型服务商识别（受「模型与消耗」里的每日上限约束）。需要看图模式开着、范围选前两档，并且开了「对话架构」里的回复策略 v2</div></span></label>
+   <span><b>后台识图</b><div class="k" style="margin-top:3px">带图消息到达后在后台生成一行描述，机器人据此了解图片内容，不用每条都同步识图；@机器人或引用图片提问时仍然直接看图，不等描述。开启后，机器人会看到的带图消息都会交给模型服务商识别（私聊一律可以；群须在白名单里且未暂停；识过的图不重复识；受「模型与消耗」里的每日上限约束，积压时旧的图不再补识）。需要看图模式开着、范围选前两档，并且开了「对话架构」里的回复策略 v2，描述才会用进对话</div></span></label>
   <div class="k" style="margin-top:10px">识图用哪个模型、每天最多识多少条，都在
    <a href="javascript:void(0)" onclick="__stGo('model')" style="color:var(--acc);text-decoration:underline">模型与消耗</a>
    里设置。</div>
@@ -2695,14 +2695,14 @@ function stVision(rv){return `
   <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
    <div class="k" style="margin-bottom:6px"><b>看图范围</b>（三档随时可换，即时生效）</div>
    <label style="display:block;margin:6px 0"><input type="radio" name="vmode-vision" value="all" ${(rv.vision_mode||'all')==='all'?'checked':''} onchange="visionModePick('all')"> <b>所有图都识</b><span class="k">——识不识、回不回都跟着群消息的触发与插话概率走（最热情；无关图也可能硬回复）</span></label>
-   <label style="display:block;margin:6px 0"><input type="radio" name="vmode-vision" value="all_prob" ${(rv.vision_mode)==='all_prob'?'checked':''} onchange="visionModePick('all_prob')"> <b>所有图都识，看后再定插话</b><span class="k">（推荐）——每张图都会真的看过（不会认错图），看完按下面的概率决定要不要插话；@/回复机器人仍然必回</span></label>
-   <label style="display:block;margin:6px 0"><input type="radio" name="vmode-vision" value="ask" ${(rv.vision_mode)==='ask'?'checked':''} onchange="visionModePick('ask')"> <b>仅明确要求时才识图</b><span class="k">——@/回复要她看、或文字里点名看图（「看看这张」「这是什么梗」）才看；其余图只当文字处理（最克制，也最省资源；没看图时她只凭文字理解，图文不符的话题可能接不准）</span></label>
+   <label style="display:block;margin:6px 0"><input type="radio" name="vmode-vision" value="all_prob" ${(rv.vision_mode)==='all_prob'?'checked':''} onchange="visionModePick('all_prob')"> <b>按概率看图</b><span class="k">（推荐）——每条带图消息都会送到机器人面前，但先按下面的概率抽一次：抽中了才真的看图，看完再决定说不说；没抽中就不看、不回。@机器人或回复机器人带的图不抽、一定看；话里明确在问这张图（「这是什么」「什么梗」）也一定看</span></label>
+   <label style="display:block;margin:6px 0"><input type="radio" name="vmode-vision" value="ask" ${(rv.vision_mode)==='ask'?'checked':''} onchange="visionModePick('ask')"> <b>仅 @ 或回复时才看图</b><span class="k">——只有 @机器人 或回复机器人 时才看图，私聊里直接发图也一样不看；其余的图只当文字消息处理（最克制，也最省资源；没看图时她只凭文字理解，图文不符的话题可能接不准）</span></label>
    <div id="vision-prob-row" class="${(rv.vision_mode)==='all_prob'?'':'dimmed'}" style="display:flex;gap:8px;align-items:center;margin:10px 0 0 26px">
-    <span class="k" style="flex:none">识图后插话概率</span>
-    <input type="number" min="0" max="100" step="5" value="${Math.round(((rv.vision_prob===undefined||rv.vision_prob===null)?0.3:rv.vision_prob)*100)}" style="width:64px" onchange="saveKVLoad('/api/reply-config',{vision_prob:Math.max(0,Math.min(100,parseInt(this.value)||0))/100},'识图插话概率已保存')">
-    <span class="k">%（0%=不主动评论图片，仅当对话明确提到这张图或有人 @她时才看图回应；100%=见图必聊）</span>
+    <span class="k" style="flex:none">看图概率</span>
+    <input type="number" min="0" max="100" step="5" value="${Math.round(((rv.vision_prob===undefined||rv.vision_prob===null)?0.3:rv.vision_prob)*100)}" style="width:64px" onchange="saveKVLoad('/api/reply-config',{vision_prob:Math.max(0,Math.min(100,parseInt(this.value)||0))/100},'看图概率已保存')">
+    <span class="k">%（0%=不主动看图，只有 @她、回复她或话里明确在问这张图时才看；100%=每条带图消息都看，看完仍可能选择不说）</span>
    </div>
-   <div class="k" style="margin-top:8px">「看后再定」= 看图与插话解耦：每张图都会真的看过（内容理解准确），要不要开口由概率单独控制——在热情与克制之间。前两档也会把带图消息更积极地送到机器人面前；「仅明确要求」最省资源</div>
+   <div class="k" style="margin-top:8px">「按概率看图」＝看图本身按概率抽：抽中的才会真的去看这张图（开着下面的「后台识图」时，每张图的简短描述照常生成），看完说不说另由她判断。她主动评论图片的多少基本由这个概率决定，想少回就调低。前两档都会把带图消息更积极地送到机器人面前；「仅 @ 或回复时才看图」最省资源</div>
   </div>${stCaption(rv)}</div>`}
 function stLen(rv){return `
  <div class="card"><div class="k" style="margin-bottom:6px"><b>闲聊回复长度上限</b>（活人感复盘 P3——消除小作文感）</div>
@@ -3279,7 +3279,7 @@ async function saveIntv(){await saveKV('/api/reply-config',{chat_min_interval_se
 async function saveCk(key,on,name){await saveKV('/api/reply-config',{[key]:on},name+(on?'已开启':'已关闭')+'（已生效）')}
 async function saveVision(on){await saveKV('/api/reply-config',{vision_enabled:on},on?'看图模式已开启（已生效）':'看图模式已关闭（已生效）')}
 function visionModePick(v){
- const names={all:'所有图都识',all_prob:'所有图都识，看后再定插话',ask:'仅明确要求时才识图'};
+ const names={all:'所有图都识',all_prob:'按概率看图',ask:'仅 @ 或回复时才看图'};
  saveKVLoad('/api/reply-config',{vision_mode:v},'看图范围：'+(names[v]||v)+'（即时生效）');
  const el=document.getElementById('vision-prob-row');
  if(el)el.classList.toggle('dimmed',v!=='all_prob');
