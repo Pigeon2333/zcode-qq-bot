@@ -199,14 +199,19 @@ OWNCALLS = []     # owner_command 桩收到的 text（stub_owner=True 时记）
 
 
 class OwnerDaemon(object):
-    """daemon 桩：set_quiet / send / ack 全部只记录；send 返回 {"ok": …}
-    （复述确认落表只认发送成功的 ok，send_ok=False 模拟发送失败）。"""
+    """daemon 桩：set_quiet / send / ack / status 全部只记录；send 返回
+    {"ok": …}（复述确认落表只认发送成功的 ok，send_ok=False 模拟发送失败）。
+    status() 模拟 daemon 的 /status（带 quiet_until）：默认在安静（quiet_until
+    在未来，unquiet 命中才照旧执行）；quiet_until="missing"＝回复里没有这个
+    字段；status_fail=True＝status 抛异常。"""
 
     def __init__(self):
         self.quiet_calls = []
         self.sent = []
         self.acked = []
         self.send_ok = True
+        self.quiet_until = time.time() + 600.0
+        self.status_fail = False
 
     def set_quiet(self, minutes):
         self.quiet_calls.append(minutes)
@@ -220,6 +225,13 @@ class OwnerDaemon(object):
     def send(self, chat_type, chat_id, texts, reply_message_id=None):
         self.sent.append(list(texts))
         return {"ok": bool(self.send_ok)}
+
+    def status(self):
+        if self.status_fail:
+            raise RuntimeError("status 不可用（模拟）")
+        if self.quiet_until == "missing":
+            return {"ok": True}          # 拿不到 quiet_until 字段
+        return {"ok": True, "quiet_until": self.quiet_until}
 
 
 def base_msg(**kw):
@@ -235,15 +247,23 @@ def base_msg(**kw):
 
 
 def run_intent(msg, judge_raw, stub_owner=False, owner_reply=(True, "桩回复"),
-               owner_fn=None):
+               owner_fn=None, quiet_state="quiet"):
     """打桩跑一遍 _intent_command，返回 (handled, dm, owner_received)。
     owner_received＝owner_command 桩收到的 text 列表（stub_owner=False 时
     owner_command 走真实实现，执行体桩在 BASE_STUBS；owner_fn 直接给桩
-    函数，供「让它抛异常/不命中」的用例用）。"""
+    函数，供「让它抛异常/不命中」的用例用）。quiet_state：quiet＝在安静
+    （默认，unquiet 才会照旧执行）；off＝没在安静；missing＝status 回复里
+    没有 quiet_until 字段；error＝status 抛异常。"""
     del INTENT_CALLS[:], MAIN_CALLS[:], OWNCALLS[:]
     ALOG.clear()
     JUDGE_RAW[0] = judge_raw
     dm = OwnerDaemon()
+    if quiet_state == "off":
+        dm.quiet_until = 0.0
+    elif quiet_state == "missing":
+        dm.quiet_until = "missing"
+    elif quiet_state == "error":
+        dm.status_fail = True
     patches = dict(MODEL_STUB)
     patches.update(BASE_STUBS)
     if owner_fn is not None:
@@ -413,6 +433,36 @@ for label, utter, raw, rendered, risk in HITS:
         and dm.acked == ["t5"] and len(hits) == 1
         and ("name=%s" % cname) in hits[0] and ("risk=%s" % risk) in hits[0],
         (handled, own, dm.sent, dm.acked, hits))
+
+# ---- T5x unquiet 无害化：没在安静不执行（照常聊天）；在安静、status 抛
+# 异常、拿不到 quiet_until 字段都照旧执行（出错不改行为） ----
+
+for _label, _qstate, _detail_ok in (
+        ("没在安静", "off", "noop"),
+        ("在安静", "quiet", "exec"),
+        ("status 抛异常", "error", "exec"),
+        ("拿不到 quiet_until 字段", "missing", "exec")):
+    handled, dm, own = run_intent(base_msg(text="好了，可以说话了", id="t5x"),
+                                  jcmd("unquiet"), stub_owner=True,
+                                  quiet_state=_qstate)
+    _noop = [l for l in ALOG if l.startswith("AGENT_INTENT_NOOP")]
+    _hits = [l for l in ALOG if l.startswith("AGENT_INTENT_HIT")]
+    if _detail_ok == "noop":
+        good = (handled is False and own == [] and dm.sent == []
+                and dm.acked == [] and len(_noop) == 1
+                and "name=unquiet reason=not_quiet conf=0.90" in _noop[0]
+                and not _hits)
+        _want = ("不执行（owner 桩零调用、无发送无确认、返回 False 落回聊天）、"
+                 "只记 AGENT_INTENT_NOOP name=unquiet reason=not_quiet "
+                 "conf=0.90")
+    else:
+        good = (handled is True and own == ["继续"]
+                and dm.sent == [["桩回复"]] and dm.acked == ["t5x"]
+                and len(_hits) == 1 and not _noop)
+        _want = ("照旧执行（owner 桩收到「继续」、发送一次、确认一次、有 "
+                 "AGENT_INTENT_HIT、无 NOOP）")
+    chk("T5x unquiet（%s）：%s" % (_label, _want), good,
+        (handled, own, dm.sent, dm.acked, _noop, _hits))
 
 handled, dm, own = run_intent(base_msg(text="给我报个状态", id="t6"),
                               jcmd("status", conf=0.7), stub_owner=True)

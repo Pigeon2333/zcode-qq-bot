@@ -5654,6 +5654,21 @@ def _intent_prompt(text, doc=None):
             "主人的这句话：" + str(text or ""))
 
 
+def _daemon_quiet_until(daemon):
+    """daemon 的安静截止时间戳（quiet_until，daemon /status 接口带）。返回
+    None＝状态读不到（status 抛异常、回复 ok 不为真、没有这个字段、类型
+    不对）——调用方按原样执行，出错不改行为。"""
+    try:
+        st = daemon.status()
+    except Exception:
+        return None
+    qu = st.get("quiet_until") if isinstance(st, dict) else None
+    if isinstance(qu, bool) or not isinstance(qu, (int, float)) \
+            or qu != qu:
+        return None
+    return float(qu)
+
+
 def _intent_command(daemon, msg):
     """主人私聊自然语言指令识别。返回 True＝已处理（已回复并确认），False＝
     不是指令、照原流程往下走。前提任一不满足直接返回 False、不调模型：
@@ -5664,9 +5679,12 @@ def _intent_command(daemon, msg):
     缺必填参数走表里的反问文本（带 ask_extra 的附上对应的列表）；参数没过
     校验（判定模型已认出指令、置信度也够）不再悄悄掉回聊天路径——回一句
     确定性说明（qq_commands.explain_failure），否则主模型会随口答应却什么
-    也没做。置信度不够、模型说不是指令、指令未开放仍静默走聊天。write 命中
-    且 tool_confirm_write 开时先复述等「确认」（挂 kind="cmd" 的待确认，
-    发送成功才落表）。日志一律不记主人原话、不记参数值。"""
+    也没做。unquiet 命中但 daemon 没在安静（quiet_until 不在未来）时不执行、
+    不回「恢复正常聊天」——记 AGENT_INTENT_NOOP 后 return False，这条消息
+    照常走聊天；状态读不到时按原样执行（出错不改行为）。置信度不够、模型
+    说不是指令、指令未开放仍静默走聊天。write 命中且 tool_confirm_write 开
+    时先复述等「确认」（挂 kind="cmd" 的待确认，发送成功才落表）。日志一律
+    不记主人原话、不记参数值。"""
     if not _owner_intent_on():
         return False
     if not is_owner(msg) or msg.get("chat_type") != "private":
@@ -5748,6 +5766,15 @@ def _intent_command(daemon, msg):
         daemon.ack([msg["id"]])
         RT.count_processed()
         return True
+    if name == "unquiet":
+        # 没在安静却被认成「继续」类的话（闲聊里很常见）：不执行、不回
+        # 「恢复正常聊天」，照常当聊天；在安静（quiet_until 在未来）或状态
+        # 读不到（None＝抛异常/拿不到字段）时按原样执行。
+        _qu = _daemon_quiet_until(daemon)
+        if _qu is not None and _qu <= time.time():
+            out("AGENT_INTENT_NOOP name=unquiet reason=not_quiet conf=%.2f"
+                % conf)
+            return False
     rendered = qq_commands.render(name, norm)
     if ent["risk"] == "write" and _tool_confirm_write_on():
         # C3：write 命中且复述确认开关开——不执行，回一句确定性复述并挂

@@ -260,7 +260,9 @@ CASES = {
               ("别在群里说话了，安静俩小时", {"minutes": 120}, "安静 120 分钟"),
               ("先安静个五分钟吧", {"minutes": 5}, "安静 5 分钟")],
     "unquiet": [("好了，可以说话了", {}, "继续"), ("继续吧", {}, "继续"),
-                ("出来说话", {}, "继续")],
+                ("出来说话", {}, "继续"),
+                ("会开完啦，可以继续了", {}, "继续"),
+                ("忙完了，恢复吧", {}, "继续"), ("不用安静了，继续", {}, "继续")],
     "log": [("看看最近的日志", {}, "日志"), ("把最近 30 条日志发我", {"n": 30}, "日志 30"),
             ("拉 5 条日志给我瞅瞅", {"n": 5}, "日志 5")],
     "cron_add": [("每天早上八点半提醒我给花浇水", {"time": "08:30", "text": "给花浇水"},
@@ -314,7 +316,7 @@ for c in K.COMMANDS:
         if not (ok and got == want and hit is True and isinstance(reply, str)
                 and reply):
             bad.append((utter, ok, why or got, hit, reply[:40]))
-    chk("T2 %s 三条例句渲染必命中 owner_command（返回 True+非空回复）" % name,
+    chk("T2 %s 全部例句渲染必命中 owner_command（返回 True+非空回复）" % name,
         not bad, bad)
 
 
@@ -347,6 +349,21 @@ hit, reply, dm = run_owner(got)
 chk("T2x unquiet → set_quiet(0)，回复与手打一致",
     ok and hit and got == "继续" and dm.quiet_calls == [0]
     and reply == "好啦，恢复正常聊天～", (got, dm.quiet_calls, reply))
+
+# unquiet 文案扩充（间接说法）后表、清单、校验渲染都完好
+_u = K.by_name("unquiet")
+_u_doc = K.intent_doc(closed="mark")
+_u_ok, _u_norm, _u_got, _u_why = v_case("unquiet", {}, "会开完啦，可以继续了")
+chk("T2x unquiet 间接说法扩充后完好：6 条例句互不相同、desc 带会开完/忙完"
+    "这类间接说法且写明「接着讲/接着做某件事的不算」、intent_doc 仍全列"
+    " 18 条且 unquiet 行含全部例句、新例句仍过 validate 并渲染成「继续」",
+    len(_u["examples"]) == 6 and len(set(_u["examples"])) == 6
+    and "结束安静状态" in _u["desc"] and "会开完" in _u["desc"]
+    and "忙完" in _u["desc"] and "不算" in _u["desc"]
+    and all("- %s：" % c["name"] in _u_doc for c in K.COMMANDS)
+    and all("「%s」" % e in _u_doc for e in _u["examples"])
+    and _u_ok and _u_got == "继续",
+    (_u["desc"], _u["examples"], _u_why, len(_u_doc)))
 
 for n_arg, utter, want_n in ((None, "看看最近的日志", 12),
                              (999, "把日志拉 999 条给我看看", 40),
