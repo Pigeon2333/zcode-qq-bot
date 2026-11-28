@@ -21,6 +21,7 @@ v2 / json 直接调用被测代码里的 _reply_gate_v2 / _generate_reply_v2，
 """
 import argparse
 import concurrent.futures
+import functools
 import json
 import os
 import statistics
@@ -220,18 +221,11 @@ def main():
     kid, kv, model, _ctx, mo = pick[0], pick[1], pick[2], pick[3], pick[4]
     print("模型：%s（key=%s，max_out=%s）| 并发 %d" % (model, kid, mo or 0, a.workers))
 
-    def _chain(messages, text_ctx="", budget_sec=200):
-        """替换被测代码的 call_glm_with_fallback：固定单模型、逐次记账、失败重试。
-        记账表在 work() 里按场景清零——判定、主调用、重试全算进同一条场景。"""
-        status, data, dt, usage = _model_call(A, model, kv, mo, messages, text_ctx)
-        if status != 200 or not isinstance(data, dict):
-            raise RuntimeError("eval http %s: %s" % (
-                status, json.dumps(data, ensure_ascii=False)[:120] if data else "empty"))
-        ch = (data.get("choices") or [{}])[0] or {}
-        return model, str((ch.get("message") or {}).get("content") or "")
-
     if pipe:
-        A.call_glm_with_fallback = _chain
+        # 替换被测代码的 call_glm_with_fallback：固定单模型、逐次记账、失败重试。
+        # 记账表在 work() 里按场景清零——判定、主调用、重试全算进同一条场景。
+        A.call_glm_with_fallback = EC.make_fixed_chain(
+            functools.partial(_model_call, A), model, kv, mo)
 
     results = [None] * len(built)
     todo = list(range(len(built)))

@@ -131,3 +131,55 @@ def fmt_table(rows, title):
             v = m.get(key)
             cells.append("-" if v is None else f.format(v))
         print("| %s | %s |" % (name, " | ".join(cells)))
+
+
+def make_fixed_chain(call_fn, model, kv, mo, pick_model=None):
+    """做一条「固定单模型」的调用链，用来替换被测代码的 call_glm_with_fallback。
+
+    call_fn 形如 functools.partial(_model_call, A)：即 _model_call 的首参
+    （module_or_A）由调用方绑定，本函数以 call_fn(model, kv, mo, messages,
+    text_ctx) 调它；返回 (status, data, 耗时, usage)——与 eval_run._model_call
+    的真实签名与返回一致。
+
+    返回的函数与生产 call_glm_with_fallback 同签名：
+    (messages, text_ctx="", budget_sec=None, route="reply", **kw)。
+    budget_sec 与多余的关键字参数一律收下，现阶段不参与控制。
+
+    pick_model(route) 可选：返回本次的模型名（str）——只影响返回值里的模型名
+    与记账，call_fn 仍用固定的 model / kv / mo；也可返回 (model, kv, mo)
+    三元组（可只给前几项，缺的沿用固定值）——这时 call_fn 本次就按三元组里的
+    模型名 / key / 输出上限调，供按路由取不同 key / max_out 的场景用。
+    返回 None / 空串或不给 pick_model 时，一律用固定模型。
+
+    status != 200 或 data 不是 dict 时抛 RuntimeError("eval http …")；
+    成功返回 (本次模型名, 回复文本)。
+
+    按 route 记账（{route: 次数}，call_fn 抛异常的那次也计）：
+    chain.call_counts 是计数 dict 本体，chain.get_counts() 取副本，
+    chain.reset_counts() 清零——调用方按场景清零。
+    """
+    counts = {}
+
+    def chain(messages, text_ctx="", budget_sec=None, route="reply", **kw):
+        call_m, use_kv, use_mo = model, kv, mo
+        name = model
+        if pick_model:
+            pm = pick_model(route)
+            if pm:
+                if isinstance(pm, tuple):
+                    call_m, use_kv, use_mo = (list(pm) + [model, kv, mo][len(pm):])[:3]
+                    name = call_m
+                else:
+                    name = pm   # 只换返回值与记账里的模型名，实际调用仍用固定模型
+        counts[route] = counts.get(route, 0) + 1
+        status, data, dt, usage = call_fn(call_m, use_kv, use_mo, messages, text_ctx)
+        if status != 200 or not isinstance(data, dict):
+            raise RuntimeError("eval http %s: %s" % (
+                status, json.dumps(data, ensure_ascii=False)[:120] if data else "empty"))
+        ch = (data.get("choices") or [{}])[0] or {}
+        return name, str((ch.get("message") or {}).get("content") or "")
+
+    chain.call_counts = counts
+    chain.get_counts = lambda: dict(counts)
+    chain.reset_counts = counts.clear
+    return chain

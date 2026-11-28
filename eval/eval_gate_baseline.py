@@ -17,6 +17,7 @@ eval_run 的 v1 模式不含闸门（每条旁观消息都跑一次完整调用�
 """
 import argparse
 import concurrent.futures
+import functools
 import os
 import statistics
 import sys
@@ -59,16 +60,9 @@ def main():
         raise SystemExit("模型链里没有可用条目")
     kid, kv, model, mo = pick[0], pick[1], pick[2], pick[4]
 
-    def _chain(messages, text_ctx="", budget_sec=200):
-        """固定单模型 + 记账（与 eval_run 同口径，记在 eval_run 自己的线程局部变量里）。"""
-        ER._tls.calls = []
-        status, data, dt, usage = ER._model_call(A, model, kv, mo, messages, text_ctx)
-        if status != 200 or not isinstance(data, dict):
-            raise RuntimeError("http %s" % status)
-        ch = (data.get("choices") or [{}])[0] or {}
-        return model, str((ch.get("message") or {}).get("content") or "")
-
-    A.call_glm_with_fallback = _chain
+    # 固定单模型 + 记账（与 eval_run 同口径，记在 eval_run 自己的线程局部变量里）
+    A.call_glm_with_fallback = EC.make_fixed_chain(
+        functools.partial(ER._model_call, A), model, kv, mo)
     print("旧闸门：%d 个闲聊场景 | 模型 %s | 并发 %d" % (len(scens), model, a.workers))
     pc, _g = A.load_persona_collection()
 
