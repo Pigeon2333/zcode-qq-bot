@@ -622,6 +622,39 @@ class DaemonClient:
             "minutes": int(minutes or 0), "count": int(count or 1),
             "content": str(content or ""), "on": bool(on)}, timeout=25)
 
+    def group_files(self, group_id, folder_id="", file_count=None):
+        """群文件列表（daemon /group-files 转发；只读）。group_id 一律按
+        字符串传（QQ 那边动作参数定义就是字符串）；folder_id 空 = 根目录，
+        为空时请求体里不带这个键；file_count None = 不限制，为 None 时请求
+        体里不带这个键。返回 daemon 的应答原样（{ok, data} / {ok, detail}）；
+        请求失败（连接不上、超时、应答不是 JSON）收成 {ok: False, detail:
+        一句不带内部细节的原因}，不外抛。"""
+        body = {"group_id": str(group_id or "")}
+        if folder_id:
+            body["folder_id"] = str(folder_id)
+        if file_count is not None:
+            body["file_count"] = file_count
+        try:
+            return self._request("POST", "/group-files", body=body,
+                                 timeout=25) or {}
+        except Exception:
+            return {"ok": False,
+                    "detail": "群文件列表没取到（消息服务暂时连不上）"}
+
+    def group_file_url(self, group_id, file_id):
+        """群文件下载链接（daemon /group-file-url 转发；只读）。file_id 是
+        group_files 结果里的重编码值，原样回传、不做任何加工。返回 daemon
+        的应答原样（{ok, data} / {ok, detail}）；请求失败（连接不上、超时、
+        应答不是 JSON）收成 {ok: False, detail: 一句不带内部细节的原因}，
+        不外抛。"""
+        body = {"group_id": str(group_id or ""), "file_id": str(file_id or "")}
+        try:
+            return self._request("POST", "/group-file-url", body=body,
+                                 timeout=25) or {}
+        except Exception:
+            return {"ok": False,
+                    "detail": "下载链接没取到（消息服务暂时连不上）"}
+
     def botloop_report(self, chat_type, chat_id, sender_id, confirmed,
                        cooldown_min=60, precheck=False, quiet=False,
                        quiet_min=15, asked=False, probation=False):
@@ -9492,7 +9525,9 @@ def _tool_available(name):
     ——都走 _gadmin_tool_enabled）；D 批起 web_fetch 只在联网读取开关
     （tool_web_fetch_enabled，与 run 第一道闸是同一判断——都走
     _web_fetch_tool_enabled）开着时可用；chat_search 恒可用（当前会话的
-    检索不需要开关，跨会话的开关在执行函数里查）；其它工具一律可用。开关
+    检索不需要开关，跨会话的开关在执行函数里查）；D 批 D3 起 group_files
+    与 group_file_url 只在群文件开关（tool_group_files_enabled，同一判断
+    ——都走 _group_files_tool_enabled）开着时可用；其它工具一律可用。开关
     关着时对应工具不进清单也不进循环（模型凭空写出时，由工具循环按
     「没有这个工具」回喂）。"""
     n = str(name or "")
@@ -9504,6 +9539,8 @@ def _tool_available(name):
         return _gadmin_tool_enabled()
     if n == "web_fetch":
         return _web_fetch_tool_enabled()
+    if n in ("group_files", "group_file_url"):
+        return _group_files_tool_enabled()
     return True
 
 
@@ -9838,6 +9875,17 @@ def _cross_chat_search_on():
     return isinstance(cfg, dict) and cfg.get("tool_cross_chat_search") is True
 
 
+def _group_files_tool_enabled():
+    """group_files / group_file_url 两个工具的开关函数（D 批 D3，main()
+    接线）：reply_config 的 tool_group_files_enabled（管理台「工具循环
+    （实验性）」卡维护；默认关）。读法照 _web_fetch_tool_enabled：读不到、
+    坏值一律 False，只有布尔 true 算开。群文件是群成员上传的内容——模型
+    能看到第三方上传的文件名与上传者，还能取到下载链接，所以开关独立、
+    默认关；机器人自己不下载、也不解析文件内容。"""
+    cfg = load_json_const(REPLY_CONFIG_PATH, {})
+    return isinstance(cfg, dict) and cfg.get("tool_group_files_enabled") is True
+
+
 def _chat_search_tool(daemon, msg, query, chat, limit):
     """chat_search 工具的执行函数（D 批，main() 接线）：经
     DaemonClient.history 取目标会话最近 limit 条，在本地按关键词匹配。
@@ -9934,6 +9982,183 @@ def _chat_search_tool(daemon, msg, query, chat, limit):
     return qq_tools.make_result(
         True, "最近 %d 条里找到 %d 条含「%s」的消息" % (len(items), len(shown), q),
         data={"content": "\n".join(lines)})
+
+
+# ---- D 批 D3：group_files / group_file_url（群文件，只读） ----
+# 取数全走 daemon 的两个只读方法（/group-files、/group-file-url 转发）；
+# 机器人不下载、也不解析文件内容。日志只记群号、条数、成败——文件名、
+# 链接、上传者是群成员的内容，一律不落日志。
+
+def _gfile_size_text(n):
+    """文件大小的人话（D3 回喂用）：不到 1 KB 写字节数；往上 KB / MB /
+    GB 保留一位小数；读不出数字如实写「大小未知」。"""
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return "大小未知"
+    if n < 0:
+        n = 0
+    if n < 1024:
+        return "%d B" % n
+    for div, unit in ((1024 ** 3, "GB"), (1024 ** 2, "MB"), (1024, "KB")):
+        if n >= div:
+            return "%.1f %s" % (n / div, unit)
+    return "%d B" % n
+
+
+def _gfiles_resolve_group(daemon, group):
+    """两个群文件工具共用的群解析（D3）：_resolve_group_all 解析群号或群
+    名。返回 (群号, 群名或群号, None)＝命中；(None, None, 失败结果)＝
+    歧义或找不到，失败结果直接回喂模型。"""
+    hits = _resolve_group_all(daemon, str(group or "").strip())
+    if len(hits) > 1:
+        names = daemon.group_names()
+        pairs = ["%s(%s)" % (str(names.get(g) or "群名未知"), g)
+                 for g in hits[:5]]
+        return None, None, qq_tools.make_result(
+            False, "叫这个名字的群有多个：%s——请告诉我群号" % "、".join(pairs))
+    if not hits:
+        return None, None, qq_tools.make_result(
+            False, "没找到这个群（或它不在我的群白名单里）——只认群号"
+                   "或完整群名")
+    gid = hits[0]
+    names = daemon.group_names()
+    gname = str(names.get(gid) or gid)
+    return gid, gname, None
+
+
+def _gfiles_svc_fail(res, fallback):
+    """把消息服务的失败应答收成统一结果（D3）：应答不是 dict 或 ok=False
+    都算失败，detail（daemon 已是人话）优先，空了用 fallback。"""
+    res = res if isinstance(res, dict) else {}
+    if res.get("ok"):
+        return None
+    detail = str(res.get("detail") or "").strip()
+    return qq_tools.make_result(False, detail or fallback)
+
+
+def _group_files_tool(daemon, group, folder="", count=None):
+    """group_files 工具的执行函数（D 批 D3，main() 接线）：参数由
+    qq_tools_builtin 的薄包装从 args 拆好传进来（group 必填，经
+    _resolve_group_all 解析；folder 可选——上一次列目录拿到的文件夹 ID，
+    也接受与某个文件夹名完整相等的名字；count 可选 1-200，不填不传）。
+    开关关着（tool_group_files_enabled，与 _tool_available 同一判断）任何
+    路径都读不了。folder 给了就先取一次根目录（不带 count）换出 folder_id
+    再列子目录（带 count）；对不上就回「没找到这个文件夹」并附上现有文件
+    夹的名字清单。回喂：摘要报条数；data["content"] 先文件夹（名字、ID、
+    文件数）再文件（名字、大小、上传者、file_id）——file_id 原样给出，
+    下一步取链接要用。消息服务任何一步 ok=False → 如实回它的 detail；
+    抛异常 → 一句「群文件没取到」，不外抛。日志只记群号与条数。"""
+    if not _group_files_tool_enabled():
+        return qq_tools.make_result(
+            False, "读取群文件没有开启（管理台 → 工具循环 里打开）")
+    gid, gname, fail = _gfiles_resolve_group(daemon, group)
+    if fail is not None:
+        return fail
+    try:
+        n = int(count) if count is not None else None
+    except (TypeError, ValueError):
+        n = None
+    if n is not None:
+        n = max(1, min(n, 200))
+    folder_id = ""
+    where = "在根目录"
+    try:
+        if str(folder or "").strip():
+            root = daemon.group_files(gid)   # 先取根目录换 folder_id（不带 count）
+            fail = _gfiles_svc_fail(root, "群文件没取到（消息服务没答上来）")
+            if fail is not None:
+                return fail
+            root_data = root.get("data") if isinstance(root.get("data"), dict) else {}
+            folders = [f for f in (root_data.get("folders") or [])
+                       if isinstance(f, dict)]
+            hit = None
+            for f in folders:
+                if str(f.get("folder_id") or "") == str(folder).strip() or \
+                        str(f.get("folder_name") or "").strip() == str(folder).strip():
+                    hit = f
+                    break
+            if hit is None:
+                avail = [str(f.get("folder_name") or "") for f in folders]
+                tip = ("现有文件夹：" + "、".join(avail)) if avail \
+                    else "这个群的根目录下没有文件夹"
+                return qq_tools.make_result(False,
+                                            "没找到这个文件夹（%s）" % tip)
+            folder_id = str(hit.get("folder_id") or "")
+            where = "文件夹「%s」" % str(hit.get("folder_name") or folder_id)
+        res = daemon.group_files(gid, folder_id=folder_id, file_count=n)
+    except Exception:
+        return qq_tools.make_result(False, "群文件没取到（消息服务没答上来）")
+    fail = _gfiles_svc_fail(res, "群文件没取到（消息服务没答上来）")
+    if fail is not None:
+        return fail
+    data = res.get("data") if isinstance(res.get("data"), dict) else {}
+    folders = [f for f in (data.get("folders") or []) if isinstance(f, dict)]
+    files = [f for f in (data.get("files") or []) if isinstance(f, dict)]
+    out("AGENT_GROUP_FILES gid=%s folders=%d files=%d"
+        % (gid, len(folders), len(files)))
+    summary = "%s(%s) 的文件（%s）：%d 个文件夹、%d 个文件" % (
+        gname, gid, where, len(folders), len(files))
+    if not folders and not files:
+        return qq_tools.make_result(True, summary,
+                                    data={"content": "（空的）"})
+    lines = []
+    if folders:
+        lines.append("文件夹：")
+        for f in folders:
+            try:
+                cnt = int(f.get("total_file_count") or 0)
+            except (TypeError, ValueError):
+                cnt = 0
+            lines.append("- %s（ID：%s，共 %d 个文件）"
+                         % (str(f.get("folder_name") or "（没名字）"),
+                            str(f.get("folder_id") or ""), cnt))
+    if files:
+        lines.append("文件：")
+        for f in files:
+            head = "- %s（%s" % (str(f.get("file_name") or "（没名字）"),
+                                 _gfile_size_text(f.get("size")))
+            who = str(f.get("uploader_name") or "").strip()
+            if who:
+                head += "，%s" % who
+            lines.append("%s）file_id=%s"
+                         % (head, str(f.get("file_id") or "")))
+    return qq_tools.make_result(True, summary,
+                                data={"content": "\n".join(lines)})
+
+
+def _group_file_url_tool(daemon, group, file_id):
+    """group_file_url 工具的执行函数（D 批 D3，main() 接线）：file_id 必填、
+    原样透传（它是 group_files 结果里 QQ 那边重编码的值，取链接要一字不
+    差）。摘要「下载链接：<url>」，不带 content；机器人自己不下载、也不
+    解析文件内容。失败路径与 group_files 相同；日志只记群号与成败——
+    链接本身不落日志。"""
+    if not _group_files_tool_enabled():
+        return qq_tools.make_result(
+            False, "读取群文件没有开启（管理台 → 工具循环 里打开）")
+    gid, gname, fail = _gfiles_resolve_group(daemon, group)
+    if fail is not None:
+        return fail
+    fid = str(file_id if file_id is not None else "").strip()
+    if not fid:
+        return qq_tools.make_result(
+            False, "file_id 不能是空的：先用 group_files 列出文件，把结果里"
+                   "的 file_id 原样带过来")
+    try:
+        res = daemon.group_file_url(gid, fid)
+    except Exception:
+        return qq_tools.make_result(False, "下载链接没取到（消息服务没答上来）")
+    fail = _gfiles_svc_fail(res, "下载链接没取到（消息服务没答上来）")
+    if fail is not None:
+        out("AGENT_GROUP_FILE_URL gid=%s ok=%s" % (gid, False))
+        return fail
+    data = res.get("data") if isinstance(res.get("data"), dict) else {}
+    url = str(data.get("url") or "").strip()
+    if not url:
+        out("AGENT_GROUP_FILE_URL gid=%s ok=%s" % (gid, False))
+        return qq_tools.make_result(False, "下载链接没取到（QQ那边没给链接）")
+    out("AGENT_GROUP_FILE_URL gid=%s ok=%s" % (gid, True))
+    return qq_tools.make_result(True, "下载链接：%s" % url)
 
 
 # 「[GADMIN] 动作|键=值」行级匹配（C7）：模式与旧分发处 findall 用的
@@ -10757,7 +10982,10 @@ def main():
     # _gadmin_tool_enabled（群管对话总开关，与旧标记是同一个）；D 批的
     # web_fetch 走 _web_fetch_tool（薄包装 qq_webfetch.fetch）+
     # _web_fetch_tool_enabled（联网读取开关），chat_search 走
-    # _chat_search_tool（agent 侧整段提供，它需要 msg 定位当前会话）。
+    # _chat_search_tool（agent 侧整段提供，它需要 msg 定位当前会话）；D 批
+    # D3 的群文件两个工具走 _group_files_tool / _group_file_url_tool（解析
+    # 群与取数都在 agent 侧整段提供）+ _group_files_tool_enabled（群文件
+    # 开关）。
     # 登记放 main 里而不是 import 时做，测试 import 本模块不会往登记表塞东西。
     try:
         qq_tools_builtin.register_builtin(
@@ -10774,7 +11002,10 @@ def main():
             gadmin_enabled_fn=_gadmin_tool_enabled,
             web_fetch_fn=_web_fetch_tool,
             web_fetch_enabled_fn=_web_fetch_tool_enabled,
-            chat_search_fn=_chat_search_tool)
+            chat_search_fn=_chat_search_tool,
+            group_files_fn=_group_files_tool,
+            group_file_url_fn=_group_file_url_tool,
+            group_files_enabled_fn=_group_files_tool_enabled)
     except Exception as e:
         out("AGENT_TOOLS_REG_FAIL %r" % e)
     threading.Thread(target=_caption_loop, args=(daemon,), daemon=True).start()

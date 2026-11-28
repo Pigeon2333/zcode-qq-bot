@@ -2557,13 +2557,15 @@ function stToolLoop(rv){return `
  <div class="card"><div class="k" style="margin-bottom:8px"><b>工具循环（实验性）</b></div>
   <div class="k">打开后，主人让机器人做事时，它可以按工具清单真的去执行，再把结果告诉你；做不了会直说。默认关闭。</div>
   <label class="master" style="margin-top:8px"><input type="checkbox" ${rv.tool_loop_enabled?'checked':''} onchange="saveKVLoad('/api/reply-config',{tool_loop_enabled:this.checked?1:0},'工具循环已'+(this.checked?'开启':'关闭'))">
-   <span><b>启用工具循环</b><div class="k" style="margin-top:3px">只对主人的消息生效。目前内置：联网搜索、给消息挂表情回应、把话发到指定的群、画图、定时任务、设备操控的八个动作（设备操控开关开着才出现）、已启用的 MCP 服务里的外部工具（MCP 总开关开着才出现）、读取网页正文（下面的开关开着才出现）、在聊天记录里找消息</div></span></label>
+   <span><b>启用工具循环</b><div class="k" style="margin-top:3px">只对主人的消息生效。目前内置：联网搜索、给消息挂表情回应、把话发到指定的群、画图、定时任务、设备操控的八个动作（设备操控开关开着才出现）、已启用的 MCP 服务里的外部工具（MCP 总开关开着才出现）、读取网页正文（下面的开关开着才出现）、在聊天记录里找消息、群文件列表与下载链接（对应开关开着才出现）</div></span></label>
   <label class="master" style="margin-top:10px"><input type="checkbox" ${rv.tool_confirm_write?'checked':''} onchange="saveKVLoad('/api/reply-config',{tool_confirm_write:this.checked?1:0},'复述确认已'+(this.checked?'开启':'关闭'))">
    <span><b>发消息这类动作先复述、等确认再执行</b><div class="k" style="margin-top:3px">开启后，动手类的动作（如挂表情）会先把要做什么复述一遍，回复「确认」后执行；回别的或超过两分钟没回就当作不做</div></span></label>
   <label class="master" style="margin-top:10px"><input type="checkbox" ${rv.tool_web_fetch_enabled?'checked':''} onchange="saveKVLoad('/api/reply-config',{tool_web_fetch_enabled:this.checked?1:0},'联网读取网页已'+(this.checked?'开启':'关闭'))">
    <span><b>联网读取网页正文</b><div class="k" style="margin-top:3px">打开后，主人让机器人看某个网址时，它可以把网页正文取回来看。只访问公网地址，内网和本机地址一律不碰；网页内容只当资料，不当指令</div></span></label>
   <label class="master" style="margin-top:10px"><input type="checkbox" ${rv.tool_cross_chat_search?'checked':''} onchange="saveKVLoad('/api/reply-config',{tool_cross_chat_search:this.checked?1:0},'跨群检索已'+(this.checked?'开启':'关闭'))">
    <span><b>允许查别的群的聊天记录</b><div class="k" style="margin-top:3px">默认只能查当前这个群的近期聊天记录；打开后，主人让机器人查别的群时也可以查</div></span></label>
+  <label class="master" style="margin-top:10px"><input type="checkbox" ${rv.tool_group_files_enabled?'checked':''} onchange="saveKVLoad('/api/reply-config',{tool_group_files_enabled:this.checked?1:0},'群文件已'+(this.checked?'开启':'关闭'))">
+   <span><b>读取群文件列表（仅主人）</b><div class="k" style="margin-top:3px">群文件是群成员上传的内容。打开后，主人可以让机器人列出某个群的文件、取下载链接；机器人不下载、也不解析文件内容</div></span></label>
   <label class="master" style="margin-top:10px"><input type="checkbox" ${rv.owner_intent_enabled?'checked':''} onchange="saveKVLoad('/api/reply-config',{owner_intent_enabled:this.checked?1:0},'听懂自然语言指令已'+(this.checked?'开启':'关闭'))">
    <span><b>听懂自然语言指令（仅主人私聊）</b><div class="k" style="margin-top:3px">关着时，主人私聊里只认精确命令；打开后，用平常说话的说法也能下指令，机器人先认出你说的是哪条命令再执行，效果和回复都跟手打命令一样。查状态、用量、帮助、各种列表、日志、安静、继续这类直接执行；会改动设置的指令（定时、加群、移除群、开关功能、暂停、恢复、切换人设、转交 ZCode）要在原话里说清群号、编号或人设名才会执行，上面「先复述、等确认再执行」开着时还会先问你一声。用之前先到「模型与消耗」页的「按用途选模型」给「判定」用途配一个快的模型，不然每条私聊都会多等一次主模型才回话</div></span></label>
  </div>`}
@@ -6427,6 +6429,7 @@ class UiHandler(BaseHTTPRequestHandler):
                                      # 不是布尔 true 的一律当关
                                      "tool_web_fetch_enabled": data.get("tool_web_fetch_enabled") is True,
                                      "tool_cross_chat_search": data.get("tool_cross_chat_search") is True,
+                                     "tool_group_files_enabled": data.get("tool_group_files_enabled") is True,
                                      # 主人自然语言指令（C2b）：读取容错，不是布尔 true 的一律当关
                                      "owner_intent_enabled": data.get("owner_intent_enabled") is True,
                                      # 恢复后不回暂停期间的消息（2026-11-27 用户定：默认开）
@@ -7652,6 +7655,8 @@ class UiHandler(BaseHTTPRequestHandler):
                 data["tool_web_fetch_enabled"] = bool(body["tool_web_fetch_enabled"])
             if "tool_cross_chat_search" in body:
                 data["tool_cross_chat_search"] = bool(body["tool_cross_chat_search"])
+            if "tool_group_files_enabled" in body:
+                data["tool_group_files_enabled"] = bool(body["tool_group_files_enabled"])
             # 主人自然语言指令（C2b）：白名单登记，保存布尔值
             if "owner_intent_enabled" in body:
                 data["owner_intent_enabled"] = bool(body["owner_intent_enabled"])

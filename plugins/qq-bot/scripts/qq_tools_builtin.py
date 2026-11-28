@@ -7,7 +7,9 @@ B3：mcp_call——MCP 外部工具并入工具表的通用入口；
 C7：gadmin_ban/gadmin_unban/gadmin_whole_ban/gadmin_whole_unban/
 gadmin_notice/gadmin_recall——群管动作并入工具表；
 D 批：web_fetch——网页正文读取（qq_webfetch.fetch 的薄包装）；
-chat_search——聊天记录关键词检索（执行函数由 agent 侧整段提供））
+chat_search——聊天记录关键词检索（执行函数由 agent 侧整段提供）；
+group_files / group_file_url——群文件列表与下载链接（只读，执行函数由
+agent 侧整段提供））
 
 每个工具是一层薄包装：调用既有函数（统一搜索入口 search_web、daemon 的
 set_msg_reaction、发群的解析+校验+发送、画图执行、定时的存入/读取、
@@ -38,16 +40,21 @@ def register_builtin(search_web_fn, send_group_fn=None, draw_fn=None,
                      mcp_call_fn=None, mcp_allowed_fn=None,
                      gadmin_exec_fn=None, gadmin_enabled_fn=None,
                      web_fetch_fn=None, web_fetch_enabled_fn=None,
-                     chat_search_fn=None):
+                     chat_search_fn=None,
+                     group_files_fn=None, group_file_url_fn=None,
+                     group_files_enabled_fn=None):
     """把内置工具登记进 qq_tools。幂等：已登记的名字原样跳过，不抛异常、
     也不覆盖已登记的同名工具。四个带对外副作用的工具（发到群/画图/定时）、
     八个设备工具（B2a 的 pc_*，两个 devctrl 函数都传了才登记）、MCP 通用
     入口（B3 的 mcp_call，mcp_call_fn/mcp_allowed_fn 两个都传了才登记）、
     六个群管工具（C7 的 gadmin_*，gadmin_exec_fn/gadmin_enabled_fn 两个
     都传了才登记）、网页读取（D 批的 web_fetch，web_fetch_fn/
-    web_fetch_enabled_fn 两个都传了才登记）与聊天记录检索（D 批的
+    web_fetch_enabled_fn 两个都传了才登记）、聊天记录检索（D 批的
     chat_search，chat_search_fn 传了才登记——它需要 msg，执行函数由
-    agent 侧整段提供）只登记调用方传了对应执行函数的那些，没传的不登记。"""
+    agent 侧整段提供）与群文件两个只读工具（D 批 D3 的 group_files /
+    group_file_url，group_files_fn/group_file_url_fn/group_files_enabled_fn
+    三个都传了才登记——解析群与取数都由 agent 侧整段提供）只登记调用方
+    传了对应执行函数的那些，没传的不登记。"""
     if qq_tools.get_tool("web_search") is None:
         qq_tools.register({
             "name": "web_search",
@@ -171,6 +178,39 @@ def register_builtin(search_web_fn, send_group_fn=None, draw_fn=None,
             "risk": "read", "scope": "owner",
             "returns": "命中的消息（何时、谁、说了什么；最多 20 条）",
             "run": _chat_search_run(chat_search_fn),
+        })
+    if (group_files_fn is not None and group_file_url_fn is not None
+            and group_files_enabled_fn is not None
+            and qq_tools.get_tool("group_files") is None):
+        qq_tools.register({
+            "name": "group_files",
+            "desc": "列出某个群里的文件夹和文件（群成员上传的内容；只看"
+                    "清单，不下载、不看内容）",
+            "params": [
+                {"name": "group", "type": "str", "required": True,
+                 "desc": "群号（优先）或完整群名"},
+                {"name": "folder", "type": "str", "required": False,
+                 "desc": "文件夹 ID 或文件夹名；不填就列根目录"},
+                {"name": "count", "type": "int", "required": False,
+                 "desc": "一次最多列多少个文件（1-200），不填按默认 50"}],
+            "risk": "read", "scope": "owner",
+            "returns": "文件夹与文件的清单（文件带 file_id，取下载链接要原样用）",
+            "run": _group_files_run(group_files_fn),
+        })
+    if (group_files_fn is not None and group_file_url_fn is not None
+            and group_files_enabled_fn is not None
+            and qq_tools.get_tool("group_file_url") is None):
+        qq_tools.register({
+            "name": "group_file_url",
+            "desc": "取群里某个文件的下载链接（只取链接，不下载、不看内容）",
+            "params": [
+                {"name": "group", "type": "str", "required": True,
+                 "desc": "群号（优先）或完整群名"},
+                {"name": "file_id", "type": "str", "required": True,
+                 "desc": "文件 ID（group_files 结果里的 file_id，原样）"}],
+            "risk": "read", "scope": "owner",
+            "returns": "该文件的下载链接",
+            "run": _group_file_url_run(group_file_url_fn),
         })
 
 
@@ -611,4 +651,25 @@ def _chat_search_run(chat_search_fn):
         return chat_search_fn(daemon, msg, str(args.get("query") or ""),
                               str(args.get("chat") or "").strip(),
                               args.get("limit"))
+    return run
+
+
+def _group_files_run(files_fn):
+    """group_files 的薄包装体（D 批 D3）：照 chat_search 的接法只做参数
+    拆包，传给 agent 侧的执行函数——解析群、开关判断、folder 的换 ID、
+    回喂拼装全在那边（它要 daemon 与 _resolve_group_all）。count 原样传
+    （None = 没填，由 agent 侧钳制 1-200）。"""
+    def run(daemon, msg, args):
+        return files_fn(daemon, str(args.get("group") or "").strip(),
+                        str(args.get("folder") or "").strip(),
+                        args.get("count"))
+    return run
+
+
+def _group_file_url_run(url_fn):
+    """group_file_url 的薄包装体（D 批 D3）：只做参数拆包；file_id 原样
+    透传、不做任何加工（它是 QQ 那边重编码的值，取链接要一字不差）。"""
+    def run(daemon, msg, args):
+        return url_fn(daemon, str(args.get("group") or "").strip(),
+                      args.get("file_id"))
     return run
