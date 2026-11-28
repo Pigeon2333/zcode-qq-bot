@@ -9489,8 +9489,12 @@ def _tool_available(name):
     工具）只在设备操控开关打开时可用；B3 起 mcp_call 只在 MCP 总开关开着时
     可用（与 run 第一道闸是同一判断——都走 _mcp_tool_allowed）；C7 起
     gadmin_* 前缀（群管六个工具）只在群管对话总开关打开时可用（同一判断
-    ——都走 _gadmin_tool_enabled）；其它工具一律可用。开关关着时对应工具
-    不进清单也不进循环（模型凭空写出时，由工具循环按「没有这个工具」回喂）。"""
+    ——都走 _gadmin_tool_enabled）；D 批起 web_fetch 只在联网读取开关
+    （tool_web_fetch_enabled，与 run 第一道闸是同一判断——都走
+    _web_fetch_tool_enabled）开着时可用；chat_search 恒可用（当前会话的
+    检索不需要开关，跨会话的开关在执行函数里查）；其它工具一律可用。开关
+    关着时对应工具不进清单也不进循环（模型凭空写出时，由工具循环按
+    「没有这个工具」回喂）。"""
     n = str(name or "")
     if n.startswith("pc_"):
         return _device_ctrl_enabled()
@@ -9498,6 +9502,8 @@ def _tool_available(name):
         return _mcp_tool_allowed()
     if n.startswith("gadmin_"):
         return _gadmin_tool_enabled()
+    if n == "web_fetch":
+        return _web_fetch_tool_enabled()
     return True
 
 
@@ -9799,6 +9805,135 @@ def _gadmin_tool_enabled():
     （_gadmin_chat_enabled，group_admin.json 根键 chat_enabled，默认关）
     ——与旧 [GADMIN] 标记教学/执行是同一个开关。"""
     return _gadmin_chat_enabled()
+
+
+def _web_fetch_tool(url):
+    """web_fetch 工具的执行函数（D 批，main() 接线）：薄包装
+    qq_webfetch.fetch——scheme、内网/回环/链路本地地址（按解析后的每个 IP
+    判、重定向每一跳重判）、DNS 重绑定、响应体上限、超时等所有防护都在它
+    内部，这里不重新实现任何一道；任何异常收成 {"ok": False, "error":
+    一句原因}，不外抛。返回形状照 qq_webfetch.fetch：
+    {ok, final_url, status, title, text, error}。"""
+    import qq_webfetch as W
+    try:
+        return W.fetch(str(url or ""))
+    except Exception as exc:
+        return {"ok": False, "error": "读取网页出错：%s" % str(exc)[:200]}
+
+
+def _web_fetch_tool_enabled():
+    """web_fetch 工具的开关函数（D 批，main() 接线）：reply_config 的
+    tool_web_fetch_enabled（管理台「工具循环（实验性）」卡维护；默认关）。
+    读法照 _tool_loop_on：读不到、坏值一律 False，只有布尔 true 算开。"""
+    cfg = load_json_const(REPLY_CONFIG_PATH, {})
+    return isinstance(cfg, dict) and cfg.get("tool_web_fetch_enabled") is True
+
+
+def _cross_chat_search_on():
+    """跨会话聊天记录检索开关（D 批）：reply_config.tool_cross_chat_search
+    （管理台「工具循环（实验性）」卡维护；默认关）。开着时 chat_search 才
+    可以查当前会话以外的群——翻别的群的记录是隐私功能，所以开关独立、
+    默认关；只认布尔 true。当前会话自己的检索不需要任何开关。"""
+    cfg = load_json_const(REPLY_CONFIG_PATH, {})
+    return isinstance(cfg, dict) and cfg.get("tool_cross_chat_search") is True
+
+
+def _chat_search_tool(daemon, msg, query, chat, limit):
+    """chat_search 工具的执行函数（D 批，main() 接线）：经
+    DaemonClient.history 取目标会话最近 limit 条，在本地按关键词匹配。
+    参数由 qq_tools_builtin 的薄包装从 args 拆好传进来（query 必填；chat
+    缺省当前会话、非空只认群——_resolve_group_all，歧义或找不到就回一句
+    确定性说明、不猜；limit 缺省 100、上限 200）。
+    隐私定位：目标会话与当前会话不同、而 tool_cross_chat_search 没开时
+    拒绝、不取数据；当前会话的检索不需要开关（机器人本来就在这个群里）。
+    匹配规则：query 按空白拆词，一条消息的文本里每个词都出现才算命中
+    （不分大小写）；没有文本的消息（纯图片等）跳过；取最近的 20 条命中、
+    按时间正序，每条「月-日 时:分 发送者：内容」，内容截 200 字；机器人
+    自己的消息（is_bot）也列入并在发送者后标「（机器人）」。
+    history 抛异常或返回形状不对（None、dict 等）＝「没取到」：ok=False 的
+    确定性说明＋一行 AGENT_CHAT_SEARCH_FAIL 日志（不含聊天内容），绝不能
+    落成 ok=True 的「最近 0 条里没有找到」；「没有找到」只在接口正常返回
+    （含正常返回的空列表）且确实没有命中时出现。
+    日志只记目标会话与条数（AGENT_CHAT_SEARCH），任何聊天内容都不落日志
+    ——工具循环原有的 AGENT_TOOL_LOOP 也只记工具名与成败。"""
+    q = str(query or "").strip()
+    terms = q.lower().split()
+    if not terms:
+        return qq_tools.make_result(False, "要找的关键词不能是空的：告诉我"
+                                           "找什么，多个词用空格隔开")
+    ct_now = str((msg or {}).get("chat_type") or "")
+    cid_now = str((msg or {}).get("chat_id") or "")
+    chat = str(chat or "").strip()
+    if chat:
+        hits = _resolve_group_all(daemon, chat)
+        if len(hits) > 1:
+            names = daemon.group_names()
+            pairs = ["%s(%s)" % (str(names.get(g) or "群名未知"), g)
+                     for g in hits[:5]]
+            return qq_tools.make_result(
+                False, "叫这个名字的群有多个：%s——请告诉我群号"
+                       % "、".join(pairs))
+        if not hits:
+            return qq_tools.make_result(
+                False, "没找到这个群（或它不在我的群白名单里）——只认群号"
+                       "或完整群名；查别的群的记录还要主人先在管理台打开对"
+                       "应的开关")
+        ct, cid = "group", hits[0]
+    else:
+        ct, cid = ct_now, cid_now
+    if (ct, cid) != (ct_now, cid_now) and not _cross_chat_search_on():
+        return qq_tools.make_result(
+            False, "查别的群的聊天记录需要在管理台打开对应的开关"
+                   "（工具循环卡里的「允许查别的群的聊天记录」）")
+    try:
+        n = int(limit) if limit is not None else 100
+    except (TypeError, ValueError):
+        n = 100
+    n = max(1, min(n, 200))
+    try:
+        items = daemon.history(ct, cid, n)
+    except Exception as exc:
+        # 取数失败 ≠ 没找到：必须如实报「没取到」，不能落成 ok=True 的
+        # 「最近 0 条里没有找到」让模型转述成没找到。日志不带聊天内容
+        # （异常 repr 截 120；异常文本不是聊天记录）。
+        out("AGENT_CHAT_SEARCH_FAIL tgt=%s/%s %r" % (ct, cid, repr(exc)[:120]))
+        return qq_tools.make_result(False, "聊天记录没取到，过会儿再试一次")
+    if not isinstance(items, list):
+        # 返回形状不对（None、dict 等）同样按「没取到」处理；日志只记类型，
+        # 不 repr 返回值——它可能内含聊天内容。
+        out("AGENT_CHAT_SEARCH_FAIL tgt=%s/%s type=%s"
+            % (ct, cid, type(items).__name__))
+        return qq_tools.make_result(False, "聊天记录没取到，过会儿再试一次")
+
+    def _hit(rec):
+        text = str(rec.get("text") or "").strip()
+        if not text:
+            return False    # 没有文本的消息（纯图片等）跳过
+        low = text.lower()
+        return all(t in low for t in terms)
+
+    matched = [r for r in items if isinstance(r, dict) and _hit(r)]
+    shown = matched[-20:]   # items 本身时间正序，末尾即最近的命中
+    if not shown:
+        return qq_tools.make_result(
+            True, "最近 %d 条里没有找到含「%s」的消息" % (len(items), q))
+    lines = []
+    for rec in shown:
+        try:
+            stamp = time.strftime("%m-%d %H:%M", time.localtime(rec.get("ts")))
+        except Exception:
+            stamp = "-- --:--"
+        who = str(rec.get("sender_name") or rec.get("sender_id") or "未知")
+        if rec.get("is_bot"):
+            who += "（机器人）"
+        text = re.sub(r"\s+", " ",
+                      str(rec.get("text") or "").strip())[:200]
+        lines.append("%s %s：%s" % (stamp, who, text))
+    out("AGENT_CHAT_SEARCH tgt=%s/%s n=%d hits=%d shown=%d"
+        % (ct, cid, len(items), len(matched), len(shown)))
+    return qq_tools.make_result(
+        True, "最近 %d 条里找到 %d 条含「%s」的消息" % (len(items), len(shown), q),
+        data={"content": "\n".join(lines)})
 
 
 # 「[GADMIN] 动作|键=值」行级匹配（C7）：模式与旧分发处 findall 用的
@@ -10619,7 +10754,10 @@ def main():
     # B3 的 mcp_call 走 _mcp_tool_call（薄包装 qq_mcp.call_tool）+
     # _mcp_tool_allowed（MCP 自己的总开关）；C7 的六个群管工具（gadmin_*）
     # 走 _gadmin_tool_call（薄包装 daemon.gadmin_exec）+
-    # _gadmin_tool_enabled（群管对话总开关，与旧标记是同一个）。
+    # _gadmin_tool_enabled（群管对话总开关，与旧标记是同一个）；D 批的
+    # web_fetch 走 _web_fetch_tool（薄包装 qq_webfetch.fetch）+
+    # _web_fetch_tool_enabled（联网读取开关），chat_search 走
+    # _chat_search_tool（agent 侧整段提供，它需要 msg 定位当前会话）。
     # 登记放 main 里而不是 import 时做，测试 import 本模块不会往登记表塞东西。
     try:
         qq_tools_builtin.register_builtin(
@@ -10633,7 +10771,10 @@ def main():
             mcp_call_fn=_mcp_tool_call,
             mcp_allowed_fn=_mcp_tool_allowed,
             gadmin_exec_fn=_gadmin_tool_call,
-            gadmin_enabled_fn=_gadmin_tool_enabled)
+            gadmin_enabled_fn=_gadmin_tool_enabled,
+            web_fetch_fn=_web_fetch_tool,
+            web_fetch_enabled_fn=_web_fetch_tool_enabled,
+            chat_search_fn=_chat_search_tool)
     except Exception as e:
         out("AGENT_TOOLS_REG_FAIL %r" % e)
     threading.Thread(target=_caption_loop, args=(daemon,), daemon=True).start()

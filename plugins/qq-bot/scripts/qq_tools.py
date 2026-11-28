@@ -51,6 +51,12 @@ _SUMMARY_MAX = 600
 _FEED_SUMMARY_MAX = 500
 _FEED_TOTAL_MAX = 4000
 
+# 长内容通道（D 批）：工具在 data["content"] 里带回一大段正文（网页正文、
+# 聊天记录条目）时，回喂把内容附在摘要行下面；正文截 2000 字、超出注明，
+# 并计入整条回喂 4000 字的预算（先到先占；放不下时后面的条目换「略」）。
+_FEED_CONTENT_MAX = 2000
+_CONTENT_NOTE = "…（内容过长，已截断）"
+
 # 工具输出里的 [TOOL] 一律改写成 [TOOL·]：防止上一轮的结果被当成新的调用。
 _TOOL_MARK = "[TOOL]"
 _TOOL_MARK_SAFE = "[TOOL·]"
@@ -444,10 +450,40 @@ def _format_entry(name, args, ok, summary):
     return _sanitize(line)
 
 
+def _content_indent(text):
+    """正文每行缩进两个空格（空行保持空），让附带的内容一眼可辨。"""
+    return "\n".join(("  " + ln) if ln else "" for ln in text.splitlines())
+
+
+def _content_block(content, room):
+    """带 content 的条目的回喂段：「\\n\\n内容：\\n」＋缩进后的正文。正文
+    先过 _sanitize（[TOOL] → [TOOL·]——网页和聊天记录都是不可信内容），
+    超过 _FEED_CONTENT_MAX 截断并在末尾注明；整段放不进 room（这条剩下的
+    预算）时再截到 room 内（同样注明）。room 连「内容：」头和注明都放不下
+    时返回 None（调用方按放不下处理，整条让位给「其余略」）。"""
+    head = "\n\n内容：\n"
+    if room < len(head) + len(_CONTENT_NOTE):
+        return None
+    text = _sanitize(content if isinstance(content, str) else str(content))
+    note = ""
+    if len(text) > _FEED_CONTENT_MAX:
+        text = text[:_FEED_CONTENT_MAX]
+        note = _CONTENT_NOTE
+    block = head + _content_indent(text) + note
+    if len(block) > room:
+        avail = room - len(head) - len(_CONTENT_NOTE)
+        block = head + _content_indent(text)[:avail].rstrip() + _CONTENT_NOTE
+    return block
+
+
 def _feedback(entries, overflow_n):
-    """拼回喂消息（role=user）：固定头、每条结果一行、本轮多出来的调用
-    写一句、固定尾。整条超过 4000 字时后面的条目换成「（其余 N 条结果
-    略）」——固定头尾和那句说明不参与裁剪（都很短）。"""
+    """拼回喂消息（role=user）：固定头、每条结果一行（带 data["content"]
+    的条目在其摘要行下空一行接「内容：」＋缩进正文，正文截 2000 字、超出
+    注明）、本轮多出来的调用写一句、固定尾。整条超过 4000 字时裁剪：固定
+    头尾和「其余略」那句不参与；条目先到先占预算，后面的整条放不下就换成
+    「（其余 N 条结果略）」；带内容的条目整段放不下时保住摘要行、正文截到
+    剩余预算并注明（连注明都放不下才整条让位）。不带 content 的条目回喂
+    文本与从前逐字节相同。"""
     tail = []
     if overflow_n > 0:
         tail.append("本轮最多执行 %d 个，其余 %d 个没有执行，需要的话下一轮"
@@ -459,11 +495,20 @@ def _feedback(entries, overflow_n):
     body = []
     kept = 0
     for e in entries:
-        line = _format_entry(*e)
-        used = sum(len(l) + 1 for l in body) + len(line) + 1
-        if used + tail_len > _FEED_TOTAL_MAX:
+        line = _format_entry(*e[:4])
+        content = e[4] if len(e) > 4 and e[4] else None
+        prefix = sum(len(l) + 1 for l in body)
+        room_full = _FEED_TOTAL_MAX - tail_len - prefix - 1
+        if content is None:
+            if len(line) > room_full:
+                break
+            body.append(line)
+            kept += 1
+            continue
+        block = _content_block(content, room_full - len(line))
+        if block is None:
             break
-        body.append(line)
+        body.append(line + block)
         kept += 1
     out = [_FEED_HEAD] + body
     if len(entries) - kept > 0:
@@ -504,7 +549,9 @@ def _closing(last_rest, actions, leftovers):
 
 def _run_round(call_list, by_name, ctx, opts, actions, resume_mode=False):
     """执行一轮解析出来的调用。返回 (entries, overflow, confirm_info)：
-      entries      每条调用的回喂条目 (name, args, ok, summary)
+      entries      每条调用的回喂条目 (name, args, ok, summary[, content])
+                   （第 5 位＝工具结果 data["content"] 的长内容，见 _feedback；
+                   只有真正执行过 run 的条目才可能带）
       overflow     超过每轮上限没轮到的调用（原样；给「还没做」/复述）
       confirm_info (spec, call, args, remaining)——write 级要复述确认时
                    立即停才返回，其余时候是 None
@@ -516,6 +563,9 @@ def _run_round(call_list, by_name, ctx, opts, actions, resume_mode=False):
     """
     entries = []
     executed = 0
+    # 条目是 (name, args, ok, summary) 或 5 元组（末位＝data["content"]，
+    # 长内容通道；不带内容的条目是 None，回喂与从前逐字节相同）——见
+    # _feedback。没登记/解析错/参数不对/闸拒掉的条目不带内容。
     for i, call in enumerate(call_list):
         if executed >= MAX_CALLS_PER_ROUND:
             return entries, list(call_list[i:]), None
@@ -545,11 +595,13 @@ def _run_round(call_list, by_name, ctx, opts, actions, resume_mode=False):
             continue
         result = _execute(spec, args, ctx)
         executed += 1
+        data = result.get("data")
+        content = data.get("content") if isinstance(data, dict) else None
         actions.append({"tool": name, "args": args,
                         "ok": bool(result.get("ok")),
                         "summary": result.get("summary", "")})
         entries.append((name, args, bool(result.get("ok")),
-                        result.get("summary", "")))
+                        result.get("summary", ""), content))
     return entries, [], None
 
 

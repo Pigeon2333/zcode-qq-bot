@@ -5,7 +5,9 @@ A2b：send_group、draw、cron_add、cron_list；
 B2a：pc_find/pc_read/pc_list/pc_search/pc_apps/pc_send/pc_open/pc_close；
 B3：mcp_call——MCP 外部工具并入工具表的通用入口；
 C7：gadmin_ban/gadmin_unban/gadmin_whole_ban/gadmin_whole_unban/
-gadmin_notice/gadmin_recall——群管动作并入工具表）
+gadmin_notice/gadmin_recall——群管动作并入工具表；
+D 批：web_fetch——网页正文读取（qq_webfetch.fetch 的薄包装）；
+chat_search——聊天记录关键词检索（执行函数由 agent 侧整段提供））
 
 每个工具是一层薄包装：调用既有函数（统一搜索入口 search_web、daemon 的
 set_msg_reaction、发群的解析+校验+发送、画图执行、定时的存入/读取、
@@ -34,13 +36,18 @@ def register_builtin(search_web_fn, send_group_fn=None, draw_fn=None,
                      cron_add_fn=None, cron_list_fn=None,
                      devctrl_step_fn=None, devctrl_enabled_fn=None,
                      mcp_call_fn=None, mcp_allowed_fn=None,
-                     gadmin_exec_fn=None, gadmin_enabled_fn=None):
+                     gadmin_exec_fn=None, gadmin_enabled_fn=None,
+                     web_fetch_fn=None, web_fetch_enabled_fn=None,
+                     chat_search_fn=None):
     """把内置工具登记进 qq_tools。幂等：已登记的名字原样跳过，不抛异常、
     也不覆盖已登记的同名工具。四个带对外副作用的工具（发到群/画图/定时）、
     八个设备工具（B2a 的 pc_*，两个 devctrl 函数都传了才登记）、MCP 通用
-    入口（B3 的 mcp_call，mcp_call_fn/mcp_allowed_fn 两个都传了才登记）
-    与六个群管工具（C7 的 gadmin_*，gadmin_exec_fn/gadmin_enabled_fn 两个
-    都传了才登记）只登记调用方传了对应执行函数的那些，没传的不登记。"""
+    入口（B3 的 mcp_call，mcp_call_fn/mcp_allowed_fn 两个都传了才登记）、
+    六个群管工具（C7 的 gadmin_*，gadmin_exec_fn/gadmin_enabled_fn 两个
+    都传了才登记）、网页读取（D 批的 web_fetch，web_fetch_fn/
+    web_fetch_enabled_fn 两个都传了才登记）与聊天记录检索（D 批的
+    chat_search，chat_search_fn 传了才登记——它需要 msg，执行函数由
+    agent 侧整段提供）只登记调用方传了对应执行函数的那些，没传的不登记。"""
     if qq_tools.get_tool("web_search") is None:
         qq_tools.register({
             "name": "web_search",
@@ -138,6 +145,33 @@ def register_builtin(search_web_fn, send_group_fn=None, draw_fn=None,
         for _spec in _gadmin_specs(gadmin_exec_fn, gadmin_enabled_fn):
             if qq_tools.get_tool(_spec["name"]) is None:
                 qq_tools.register(_spec)
+    if (web_fetch_fn is not None and web_fetch_enabled_fn is not None
+            and qq_tools.get_tool("web_fetch") is None):
+        qq_tools.register({
+            "name": "web_fetch",
+            "desc": "读取一个网页的正文（只访问公网网址，内网/本机地址不碰）",
+            "params": [{"name": "url", "type": "str", "required": True,
+                        "desc": "要读的网页地址（http:// 或 https://）"}],
+            "risk": "read", "scope": "owner",
+            "returns": "网页标题、最终地址与正文（正文走内容通道回喂）",
+            "run": _web_fetch_run(web_fetch_fn, web_fetch_enabled_fn),
+        })
+    if chat_search_fn is not None and qq_tools.get_tool("chat_search") is None:
+        qq_tools.register({
+            "name": "chat_search",
+            "desc": "在聊天记录里按关键词找消息（默认当前会话；查别的群要"
+                    "主人开开关）",
+            "params": [
+                {"name": "query", "type": "str", "required": True,
+                 "desc": "要找的关键词，可以多个（每个词都出现才算命中）"},
+                {"name": "chat", "type": "str", "required": False,
+                 "desc": "群号或群名；不填就查当前会话"},
+                {"name": "limit", "type": "int", "required": False,
+                 "desc": "往前翻多少条，不填默认 100，最多 200"}],
+            "risk": "read", "scope": "owner",
+            "returns": "命中的消息（何时、谁、说了什么；最多 20 条）",
+            "run": _chat_search_run(chat_search_fn),
+        })
 
 
 def _web_search_run(search_web_fn):
@@ -529,3 +563,52 @@ def _gadmin_specs(exec_fn, enabled_fn):
          "returns": "撤回办没办成和原因",
          "run": _gadmin_run(exec_fn, enabled_fn, "recall", {})},
     )
+
+
+# ---- D 批：web_fetch / chat_search ----
+# web_fetch 只调 qq_webfetch.fetch（scheme/内网/回环/DNS 重绑定/体积/超时等
+# 防护全在它内部，这里不重新实现任何一道）；chat_search 的取数与匹配由
+# agent 侧的执行函数整段提供（它需要 msg 来定位当前会话），这里只做参数
+# 拆包。两个工具都是 read/owner，由 qq_tools 的统一工具闸管。
+
+def _web_fetch_run(fetch_fn, enabled_fn):
+    """web_fetch 的薄包装体：第一行查开关（关着时任何路径都读不了网页）；
+    调 fetch_fn，结果照 qq_webfetch.fetch 的返回形状（{ok, final_url,
+    status, title, text, error}）转成统一结果——正文放 data["content"]
+    （长内容通道，见 qq_tools._feedback），摘要「《标题》 最终地址」；标题
+    或正文为空时摘要如实说明；ok=False 或执行函数抛异常 → ok=False 带原因
+    （截 200 字），不外抛。"""
+    def run(daemon, msg, args):
+        if not enabled_fn():
+            return qq_tools.make_result(
+                False, "读取网页没有开启（管理台 → 工具循环 里打开）")
+        url = str(args.get("url") or "").strip()
+        try:
+            res = fetch_fn(url)
+        except Exception as exc:
+            return qq_tools.make_result(
+                False, "读取网页出错：%s" % str(exc)[:200])
+        res = res if isinstance(res, dict) else {}
+        if not res.get("ok"):
+            return qq_tools.make_result(
+                False, str(res.get("error") or "没读到网页"))
+        title = str(res.get("title") or "").strip()
+        text = str(res.get("text") or "")
+        final_url = str(res.get("final_url") or url).strip()
+        summary = ("《%s》 %s" % (title, final_url)) if title \
+            else "（没抓到标题） %s" % final_url
+        if not text.strip():
+            summary += "（正文是空的）"
+        return qq_tools.make_result(True, summary, data={"content": text})
+    return run
+
+
+def _chat_search_run(chat_search_fn):
+    """chat_search 的薄包装体：把校验过的参数从 args 拆出来传给 agent 侧的
+    执行函数（它需要 msg 定位当前会话，所以由 agent 侧整段提供）；取数、
+    匹配、隐私开关判断全在那边。"""
+    def run(daemon, msg, args):
+        return chat_search_fn(daemon, msg, str(args.get("query") or ""),
+                              str(args.get("chat") or "").strip(),
+                              args.get("limit"))
+    return run

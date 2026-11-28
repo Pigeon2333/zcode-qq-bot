@@ -96,6 +96,7 @@ SAVE_KEYS = {
     "react_only": 1, "proactive_mode": 1, "nudge_mode": 1, "chat_max_len": 1,
     "wait_gate_enabled": 1, "burst_merge_enabled": 1, "botloop_guard_enabled": 1,
     "botloop_cooldown_min": 1, "tool_loop_enabled": 1, "tool_confirm_write": 1,
+    "tool_web_fetch_enabled": 1, "tool_cross_chat_search": 1,
     "owner_intent_enabled": 1,
     "vision_caption": 1, "vision_caption_model": 1,
     "vision_caption_daily_cap": 1, "vision_prob": 1, "risk_limit_image_fetch": 1,
